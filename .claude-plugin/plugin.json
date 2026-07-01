@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "devlog",
+  "displayName": "DevLog",
+  "version": "2.9.8",
+  "description": "Automatic dev tracking for Claude Code via hooks and tags — a local dashboard for builds, plans, releases, security findings, and standards, with zero telemetry.",
+  "author": { "name": "fmaaakcode" },
+  "homepage": "https://github.com/fmaaakcode/devlog",
+  "repository": "https://github.com/fmaaakcode/devlog",
+  "license": "MIT",
+  "keywords": ["devlog", "tracking", "dashboard", "hooks", "tags", "claude-code", "plans", "releases"]
+}

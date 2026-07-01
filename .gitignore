@@ -1,0 +1,54 @@
+# Runtime data — contains all your tags, events, projects. Never commit.
+.devlog-data/
+.devlog-data-backups/
+.devlog/
+
+# Local environment (VULN_LOCAL_PATH etc.). Use .env.example as the template.
+.env
+.env.local
+
+# Personal scratch/old files kept locally, never shipped.
+old/
+
+# Logs
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Bun
+node_modules/
+bun.lockb
+
+# Compiled single-file executables (bun run build)
+devlog.exe
+*.exe
+
+# Rust desktop shell — parked experiment (executable packaging, undecided).
+# Whole dir ignored while the approach is undecided; un-ignore if revived.
+desktop/
+
+# Owner's standing rules
+.claude/
+*.backup-*
+*-backup-*
+
+# Maintainer notes (local only)
+DEVELOPER_NOTES.md
+
+# Internal audit reports + planning docs (local only)
+audits/
+
+# Legacy docs kept locally but no longer shipped. The plugin now delivers the
+# tag protocol via the `devlog-protocol` skill (single source), and hooks ship
+# in hooks.json — so docs/CLAUDE.md, settings.example.json, etc. are redundant.
+docs/
+
+# Local scratch from tests / scripts
+.tmp-*.json
+nul
+New Text Document*.txt
+اخر شي .txt
