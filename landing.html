@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DevLog — ذاكرة تلقائية لكل ما يبنيه كلود</title>
+<meta name="description" content="متتبّع تطوير تلقائي لجلسات Claude Code: كل ميزة بُنيت، كل مهمة فُتحت، كل ثغرة أُغلقت — في لوحة محلية حية، بدون أن تكتب شيئاً بنفسك.">
+<link rel="canonical" href="https://fmaaakcode.github.io/devlog/landing.html">
+<meta property="og:type" content="website">
+<meta property="og:title" content="DevLog — ذاكرة تلقائية لكل ما يبنيه كلود">
+<meta property="og:description" content="متتبّع تطوير تلقائي لجلسات Claude Code: كل ميزة، مهمة، وثغرة — في لوحة محلية حية بلا تتبّع.">
+<meta property="og:image" content="https://fmaaakcode.github.io/devlog/assets/dashboard.jpeg">
+<meta property="og:url" content="https://fmaaakcode.github.io/devlog/landing.html">
+<meta property="og:locale" content="ar_AR">
+<meta name="twitter:card" content="summary_large_image">
+<style>
+:root {
+    --pink: #ef476f;
+    --gold: #ffd166;
+    --emerald: #06d6a0;
+    --blue: #118ab2;
+    --bg: #161718;
+    --bg2: #1B1C1D;
+    --bg3: #212223;
+    --border: #363737;
+    --text: #EEEEEE;
+    --text2: #9A9A9A;
+    --mono: 'Cascadia Code', Consolas, 'Courier New', monospace;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    line-height: 1.7;
+    overflow-x: hidden;
+}
+::selection { background: rgba(6, 214, 160, .25); }
+
+.wrap { max-width: 1060px; margin: 0 auto; padding: 0 24px; }
+
+/* ---------- topbar ---------- */
+.topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 0;
+}
+.logo { font-family: var(--mono); font-size: 1.25em; font-weight: 700; letter-spacing: .5px; }
+.logo span { color: var(--emerald); }
+.topbar .links { display: flex; gap: 10px; }
+.topbar a.gh {
+    color: var(--text2); text-decoration: none; font-size: .9em;
+    border: 1px solid var(--border); padding: 7px 16px; border-radius: 999px;
+    transition: color .2s, border-color .2s;
+}
+.topbar a.gh:hover { color: var(--text); border-color: var(--text2); }
+
+/* ---------- hero ---------- */
+.hero { padding: 72px 0 40px; text-align: center; position: relative; }
+.hero::before {
+    content: ""; position: absolute; inset: -120px 0 auto; height: 480px;
+    background: radial-gradient(600px 300px at 50% 0%, rgba(6,214,160,.07), transparent 70%);
+    pointer-events: none;
+}
+.hero h1 {
+    font-size: clamp(2rem, 5.5vw, 3.4rem);
+    font-weight: 800; line-height: 1.25; letter-spacing: -.5px;
+}
+.hero h1 .accent { color: var(--emerald); }
+.hero p.sub {
+    color: var(--text2); font-size: clamp(1rem, 2vw, 1.2rem);
+    max-width: 640px; margin: 18px auto 0;
+}
+.hero .cta-row { margin-top: 34px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+.btn {
+    display: inline-block; text-decoration: none; font-size: 1em; font-weight: 600;
+    padding: 12px 28px; border-radius: 10px; transition: transform .15s, box-shadow .15s;
+}
+.btn:hover { transform: translateY(-2px); }
+.btn-primary { background: var(--emerald); color: #05281f; box-shadow: 0 4px 24px rgba(6,214,160,.25); }
+.btn-ghost { border: 1px solid var(--border); color: var(--text); }
+.btn-ghost:hover { border-color: var(--text2); }
+
+/* ---------- terminal mock ---------- */
+.terminal {
+    max-width: 720px; margin: 56px auto 0; text-align: right;
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 14px;
+    overflow: hidden; box-shadow: 0 24px 60px rgba(0,0,0,.45);
+}
+.term-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--bg3);
+}
+.dot { width: 11px; height: 11px; border-radius: 50%; }
+.dot.r { background: #ff5f57; } .dot.y { background: #febc2e; } .dot.g { background: #28c840; }
+/* UI font, not mono: the title mixes Arabic, and mono fonts have no Arabic
+   glyphs — the fallback renders disconnected letterforms */
+.term-title { font-size: .78em; color: var(--text2); margin-inline-start: auto; }
+.term-body { padding: 22px 24px; font-family: var(--mono); font-size: .88em; direction: ltr; text-align: left; }
+.term-body .claude-line { color: var(--text2); direction: rtl; text-align: right; display: block; margin-bottom: 16px; font-family: 'Segoe UI', Tahoma, sans-serif; }
+.term-body .tag-line { display: block; margin-top: 4px; }
+.term-body .tag-line .t { color: var(--emerald); }
+.term-body .tag-line .t.gold { color: var(--gold); }
+.term-body .tag-line .t.pink { color: var(--pink); }
+/* isolate the Arabic content run so quotes/periods don't get bidi-reordered
+   around the LTR tag prefix */
+.term-body .tag-line .c { color: var(--text); unicode-bidi: isolate; direction: rtl; font-family: 'Segoe UI', Tahoma, sans-serif; }
+.term-caption {
+    border-top: 1px solid var(--border); background: var(--bg3);
+    padding: 12px 20px; font-size: .85em; color: var(--text2); text-align: center;
+}
+.term-caption b { color: var(--emerald); font-weight: 600; }
+
+/* ---------- sections ---------- */
+section { padding: 84px 0 0; }
+/* No letter-spacing: it visually disconnects Arabic letterforms */
+.kicker {
+    font-size: .82em; font-weight: 700;
+    color: var(--emerald);
+}
+h2 { font-size: clamp(1.5rem, 3.4vw, 2.1rem); font-weight: 800; margin-top: 8px; line-height: 1.35; }
+.lead { color: var(--text2); max-width: 680px; margin-top: 12px; }
+
+/* ---------- problem cards ---------- */
+.grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; margin-top: 36px; }
+.card {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 14px;
+    padding: 26px 24px; transition: border-color .2s, transform .2s;
+}
+.card:hover { border-color: #4a4b4c; transform: translateY(-3px); }
+.card .icon { font-size: 1.5em; }
+.card h3 { font-size: 1.05em; margin: 12px 0 6px; }
+.card p { color: var(--text2); font-size: .93em; }
+
+/* ---------- steps ---------- */
+.steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; margin-top: 36px; counter-reset: step; }
+.step {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 14px; padding: 26px 24px;
+    position: relative;
+}
+.step::before {
+    counter-increment: step; content: counter(step);
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 34px; height: 34px; border-radius: 50%;
+    background: rgba(6,214,160,.12); color: var(--emerald);
+    font-family: var(--mono); font-weight: 700; font-size: .95em;
+    margin-bottom: 14px;
+}
+.step h3 { font-size: 1.05em; margin-bottom: 6px; }
+.step p { color: var(--text2); font-size: .93em; }
+.step code {
+    font-family: var(--mono); font-size: .85em; color: var(--gold);
+    background: rgba(255,209,102,.08); padding: 1px 6px; border-radius: 5px;
+    direction: ltr; display: inline-block;
+}
+
+/* ---------- enforcement ---------- */
+.enforce {
+    margin-top: 36px; display: grid; grid-template-columns: 1fr 1fr; gap: 18px;
+}
+@media (max-width: 800px) { .enforce { grid-template-columns: 1fr; } }
+.enforce .shell {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
+}
+.enforce .shell-head {
+    padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--bg3);
+    font-size: .9em; font-weight: 600;
+}
+.enforce .shell-head.red { color: var(--pink); }
+.enforce .shell-head.gold { color: var(--gold); }
+/* Arabic-first output: RTL base, individual command lines opt into LTR */
+.enforce .shell-body { padding: 20px; font-family: 'Segoe UI', Tahoma, sans-serif; font-size: .88em; direction: rtl; text-align: right; color: var(--text2); }
+.enforce .shell-body .blocked { color: var(--pink); }
+.enforce .shell-body .cmd { color: var(--text); direction: ltr; text-align: left; display: block; unicode-bidi: isolate; font-family: var(--mono); font-size: .92em; }
+/* Arabic "command" line (Claude's own output): UI font + RTL, code parts stay readable inline */
+.enforce .shell-body .cmd-ar { color: var(--text); display: block; }
+.enforce .shell-body .cmd-ar code { font-family: var(--mono); font-size: .92em; color: var(--gold); direction: ltr; unicode-bidi: isolate; }
+.enforce .shell-body .ok { color: var(--emerald); }
+.enforce-note { margin-top: 18px; color: var(--text2); font-size: .95em; max-width: 720px; }
+.enforce-note b { color: var(--text); }
+
+/* ---------- features ---------- */
+.feat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-top: 36px; }
+.feat {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; padding: 22px 20px;
+}
+.feat h3 { font-size: .98em; margin-bottom: 5px; display: flex; align-items: center; gap: 8px; }
+.feat h3 .b { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.feat p { color: var(--text2); font-size: .88em; }
+
+/* ---------- privacy ---------- */
+.privacy {
+    margin-top: 36px; background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 16px; padding: 36px 32px;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 24px;
+}
+.priv h3 { font-size: 1em; color: var(--emerald); margin-bottom: 4px; }
+.priv p { color: var(--text2); font-size: .9em; }
+
+/* ---------- install ---------- */
+.install-box {
+    margin-top: 36px; background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 16px; padding: 34px 32px; max-width: 720px;
+}
+.cmdline {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+    padding: 13px 18px; margin-top: 12px; direction: ltr;
+}
+.cmdline code { font-family: var(--mono); font-size: .92em; color: var(--emerald); }
+.copy-btn {
+    background: none; border: 1px solid var(--border); color: var(--text2);
+    border-radius: 7px; padding: 4px 12px; font-size: .78em; cursor: pointer;
+    font-family: inherit; transition: color .2s, border-color .2s; white-space: nowrap;
+}
+.copy-btn:hover { color: var(--text); border-color: var(--text2); }
+.copy-btn.done { color: var(--emerald); border-color: var(--emerald); }
+.install-note { margin-top: 18px; color: var(--text2); font-size: .9em; }
+.install-note a { color: var(--gold); text-decoration: none; }
+.install-note code { font-family: var(--mono); font-size: .88em; color: var(--gold); direction: ltr; display: inline-block; }
+
+/* ---------- faq ---------- */
+.faq { margin-top: 36px; max-width: 760px; }
+.faq details {
+    border: 1px solid var(--border); border-radius: 12px; background: var(--bg2);
+    padding: 18px 22px; margin-bottom: 12px;
+}
+.faq summary { cursor: pointer; font-weight: 600; font-size: .98em; list-style: none; }
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::before { content: "+"; color: var(--emerald); font-family: var(--mono); margin-inline-end: 10px; }
+.faq details[open] summary::before { content: "–"; }
+.faq details p { color: var(--text2); font-size: .92em; margin-top: 10px; }
+.faq details code { font-family: var(--mono); font-size: .85em; color: var(--gold); direction: ltr; display: inline-block; }
+
+/* ---------- footer ---------- */
+footer {
+    margin-top: 96px; border-top: 1px solid var(--border);
+    padding: 32px 0 44px; text-align: center; color: var(--text2); font-size: .88em;
+}
+footer a { color: var(--text); text-decoration: none; }
+footer a:hover { color: var(--emerald); }
+
+/* ---------- reveal ----------
+   Content is visible by default; JS adds .pre only to elements below the fold,
+   so nothing can end up permanently hidden if JS fails or IO never fires. */
+.reveal { transition: opacity .6s ease, transform .6s ease; }
+.reveal.pre { opacity: 0; transform: translateY(18px); }
+.reveal.in { opacity: 1; transform: none; }
+@media (prefers-reduced-motion: reduce) {
+    .reveal, .reveal.pre { opacity: 1; transform: none; transition: none; }
+    html { scroll-behavior: auto; }
+}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+    <div class="topbar">
+        <div class="logo">Dev<span>Log</span></div>
+        <div class="links">
+            <a class="gh" href="./landing-en.html" lang="en" dir="ltr">English</a>
+            <a class="gh" href="https://github.com/fmaaakcode/devlog" target="_blank" rel="noopener">GitHub ↗</a>
+        </div>
+    </div>
+</div>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+    <div class="wrap">
+        <h1>كلود يبرمج.<br><span class="accent">DevLog يتذكّر.</span></h1>
+        <p class="sub">
+            كل جلسة Claude Code تنتهي وتأخذ ذاكرتها معها. DevLog يحوّلها إلى تاريخ حي:
+            كل ميزة بُنيت، كل مهمة فُتحت، كل ثغرة أُغلقت — في لوحة محلية على جهازك،
+            بدون أن تكتب سطراً واحداً بنفسك.
+        </p>
+        <div class="cta-row">
+            <a class="btn btn-primary" href="#install">ثبّته بأمرين</a>
+            <a class="btn btn-ghost" href="#how">كيف يعمل؟</a>
+        </div>
+
+        <div class="terminal">
+            <div class="term-head">
+                <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+                <span class="term-title">Claude Code — نهاية الرد</span>
+            </div>
+            <div class="term-body">
+                <span class="claude-line">… انتهيت من بناء شاشة تسجيل الدخول وربطها بالـAPI.</span>
+                <span class="tag-line"><span class="t">-(built)</span> <span class="c">شاشة تسجيل الدخول مع تحقق الحقول</span></span>
+                <span class="tag-line"><span class="t gold">-(todo)</span> <span class="c">إضافة "نسيت كلمة المرور"</span></span>
+                <span class="tag-line"><span class="t pink">-(bug fix)</span> <span class="c">#12</span></span>
+            </div>
+            <div class="term-caption">
+                ثلاثة أسطر في نهاية الرد — <b>يلتقطها DevLog بصمت</b> وتظهر في لوحتك لحظياً
+            </div>
+        </div>
+    </div>
+</header>
+
+<!-- ============ PROBLEM ============ -->
+<section id="problem">
+    <div class="wrap reveal">
+        <div class="kicker">المشكلة</div>
+        <h2>يعرفها كل من يعمل مع كلود يومياً</h2>
+        <div class="grid3">
+            <div class="card">
+                <div class="icon">🌫️</div>
+                <h3>«وش سويت الأسبوع الماضي؟»</h3>
+                <p>الجلسة تنتهي والسياق يتبخر معها. تفتح المشروع بعد أيام ولا أنت ولا كلود تتذكرون أين وقفتم.</p>
+            </div>
+            <div class="card">
+                <div class="icon">📝</div>
+                <h3>المهام تعيش في المحادثة — وتموت معها</h3>
+                <p>«نرجع لها لاحقاً» تُقال في جلسة، وتُنسى في التي بعدها. لا أحد يحاسب أحداً.</p>
+            </div>
+            <div class="card">
+                <div class="icon">🚢</div>
+                <h3>إصدار يطلع وخلفه شغل مفتوح</h3>
+                <p>بق مكتشف لم يُصلَّح، خطوة خطة لم تكتمل — والإصدار خرج للناس لأن لا شيء اعترض طريقه.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ============ HOW ============ -->
+<section id="how">
+    <div class="wrap reveal">
+        <div class="kicker">كيف يعمل</div>
+        <h2>ثلاث خطوات — كلها تحدث وحدها</h2>
+        <p class="lead">لا أوامر تحفظها، لا ملفات تكتبها، لا شيء يُضاف إلى مستودعك. أنت تعمل مع كلود كالمعتاد.</p>
+        <div class="steps">
+            <div class="step">
+                <h3>كلود يختم رده بتاقات قصيرة</h3>
+                <p>البروتوكول يصل لكلود تلقائياً مع بداية كل جلسة، فيختم عمله بأسطر مثل <code>-(built)</code> و<code>-(todo)</code> و<code>-(bug fix) #7</code>.</p>
+            </div>
+            <div class="step">
+                <h3>الـHook يلتقطها بصمت</h3>
+                <p>عند نهاية كل رد، يقرأ DevLog التاقات ويرسلها للسيرفر المحلي. صفر ضجيج في سياق المحادثة، صفر ملفات في مستودعك.</p>
+            </div>
+            <div class="step">
+                <h3>اللوحة تتحدّث لحظياً</h3>
+                <p>افتح <code>127.0.0.1:7777</code> وشاهد كل مشاريعك: النشاط، الخطط، الإصدارات، الثغرات — تتحرك أمامك أولاً بأول عبر WebSocket.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ============ ENFORCEMENT ============ -->
+<section id="enforce">
+    <div class="wrap reveal">
+        <div class="kicker">الفرق الجوهري</div>
+        <h2>ليس سجلاً يكتب ويسكت — نظام محاسبة يرفض</h2>
+        <p class="lead">أدوات التتبع المعتادة تدوّن وتتفرج. DevLog يفرض الانضباط على كلود نفسه — وهذا ما لا تجده في غيره.</p>
+        <div class="enforce">
+            <div class="shell">
+                <div class="shell-head red">انضباط الإغلاق — Closure Discipline</div>
+                <div class="shell-body">
+                    <span class="cmd-ar">كلود: <code>-(built)</code> نظام تسجيل الدخول ✓</span><br>
+                    <span class="blocked">✗ هذا العمل يطابق مهمة مفتوحة ‎#14‎</span><br>
+                    <span class="blocked">✗ الرد مرفوض — أغلقها بـ <code style="font-family:var(--mono);color:var(--gold);direction:ltr;unicode-bidi:isolate">-(done) #14</code></span>
+                </div>
+            </div>
+            <div class="shell">
+                <div class="shell-head gold">حارس الإصدارات — Release Guard</div>
+                <div class="shell-body">
+                    <span class="cmd">$ gh release create v2.0.0</span><br>
+                    <span class="blocked">✗ الأمر اعتُرض قبل التنفيذ:</span><br>
+                    <span class="blocked">بق مفتوح ‎#9‎ + خطوتا خطة لم تكتملا</span><br>
+                    <span class="ok">✓ أغلِق العناصر أولاً — أو تعمّد التجاوز بنفسك</span>
+                </div>
+            </div>
+        </div>
+        <p class="enforce-note">
+            كلود أنهى عملاً يطابق مهمة مفتوحة ولم يغلقها؟ <b>الرد يُرفض حتى يغلقها.</b>
+            حاول أحد إطلاق إصدار وخلفه عناصر مفتوحة؟ <b>الأمر يُعترض قبل أن يُنفذ.</b>
+            هكذا لا يضيع شيء — ليس لأن أحداً انتبه، بل لأن النظام لا يسمح.
+        </p>
+    </div>
+</section>
+
+<!-- ============ FEATURES ============ -->
+<section id="features">
+    <div class="wrap reveal">
+        <div class="kicker">المميزات</div>
+        <h2>كل ما تحتاجه — في عملية واحدة على جهازك</h2>
+        <div class="feat-grid">
+            <div class="feat">
+                <h3><span class="b" style="background:var(--emerald)"></span>لوحة حية لكل مشاريعك</h3>
+                <p>كل مشروع يلمسه كلود يظهر تلقائياً: ما بُني، ما فُتح، ما أُغلق — بتحديث لحظي بلا refresh.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--gold)"></span>خطط قابلة للتتبع من المحادثة</h3>
+                <p>خطة بمراحل وخانات اختيار، تتحدّث عبر الجلسات: كلود يقول «أنجزت الخطوة» فتنقلب ☑ في اللوحة.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--pink)"></span>فحص ثغرات حقيقي (CVE)</h3>
+                <p>فحص مدمج عبر قاعدة OSV.dev — بلا مفتاح API وبلا خدمة خارجية — مع كشف التبعيات غير المباشرة.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--blue)"></span>تقادم المكتبات عبر 5 سجلات</h3>
+                <p>npm وcrates.io وPyPI وGo وPackagist — يقارن نسخك بآخر إصدار رسمي ويحذرك من الأحدث من 7 أيام.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--emerald)"></span>تقارير إصدارات تتولّد وحدها</h3>
+                <p>عند كل إصدار: تقرير يجمع ما بُني وما أُصلح وما أُغلق أمنياً — ويرقّي رقم النسخة في manifest مشروعك آلياً.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--gold)"></span>ذاكرة جلسات لكلود نفسه</h3>
+                <p>مع بداية كل جلسة يُحقن سياق مضغوط: ما أُنجز سابقاً وما زال مفتوحاً — فلا يعيد كلود اختراع ما بناه أمس.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--pink)"></span>تتبع تغييرات الملفات مع Diff</h3>
+                <p>كل تعديل يجريه كلود مسجّل بفرقه الكامل — لكل ملف، لكل جلسة، قابل للمراجعة من اللوحة.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--blue)"></span>مستندات جاهزة من المحادثة</h3>
+                <p>تقارير وتحليلات وخطط تُكتب كـMarkdown وتُقدَّم كـHTML منسّق — بدون أن يكتب كلود صفحة ويب بيده.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ============ PRIVACY ============ -->
+<section id="privacy">
+    <div class="wrap reveal">
+        <div class="kicker">الخصوصية</div>
+        <h2>ليست ميزة إضافية — هي التصميم نفسه</h2>
+        <div class="privacy">
+            <div class="priv">
+                <h3>100% محلي</h3>
+                <p>كل بياناتك على جهازك. السيرفر يستمع على 127.0.0.1 فقط — لا شيء يخرج للإنترنت.</p>
+            </div>
+            <div class="priv">
+                <h3>صفر تبعيات تشغيل</h3>
+                <p>Bun ومكتبات Node المدمجة فقط. لا سلسلة توريد تقلق منها، ولا حزمة مجهولة تفحصها.</p>
+            </div>
+            <div class="priv">
+                <h3>لا Telemetry ولا حسابات</h3>
+                <p>لا تسجيل، لا تتبّع، لا سحابة. الاتصال الخارجي الوحيد: سؤال سجلات الحزم الرسمية عن الثغرات — إن أردت.</p>
+            </div>
+            <div class="priv">
+                <h3>أمان بمستوى أداة إنتاجية</h3>
+                <p>دفاعات مدمجة ضد DNS rebinding وXSS وتجاوز المسارات — ومغطى بأكثر من 575 اختباراً آلياً.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ============ INSTALL ============ -->
+<section id="install">
+    <div class="wrap reveal">
+        <div class="kicker">التثبيت</div>
+        <h2>أمران داخل Claude Code — وانتهيت</h2>
+        <div class="install-box">
+            <div class="cmdline">
+                <code>/plugin marketplace add fmaaakcode/devlog</code>
+                <button class="copy-btn" data-cmd="/plugin marketplace add fmaaakcode/devlog">نسخ</button>
+            </div>
+            <div class="cmdline">
+                <code>/plugin install devlog</code>
+                <button class="copy-btn" data-cmd="/plugin install devlog">نسخ</button>
+            </div>
+            <p class="install-note">
+                هذا كل شيء: الـhooks والبروتوكول والسيرفر كلها داخل الإضافة، والسيرفر يعمل وحده مع أول جلسة.
+                افتح <code>http://127.0.0.1:7777</code> وشاهد لوحتك.
+                المتطلب الوحيد: <a href="https://bun.sh" target="_blank" rel="noopener">Bun</a> على جهازك.
+            </p>
+        </div>
+    </div>
+</section>
+
+<!-- ============ FAQ ============ -->
+<section id="faq">
+    <div class="wrap reveal">
+        <div class="kicker">أسئلة متوقعة</div>
+        <h2>قبل أن تسأل</h2>
+        <div class="faq">
+            <details>
+                <summary>هل يضيف ملفات إلى مستودعاتي أو يلوّثها؟</summary>
+                <p>لا. التاقات تُلتقط من ردود كلود مباشرة، والبيانات كلها تُخزَّن في مجلد DevLog الخاص خارج مشاريعك. مستودعك يبقى كما هو.</p>
+            </details>
+            <details>
+                <summary>هل يستهلك من سياق كلود أو يبطئه؟</summary>
+                <p>الحقن عند بداية الجلسة مضغوط ومشروط (يظهر فقط عند الحاجة)، والتقاط التاقات يضيف أجزاء من الثانية في نهاية الرد — ثمن زهيد مقابل إنفاذ حقيقي.</p>
+            </details>
+            <details>
+                <summary>هل يحتاج اتصالاً بالإنترنت؟</summary>
+                <p>لا، إلا في حالة واحدة: زر الفحص الأمني يسأل قاعدة OSV.dev والسجلات الرسمية عن الثغرات والنسخ. كل ما عدا ذلك يعمل بلا اتصال.</p>
+            </details>
+            <details>
+                <summary>ماذا لو احتجت إصداراً طارئاً وعندي عناصر مفتوحة؟</summary>
+                <p>حارس الإصدارات قابل للتجاوز الواعي بمتغير بيئة (<code>DEVLOG_RELEASE_GUARD=0</code>) — القرار يبقى بيدك، لكن لا يمر شيء بالسهو أبداً.</p>
+            </details>
+        </div>
+    </div>
+</section>
+
+<footer>
+    <div class="wrap">
+        DevLog — مفتوح المصدر برخصة MIT ·
+        <a href="https://github.com/fmaaakcode/devlog" target="_blank" rel="noopener">github.com/fmaaakcode/devlog</a>
+    </div>
+</footer>
+
+<script>
+// copy buttons
+document.querySelectorAll(".copy-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+        try {
+            await navigator.clipboard.writeText(btn.dataset.cmd);
+            btn.textContent = "تم النسخ ✓"; btn.classList.add("done");
+            setTimeout(() => { btn.textContent = "نسخ"; btn.classList.remove("done"); }, 1800);
+        } catch { /* clipboard unavailable (file://) — ignore */ }
+    });
+});
+// reveal on scroll — hide only what's below the fold, then animate it in.
+// Elements already visible (or when IO is unavailable) are never hidden.
+if ("IntersectionObserver" in window) {
+    const io = new IntersectionObserver(entries => {
+        entries.forEach(e => {
+            if (e.isIntersecting) {
+                e.target.classList.add("in");
+                e.target.classList.remove("pre");
+                io.unobserve(e.target);
+            }
+        });
+    }, { threshold: 0.12 });
+    document.querySelectorAll(".reveal").forEach(el => {
+        if (el.getBoundingClientRect().top > window.innerHeight) el.classList.add("pre");
+        io.observe(el);
+    });
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,45 @@
+name: test
+
+# Quality gate: typecheck + lint + tests on every push to main and on PRs.
+# Zero RUNTIME deps; dev-only deps (bun-types, typescript, @biomejs/biome)
+# are pinned in bun.lock so the gate is reproducible (no floating bunx fetches).
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # Cross-OS matrix answers "does it work on Unix/macOS/Windows?" on every push,
+    # not once. fail-fast off so one platform's failure still surfaces the others.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - name: Install dev dependencies (bun-types)
+        run: bun install --frozen-lockfile
+      - name: Typecheck (tsc)
+        run: bun run typecheck
+      - name: Lint (Biome — fails on errors only; warnings don't gate)
+        run: bun run lint
+      - name: Run tests
+        run: bun test
+
+  plugin-validate:
+    # Validates the plugin + marketplace manifests and hooks/hooks.json against
+    # the Claude Code schema, so a broken plugin.json can't ship. --strict treats
+    # unrecognized-field warnings as errors. Runs headless (no auth needed —
+    # `plugin validate` is a static schema check).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Validate plugin manifests
+        run: claude plugin validate ./ --strict
