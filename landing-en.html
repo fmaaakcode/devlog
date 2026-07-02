@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DevLog — automatic memory for everything Claude builds</title>
+<meta name="description" content="Automatic development tracker for Claude Code sessions: every feature built, every task opened, every vulnerability closed — on a live local dashboard, without writing any of it yourself.">
+<style>
+:root {
+    --pink: #ef476f;
+    --gold: #ffd166;
+    --emerald: #06d6a0;
+    --blue: #118ab2;
+    --bg: #161718;
+    --bg2: #1B1C1D;
+    --bg3: #212223;
+    --border: #363737;
+    --text: #EEEEEE;
+    --text2: #9A9A9A;
+    --mono: 'Cascadia Code', Consolas, 'Courier New', monospace;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    line-height: 1.7;
+    overflow-x: hidden;
+}
+::selection { background: rgba(6, 214, 160, .25); }
+
+.wrap { max-width: 1060px; margin: 0 auto; padding: 0 24px; }
+
+/* ---------- topbar ---------- */
+.topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 0;
+}
+.logo { font-family: var(--mono); font-size: 1.25em; font-weight: 700; letter-spacing: .5px; }
+.logo span { color: var(--emerald); }
+.topbar .links { display: flex; gap: 10px; }
+.topbar a.gh {
+    color: var(--text2); text-decoration: none; font-size: .9em;
+    border: 1px solid var(--border); padding: 7px 16px; border-radius: 999px;
+    transition: color .2s, border-color .2s;
+}
+.topbar a.gh:hover { color: var(--text); border-color: var(--text2); }
+
+/* ---------- hero ---------- */
+.hero { padding: 72px 0 40px; text-align: center; position: relative; }
+.hero::before {
+    content: ""; position: absolute; inset: -120px 0 auto; height: 480px;
+    background: radial-gradient(600px 300px at 50% 0%, rgba(6,214,160,.07), transparent 70%);
+    pointer-events: none;
+}
+.hero h1 {
+    font-size: clamp(2rem, 5.5vw, 3.4rem);
+    font-weight: 800; line-height: 1.25; letter-spacing: -.5px;
+}
+.hero h1 .accent { color: var(--emerald); }
+.hero p.sub {
+    color: var(--text2); font-size: clamp(1rem, 2vw, 1.2rem);
+    max-width: 640px; margin: 18px auto 0;
+}
+.hero .cta-row { margin-top: 34px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+.btn {
+    display: inline-block; text-decoration: none; font-size: 1em; font-weight: 600;
+    padding: 12px 28px; border-radius: 10px; transition: transform .15s, box-shadow .15s;
+}
+.btn:hover { transform: translateY(-2px); }
+.btn-primary { background: var(--emerald); color: #05281f; box-shadow: 0 4px 24px rgba(6,214,160,.25); }
+.btn-ghost { border: 1px solid var(--border); color: var(--text); }
+.btn-ghost:hover { border-color: var(--text2); }
+
+/* ---------- terminal mock ---------- */
+.terminal {
+    max-width: 720px; margin: 56px auto 0; text-align: left;
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 14px;
+    overflow: hidden; box-shadow: 0 24px 60px rgba(0,0,0,.45);
+}
+.term-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--bg3);
+}
+.dot { width: 11px; height: 11px; border-radius: 50%; }
+.dot.r { background: #ff5f57; } .dot.y { background: #febc2e; } .dot.g { background: #28c840; }
+.term-title { font-family: var(--mono); font-size: .75em; color: var(--text2); margin-inline-start: auto; }
+.term-body { padding: 22px 24px; font-family: var(--mono); font-size: .88em; }
+.term-body .claude-line { color: var(--text2); display: block; margin-bottom: 16px; }
+.term-body .tag-line { display: block; margin-top: 4px; }
+.term-body .tag-line .t { color: var(--emerald); }
+.term-body .tag-line .t.gold { color: var(--gold); }
+.term-body .tag-line .t.pink { color: var(--pink); }
+.term-body .tag-line .c { color: var(--text); }
+.term-caption {
+    border-top: 1px solid var(--border); background: var(--bg3);
+    padding: 12px 20px; font-size: .85em; color: var(--text2); text-align: center;
+}
+.term-caption b { color: var(--emerald); font-weight: 600; }
+
+/* ---------- sections ---------- */
+section { padding: 84px 0 0; }
+.kicker {
+    font-family: var(--mono); font-size: .78em; letter-spacing: 2px;
+    color: var(--emerald); text-transform: uppercase;
+}
+h2 { font-size: clamp(1.5rem, 3.4vw, 2.1rem); font-weight: 800; margin-top: 8px; line-height: 1.35; }
+.lead { color: var(--text2); max-width: 680px; margin-top: 12px; }
+
+/* ---------- problem cards ---------- */
+.grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; margin-top: 36px; }
+.card {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 14px;
+    padding: 26px 24px; transition: border-color .2s, transform .2s;
+}
+.card:hover { border-color: #4a4b4c; transform: translateY(-3px); }
+.card .icon { font-size: 1.5em; }
+.card h3 { font-size: 1.05em; margin: 12px 0 6px; }
+.card p { color: var(--text2); font-size: .93em; }
+
+/* ---------- steps ---------- */
+.steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; margin-top: 36px; counter-reset: step; }
+.step {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 14px; padding: 26px 24px;
+    position: relative;
+}
+.step::before {
+    counter-increment: step; content: counter(step);
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 34px; height: 34px; border-radius: 50%;
+    background: rgba(6,214,160,.12); color: var(--emerald);
+    font-family: var(--mono); font-weight: 700; font-size: .95em;
+    margin-bottom: 14px;
+}
+.step h3 { font-size: 1.05em; margin-bottom: 6px; }
+.step p { color: var(--text2); font-size: .93em; }
+.step code {
+    font-family: var(--mono); font-size: .85em; color: var(--gold);
+    background: rgba(255,209,102,.08); padding: 1px 6px; border-radius: 5px;
+}
+
+/* ---------- enforcement ---------- */
+.enforce {
+    margin-top: 36px; display: grid; grid-template-columns: 1fr 1fr; gap: 18px;
+}
+@media (max-width: 800px) { .enforce { grid-template-columns: 1fr; } }
+.enforce .shell {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
+}
+.enforce .shell-head {
+    padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--bg3);
+    font-size: .9em; font-weight: 600;
+}
+.enforce .shell-head.red { color: var(--pink); }
+.enforce .shell-head.gold { color: var(--gold); }
+.enforce .shell-body { padding: 20px; font-family: var(--mono); font-size: .82em; color: var(--text2); }
+.enforce .shell-body .blocked { color: var(--pink); }
+.enforce .shell-body .cmd { color: var(--text); }
+.enforce .shell-body .ok { color: var(--emerald); }
+.enforce-note { margin-top: 18px; color: var(--text2); font-size: .95em; max-width: 720px; }
+.enforce-note b { color: var(--text); }
+
+/* ---------- features ---------- */
+.feat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-top: 36px; }
+.feat {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; padding: 22px 20px;
+}
+.feat h3 { font-size: .98em; margin-bottom: 5px; display: flex; align-items: center; gap: 8px; }
+.feat h3 .b { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.feat p { color: var(--text2); font-size: .88em; }
+
+/* ---------- privacy ---------- */
+.privacy {
+    margin-top: 36px; background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 16px; padding: 36px 32px;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 24px;
+}
+.priv h3 { font-size: 1em; color: var(--emerald); margin-bottom: 4px; }
+.priv p { color: var(--text2); font-size: .9em; }
+
+/* ---------- install ---------- */
+.install-box {
+    margin-top: 36px; background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 16px; padding: 34px 32px; max-width: 720px;
+}
+.cmdline {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+    padding: 13px 18px; margin-top: 12px;
+}
+.cmdline code { font-family: var(--mono); font-size: .92em; color: var(--emerald); }
+.copy-btn {
+    background: none; border: 1px solid var(--border); color: var(--text2);
+    border-radius: 7px; padding: 4px 12px; font-size: .78em; cursor: pointer;
+    font-family: inherit; transition: color .2s, border-color .2s; white-space: nowrap;
+}
+.copy-btn:hover { color: var(--text); border-color: var(--text2); }
+.copy-btn.done { color: var(--emerald); border-color: var(--emerald); }
+.install-note { margin-top: 18px; color: var(--text2); font-size: .9em; }
+.install-note a { color: var(--gold); text-decoration: none; }
+.install-note code { font-family: var(--mono); font-size: .88em; color: var(--gold); }
+
+/* ---------- faq ---------- */
+.faq { margin-top: 36px; max-width: 760px; }
+.faq details {
+    border: 1px solid var(--border); border-radius: 12px; background: var(--bg2);
+    padding: 18px 22px; margin-bottom: 12px;
+}
+.faq summary { cursor: pointer; font-weight: 600; font-size: .98em; list-style: none; }
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::before { content: "+"; color: var(--emerald); font-family: var(--mono); margin-inline-end: 10px; }
+.faq details[open] summary::before { content: "–"; }
+.faq details p { color: var(--text2); font-size: .92em; margin-top: 10px; }
+.faq details code { font-family: var(--mono); font-size: .85em; color: var(--gold); }
+
+/* ---------- footer ---------- */
+footer {
+    margin-top: 96px; border-top: 1px solid var(--border);
+    padding: 32px 0 44px; text-align: center; color: var(--text2); font-size: .88em;
+}
+footer a { color: var(--text); text-decoration: none; }
+footer a:hover { color: var(--emerald); }
+
+/* ---------- reveal ----------
+   Content is visible by default; JS adds .pre only to elements below the fold,
+   so nothing can end up permanently hidden if JS fails or IO never fires. */
+.reveal { transition: opacity .6s ease, transform .6s ease; }
+.reveal.pre { opacity: 0; transform: translateY(18px); }
+.reveal.in { opacity: 1; transform: none; }
+@media (prefers-reduced-motion: reduce) {
+    .reveal, .reveal.pre { opacity: 1; transform: none; transition: none; }
+    html { scroll-behavior: auto; }
+}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+    <div class="topbar">
+        <div class="logo">Dev<span>Log</span></div>
+        <div class="links">
+            <a class="gh" href="./landing.html" lang="ar" dir="rtl">عربي</a>
+            <a class="gh" href="https://github.com/fmaaakcode/devlog" target="_blank" rel="noopener">GitHub ↗</a>
+        </div>
+    </div>
+</div>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+    <div class="wrap">
+        <h1>Claude codes.<br><span class="accent">DevLog remembers.</span></h1>
+        <p class="sub">
+            Every Claude Code session ends and takes its memory with it. DevLog turns your work
+            into a living history: every feature built, every task opened, every vulnerability
+            closed — on a local dashboard, without you writing a single line of it yourself.
+        </p>
+        <div class="cta-row">
+            <a class="btn btn-primary" href="#install">Install in two commands</a>
+            <a class="btn btn-ghost" href="#how">How does it work?</a>
+        </div>
+
+        <div class="terminal">
+            <div class="term-head">
+                <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+                <span class="term-title">Claude Code — end of response</span>
+            </div>
+            <div class="term-body">
+                <span class="claude-line">… Finished building the login screen and wiring it to the API.</span>
+                <span class="tag-line"><span class="t">-(built)</span> <span class="c">login screen with field validation</span></span>
+                <span class="tag-line"><span class="t gold">-(todo)</span> <span class="c">add a "forgot password" flow</span></span>
+                <span class="tag-line"><span class="t pink">-(bug fix)</span> <span class="c">#12</span></span>
+            </div>
+            <div class="term-caption">
+                Three lines at the end of a response — <b>DevLog captures them silently</b> and your dashboard updates live
+            </div>
+        </div>
+    </div>
+</header>
+
+<!-- ============ PROBLEM ============ -->
+<section id="problem">
+    <div class="wrap reveal">
+        <div class="kicker">The problem</div>
+        <h2>Anyone who works with Claude daily knows it</h2>
+        <div class="grid3">
+            <div class="card">
+                <div class="icon">🌫️</div>
+                <h3>"What did I do last week?"</h3>
+                <p>The session ends and the context evaporates with it. You open the project days later and neither you nor Claude remembers where you stopped.</p>
+            </div>
+            <div class="card">
+                <div class="icon">📝</div>
+                <h3>Tasks live in the chat — and die with it</h3>
+                <p>"We'll get back to it later" gets said in one session and forgotten in the next. Nothing holds anyone accountable.</p>
+            </div>
+            <div class="card">
+                <div class="icon">🚢</div>
+                <h3>A release ships with open work behind it</h3>
+                <p>A discovered bug left unfixed, a plan step never finished — and the release went out because nothing stood in its way.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ============ HOW ============ -->
+<section id="how">
+    <div class="wrap reveal">
+        <div class="kicker">How it works</div>
+        <h2>Three steps — all of them automatic</h2>
+        <p class="lead">No commands to memorize, no files to write, nothing added to your repo. You work with Claude exactly as you always do.</p>
+        <div class="steps">
+            <div class="step">
+                <h3>Claude ends its response with short tags</h3>
+                <p>The protocol reaches Claude automatically at the start of every session, so it closes its work with lines like <code>-(built)</code>, <code>-(todo)</code> and <code>-(bug fix) #7</code>.</p>
+            </div>
+            <div class="step">
+                <h3>The hook captures them silently</h3>
+                <p>At the end of every response, DevLog reads the tags and posts them to the local server. Zero noise in your conversation context, zero files in your repo.</p>
+            </div>
+            <div class="step">
+                <h3>The dashboard updates live</h3>
+                <p>Open <code>127.0.0.1:7777</code> and watch all your projects: activity, plans, releases, vulnerabilities — moving in real time over WebSocket.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ============ ENFORCEMENT ============ -->
+<section id="enforce">
+    <div class="wrap reveal">
+        <div class="kicker">The real difference</div>
+        <h2>Not a logger that writes and stays quiet — an accountability system that refuses</h2>
+        <p class="lead">Ordinary trackers record and watch. DevLog enforces discipline on Claude itself — and that's what you won't find anywhere else.</p>
+        <div class="enforce">
+            <div class="shell">
+                <div class="shell-head red">Closure Discipline</div>
+                <div class="shell-body">
+                    <span class="cmd">Claude: -(built) login system ✓</span><br><br>
+                    <span class="blocked">✗ this work matches open item #14</span><br>
+                    <span class="blocked">✗ response rejected — close it with -(done) #14</span>
+                </div>
+            </div>
+            <div class="shell">
+                <div class="shell-head gold">Release Guard</div>
+                <div class="shell-body">
+                    <span class="cmd">$ gh release create v2.0.0</span><br><br>
+                    <span class="blocked">✗ command intercepted before execution:</span><br>
+                    <span class="blocked">  open bug #9 + two unfinished plan steps</span><br>
+                    <span class="ok">✓ close the items first — or bypass deliberately, yourself</span>
+                </div>
+            </div>
+        </div>
+        <p class="enforce-note">
+            Claude finished work that matches an open task and didn't close it? <b>The response is rejected until it does.</b>
+            Someone tries to ship a release with items still open? <b>The command is intercepted before it runs.</b>
+            Nothing slips through — not because someone was paying attention, but because the system doesn't allow it.
+        </p>
+    </div>
+</section>
+
+<!-- ============ FEATURES ============ -->
+<section id="features">
+    <div class="wrap reveal">
+        <div class="kicker">Features</div>
+        <h2>Everything you need — in one process on your machine</h2>
+        <div class="feat-grid">
+            <div class="feat">
+                <h3><span class="b" style="background:var(--emerald)"></span>A live dashboard for all your projects</h3>
+                <p>Every project Claude touches appears automatically: what was built, opened, closed — updating in real time, no refresh.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--gold)"></span>Trackable plans driven from chat</h3>
+                <p>Plans with phases and checkboxes that persist across sessions: Claude says "step done" and the ☑ flips on your dashboard.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--pink)"></span>Real vulnerability scanning (CVE)</h3>
+                <p>Built-in scanning against the OSV.dev database — no API key, no external service — including transitive dependencies.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--blue)"></span>Outdated-dependency checks across 5 registries</h3>
+                <p>npm, crates.io, PyPI, Go and Packagist — compares your versions against the latest official release and flags anything newer than 7 days.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--emerald)"></span>Release reports that write themselves</h3>
+                <p>On every release: a report grouping what was built, fixed and security-closed — and the version field in your project manifest bumps automatically.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--gold)"></span>Session memory for Claude itself</h3>
+                <p>Each session starts with a compact injected context: what was done before and what's still open — so Claude never reinvents what it built yesterday.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--pink)"></span>File-change tracking with diffs</h3>
+                <p>Every edit Claude makes is recorded with its full diff — per file, per session, reviewable from the dashboard.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--blue)"></span>Ready-made documents from chat</h3>
+                <p>Reports, analyses and plans written as Markdown and served as styled HTML — without Claude hand-writing a web page.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ============ PRIVACY ============ -->
+<section id="privacy">
+    <div class="wrap reveal">
+        <div class="kicker">Privacy</div>
+        <h2>Not an added feature — it's the design itself</h2>
+        <div class="privacy">
+            <div class="priv">
+                <h3>100% local</h3>
+                <p>All your data stays on your machine. The server listens on 127.0.0.1 only — nothing leaves for the internet.</p>
+            </div>
+            <div class="priv">
+                <h3>Zero runtime dependencies</h3>
+                <p>Bun and Node built-ins only. No supply chain to worry about, no unknown package to audit.</p>
+            </div>
+            <div class="priv">
+                <h3>No telemetry, no accounts</h3>
+                <p>No sign-up, no tracking, no cloud. The only external calls: asking the official registries about vulnerabilities — if you want to.</p>
+            </div>
+            <div class="priv">
+                <h3>Production-grade security</h3>
+                <p>Built-in defenses against DNS rebinding, XSS and path traversal — covered by 575+ automated tests.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ============ INSTALL ============ -->
+<section id="install">
+    <div class="wrap reveal">
+        <div class="kicker">Install</div>
+        <h2>Two commands inside Claude Code — and you're done</h2>
+        <div class="install-box">
+            <div class="cmdline">
+                <code>/plugin marketplace add fmaaakcode/devlog</code>
+                <button class="copy-btn" data-cmd="/plugin marketplace add fmaaakcode/devlog">Copy</button>
+            </div>
+            <div class="cmdline">
+                <code>/plugin install devlog</code>
+                <button class="copy-btn" data-cmd="/plugin install devlog">Copy</button>
+            </div>
+            <p class="install-note">
+                That's everything: the hooks, the protocol and the server all ship inside the plugin,
+                and the server starts on its own with your first session.
+                Open <code>http://127.0.0.1:7777</code> and watch your dashboard.
+                The only requirement: <a href="https://bun.sh" target="_blank" rel="noopener">Bun</a> on your machine.
+            </p>
+        </div>
+    </div>
+</section>
+
+<!-- ============ FAQ ============ -->
+<section id="faq">
+    <div class="wrap reveal">
+        <div class="kicker">FAQ</div>
+        <h2>Before you ask</h2>
+        <div class="faq">
+            <details>
+                <summary>Does it add files to my repos or pollute them?</summary>
+                <p>No. Tags are captured straight from Claude's responses, and all data is stored in DevLog's own directory outside your projects. Your repo stays untouched.</p>
+            </details>
+            <details>
+                <summary>Does it eat Claude's context or slow it down?</summary>
+                <p>The session-start injection is compact and conditional (it only appears when needed), and tag capture adds a fraction of a second at the end of a response — a small price for real enforcement.</p>
+            </details>
+            <details>
+                <summary>Does it need an internet connection?</summary>
+                <p>No, except in one case: the security-scan button queries the OSV.dev database and the official registries for vulnerabilities and versions. Everything else works offline.</p>
+            </details>
+            <details>
+                <summary>What if I need an emergency release while items are still open?</summary>
+                <p>The release guard can be bypassed consciously with an environment variable (<code>DEVLOG_RELEASE_GUARD=0</code>) — the decision stays yours, but nothing ever slips through by accident.</p>
+            </details>
+        </div>
+    </div>
+</section>
+
+<footer>
+    <div class="wrap">
+        DevLog — open source under the MIT license ·
+        <a href="https://github.com/fmaaakcode/devlog" target="_blank" rel="noopener">github.com/fmaaakcode/devlog</a>
+    </div>
+</footer>
+
+<script>
+// copy buttons
+document.querySelectorAll(".copy-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+        try {
+            await navigator.clipboard.writeText(btn.dataset.cmd);
+            btn.textContent = "Copied ✓"; btn.classList.add("done");
+            setTimeout(() => { btn.textContent = "Copy"; btn.classList.remove("done"); }, 1800);
+        } catch { /* clipboard unavailable (file://) — ignore */ }
+    });
+});
+// reveal on scroll — hide only what's below the fold, then animate it in.
+// Elements already visible (or when IO is unavailable) are never hidden.
+if ("IntersectionObserver" in window) {
+    const io = new IntersectionObserver(entries => {
+        entries.forEach(e => {
+            if (e.isIntersecting) {
+                e.target.classList.add("in");
+                e.target.classList.remove("pre");
+                io.unobserve(e.target);
+            }
+        });
+    }, { threshold: 0.12 });
+    document.querySelectorAll(".reveal").forEach(el => {
+        if (el.getBoundingClientRect().top > window.innerHeight) el.classList.add("pre");
+        io.observe(el);
+    });
+}
+</script>
+</body>
+</html>

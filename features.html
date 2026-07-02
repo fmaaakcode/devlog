@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DevLog — جولة في المميزات</title>
+<style>
+  :root {
+    --pink: #ef476f;
+    --gold: #ffd166;
+    --emerald: #06d6a0;
+    --blue: #118ab2;
+    --teal: #073b4c;
+    --bg: #161718;
+    --bg2: #161718;
+    --bg3: #1B1C1D;
+    --border: #363737;
+    --text: #EEEEEE;
+    --text2: #9A9A9A;
+    --mono: 'Cascadia Code', Consolas, monospace;
+    --sans: 'Segoe UI', Tahoma, sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--emerald); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, .mono { font-family: var(--mono); }
+
+  /* ---------- top nav ---------- */
+  .nav {
+    position: sticky; top: 0; z-index: 50;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 28px;
+    background: rgba(22,23,24,0.85);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav .brand { font-family: var(--mono); font-weight: 700; font-size: 1.15em; color: var(--text); }
+  .nav .brand .dot { color: var(--emerald); }
+  .nav .links { display: flex; gap: 18px; font-size: 0.85em; }
+  .nav .links a { color: var(--text2); }
+  .nav .links a:hover { color: var(--text); text-decoration: none; }
+
+  /* ---------- hero ---------- */
+  .hero {
+    max-width: 1080px; margin: 0 auto; padding: 64px 28px 32px;
+    text-align: center;
+  }
+  .hero h1 { font-family: var(--mono); font-size: 3em; letter-spacing: -1px; margin-bottom: 8px; }
+  .hero h1 .dot { color: var(--emerald); }
+  .hero .tag { color: var(--text2); font-size: 1.15em; max-width: 640px; margin: 0 auto 10px; }
+  .hero .badges { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 18px; }
+  .badge {
+    font-family: var(--mono); font-size: 0.72em; padding: 4px 12px;
+    border-radius: 999px; border: 1px solid var(--border); color: var(--text2);
+  }
+  .badge.on { color: var(--emerald); border-color: #1a4a38; background: #0e2620; }
+
+  .shot-wrap { max-width: 1080px; margin: 24px auto 0; padding: 0 28px; }
+  .shot {
+    width: 100%; border-radius: 14px; border: 1px solid var(--border);
+    box-shadow: 0 24px 60px rgba(0,0,0,0.55); display: block;
+  }
+  .shot-cap { text-align: center; color: var(--text2); font-size: 0.8em; margin-top: 10px; }
+
+  /* ---------- sections ---------- */
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 28px; }
+  .section-title {
+    font-family: var(--mono); font-size: 0.78em; color: var(--text2);
+    text-transform: uppercase; letter-spacing: 2px;
+    margin: 72px 0 4px; display: flex; align-items: center; gap: 10px;
+  }
+  .section-title::before { content: ""; width: 22px; height: 2px; background: var(--emerald); display: inline-block; }
+  .section-lead { font-size: 1.5em; font-weight: 600; margin-bottom: 28px; }
+
+  .grid { display: grid; grid-template-columns: 1fr; gap: 22px; }
+
+  .card {
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 14px; overflow: hidden;
+    display: grid; grid-template-columns: 1fr 1fr; align-items: stretch;
+  }
+  .card.flip { grid-template-columns: 1fr 1fr; }
+  .card .body { padding: 28px 30px; }
+  .card.flip .body { order: 2; }
+  .card .demo {
+    background: #131414; border-right: 1px solid var(--border);
+    padding: 24px; display: flex; align-items: center; justify-content: center; min-height: 230px;
+  }
+  .card.flip .demo { order: 1; border-right: none; border-left: 1px solid var(--border); }
+
+  .pill {
+    display: inline-block; font-family: var(--mono); font-size: 0.66em;
+    padding: 3px 10px; border-radius: 999px; margin-bottom: 12px;
+    letter-spacing: 0.5px;
+  }
+  .pill.core { color: var(--blue); border: 1px solid #14506a; background: #0c2630; }
+  .pill.hidden { color: var(--gold); border: 1px solid #5a4a18; background: #2a2410; }
+  .card h3 { font-size: 1.35em; margin-bottom: 10px; }
+  .card p { color: #c9c9c9; font-size: 0.95em; margin-bottom: 12px; }
+  .card .api { font-family: var(--mono); font-size: 0.74em; color: var(--text2); }
+  .card .api b { color: var(--emerald); font-weight: 600; }
+
+  /* ---------- mini mockups (pure css/svg) ---------- */
+  .mk { width: 100%; font-family: var(--mono); font-size: 0.72em; }
+  .mk-win {
+    width: 100%; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 9px; overflow: hidden;
+  }
+  .mk-bar { display: flex; gap: 5px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  .mk-bar i { width: 9px; height: 9px; border-radius: 999px; display: inline-block; }
+  .mk-body { padding: 12px 14px; }
+  .row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+  .dotmark { width: 7px; height: 7px; border-radius: 999px; flex: none; }
+  .muted { color: var(--text2); }
+
+  /* tag capture demo */
+  .chat-line { color: var(--text2); }
+  .tagline { color: var(--emerald); }
+  .tagline .k { color: var(--gold); }
+  .arrow { text-align: center; color: var(--text2); padding: 6px 0; }
+  .act-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; background: var(--bg3); border-radius: 6px; margin-top: 3px; }
+
+  /* diff demo */
+  .diff div { padding: 1px 8px; border-radius: 3px; }
+  .diff .add { background: rgba(6,214,160,0.12); color: var(--emerald); }
+  .diff .del { background: rgba(239,71,111,0.12); color: var(--pink); }
+
+  /* process tree */
+  .proc .kill { margin-inline-start: auto; color: var(--pink); border: 1px solid #5a2030; background: #2a1018; border-radius: 5px; padding: 1px 8px; font-size: 0.85em; cursor: default; }
+  .proc .indent { padding-inline-start: 18px; position: relative; }
+  .proc .indent::before { content: "└"; position: absolute; inset-inline-start: 4px; color: var(--border); }
+
+  /* stack map grid */
+  .stackgrid { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; width: 100%; }
+  .scard { background: var(--bg3); border: 1px solid var(--border); border-radius: 7px; padding: 8px; }
+  .scard .nm { color: var(--text); margin-bottom: 6px; }
+  .chip { display: inline-block; font-size: 0.85em; padding: 1px 6px; border-radius: 4px; margin: 1px; }
+
+  /* progress / plan demo */
+  .step { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+  .cbx { width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--border); flex: none; }
+  .cbx.on { background: var(--emerald); border-color: var(--emerald); }
+  .bar { height: 6px; background: var(--bg3); border-radius: 999px; margin-top: 10px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--emerald); }
+
+  /* lib scan */
+  .lib { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+  .lib .old { color: var(--pink); }
+  .lib .new { color: var(--emerald); }
+  .lib .warn { color: var(--gold); }
+
+  /* call graph svg colors set inline */
+
+  /* ---------- api table ---------- */
+  table { width: 100%; border-collapse: collapse; font-size: 0.85em; margin-top: 10px; }
+  th, td { text-align: right; padding: 9px 12px; border-bottom: 1px solid var(--border); }
+  th { color: var(--text2); font-weight: 600; font-size: 0.85em; text-transform: uppercase; letter-spacing: 1px; }
+  td .mono { color: var(--emerald); font-size: 0.92em; }
+
+  /* ---------- footer ---------- */
+  footer { text-align: center; color: var(--text2); font-size: 0.82em; padding: 60px 28px 50px; margin-top: 60px; border-top: 1px solid var(--border); }
+
+  @media (max-width: 760px) {
+    .card, .card.flip { grid-template-columns: 1fr; }
+    .card .demo, .card.flip .demo { order: 0; border: none; border-bottom: 1px solid var(--border); }
+    .card.flip .body { order: 0; }
+    .hero h1 { font-size: 2.2em; }
+    .stackgrid { grid-template-columns: repeat(2,1fr); }
+  }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="brand">DevLog<span class="dot">.</span></div>
+  <div class="links">
+    <a href="#basics">الأساسيات</a>
+    <a href="#advanced">المتقدّمة</a>
+    <a href="#api">واجهة API</a>
+    <a href="/">الداش بورد</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <h1>DevLog<span class="dot">.</span></h1>
+  <p class="tag">سجلّ تطوير تلقائي لمشاريع Claude Code. كلود يكتب تاقات قصيرة في ردوده، وخطّاف Stop يلتقطها ويغذّي داش بورد محلّي — بلا تلويث أي مستودع ولا استهلاك سياق كلود.</p>
+  <div class="badges">
+    <span class="badge on">صفر تبعيات runtime</span>
+    <span class="badge on">محلّي 127.0.0.1 فقط</span>
+    <span class="badge on">بلا تتبّع</span>
+    <span class="badge">Bun + Node built-ins</span>
+  </div>
+</header>
+
+<div class="shot-wrap">
+  <img class="shot" src="/assets/dashboard.jpeg" alt="واجهة DevLog">
+  <p class="shot-cap">الداش بورد الرئيسي — نشاط كل مشروع، الخطط، الإصدارات، والملاحظات الأمنية في مكان واحد.</p>
+</div>
+
+<!-- ================= BASICS ================= -->
+<div class="wrap">
+  <div class="section-title" id="basics">الأساسيات</div>
+  <div class="section-lead">ما تراه من أول نظرة</div>
+
+  <div class="grid">
+
+    <!-- tag capture -->
+    <div class="card">
+      <div class="demo">
+        <div class="mk" style="width:100%">
+          <div class="chat-line">…أضفت دالة المصادقة وأغلقت الثغرة.</div>
+          <div class="tagline">-(<span class="k">built</span>) auth.ts — JWT issuance</div>
+          <div class="tagline">-(<span class="k">security fix</span>) #11</div>
+          <div class="arrow">↓ &nbsp;Stop hook</div>
+          <div class="act-row"><span class="dotmark" style="background:var(--emerald)"></span> built · auth.ts — JWT issuance</div>
+          <div class="act-row"><span class="dotmark" style="background:var(--blue)"></span> security fixed · #11</div>
+        </div>
+      </div>
+      <div class="body">
+        <span class="pill core">أساسي</span>
+        <h3>التقاط التاقات تلقائياً</h3>
+        <p>كلود يُنهي ردّه بعلامات <code>-(tag) محتوى</code>. خطّاف Stop يمسح الرد، يلتقطها، ويرسلها للداش بورد — مبنيّ، إصلاح خطأ، todo، ملاحظة أمنية، قرار معماري… بلا أي ملف يدوي.</p>
+        <div class="api">يلتقطها <b>parse-tags.js</b> ← <b>POST /api/tags</b></div>
+      </div>
+    </div>
+
+    <!-- plans -->
+    <div class="card flip">
+      <div class="demo">
+        <div class="mk" style="width:100%">
+          <div class="muted" style="margin-bottom:8px">خطة: ميزة تسجيل الدخول</div>
+          <div class="step"><span class="cbx on"></span> صفحة الدخول</div>
+          <div class="step"><span class="cbx on"></span> التحقق من النموذج</div>
+          <div class="step"><span class="cbx"></span> POST /api/login</div>
+          <div class="step"><span class="cbx"></span> إصدار JWT</div>
+          <div class="bar"><i style="width:50%"></i></div>
+          <div class="muted" style="margin-top:6px">2 / 4 — تُغلَق من الشات بـ <span class="tagline">-(<span class="k">done</span>) #N</span></div>
+        </div>
+      </div>
+      <div class="body">
+        <span class="pill core">أساسي</span>
+        <h3>خطط قابلة للتتبّع</h3>
+        <p>تاق <code>-(doc:plan)</code> يولّد مستند markdown + html ويسجّل كل <code>[ ]</code> كخطوة. الخانات تنقلب والأشرطة تتحرّك عبر الجلسات — كله من المحادثة، مع تتبّع الإكمال بالأرقام <code>#N</code>.</p>
+        <div class="api">يكتبها <b>doc-store.ts</b> تحت <b>&lt;project&gt;/.devlog/docs/</b></div>
+      </div>
+    </div>
+
+    <!-- closure enforcement -->
+    <div class="card">
+      <div class="demo">
+        <div class="mk-win" style="width:100%">
+          <div class="mk-bar"><i style="background:var(--pink)"></i><i style="background:var(--gold)"></i><i style="background:var(--emerald)"></i></div>
+          <div class="mk-body">
+            <div class="muted">$ gh release create v2.6.0</div>
+            <div style="color:var(--pink);margin-top:6px">⛔ مرفوض — عناصر مفتوحة:</div>
+            <div class="row"><span class="dotmark" style="background:var(--gold)"></span> todo #7 — توثيق الـAPI</div>
+            <div class="row"><span class="dotmark" style="background:var(--pink)"></span> bug #12 — تسرّب ذاكرة</div>
+            <div class="muted" style="margin-top:6px">أغلِق الكل قبل الإصدار.</div>
+          </div>
+        </div>
+      </div>
+      <div class="body">
+        <span class="pill core">أساسي</span>
+        <h3>إلزام الإغلاق + حارس الإصدار</h3>
+        <p>خطّاف Stop يطابق المبنيّ مع العناصر المفتوحة ويذكّر بإغلاقها. وخطّاف PreToolUse يعترض أوامر الإصدار (<code>gh release</code>، <code>git tag -a</code>، <code>npm publish</code>…) ويرفضها ما دام فيه عمل مفتوح.</p>
+        <div class="api"><b>closure-check.ts</b> · <b>pre-release-hook.js</b></div>
+      </div>
+    </div>
+
+    <!-- lib scanning -->
+    <div class="card flip">
+      <div class="demo">
+        <div class="mk" style="width:100%">
+          <div class="muted" style="margin-bottom:8px">فحص إصدارات المكتبات</div>
+          <div class="lib"><span class="dotmark" style="background:var(--pink)"></span> react <span class="old">18.2.0</span> → <span class="new">19.1.0</span></div>
+          <div class="lib"><span class="dotmark" style="background:var(--pink)"></span> zod <span class="old">3.22</span> → <span class="new">3.24</span></div>
+          <div class="lib"><span class="dotmark" style="background:var(--gold)"></span> vite <span class="new">6.0.1</span> <span class="warn">⏳ &lt; 7 أيام</span></div>
+          <div class="muted" style="margin-top:8px">npm · crates.io · PyPI · Go · Packagist · vcpkg</div>
+        </div>
+      </div>
+      <div class="body">
+        <span class="pill core">أساسي</span>
+        <h3>فحص إصدارات المكتبات</h3>
+        <p>زرّ «فحص أمني» يقارن كل تبعية بسجلّ نظامها الرسمي ويُبرز المتأخّرة — الإصدار الأحدث وتاريخه، مع تحذير ⏳ للإصدارات الأطرى من 7 أيام. مدمج بالكامل: بلا خدمة خارجية ولا مفتاح API.</p>
+        <div class="api"><b>registry.ts</b> · <b>GET /api/vuln/:project</b></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ================= ADVANCED ================= -->
+<div class="wrap">
+  <div class="section-title" id="advanced">المميزات المتقدّمة</div>
+  <div class="section-lead">القدرات «المخفية» — موجودة وشغّالة، خلف واجهة API</div>
+
+  <div class="grid">
+
+    <!-- code analysis / call graph -->
+    <div class="card">
+      <div class="demo">
+        <svg viewBox="0 0 240 200" style="width:100%;max-width:260px" font-family="Cascadia Code, monospace" font-size="9">
+          <line x1="120" y1="34" x2="60"  y2="92"  stroke="#363737" stroke-width="1.5"/>
+          <line x1="120" y1="34" x2="180" y2="92"  stroke="#363737" stroke-width="1.5"/>
+          <line x1="60"  y1="108" x2="40"  y2="160" stroke="#363737" stroke-width="1.5"/>
+          <line x1="60"  y1="108" x2="110" y2="160" stroke="#363737" stroke-width="1.5"/>
+          <line x1="180" y1="108" x2="180" y2="160" stroke="#363737" stroke-width="1.5"/>
+          <g>
+            <rect x="92" y="20" width="56" height="22" rx="6" fill="#0c2630" stroke="#118ab2"/>
+            <text x="120" y="34" fill="#06d6a0" text-anchor="middle">main()</text>
+            <rect x="34" y="92" width="52" height="22" rx="6" fill="#1B1C1D" stroke="#363737"/>
+            <text x="60" y="106" fill="#EEEEEE" text-anchor="middle">auth()</text>
+            <rect x="154" y="92" width="52" height="22" rx="6" fill="#1B1C1D" stroke="#363737"/>
+            <text x="180" y="106" fill="#EEEEEE" text-anchor="middle">route()</text>
+            <rect x="16" y="160" width="48" height="20" rx="6" fill="#1B1C1D" stroke="#363737"/>
+            <text x="40" y="173" fill="#9A9A9A" text-anchor="middle">hash()</text>
+            <rect x="86" y="160" width="48" height="20" rx="6" fill="#1B1C1D" stroke="#363737"/>
+            <text x="110" y="173" fill="#9A9A9A" text-anchor="middle">db()</text>
+            <rect x="156" y="160" width="48" height="20" rx="6" fill="#1B1C1D" stroke="#363737"/>
+            <text x="180" y="173" fill="#9A9A9A" text-anchor="middle">json()</text>
+          </g>
+        </svg>
+      </div>
+      <div class="body">
+        <span class="pill hidden">مخفي</span>
+        <h3>محرّك تحليل كود ساكن</h3>
+        <p>مُحلِّل (tokenizer + مستخرِج رموز متعدّد اللغات) يرسم مسارات HTTP، <b>رسم استدعاء الدوال</b> (call graph)، رسم اعتماد الوحدات، الخيوط، رسائل IPC، أنواع البيانات، وأنماطاً حسّاسة أمنياً — دون قواعد لغة خارجية.</p>
+        <div class="api"><b>GET /api/analyze</b> · <b>analyze.ts</b> · <b>tokenizer.ts</b> · <b>symbols.ts</b></div>
+      </div>
+    </div>
+
+    <!-- process monitoring -->
+    <div class="card flip">
+      <div class="demo">
+        <div class="mk-win" style="width:100%">
+          <div class="mk-bar"><i style="background:var(--pink)"></i><i style="background:var(--gold)"></i><i style="background:var(--emerald)"></i></div>
+          <div class="mk-body proc">
+            <div class="row"><span class="dotmark" style="background:var(--emerald)"></span> claude.exe <span class="muted">· pid 8124</span></div>
+            <div class="row indent"><span class="muted">bun src/server.ts · 9210</span></div>
+            <div class="row indent"><span class="muted">node build · 9344</span> <span class="kill">إنهاء</span></div>
+            <div class="row" style="margin-top:6px"><span class="dotmark" style="background:var(--gold)"></span> claude.exe <span class="muted">· pid 7700</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="body">
+        <span class="pill hidden">مخفي</span>
+        <h3>مراقبة العمليات الحيّة + إنهاؤها</h3>
+        <p>يعرض جلسات Claude Code النشطة ويبني <b>شجرة العمليات المتفرّعة</b> على ويندوز — فتشوف العمليات الجامحة وتُنهي أي PID مباشرة من الداش بورد.</p>
+        <div class="api"><b>GET /api/processes</b> · <b>POST /api/kill-pid/:pid</b> · <b>sessions.ts</b></div>
+      </div>
+    </div>
+
+    <!-- change tracking / diff -->
+    <div class="card">
+      <div class="demo">
+        <div class="mk" style="width:100%">
+          <div class="muted" style="margin-bottom:8px">auth.ts — تعديل #34</div>
+          <div class="diff">
+            <div class="del">- const token = sign(user)</div>
+            <div class="del">- return token</div>
+            <div class="add">+ const token = sign(user, { exp: '1h' })</div>
+            <div class="add">+ return { token, exp }</div>
+          </div>
+          <div class="muted" style="margin-top:8px">لكل تعديل · لكل ملف · لكل جلسة</div>
+        </div>
+      </div>
+      <div class="body">
+        <span class="pill hidden">مخفي</span>
+        <h3>تتبّع تغييرات الملفات مع diff</h3>
+        <p>يخزّن <code>old_string</code> / <code>new_string</code> لكل تعديل يجريه كلود ويعرض <b>diff داخلياً</b> — على مستوى التعديل الواحد، أو الملف، أو الجلسة كاملة.</p>
+        <div class="api"><b>GET /api/changes</b> · <b>/changes/by-id/:id</b> · <b>/changes/session</b></div>
+      </div>
+    </div>
+
+    <!-- stack map -->
+    <div class="card flip">
+      <div class="demo">
+        <div class="stackgrid">
+          <div class="scard"><div class="nm">helper</div><span class="chip" style="background:#0c2630;color:#118ab2">TS</span><span class="chip" style="background:#2a2410;color:#ffd166">Bun</span></div>
+          <div class="scard"><div class="nm">api</div><span class="chip" style="background:#0e2620;color:#06d6a0">Go</span></div>
+          <div class="scard"><div class="nm">ui</div><span class="chip" style="background:#0c2630;color:#118ab2">TS</span><span class="chip" style="background:#2a1018;color:#ef476f">React</span></div>
+          <div class="scard"><div class="nm">core</div><span class="chip" style="background:#2a1810;color:#ff9f45">Rust</span></div>
+          <div class="scard"><div class="nm">ml</div><span class="chip" style="background:#1a2a0d;color:#9bd45f">Py</span></div>
+          <div class="scard"><div class="nm">cli</div><span class="chip" style="background:#2a1810;color:#ff9f45">Rust</span></div>
+        </div>
+      </div>
+      <div class="body">
+        <span class="pill hidden">مخفي</span>
+        <h3>خريطة Stack عبر المشاريع</h3>
+        <p>نظرة شاملة على لغات وأُطر ومكتبات كل مشاريعك في صفحة واحدة، مع تخطيط قابل للحفظ — لترى تقنياتك من علٍ عبر المحفظة كلها.</p>
+        <div class="api"><b>stack-map.html</b> · <b>GET /api/stack/:project</b> · <b>/stack/:project/layout</b></div>
+      </div>
+    </div>
+
+    <!-- file tree + export + inject preview -->
+    <div class="card">
+      <div class="demo">
+        <div class="mk" style="width:100%">
+          <div class="row"><span class="muted">📁 src/</span></div>
+          <div class="row indent" style="padding-inline-start:16px"><span class="muted">server.ts</span></div>
+          <div class="row indent" style="padding-inline-start:16px"><span class="muted">analyze.ts</span></div>
+          <div class="row indent" style="padding-inline-start:16px"><span class="muted">📁 hooks/</span></div>
+          <div class="arrow">↓ معاينة الحقن</div>
+          <div class="tagline" style="font-size:0.95em">todos: #5 · bugs: #11 · plan "auth": #33</div>
+        </div>
+      </div>
+      <div class="body">
+        <span class="pill hidden">مخفي</span>
+        <h3>متصفّح الشجرة · التصدير · معاينة الحقن</h3>
+        <p>تصفّح شجرة المشروع داخل الداش بورد، صدّر مشروعاً (أو الكل) إلى JSON محمول، وعايِن كتلة سياق SessionStart <b>بالضبط</b> قبل حقنها — مع سجلّ الحقن السابق.</p>
+        <div class="api"><b>/api/tree/:project</b> · <b>/api/export-all</b> · <b>/api/inject/preview</b></div>
+      </div>
+    </div>
+
+    <!-- retention + live ws -->
+    <div class="card flip">
+      <div class="demo">
+        <div class="mk" style="width:100%">
+          <div class="row"><span class="dotmark" style="background:var(--emerald)"></span> WebSocket متّصل — تحديث حيّ</div>
+          <div class="act-row" style="margin-top:8px"><span class="dotmark" style="background:var(--blue)"></span> الآن · built · scanner.ts</div>
+          <div class="muted" style="margin-top:10px">سياسة الاحتفاظ:</div>
+          <div class="row"><span class="muted">أحداث قديمة → تُقلَّم</span></div>
+          <div class="row"><span class="dotmark" style="background:var(--gold)"></span> العناصر المرتبطة بالإغلاق محميّة</div>
+        </div>
+      </div>
+      <div class="body">
+        <span class="pill hidden">مخفي</span>
+        <h3>تحديث حيّ + سياسة احتفاظ</h3>
+        <p>الداش بورد يشترك عبر WebSocket فتظهر التاقات والعمليات فوراً بلا تحديث للصفحة. وفي الخلفية تُقلَّم الأحداث القديمة وفق سياسة احتفاظ تحمي العناصر المرتبطة بالإغلاق.</p>
+        <div class="api"><b>broadcast.ts</b> · <b>retention.ts</b></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ================= API REFERENCE ================= -->
+<div class="wrap">
+  <div class="section-title" id="api">واجهة API</div>
+  <div class="section-lead">كل ذلك داخل سيرفر Bun واحد على المنفذ 7777</div>
+
+  <table>
+    <thead><tr><th>الميزة</th><th>نقطة الدخول</th><th>الملف</th></tr></thead>
+    <tbody>
+      <tr><td>تحليل الكود الساكن</td><td><span class="mono">GET /api/analyze</span></td><td><code>analyze.ts</code></td></tr>
+      <tr><td>مراقبة/إنهاء العمليات</td><td><span class="mono">GET /api/processes · POST /api/kill-pid/:pid</span></td><td><code>sessions.ts</code></td></tr>
+      <tr><td>تتبّع التغييرات + diff</td><td><span class="mono">GET /api/changes/by-id/:id</span></td><td><code>server.ts</code></td></tr>
+      <tr><td>خريطة Stack</td><td><span class="mono">GET /api/stack/:project · /layout</span></td><td><code>stack-map.html</code></td></tr>
+      <tr><td>متصفّح الشجرة</td><td><span class="mono">GET /api/tree/:project</span></td><td><code>tree.ts</code></td></tr>
+      <tr><td>التصدير</td><td><span class="mono">GET /api/export/:project · /api/export-all</span></td><td><code>export.ts</code></td></tr>
+      <tr><td>معاينة الحقن</td><td><span class="mono">GET /api/inject/preview · /api/injections</span></td><td><code>inject.ts</code></td></tr>
+      <tr><td>فحص المكتبات</td><td><span class="mono">GET /api/vuln/:project</span></td><td><code>registry.ts</code></td></tr>
+      <tr><td>التقاط التاقات</td><td><span class="mono">POST /api/tags</span></td><td><code>tags-service.ts</code></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<footer>
+  DevLog — كل البيانات محلّية، السيرفر يستمع على <code>127.0.0.1</code> فقط، بلا تتبّع.<br>
+  للمرجع الكامل راجع <a href="https://github.com/">README</a> و <code>docs/CLAUDE.md</code> (بروتوكول التاقات).
+</footer>
+
+</body>
+</html>
