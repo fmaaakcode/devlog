@@ -1,0 +1,17 @@
+{
+  "name": "devlog",
+  "owner": {
+    "name": "fmaaakcode"
+  },
+  "metadata": {
+    "description": "DevLog — automatic development tracking for Claude Code: a local dashboard fed by tags in Claude's responses, with plans, releases, native vuln scanning, and a standards library. Zero telemetry."
+  },
+  "plugins": [
+    {
+      "name": "devlog",
+      "source": "./",
+      "description": "Automatic dev tracking for Claude Code via hooks and tags — local dashboard, plans, releases, native vuln scanning, and a standards library.",
+      "author": { "name": "fmaaakcode" }
+    }
+  ]
+}

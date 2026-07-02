@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DevLog — automatic memory for everything Claude builds</title>
+  <meta name="description" content="DevLog — automatic development tracking for Claude Code via hooks and tags. A local, zero-telemetry dashboard for builds, plans, releases, security findings, and standards.">
+  <link rel="canonical" href="./landing-en.html">
+
+  <!-- Language-aware entry point for GitHub Pages. JS picks the visitor's
+       language (Arabic → landing.html, everything else → English default).
+       No-JS visitors get a meta-refresh to English + explicit links below. -->
+  <script>
+    (function () {
+      var lang = (navigator.language || navigator.userLanguage || "en").toLowerCase();
+      var target = lang.indexOf("ar") === 0 ? "./landing.html" : "./landing-en.html";
+      location.replace(target);
+    })();
+  </script>
+  <noscript><meta http-equiv="refresh" content="0; url=./landing-en.html"></noscript>
+
+  <style>
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: flex; align-items: center; justify-content: center;
+      background: #0b0f14; color: #e6edf3;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      text-align: center; padding: 24px;
+    }
+    a { color: #58a6ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .links { margin-top: 12px; font-size: 1.1rem; }
+    .links span { opacity: .4; margin: 0 8px; }
+  </style>
+</head>
+<body>
+  <div>
+    <p>Redirecting to DevLog…</p>
+    <p class="links">
+      <a href="./landing-en.html">Continue in English</a>
+      <span>·</span>
+      <a href="./landing.html" lang="ar" dir="rtl">تابع بالعربية</a>
+    </p>
+  </div>
+</body>
+</html>

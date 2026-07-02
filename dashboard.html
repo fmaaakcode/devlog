@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DevLog</title>
+    <link rel="stylesheet" href="/assets/dashboard.css">
+</head>
+<body>
+    <div id="memPopover"></div>
+    <div id="filePopup" class="file-popup"></div>
+
+    <div class="topbar" id="topbar">
+        <div class="topbar-left" id="topbarLeft"></div>
+        <div class="live-banner" id="liveBanner" style="opacity:0"></div>
+        <div class="topbar-right">
+            <div class="top-actions">
+                <button class="rescan-btn" onclick="rescanProject(activeProject, this)">إعادة مسح</button>
+                <button class="vuln-btn" onclick="vulnScan(activeProject, this)">فحص أمني</button>
+                <button class="inj-btn" onclick="openInjectionPanel(activeProject)">الحقن</button>
+                <button class="inj-btn" onclick="openStandardsPanel(activeProject)">المعايير</button>
+                <button class="kill-srv-btn" onclick="killServer(this)" title="إيقاف السيرفر (يعود تلقائياً مع bun --watch)">إيقاف السيرفر</button>
+            </div>
+            <span id="updates-badge" style="display:none;font-size:0.7em;padding:3px 10px;border-radius:5px;background:#1a2a0d;color:#9bd45f;border:1px solid #2a4a15;cursor:pointer;font-weight:600" onclick="openUpdatesPopup()" title="تحديثات الأدوات متاحة"></span>
+            <div class="topbar-logo">DevLog</div>
+        </div>
+    </div>
+
+    <div class="page-body">
+    <div class="sidebar">
+        <div class="project-list project-list-active" id="projectListActive"></div>
+        <div class="project-list project-list-other" id="projectListOther"></div>
+    </div>
+
+    <div class="main" id="mainArea">
+        <div class="welcome" id="welcome">
+            <div>
+                <h2>DevLog</h2>
+                <p>
+                    سجل تطوير تلقائي لكل مشاريعك<br>
+                    يتتبع التغييرات والمكتبات والمشاكل الأمنية<br>
+                    اختر مشروع من القائمة أو ابدأ العمل
+                </p>
+            </div>
+        </div>
+
+        <div id="projectView" style="display:none; flex-direction:column; overflow:hidden; height:100%">
+            <div class="project-row">
+                <div class="project-header" id="projectHeader"></div>
+                <div id="vuln-panel" class="vuln-panel"></div>
+                <div class="stats-pair">
+                    <div id="statsNumbers" class="stats-numbers" style="display:none"></div>
+                    <div id="centerStats" class="center-stats" style="display:none"></div>
+                </div>
+            </div>
+            <div id="panel-files" style="flex:1;overflow:hidden;padding:16px 8px 16px 24px;min-height:0"></div>
+        </div>
+    </div>
+    </div>
+
+    <div class="ctx-menu" id="ctxMenu">
+        <div class="ctx-menu-item" id="ctxOpenLabel" onclick="openTargetFile()">فتح في نافذة جديدة</div>
+        <div class="ctx-menu-item" id="ctxIgnoreLabel" onclick="ignoreTarget()"></div>
+    </div>
+
+    <div class="inj-modal-bg" id="injModal" onclick="if(event.target===this)closeInjectionPanel()">
+        <div class="inj-modal">
+            <div class="inj-header">
+                <span class="inj-title">الحقن — <span id="injProjectName"></span></span>
+                <button class="inj-close" onclick="closeInjectionPanel()">&times;</button>
+            </div>
+            <div class="inj-body" id="injBody"></div>
+        </div>
+    </div>
+
+    <div class="inj-modal-bg" id="stdModal" onclick="if(event.target===this)closeStandardsPanel()">
+        <div class="inj-modal">
+            <div class="inj-header">
+                <span class="inj-title">المعايير — <span id="stdProjectName"></span></span>
+                <button class="inj-close" onclick="closeStandardsPanel()">&times;</button>
+            </div>
+            <div class="inj-body" id="stdBody"></div>
+        </div>
+    </div>
+
+    <script src="/assets/dashboard.js"></script>
+</body>
+</html>
