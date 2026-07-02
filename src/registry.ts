@@ -25,7 +25,25 @@ const UA = "devlog-version-check (https://github.com/devlog/devlog)";
 // silently vanished from the outdated card. So we retry on network errors and
 // retryable HTTP (429/5xx); a real 404 ("package not found") returns null
 // immediately without burning retries.
-async function fetchJson(url: string): Promise<any | null> {
+// ── Raw registry response shapes ─────────────────────────────────────────────
+// Every field is optional/loose: these are external payloads accessed defensively
+// (optional chaining + Array.isArray guards at every use). Typing them replaces a
+// blanket `any` with a checked contract at the network boundary, without pretending
+// the remote data is trustworthy.
+interface NpmResponse { "dist-tags"?: { latest?: string }; time?: Record<string, string>; }
+interface CratesVersion { num?: string; created_at?: string | null; yanked?: boolean; }
+interface CratesResponse { crate?: { max_stable_version?: string; newest_version?: string }; versions?: CratesVersion[]; }
+interface PypiFile { upload_time_iso_8601?: string; upload_time?: string; }
+interface PypiResponse { info?: { version?: string }; releases?: Record<string, PypiFile[]>; }
+interface GoProxyLatest { Version?: string; Time?: string | null; }
+interface PackagistVersion { version?: string; time?: string | null; }
+interface PackagistResponse { packages?: Record<string, PackagistVersion[]>; }
+interface VcpkgManifest { version?: string | number; "version-semver"?: string; "version-string"?: string; "version-date"?: string; }
+interface GithubRelease { tag_name?: string; }
+interface GoDlRelease { stable?: boolean; version?: string; }
+interface NodeDistEntry { version?: string; }
+
+async function fetchJson<T = unknown>(url: string): Promise<T | null> {
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const r = await fetch(url, {
@@ -34,7 +52,7 @@ async function fetchJson(url: string): Promise<any | null> {
       });
       if (r.status === 404) return null;            // genuinely absent — don't retry
       if (!r.ok) { if (attempt < 2) { await backoff(attempt); continue; } return null; }  // 429/5xx
-      return await r.json();
+      return (await r.json()) as T;
     } catch {                                       // ECONNRESET / timeout — retry then give up
       if (attempt < 2) { await backoff(attempt); continue; }
       return null;
@@ -72,23 +90,23 @@ async function queryRegistry(ecosystem: string, name: string): Promise<VersionIn
   const enc = encodeURIComponent(name);
   switch (ecosystem) {
     case "npm": {
-      const j = await fetchJson(`https://registry.npmjs.org/${enc}`);
+      const j = await fetchJson<NpmResponse>(`https://registry.npmjs.org/${enc}`);
       const version = j?.["dist-tags"]?.latest ?? null;
       // npm's `time` maps every version → ISO publish date.
       const date = version ? (j?.time?.[version] ?? null) : null;
       return { version, date };
     }
     case "crates.io": {
-      const j = await fetchJson(`https://crates.io/api/v1/crates/${enc}`);
+      const j = await fetchJson<CratesResponse>(`https://crates.io/api/v1/crates/${enc}`);
       const version = j?.crate?.max_stable_version ?? j?.crate?.newest_version ?? null;
       let date: string | null = null;
       if (version && Array.isArray(j?.versions)) {
-        date = j.versions.find((v: any) => v?.num === version)?.created_at ?? null;
+        date = j.versions.find(v => v?.num === version)?.created_at ?? null;
       }
       return { version, date };
     }
     case "pypi": {
-      const j = await fetchJson(`https://pypi.org/pypi/${enc}/json`);
+      const j = await fetchJson<PypiResponse>(`https://pypi.org/pypi/${enc}/json`);
       const version = j?.info?.version ?? null;
       // releases[version] is the file list; any file's upload time is the
       // release date (they're published together).
@@ -103,7 +121,7 @@ async function queryRegistry(ecosystem: string, name: string): Promise<VersionIn
       // an untrusted module name from go.mod can't normalize the URL path —
       // encodeURIComponent alone leaves `..` intact (`.` is unreserved) (R4 sec L1).
       const enc = encodePkgPath(name);
-      const j = await fetchJson(`https://proxy.golang.org/${enc}/@latest`);
+      const j = await fetchJson<GoProxyLatest>(`https://proxy.golang.org/${enc}/@latest`);
       const version = j?.Version ? String(j.Version).replace(/^v/, "") : null;
       return { version, date: j?.Time ?? null };
     }
@@ -111,7 +129,7 @@ async function queryRegistry(ecosystem: string, name: string): Promise<VersionIn
       const lower = name.toLowerCase();
       // `lower` keys the response map; `enc` encodes + strips traversal for the URL (R4 sec L1).
       const enc = encodePkgPath(lower);
-      const j = await fetchJson(`https://repo.packagist.org/p2/${enc}.json`);
+      const j = await fetchJson<PackagistResponse>(`https://repo.packagist.org/p2/${enc}.json`);
       const versions = j?.packages?.[lower];
       if (Array.isArray(versions)) {
         for (const v of versions) {
@@ -131,7 +149,7 @@ async function queryRegistry(ecosystem: string, name: string): Promise<VersionIn
       // 404 (lib isn't a vcpkg port) → null version → treated as "unknown".
       const port = name.toLowerCase();
       // Encode the port name (untrusted) so it can't traverse the URL path (R4 sec L1).
-      const j = await fetchJson(`https://raw.githubusercontent.com/microsoft/vcpkg/master/ports/${encodeURIComponent(port)}/vcpkg.json`);
+      const j = await fetchJson<VcpkgManifest>(`https://raw.githubusercontent.com/microsoft/vcpkg/master/ports/${encodeURIComponent(port)}/vcpkg.json`);
       const raw = j?.version ?? j?.["version-semver"] ?? j?.["version-string"] ?? j?.["version-date"] ?? null;
       return { version: raw != null ? String(raw) : null, date: null };
     }
@@ -198,7 +216,7 @@ async function queryHistory(ecosystem: string, name: string): Promise<VersionEnt
   const enc = encodeURIComponent(name);
   switch (ecosystem) {
     case "npm": {
-      const j = await fetchJson(`https://registry.npmjs.org/${enc}`);
+      const j = await fetchJson<NpmResponse>(`https://registry.npmjs.org/${enc}`);
       const time = j?.time;
       if (!time || typeof time !== "object") return [];
       const out: VersionEntry[] = [];
@@ -209,7 +227,7 @@ async function queryHistory(ecosystem: string, name: string): Promise<VersionEnt
       return sortVersionsDesc(out);
     }
     case "crates.io": {
-      const j = await fetchJson(`https://crates.io/api/v1/crates/${enc}`);
+      const j = await fetchJson<CratesResponse>(`https://crates.io/api/v1/crates/${enc}`);
       if (!Array.isArray(j?.versions)) return [];
       const out: VersionEntry[] = [];
       for (const v of j.versions) {
@@ -220,7 +238,7 @@ async function queryHistory(ecosystem: string, name: string): Promise<VersionEnt
       return sortVersionsDesc(out);
     }
     case "pypi": {
-      const j = await fetchJson(`https://pypi.org/pypi/${enc}/json`);
+      const j = await fetchJson<PypiResponse>(`https://pypi.org/pypi/${enc}/json`);
       const rel = j?.releases;
       if (!rel || typeof rel !== "object") return [];
       const out: VersionEntry[] = [];
@@ -365,23 +383,23 @@ async function queryToolchain(lang: string): Promise<ToolchainInfo> {
     case "rust": {
       // GitHub's latest release tag is the stable version (e.g. "1.79.0") —
       // far lighter than the ~1MB channel-rust-stable.toml.
-      const j = await fetchJson("https://api.github.com/repos/rust-lang/rust/releases/latest");
+      const j = await fetchJson<GithubRelease>("https://api.github.com/repos/rust-lang/rust/releases/latest");
       const v = j?.tag_name ? String(j.tag_name).replace(/^v/, "") : null;
       return { version: v, edition: latestEditionFor(v) };
     }
     case "typescript": {
       // The compiler ships as the npm `typescript` package — reuse npm's dist-tags.
-      const j = await fetchJson("https://registry.npmjs.org/typescript");
+      const j = await fetchJson<NpmResponse>("https://registry.npmjs.org/typescript");
       return { version: j?.["dist-tags"]?.latest ?? null, edition: null };
     }
     case "go": {
       // go.dev publishes stable releases as JSON; the first `stable` entry is latest.
-      const j = await fetchJson("https://go.dev/dl/?mode=json");
-      const v = Array.isArray(j) ? j.find((r: any) => r?.stable)?.version : null;
+      const j = await fetchJson<GoDlRelease[]>("https://go.dev/dl/?mode=json");
+      const v = Array.isArray(j) ? j.find(r => r?.stable)?.version : null;
       return { version: v ? String(v).replace(/^go/, "") : null, edition: null };
     }
     case "node": {
-      const j = await fetchJson("https://nodejs.org/dist/index.json");
+      const j = await fetchJson<NodeDistEntry[]>("https://nodejs.org/dist/index.json");
       const v = Array.isArray(j) && j.length ? j[0]?.version : null;
       return { version: v ? String(v).replace(/^v/, "") : null, edition: null };
     }

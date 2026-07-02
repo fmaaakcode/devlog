@@ -50,7 +50,7 @@ One concept per tag. Headline-style tags (`todo`, `done`, `dropped`, `bug found`
 
 Every open tag has a closure, emitted in the **same response** as the work.
 
-**Always close by `#N` — never copy the full text.** Re-emitting wording wastes tokens and risks a byte-level mismatch that leaves the item open forever. `#N` numbers arrive in the SessionStart context and the dashboard; type `?open` in a prompt for full text.
+**Always close by `#N` — never copy the full text.** Re-emitting wording wastes tokens and risks a byte-level mismatch that leaves the item open forever. `#N` numbers arrive in the SessionStart context and the dashboard; type `?open` in a prompt for full text, or emit `-(ask:open)` yourself to pull the live open list (bugs/todos/security/plan-steps) mid-response before closing — so you never close a stale or wrong number.
 
 | Open | Close |
 |---|---|

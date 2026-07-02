@@ -322,6 +322,33 @@ if (msg) {
                 `💡 أغلقتَ (${verbs}) بلا تشغيل أي اختبار في هذه الجلسة. «التحقّق» = دليل مُلاحَظ (اختبار ناجح في المحادثة)، لا قراءة الكود. شغّل الاختبار للتأكيد.`)}\n`);
             await log(`verify-hint: ${resp.verifyHint.closers.length} closer(s), no test run`);
           }
+          // Closure text divergence (#315): the closure APPLIED (valid number +
+          // verb), but the trailing description shares no token with the item #N
+          // is about — a likely wrong-but-compatible number (the #310/#311 slip).
+          // Objection, not a skip: verify you closed the intended item, then undo
+          // + re-close if wrong. Fires once (the item is now closed, so a correct
+          // re-run won't retrigger). Mute with DEVLOG_CLOSURE_TEXT_CHECK=0.
+          if (Array.isArray(resp.closureTextWarnings) && resp.closureTextWarnings.length
+              && process.env.DEVLOG_CLOSURE_TEXT_CHECK !== "0") {
+            const lines = resp.closureTextWarnings.map(w =>
+              L(`· #${w.num} is about: «${w.openerText}» — your closure text is unrelated. Did you mean a different number?`,
+                `· #${w.num} موضوعه: «${w.openerText}» — نص إغلاقك لا يمتّ له بصلة. هل قصدتَ رقماً آخر؟`));
+            const out = [
+              "════════ DevLog Closure Text Divergence ════════",
+              L(`⚠ ${resp.closureTextWarnings.length} closure(s) applied, but the text diverges from the item:`,
+                `⚠ ${resp.closureTextWarnings.length} إغلاق طُبِّق، لكن نصّه يتنافر مع العنصر:`),
+              ...lines,
+              "",
+              L("If the number is wrong: -(undo) #N to reopen, then close the intended item.",
+                "إن كان الرقم خاطئاً: -(undo) #N لإعادة الفتح، ثم أغلِق العنصر المقصود."),
+              "═════════════════════════════════════════════════",
+            ].join("\n");
+            process.stderr.write(`\n${out}\n`);
+            await log(`closure-text-divergence: ${resp.closureTextWarnings.map(w => w.num).join(", ")}`);
+            // Only self-exit when there's no harder closure mismatch below (that
+            // one exits(2) too); avoid double handling.
+            if (!(Array.isArray(resp.closureHints) && resp.closureHints.length)) process.exit(2);
+          }
           // Closure mismatch: Claude closed an item that won't actually close —
           // wrong verb for an open item (`-(done)` on a bug), or a #N matching no
           // open item (typo'd / already-closed number). The server skipped the
@@ -493,6 +520,48 @@ if (msg && cwd && !stopHookActive) {
     }
   } catch (e) {
     await log(`audit error: ${e.message}`);
+  }
+}
+
+// === Part 1.5c: -(ask:open) — pull the live open items on demand (#317) ===
+// Symmetry with -(ask:rules): the assistant could pull the standards library any
+// time, but had no way to pull its OWN open bugs/todos/security/plan-steps mid-
+// session without the user typing `?open` — so it closed items off a stale
+// SessionStart snapshot (the #310/#311 slip). This serves the LIVE open list THIS
+// turn via stderr+exit(2), authoritative from /api/open-items (same resolver as
+// the SessionStart summary). Re-runnable across turns via the stopHookActive
+// guard (like -(audit)); never a logged tag (not in ALLOWED_TAGS).
+if (msg && cwd && !stopHookActive) {
+  try {
+    const stripped = msg
+      .replace(/```[\s\S]*?```/g, s => " ".repeat(s.length))
+      .replace(/`[^`\n]*`/g, s => " ".repeat(s.length));
+    if (/^[ \t]*-\(ask:open\)[ \t]*$/m.test(stripped)) {
+      const r = await fetch(`${SERVER}/api/open-items?cwd=${encodeURIComponent(cwd)}`, { signal: AbortSignal.timeout(10000) });
+      if (r.ok) {
+        const { items = [] } = await r.json();
+        const groups = {};
+        for (const it of items) (groups[it.tag] ||= []).push(it);
+        const section = (label, arr) => (arr && arr.length)
+          ? `\n${label}:\n` + arr.map(it => `  #${it.num} ${it.content}${it.planTitle ? ` (${it.planTitle})` : ""}`).join("\n")
+          : "";
+        const sec = [...(groups["security"] || []), ...(groups["security:own"] || []), ...(groups["security:dep"] || [])];
+        const body = [
+          section(L("Open bugs", "بقات مفتوحة"), groups["bug found"]),
+          section(L("Open security", "ثغرات مفتوحة"), sec),
+          section(L("Open todos", "مهام مفتوحة"), groups["todo"]),
+          section(L("Open plan steps", "خطوات خطط مفتوحة"), groups["plan-step"]),
+        ].filter(Boolean).join("\n");
+        const out = body || L("No open items.", "لا عناصر مفتوحة.");
+        await log(`ask:open: served ${items.length} item(s)`);
+        process.stderr.write(`\n[devlog open]\n${out}\n`);
+        process.exit(2);
+      } else {
+        await log(`ask:open: server replied ${r.status}`);
+      }
+    }
+  } catch (e) {
+    await log(`ask:open error: ${e.message}`);
   }
 }
 

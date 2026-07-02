@@ -11,6 +11,14 @@
 // injectable so tests stay offline.
 
 import { isVersionBehind } from "./registry";
+import { currentLang } from "./i18n";
+
+// Module-local message picker (i18n pattern: strings live with their code).
+const L = <T>(en: T, ar: T): T => (currentLang() === "ar" ? ar : en);
+
+// Raw shapes of the two OSV endpoints. Both loose/optional — external payloads.
+interface OsvQueryResponse { vulns?: OsvVuln[]; }
+interface OsvBatchResponse { results?: Array<{ vulns?: Array<{ id?: string }> }>; }
 
 // The subset of an OSV advisory (https://ossf.github.io/osv-schema/) we read.
 // All fields optional — the payload is external/untrusted, so every access is guarded.
@@ -259,8 +267,8 @@ export function summarizeVulns(rawVulns: OsvVuln[], name: string, installed: str
 
   const status: PkgVuln["status"] = anyUnfixed ? "danger" : "update";
   const message = status === "danger"
-    ? `${vulns.length} ثغرة (${topSev}) — لا إصلاح كامل`
-    : `${vulns.length} ثغرة (${topSev}) — رقِّ لـ${bestFix}`;
+    ? L(`${vulns.length} vuln(s) (${topSev}) — no complete fix`, `${vulns.length} ثغرة (${topSev}) — لا إصلاح كامل`)
+    : L(`${vulns.length} vuln(s) (${topSev}) — upgrade to ${bestFix}`, `${vulns.length} ثغرة (${topSev}) — رقِّ لـ${bestFix}`);
   return {
     ok: true,
     vulns: vulns.length,
@@ -285,7 +293,7 @@ function backoff(attempt: number): Promise<void> {
 // POST a single OSV query. Mirrors registry.ts/fetchJson's retry policy (retry on
 // network error + 429/5xx, give up after 3 tries) but for POST. null = couldn't
 // get an answer → caller treats the package as indeterminate, never "safe".
-async function postJson(url: string, body: unknown, fetchImpl: typeof fetch): Promise<any | null> {
+async function postJson<T>(url: string, body: unknown, fetchImpl: typeof fetch): Promise<T | null> {
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const r = await fetchImpl(url, {
@@ -296,7 +304,7 @@ async function postJson(url: string, body: unknown, fetchImpl: typeof fetch): Pr
       });
       if (r.status === 404) return null;
       if (!r.ok) { if (attempt < 2) { await backoff(attempt); continue; } return null; }
-      return await r.json();
+      return (await r.json()) as T;
     } catch {
       if (attempt < 2) { await backoff(attempt); continue; }
       return null;
@@ -325,7 +333,7 @@ export async function scanPackages(
     while (next < packages.length) {
       const p = packages[next++];
       if (!/^\d/.test(p.version)) { out.set(p.name, UNKNOWN); continue; }
-      const j = await postJson(OSV_QUERY_URL, { version: p.version, package: { name: p.name, ecosystem: osvEco } }, fetchImpl);
+      const j = await postJson<OsvQueryResponse>(OSV_QUERY_URL, { version: p.version, package: { name: p.name, ecosystem: osvEco } }, fetchImpl);
       if (j === null) { out.set(p.name, UNKNOWN); continue; }
       const vulns = Array.isArray(j.vulns) ? j.vulns : [];
       out.set(p.name, summarizeVulns(vulns, p.name, p.version, ignoreIds));
@@ -354,12 +362,12 @@ async function batchVulnerable(
   for (let off = 0; off < packages.length; off += BATCH_CHUNK) {
     const slice = packages.slice(off, off + BATCH_CHUNK);
     const queries = slice.map(p => ({ package: { name: p.name, ecosystem: osvEco }, version: p.version }));
-    const j = await postJson(OSV_BATCH_URL, { queries }, fetchImpl);
+    const j = await postJson<OsvBatchResponse>(OSV_BATCH_URL, { queries }, fetchImpl);
     if (!j || !Array.isArray(j.results)) {
       for (let i = 0; i < slice.length; i++) hits.add(off + i);
       continue;
     }
-    j.results.forEach((res: any, i: number) => {
+    j.results.forEach((res, i) => {
       if (res && Array.isArray(res.vulns) && res.vulns.length > 0) hits.add(off + i);
     });
   }

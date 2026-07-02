@@ -56,6 +56,27 @@ function data(): DevLogData {
   };
 }
 
+describe("buildContext — ?open command trigger (plugin-review #6)", () => {
+  const openCtx = (userPrompt: string) => buildContext(data(), PROJ, "UserPromptSubmit", { userPrompt });
+  const HEADER = "كل المفتوح"; // Arabic "everything open" (module forces DEVLOG_LANG=ar)
+
+  test("fires when `?open` is the whole prompt", () => {
+    expect(openCtx("?open")).toContain(HEADER);
+  });
+  test("fires when `?open` is alone on its own line", () => {
+    expect(openCtx("من فضلك\n?open\n")).toContain(HEADER);
+  });
+  test("does NOT fire when `?open` is mid-line inside a longer prompt (the quoted-mention bug)", () => {
+    expect(openCtx("شرح: ?open (أمرك أنت) يعرض القائمة الكاملة")).not.toContain(HEADER);
+  });
+  test("does NOT fire when `?open` sits inside a code fence", () => {
+    expect(openCtx("انظر المثال:\n```\n?open\n```\nانتهى")).not.toContain(HEADER);
+  });
+  test("does NOT fire when `?open` is inline code", () => {
+    expect(openCtx("الأمر `?open` يعرض المفتوح")).not.toContain(HEADER);
+  });
+});
+
 describe("buildContext — English default", () => {
   test("SessionStart headers are English when DEVLOG_LANG is unset", () => {
     const prev = process.env.DEVLOG_LANG;

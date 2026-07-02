@@ -3,16 +3,14 @@
     "SessionStart": [
       {
         "hooks": [
-          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/ensure-server.sh\"", "timeout": 15 },
-          { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:7777/api/inject?plugin=1\" -H \"Content-Type: application/json\" --data-binary @-", "timeout": 10 }
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/ensure-server.sh\" | curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/inject?plugin=1\" -H \"Content-Type: application/json\" --data-binary @-", "timeout": 20 }
         ]
       }
     ],
     "UserPromptSubmit": [
       {
         "hooks": [
-          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/ensure-server.sh\"", "timeout": 15 },
-          { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:7777/api/inject?plugin=1\" -H \"Content-Type: application/json\" --data-binary @-", "timeout": 10 }
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/ensure-server.sh\" | curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/inject?plugin=1\" -H \"Content-Type: application/json\" --data-binary @-", "timeout": 20 }
         ]
       }
     ],
@@ -34,29 +32,29 @@
       {
         "matcher": "Write|Edit|Read|Bash|Agent|EnterPlanMode|ExitPlanMode",
         "hooks": [
-          { "type": "http", "url": "http://127.0.0.1:7777/api/hook", "timeout": 10 }
+          { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/hook\" -H \"Content-Type: application/json\" --data-binary @-", "timeout": 10 }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "http", "url": "http://127.0.0.1:7777/api/hook", "timeout": 10 },
+          { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/hook\" -H \"Content-Type: application/json\" --data-binary @-", "timeout": 10 },
           { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/parse-tags.sh\"", "timeout": 15 }
         ]
       }
     ],
     "SubagentStart": [
-      { "hooks": [ { "type": "http", "url": "http://127.0.0.1:7777/api/hook", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/hook\" -H \"Content-Type: application/json\" --data-binary @-", "timeout": 10 } ] }
     ],
     "SubagentStop": [
-      { "hooks": [ { "type": "http", "url": "http://127.0.0.1:7777/api/hook", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/hook\" -H \"Content-Type: application/json\" --data-binary @-", "timeout": 10 } ] }
     ],
     "TaskCreated": [
-      { "hooks": [ { "type": "http", "url": "http://127.0.0.1:7777/api/hook", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/hook\" -H \"Content-Type: application/json\" --data-binary @-", "timeout": 10 } ] }
     ],
     "TaskCompleted": [
-      { "hooks": [ { "type": "http", "url": "http://127.0.0.1:7777/api/hook", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/hook\" -H \"Content-Type: application/json\" --data-binary @-", "timeout": 10 } ] }
     ]
   }
 }

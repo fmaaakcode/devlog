@@ -10,7 +10,14 @@ import dashboardHtmlBundle from "../dashboard.html" with { type: "text" };
 import stackMapHtmlBundle from "../stack-map.html" with { type: "text" };
 import featuresHtmlBundle from "../features.html" with { type: "text" };
 import dashboardCss from "../assets/dashboard.css" with { type: "text" };
-import dashboardJs from "../assets/dashboard.js" with { type: "text" };
+// dashboard.js was split into topical files (report #9) loaded as sequential
+// classic scripts (shared global scope — behavior-identical to the monolith).
+import dashboardCoreJs from "../assets/dashboard-core.js" with { type: "text" };
+import dashboardDataJs from "../assets/dashboard-data.js" with { type: "text" };
+import dashboardProjectJs from "../assets/dashboard-project.js" with { type: "text" };
+import dashboardPanelsJs from "../assets/dashboard-panels.js" with { type: "text" };
+import dashboardTreeWsJs from "../assets/dashboard-tree-ws.js" with { type: "text" };
+import stackMapJs from "../assets/stack-map.js" with { type: "text" };
 // Binary asset: the "file" loader yields a path (real on disk in dev, virtual
 // in the compiled fs) that Bun.file() can stream either way.
 import dashboardJpeg from "../assets/dashboard.jpeg" with { type: "file" };
@@ -25,6 +32,11 @@ type Asset = { text: string; mime: string } | { file: string; mime: string };
 
 export const STATIC_ASSETS: Record<string, Asset> = {
   "dashboard.css": { text: dashboardCss, mime: "text/css; charset=utf-8" },
-  "dashboard.js": { text: dashboardJs, mime: "application/javascript; charset=utf-8" },
+  "dashboard-core.js": { text: dashboardCoreJs, mime: "application/javascript; charset=utf-8" },
+  "dashboard-data.js": { text: dashboardDataJs, mime: "application/javascript; charset=utf-8" },
+  "dashboard-project.js": { text: dashboardProjectJs, mime: "application/javascript; charset=utf-8" },
+  "dashboard-panels.js": { text: dashboardPanelsJs, mime: "application/javascript; charset=utf-8" },
+  "dashboard-tree-ws.js": { text: dashboardTreeWsJs, mime: "application/javascript; charset=utf-8" },
+  "stack-map.js": { text: stackMapJs, mime: "application/javascript; charset=utf-8" },
   "dashboard.jpeg": { file: dashboardJpeg, mime: "image/jpeg" },
 };

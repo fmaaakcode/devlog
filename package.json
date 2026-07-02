@@ -1,6 +1,6 @@
 {
   "name": "devlog",
-  "version": "2.13.0",
+  "version": "2.14.0",
   "description": "Automatic dev tracking for Claude Code via hooks and tags",
   "type": "module",
   "private": true,

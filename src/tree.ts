@@ -1,5 +1,6 @@
 import { readdir } from "node:fs/promises";
 import { join, extname } from "node:path";
+import { softFail } from "./soft-fail";
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "__pycache__", "target", "vendor", ".venv", "venv", "cache", "tmp", "temp", ".cache", ".tmp", "release", "debug", ".devlog", ".claude", "old"]);
 const SKIP_EXT = new Set(["exe", "dll", "so", "dylib", "o", "obj", "pdb", "lib", "a", "bin", "dat", "db", "db-journal", "7z", "zip", "tar", "gz", "pma", "compiled", "ppu", "res", "lock"]);
@@ -56,6 +57,11 @@ export async function buildTree(dir: string, depth: number): Promise<TreeNode[]>
         nodes.push({ name: entry.name, type: "file", ext: ext || undefined });
       }
     }
-  } catch {}
+  } catch (e) {
+    // A denied/vanished dir yields whatever we gathered so far rather than
+    // failing the whole tree — but under DEVLOG_DEBUG the reason is visible,
+    // so an "empty" folder can be told apart from an unreadable one.
+    softFail(`tree.buildTree(${dir})`, e);
+  }
   return nodes;
 }

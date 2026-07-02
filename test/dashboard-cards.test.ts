@@ -9,7 +9,10 @@ import { join } from "node:path";
 // is browser JS with no DOM harness, so we pin the single-source invariant at
 // the source level (same approach as security-sinks.test.ts / #227).
 
-const SRC = await Bun.file(join(import.meta.dir, "..", "assets", "dashboard.js")).text();
+// dashboard.js was split into topical files (report #9); read them as one body.
+const SRC = (await Promise.all(
+  ["core", "data", "project", "panels", "tree-ws"].map(
+    p => Bun.file(join(import.meta.dir, "..", "assets", `dashboard-${p}.js`)).text()))).join("\n");
 
 describe("dashboard events card unified (#229)", () => {
   test("exactly one buildEventsHtml definition", () => {

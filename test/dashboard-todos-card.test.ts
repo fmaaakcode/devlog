@@ -9,7 +9,10 @@ import { join } from "node:path";
 // at the source level: one builder, used by both paths, that renders #N + notes.
 
 const ROOT = join(import.meta.dir, "..");
-const SRC = await Bun.file(join(ROOT, "assets", "dashboard.js")).text();
+// dashboard.js was split into topical files (report #9); read them as one body.
+const SRC = (await Promise.all(
+  ["core", "data", "project", "panels", "tree-ws"].map(
+    p => Bun.file(join(ROOT, "assets", `dashboard-${p}.js`)).text()))).join("\n");
 
 describe("dashboard todos card (#227)", () => {
   test("a single shared builder renders the todos card", () => {

@@ -1,9 +1,8 @@
-import { join, resolve, relative, sep, dirname } from "node:path";
+import { join, resolve, relative, sep, dirname, isAbsolute } from "node:path";
 import { existsSync, watch } from "node:fs";
 import { loadData, saveData, withData, projectName, PORT, DATA_DIR, PLUGIN_MODE, cleanupMissingProjects, cleanupOldBackups, DEFAULT_INJECTION_CONFIG, assignNum, backfillNums, cleanupMalformedSecurityTags, cleanupMalformedOutdatedTags, cleanupOrphanClosures, normalizeTagContent, openTodos, openBugs, openSecurity, openPlanSteps } from "./data";
-import { STATIC_HTML, STATIC_ASSETS } from "./static-assets";
 import { wsClients, broadcast } from "./broadcast";
-import { rescanPreserve, scanFreshProfile, applyPreservedScan, enumerateDepTree } from "./scanner";
+import { rescanPreserve, scanFreshProfile, applyPreservedScan } from "./scanner";
 import { parseHookEvent } from "./hooks";
 import { parsePlanMarkdown } from "./plans";
 import { exportStatusMd, generateStackMd, rebuildChangelogsMigration } from "./export";
@@ -13,10 +12,10 @@ import { primerFor } from "./primer";
 import { migrateLegacyData } from "./migrate";
 import { readActiveSessions, refreshDescendants, killProcess } from "./sessions";
 import { parseStack } from "./stack-parser";
-import { handleDocTag, enforceAtomicContent, resolveClosureNumber, diagnoseClosureMismatch, confirmClosure, applyUndo, applyRelease, resolveReleaseIntent, detectReleaseDowngrade, detectReleaseOpenItems, syncPlanSteps, registerPlan, type ClosureMismatch, type ClosureConfirm, type ReleaseDowngrade, type ReleaseBlocked, type ReleaseIntent } from "./tags-service";
+import { handleDocTag, enforceAtomicContent, resolveClosureNumber, diagnoseClosureMismatch, diagnoseClosureTextDivergence, confirmClosure, applyUndo, applyRelease, resolveReleaseIntent, detectReleaseDowngrade, detectReleaseOpenItems, syncPlanSteps, registerPlan, type ClosureMismatch, type ClosureTextDivergence, type ClosureConfirm, type ReleaseDowngrade, type ReleaseBlocked, type ReleaseIntent } from "./tags-service";
 import { verifyHintFor } from "./verify-hint";
 import type { RollbackResult } from "./release-rollback";
-import { readFile, writeFile, mkdir, rm, rename as fsRename, realpath } from "node:fs/promises";
+import { writeFile, mkdir, rm, rename as fsRename } from "node:fs/promises";
 import { renameProjectData, migrateMemoryDir, sanitizeProjectName, rewriteDescendantPaths, type MovedDescendant } from "./project-rename";
 import { resolveProjectFor } from "./project-resolve";
 import { startVersionCheckLoop, getCachedUpdates, checkAllToolUpdates } from "./version-check";
@@ -26,11 +25,25 @@ import { appendAudit } from "./audit";
 import { scanCatalog, formatCatalogNames, parseRules, readAcks } from "./standards";
 import { ENFORCED_CATEGORIES } from "./write-checks";
 import { findDepVerdicts } from "./dep-check";
-import { latestVersions, versionHistories, synthesizeStatus } from "./registry";
-import { osvEcosystem, scanTree, type PkgVuln } from "./osv";
+import { versionHistories } from "./registry";
 import { runProjectAudit, formatAuditReport } from "./vuln-audit";
-import { loadVulnIgnore } from "./vuln-ignore";
-import type { InjectionConfig, DevLogData, ProjectProfile, EventEntry, TagEntry } from "./types";
+import type { InjectionConfig, ProjectProfile, EventEntry, TagEntry } from "./types";
+import { currentLang } from "./i18n";
+import { softFail } from "./soft-fail";
+import { ecoMap } from "./eco-map";
+import { runVulnScan } from "./vuln-scan";
+import { makeStaticRoutes } from "./routes-static";
+import { isStale, newestSourceMtime } from "./freshness";
+
+// Module-local message picker (i18n pattern: each module owns its en/ar strings;
+// i18n.ts only resolves the active language). English default, ar via DEVLOG_LANG.
+const L = <T>(en: T, ar: T): T => (currentLang() === "ar" ? ar : en);
+
+// Wall-clock boot time (evaluated once at module load = server start). Exposed on
+// /api/boot so the SessionStart hook can warn when the running daemon is older
+// than the source on disk — the daemon loads code once and, without --watch,
+// serves stale code until restarted (#326).
+const BOOT_MS = Date.now();
 
 // Global safety net: this daemon is the SOLE capture point for the user's dev
 // history, launched once per SessionStart with no supervisor. An uncaught error
@@ -134,7 +147,7 @@ function scheduleRescan(cwd: string, name: string) {
         await rescanPreserve(data, name, cwd);
       });
       broadcast("scan", { project: name });
-      runVulnScan(name).catch(() => {});
+      runVulnScan(name).catch(e => softFail("runVulnScan", e));
     } catch {}
   }, RESCAN_DEBOUNCE_MS);
   rescanTimers.set(cwd, timer);
@@ -162,7 +175,7 @@ async function checkAndRescanIfStale(name: string) {
     // Manifests unchanged — but vuln data may be stale (CVEs published since last scan)
     const lastVulnMs = project.vulnScanDate ? new Date(project.vulnScanDate).getTime() : 0;
     if (!lastVulnMs || Date.now() - lastVulnMs > VULN_STALE_MS) {
-      runVulnScan(name).catch(() => {});
+      runVulnScan(name).catch(e => softFail("runVulnScan", e));
     }
   } catch {}
 }
@@ -171,10 +184,28 @@ async function checkAndRescanIfStale(name: string) {
 // fold-vs-independent decision is unit-testable in isolation. See that module
 // for why a cwd inside a registered project isn't always a subfolder of it.
 
+// A hook can hand us a `cwd` that the shell never expanded (a literal "$NAME"
+// / "%CD%") or one that points at a path which no longer exists. Resolving such
+// a value still yields a plausible basename, so without this gate the server
+// would mint a phantom project and write `.devlog/` files under the bogus path
+// — exactly what produced the stray `$NAME/` folder. A real project cwd is
+// absolute AND present on disk; anything else is treated as "no project".
+// Empty cwd stays legal (callers already gate on it) — only a *non-empty* but
+// malformed cwd is rejected here.
+function isRealCwd(cwd: string): boolean {
+  return !!cwd && isAbsolute(cwd) && existsSync(cwd);
+}
+
 async function doInject(body: any) {
   const cwd = body.cwd || "";
   const type = body.hook_event_name || body.type || "SessionStart";
   const sessionId = body.session_id || "";
+
+  // Reject a malformed cwd before any resolution/scan/write (data-integrity).
+  if (cwd && !isRealCwd(cwd)) {
+    console.warn(`[doInject] ignoring hook with non-existent/relative cwd='${cwd}' — no project created, no files written.`);
+    return Response.json({ hookSpecificOutput: { hookEventName: type, additionalContext: "" } });
+  }
 
   // Phase 1 (no lock): resolve + run the expensive disk walk OUTSIDE the
   // mutation lock so a rescan never freezes concurrent writers, and so the
@@ -190,7 +221,7 @@ async function doInject(body: any) {
   let fresh: ProjectProfile | null = null;
   let relocateFromPath: string | null = null;   // set when an existing project's folder moved to this cwd
   if (effectiveCwd && !pathConflict && (!existing0 || Date.now() - new Date(existing0.lastScan).getTime() > 3600000)) {
-    try { fresh = await scanFreshProfile(effectiveCwd); } catch {}
+    try { fresh = await scanFreshProfile(effectiveCwd); } catch (e) { softFail("doInject.scanFreshProfile", e); }
   } else if (pathConflict) {
     // The stored path differs from this cwd. Two cases:
     //   (a) the old folder is GONE and this cwd is the SAME git repo → the folder
@@ -201,7 +232,7 @@ async function doInject(body: any) {
     //       collision between two different folders; skip, exactly as before.
     const oldGone = !existsSync(existing0.path);
     let candidate: ProjectProfile | null = null;
-    if (oldGone) { try { candidate = await scanFreshProfile(effectiveCwd); } catch {} }
+    if (oldGone) { try { candidate = await scanFreshProfile(effectiveCwd); } catch (e) { softFail("doInject.scanFreshProfile(relocate)", e); } }
     if (candidate && existing0.gitRepoSlug && candidate.gitRepoSlug && existing0.gitRepoSlug === candidate.gitRepoSlug) {
       fresh = candidate;
       relocateFromPath = existing0.path;
@@ -220,11 +251,11 @@ async function doInject(body: any) {
       const isNew = !data.projects[name];
       if (relocateFromPath) {
         // Folder moved here — carry Claude's memory cards to the new slug dir.
-        try { await migrateMemoryDir(relocateFromPath, effectiveCwd); } catch {}
+        try { await migrateMemoryDir(relocateFromPath, effectiveCwd); } catch (e) { softFail("doInject.migrateMemoryDir", e); }
       }
       applyPreservedScan(data, name, fresh);
       if (isNew) await generateStackMd(effectiveCwd, data.projects[name]);
-      runVulnScan(name).catch(() => {});
+      runVulnScan(name).catch(e => softFail("runVulnScan", e));
     }
 
     const entry = parseHookEvent({ ...body, hook_event_name: type });
@@ -261,7 +292,7 @@ async function doInject(body: any) {
           try {
             const cat = await scanCatalog(effectiveCwd);
             if (cat.length) catalogNames = formatCatalogNames(cat);
-          } catch {}
+          } catch (e) { softFail("doInject.scanCatalog", e); }
         }
         const built = buildContext(data, name, type, { sessionId, userPrompt, catalogNames });
         // Prepend the protocol primer for plugin sessions (SessionStart only).
@@ -307,23 +338,6 @@ async function doInject(body: any) {
 // registry (npm, crates.io, PyPI, Go, Packagist) directly. No external vuln
 // server, no API key, no extra process to run.
 
-// Ecosystem labels consumed by registry.ts's latestVersions(). No default —
-// languages without a mapping (or without a native registry source) are
-// skipped rather than guessed.
-const ecoMap: Record<string, string> = {
-  TypeScript: "npm",
-  JavaScript: "npm",
-  Python: "pypi",
-  Rust: "crates.io",
-  Go: "go",
-  "C++": "vcpkg",
-  C: "vcpkg",
-  Java: "maven",
-  "C#": "nuget",
-  PHP: "packagist",
-  Ruby: "rubygems",
-};
-
 // Opt-out for the outbound registry lookups (parity with version-check's
 // DEVLOG_VERSION_CHECK_DISABLED). Lets an offline/air-gapped user stop DevLog
 // from sending every project's package names to public registries (R4 devops F4).
@@ -332,258 +346,6 @@ const REGISTRY_CHECK_DISABLED = process.env.DEVLOG_REGISTRY_CHECK_DISABLED === "
 // freshness/outdated tracking (native registry) but stop sending package names to
 // OSV, or silence security tags. Freshness still works; CVE detection is skipped.
 const VULN_CHECK_DISABLED = process.env.DEVLOG_VULN_CHECK_DISABLED === "1";
-
-// Global concurrency gate across ALL projects' scans. latestVersions already
-// caps to 4 requests per scan, but the sweep fired runVulnScan for all ~28
-// scannable projects at once → up to ~112 concurrent HTTPS connections in a
-// startup burst (rate-limit/ban risk). This bounds total in-flight scans so the
-// worst case is SCAN_GATE × 4 connections (R4 devops F4).
-const SCAN_GATE = 3;
-let scansRunning = 0;
-const scanQueue: Array<() => void> = [];
-async function acquireScanSlot(): Promise<void> {
-  if (scansRunning >= SCAN_GATE) await new Promise<void>(resolve => scanQueue.push(resolve));
-  scansRunning++;
-}
-function releaseScanSlot(): void {
-  scansRunning--;
-  scanQueue.shift()?.();
-}
-
-async function runVulnScan(name: string) {
-  if (REGISTRY_CHECK_DISABLED) return;
-  await acquireScanSlot();
-  try {
-    // Phase 1 (no lock): snapshot project profile, run network fetches.
-    // Lock-holding through 60s+30s fetches would freeze every other writer.
-    const snapshot = await loadData();
-    const projectSnap = snapshot.projects[name];
-    if (!projectSnap || projectSnap.libraries.length === 0) return;
-
-    const ecosystem = ecoMap[projectSnap.language];
-    if (!ecosystem) {
-      // Language with no registry mapping (e.g. Zig, "Unknown") — skip scan
-      // instead of guessing. Cross-ecosystem matches produce false positives.
-      return;
-    }
-    const packages = projectSnap.libraries.map(l => ({
-      name: l.name,
-      version: l.version.replace(/[\^~>=<\s]/g, "") || "latest",
-    }));
-
-    // Native latest-version lookup — the source of truth for "outdated".
-    const nativeLatest = await latestVersions(ecosystem, packages.map(p => p.name));
-    // Whole days since an ISO date — feeds the dashboard's "صدر الإصدار الجديد
-    // منذ N يوم" caption and its <7-day "fresh, wait before upgrading" warning.
-    const daysSince = (iso: string | null): number | null => {
-      if (!iso) return null;
-      const t = Date.parse(iso);
-      if (Number.isNaN(t)) return null;
-      return Math.max(0, Math.floor((Date.now() - t) / 86_400_000));
-    };
-
-    // CVE axis (OSV.dev) — the native scan above sees only freshness; OSV adds the
-    // known-advisory data that lets the reconciliation loop create/close security
-    // tags. Independent opt-out (air-gapped users who still want outdated tracking).
-    // osvEcosystem(...) === null (e.g. vcpkg/C-C++) → freshness-only, as before.
-    const osvEco = VULN_CHECK_DISABLED ? null : osvEcosystem(ecosystem);
-    // Full dependency tree (direct + transitive) from the lockfile — most vulns
-    // live in transitive deps that the direct-only `packages` list misses (~half,
-    // verified vs bun/cargo audit). Falls back to the direct list when no lockfile.
-    // Capped so a giant monorepo can't issue an unbounded scan. Freshness stays on
-    // direct deps only (the dashboard's library view); the tree is vuln-coverage only.
-    const tree = osvEco ? await enumerateDepTree(projectSnap.path) : [];
-    const treePackages = (tree.length ? tree : packages).slice(0, 2000)
-      .map(p => ({ name: p.name, version: p.version.replace(/[\^~>=<\s]/g, "") || "latest" }));
-    const vulnByPkg = osvEco
-      ? await scanTree(osvEco, treePackages, fetch, await loadVulnIgnore(projectSnap.path))
-      : new Map<string, PkgVuln>();
-    // Gates security-tag creation below: true only when OSV actually ran, so a
-    // freshness-only scan never touches security tags.
-    const hasVulnData = osvEco != null;
-
-    // Direct deps: native freshness + OSV vuln verdict (keyed by name → exact
-    // installed version from the tree). OSV "ok:false" (query failed / non-numeric
-    // version) → indeterminate, so a transient OSV outage never auto-closes a tag.
-    const directNames = new Set(packages.map(p => p.name));
-    const directResults = packages.map(p => {
-      // synthesizeStatus distinguishes "indeterminate" (registry lookup failed →
-      // latest UNKNOWN) from "safe" (R4 code-quality F1).
-      const s = synthesizeStatus(p.version, nativeLatest.get(p.name));
-      const fresh = { isLatest: s.isLatest, latestVersion: s.latestVersion, latestReleaseDate: s.date || "", daysSinceLatest: daysSince(s.date) };
-      const pv = vulnByPkg.get(p.name);
-      if (pv && pv.ok && pv.vulns > 0) {
-        return { name: p.name, version: p.version, status: pv.status, icon: pv.icon, message: pv.message, severity: pv.severity, topVuln: pv.topVuln, fixVersion: pv.fixVersion, vulns: pv.vulns, detailsUrl: pv.detailsUrl, advisories: pv.advisories, direct: true, ...fresh };
-      }
-      if (pv && !pv.ok) {
-        return { name: p.name, version: p.version, status: "indeterminate", direct: true, ...fresh };
-      }
-      return { name: p.name, version: p.version, status: s.status, direct: true, ...fresh };
-    });
-    // Transitive deps: vuln verdict only (no freshness). Vulnerable ones create
-    // security tags + get stored; clean ones pass through ONLY so a previously
-    // opened security tag can auto-close (the storage loop skips them to stay bounded).
-    const transitiveResults: any[] = [];
-    for (const [name, pv] of vulnByPkg) {
-      if (directNames.has(name) || !pv.ok) continue;
-      const version = treePackages.find(t => t.name === name)?.version || "";
-      const base = { name, version, direct: false, isLatest: undefined, latestVersion: "", latestReleaseDate: "", daysSinceLatest: null };
-      if (pv.vulns > 0) {
-        transitiveResults.push({ ...base, status: pv.status, icon: pv.icon, message: pv.message, severity: pv.severity, topVuln: pv.topVuln, fixVersion: pv.fixVersion, vulns: pv.vulns, detailsUrl: pv.detailsUrl, advisories: pv.advisories });
-      } else {
-        transitiveResults.push({ ...base, status: "safe" });
-      }
-    }
-    const libResults: { results: any[] } = { results: [...directResults, ...transitiveResults] };
-
-    // Phase 2 (with lock): apply mutations on a fresh snapshot.
-    return await withData(async (data) => {
-      const project = data.projects[name];
-      if (!project) return; // project deleted between phases — drop results
-
-    // Store vuln results
-    if (libResults?.results) {
-      const vulnMap: Record<string, any> = {};
-      // Sanitize fields from the (external, possibly attacker-controlled) Vuln API
-      // at the source — defense-in-depth beyond safeHref at the render sink (D4).
-      const sStr = (v: any, max: number) => typeof v === "string" ? v.slice(0, max) : "";
-      const sUrl = (v: any) => (typeof v === "string" && /^https?:\/\//i.test(v)) ? v.slice(0, 500) : "";
-      const priorVuln: Record<string, any> = project.vulnResults || {};
-      for (const pkg of libResults.results) {
-        // Indeterminate (registry lookup failed) — latest is unknown. Keep the
-        // last known entry rather than overwriting it with a misleading
-        // isLatest=true; if there's no prior entry, leave it out (R4 cq F1).
-        if (pkg.status === "indeterminate") {
-          const keep = priorVuln[pkg.name];
-          if (keep) vulnMap[sStr(pkg.name, 100)] = keep;
-          continue;
-        }
-        // Don't store CLEAN transitive deps — a project's tree is hundreds of nodes
-        // and persisting every safe one would bloat the dataset. They still flow
-        // through the tag-reconciliation loop below (to auto-close a fixed vuln);
-        // here we keep only direct deps + any transitive dep that actually has a vuln.
-        if (pkg.direct === false && !(pkg.vulns > 0)) continue;
-        // Sanitize each advisory at the source too (external OSV data). Cap at 25
-        // so a package with a huge advisory list can't bloat the stored dataset.
-        const advisories = Array.isArray(pkg.advisories)
-          ? pkg.advisories.slice(0, 25).map((a: any) => ({
-              id: sStr(a?.id, 60), severity: sStr(a?.severity, 20) || "none",
-              summary: sStr(a?.summary, 300), fix: sStr(a?.fix, 50), url: sUrl(a?.url),
-            }))
-          : [];
-        vulnMap[sStr(pkg.name, 100)] = { status: sStr(pkg.status, 20), icon: sStr(pkg.icon, 20), message: sStr(pkg.message, 500), vulns: pkg.vulns, severity: sStr(pkg.severity, 20) || "none", topVuln: pkg.topVuln || null, fixVersion: sStr(pkg.fixVersion, 50), latestVersion: sStr(pkg.latestVersion, 50), isLatest: pkg.isLatest === undefined ? true : pkg.isLatest, unscannableReason: sStr(pkg.unscannableReason, 200), detailsUrl: sUrl(pkg.detailsUrl), daysSinceFix: pkg.daysSinceFix ?? null, daysSinceLatest: pkg.daysSinceLatest ?? null, fixReleaseDate: sStr(pkg.fixReleaseDate, 40), latestReleaseDate: sStr(pkg.latestReleaseDate, 40), advisories, transitive: pkg.direct === false };
-      }
-      project.vulnResults = vulnMap;
-      project.vulnScanDate = new Date().toISOString();
-    }
-
-    // Auto-create security tags + auto-close fixed + track outdated
-    const now = new Date().toISOString();
-
-    // Cleanup: remove outdated tags for "latest" versions (meaningless)
-    data.tags = data.tags.filter(t => !(t.project === name && t.tag === "outdated" && t.content.toLowerCase().includes("@latest")));
-
-    // Cleanup: drop orphaned outdated tags — packages that no longer exist
-    // in the project's library list. Happens when a dep is removed, or when
-    // an older scanner version picked up libs the current one ignores
-    // (e.g. Rust crates before the nested-manifest merge). Safe because the
-    // function already early-returned if libraries is empty (line 281).
-    const currentLibNames = new Set(projectSnap.libraries.map(l => l.name.toLowerCase()));
-    data.tags = data.tags.filter(t => {
-      if (t.project !== name || t.tag !== "outdated") return true;
-      const m = t.content.match(/^([^\s@]+)@/);
-      if (!m) return true;
-      return currentLibNames.has(m[1].toLowerCase());
-    });
-
-    const existingSecTags = data.tags.filter(t => t.project === name && t.tag === "security");
-    const existingSecTexts = new Set(existingSecTags.map(t => normalizeTagContent(t.content)));
-    const existingSecFixTexts = new Set(data.tags.filter(t => t.project === name && t.tag === "security fix").map(t => normalizeTagContent(t.content)));
-    const existingOutdatedTexts = new Set(data.tags.filter(t => t.project === name && t.tag === "outdated").map(t => normalizeTagContent(t.content)));
-
-    if (libResults?.results) {
-      for (const pkg of libResults.results) {
-        // Indeterminate: native registry lookup failed (transient/404), latest
-        // is UNKNOWN. Leave EVERY tag for this package untouched — never evict an
-        // `outdated` tag and never forge an `update` tag off a guess (R4 cq F1).
-        if (pkg.status === "indeterminate") continue;
-        // Status semantics (per Vuln API v1):
-        //   "danger"   — malware OR vuln with no fix    → security tag
-        //   "update"   — vuln, fix available            → security tag
-        //   "outdated" — no CVE, just behind on version → outdated tag (informational)
-        //   "safe"     — no CVE AND on latest           → close any open tags
-        // "unscannable" (v0.5.1-beta) — input couldn't be resolved (vendored,
-        // undefined, etc). "unknown" (v0.5.6-beta) — package not in any
-        // registry. Both: don't treat as safe or dangerous, don't churn tags.
-        // Also evict any stale `outdated` tag left over from older API versions
-        // that cross-matched this package against an unrelated registry entry.
-        if (pkg.status === "unscannable" || pkg.status === "unknown") {
-          for (let i = data.tags.length - 1; i >= 0; i--) {
-            const t = data.tags[i];
-            if (t.project === name && t.tag === "outdated" &&
-                t.content.toLowerCase().startsWith(`${pkg.name.toLowerCase()}@`)) {
-              data.tags.splice(i, 1);
-            }
-          }
-          continue;
-        }
-
-        const hasCve = pkg.status === "update" || pkg.status === "danger";
-        const isOutdated = pkg.status === "outdated";
-        const isSafe = pkg.status === "safe";
-
-        // Security tags only when we actually have CVE data (external API). A
-        // native version-only scan knows nothing about vulnerabilities, so it
-        // must never create or auto-close security tags.
-        if (hasVulnData) {
-          if (hasCve) {
-            const text = `${pkg.name}@${pkg.version} — ${pkg.message}`.slice(0, 100);
-            if (!existingSecTexts.has(normalizeTagContent(text))) {
-              data.tags.push({ id: crypto.randomUUID(), project: name, tag: "security", content: text, timestamp: now, num: assignNum(data, name) });
-            }
-          } else {
-            // No CVE on this lib — auto-close any open security tags for it
-            for (const secTag of existingSecTags) {
-              const low = normalizeTagContent(secTag.content);
-              if (low.startsWith(`${pkg.name.toLowerCase()}@`) && !existingSecFixTexts.has(low)) {
-                data.tags.push({ id: crypto.randomUUID(), project: name, tag: "security fix", content: secTag.content, timestamp: now });
-                existingSecFixTexts.add(low);
-              }
-            }
-          }
-        }
-
-        // Track outdated: status === "outdated", or status === "safe" but version is behind.
-        const behindVersion = pkg.isLatest === false && pkg.latestVersion && pkg.version !== "latest";
-        if ((isOutdated || (isSafe && behindVersion)) && pkg.latestVersion) {
-          const text = `${pkg.name}@${pkg.version} — احدث: ${pkg.latestVersion}`.slice(0, 100);
-          if (!existingOutdatedTexts.has(normalizeTagContent(text))) {
-            const idx = data.tags.findIndex(t => t.project === name && t.tag === "outdated" && t.content.toLowerCase().startsWith(`${pkg.name.toLowerCase()}@`));
-            if (idx >= 0) data.tags.splice(idx, 1);
-            data.tags.push({ id: crypto.randomUUID(), project: name, tag: "outdated", content: text, timestamp: now });
-          }
-        } else if (pkg.isLatest === true) {
-          // Library is latest — remove outdated tag + create update tag if was outdated
-          const outdatedIdx = data.tags.findIndex(t => t.project === name && t.tag === "outdated" && t.content.toLowerCase().startsWith(`${pkg.name.toLowerCase()}@`));
-          if (outdatedIdx >= 0) {
-            const _oldTag = data.tags[outdatedIdx];
-            data.tags.splice(outdatedIdx, 1);
-            // Create update tag as proof it was updated
-            const updateText = `${pkg.name} — تم التحديث الى ${pkg.version}`.slice(0, 100);
-            const hasUpdate = data.tags.some(t => t.project === name && t.tag === "update" && normalizeTagContent(t.content) === normalizeTagContent(updateText));
-            if (!hasUpdate) {
-              data.tags.push({ id: crypto.randomUUID(), project: name, tag: "update", content: updateText, timestamp: now });
-            }
-          }
-        }
-      }
-    }
-      broadcast("vuln", { project: name });
-      return { libraries: libResults };
-    });
-  } catch {}
-  finally { releaseScanSlot(); }
-}
 
 const ALLOWED_ORIGINS = new Set([
   `http://127.0.0.1:${PORT}`,
@@ -645,12 +407,16 @@ function wrapRoutes(routes: Record<string, any>): Record<string, any> {
   return out;
 }
 
-// Security headers applied to every HTML response. CSP keeps 'unsafe-inline'
-// for now (inline handlers in dashboard.html/stack-map.html aren't extracted
-// yet) but `connect-src 'self'` breaks the external-exfil step of any XSS —
-// the highest-ROI mitigation. Tighten to `script-src 'self'` once inline
-// handlers move to external files.
-const CSP = `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws://127.0.0.1:${PORT} ws://localhost:${PORT}; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`;
+// Security headers applied to every HTML response. `script-src 'self'` (no
+// 'unsafe-inline'): every inline on*= handler and inline <script> has been moved
+// to external files (dashboard.js delegated [data-action] listener + assets/
+// stack-map.js), so even if tag content slipped past esc() into an innerHTML
+// sink, the browser refuses to run injected inline script — the manual esc()
+// discipline is now backed by a platform guarantee. `style-src` keeps
+// 'unsafe-inline' (the dashboard sets many element .style values / inline style
+// attributes; that's not a script-execution vector). `connect-src 'self'` still
+// breaks the external-exfil step of any XSS.
+const CSP = `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws://127.0.0.1:${PORT} ws://localhost:${PORT}; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`;
 const HTML_SECURITY_HEADERS = {
   "Content-Security-Policy": CSP,
   "X-Content-Type-Options": "nosniff",
@@ -677,90 +443,10 @@ const DEV_ASSETS = !(import.meta.dir.includes("$bunfs") || import.meta.dir.inclu
 const ASSET_ROOT = import.meta.dir.replace(/[\\/]src$/, "");
 
 const routeDefs = {
-    "/": async () => DEV_ASSETS
-      ? htmlResponse(Bun.file(`${ASSET_ROOT}/dashboard.html`))
-      : htmlResponse(STATIC_HTML["dashboard.html"]),
-
-    "/stack-map.html": async () => DEV_ASSETS
-      ? htmlResponse(Bun.file(`${ASSET_ROOT}/stack-map.html`))
-      : htmlResponse(STATIC_HTML["stack-map.html"]),
-
-    "/features.html": async () => DEV_ASSETS
-      ? htmlResponse(Bun.file(`${ASSET_ROOT}/features.html`))
-      : htmlResponse(STATIC_HTML["features.html"]),
-
-    "/assets/:file": async (req: ApiReq) => {
-      const name = req.params.file;
-      // Only allow simple filenames; reject anything with path separators or traversal
-      if (!/^[a-zA-Z0-9_.-]+$/.test(name)) return new Response("Bad request", { status: 400 });
-      // STATIC_ASSETS is the allowlist + MIME source. Dev reads the file from
-      // disk for live edits; a compiled binary serves the embedded bytes.
-      const asset = STATIC_ASSETS[name];
-      if (!asset) return new Response("Not found", { status: 404 });
-      const body = DEV_ASSETS
-        ? Bun.file(`${ASSET_ROOT}/assets/${name}`)
-        : ("text" in asset ? asset.text : Bun.file(asset.file));
-      return new Response(body, { headers: { "Content-Type": asset.mime } });
-    },
-
-    // Read a project file's content for the dashboard hover-preview + "open in
-    // new window". Security: the path must resolve inside a tracked project (no
-    // `..` traversal), and the body is served as text/plain + nosniff so an
-    // .html/.svg project file can never execute in the opened tab.
-    "/api/file": async (req: ApiReq) => {
-      const url = new URL(req.url);
-      const raw = (url.searchParams.get("path") || "").replace(/\\/g, "/");
-      if (!raw || raw.includes("..")) return new Response("Bad request", { status: 400 });
-      const data = await loadData();
-      const dir = raw.slice(0, raw.lastIndexOf("/"));
-      const inside = Object.values(data.projects).some(p => {
-        const pp = (p.path || "").replace(/\\/g, "/");
-        return !!pp && (pathsEqual(dir, pp) || isPathInside(pp, raw));
-      });
-      if (!inside) return new Response("Forbidden", { status: 403 });
-      const file = Bun.file(raw);
-      if (!(await file.exists())) return new Response("Not found", { status: 404 });
-      // Resolve symlinks: the string-prefix check above can be defeated by a
-      // symlink inside a tracked project that points outside it. Re-verify the
-      // REAL path is still inside a tracked project before reading (R4 bt D5).
-      let real: string;
-      try { real = (await realpath(raw)).replace(/\\/g, "/"); }
-      catch { return new Response("Not found", { status: 404 }); }
-      const realInside = Object.values(data.projects).some(p => {
-        const pp = (p.path || "").replace(/\\/g, "/");
-        return !!pp && (pathsEqual(real, pp) || isPathInside(pp, real));
-      });
-      if (!realInside) return new Response("Forbidden", { status: 403 });
-      const MAX = 512 * 1024;
-      let text = await file.text();
-      if (text.length > MAX) text = `${text.slice(0, MAX)}\n\n… [مقتطع — الملف أكبر من 512KB]`;
-      return new Response(text, {
-        headers: { "Content-Type": "text/plain; charset=utf-8", "X-Content-Type-Options": "nosniff" },
-      });
-    },
-
-    "/releases/:project": async (req: ApiReq) => {
-      // Bun already URL-decodes route params; decoding again throws URIError on
-      // a name with a literal `%` (e.g. "100%done") → 500. Use the param as-is.
-      const project = req.params.project;
-      const data = await loadData();
-      const p = data.projects[project];
-      if (!p?.path) return new Response("Not found", { status: 404 });
-      const file = Bun.file(join(p.path, ".devlog", "releases", "index.html"));
-      if (!(await file.exists())) return new Response("Not found", { status: 404 });
-      return htmlResponse(file);
-    },
-
-    "/releases/:project/:version": async (req: ApiReq) => {
-      const project = req.params.project;   // Bun pre-decodes; don't double-decode
-      const version = req.params.version.replace(/[^\w.\-+]/g, "_");
-      const data = await loadData();
-      const p = data.projects[project];
-      if (!p?.path) return new Response("Not found", { status: 404 });
-      const file = Bun.file(join(p.path, ".devlog", "releases", version));
-      if (!(await file.exists())) return new Response("Not found", { status: 404 });
-      return htmlResponse(file);
-    },
+    // Static / file-serving routes live in ./routes-static (report #3); spread
+    // here so Bun.serve sees one flat route table. Server-local helpers are
+    // injected so that module needs no import back into server.ts.
+    ...makeStaticRoutes({ htmlResponse, DEV_ASSETS, ASSET_ROOT }),
 
     "/ws": {
       GET(req: Request, server: any) {
@@ -788,12 +474,31 @@ const routeDefs = {
     // "is the port alive?" without CPU cost (R4 devops F3).
     "/api/ping": { GET() { return new Response("ok", { status: 200 }); } },
 
+    // Daemon freshness (#326): `boot` = server start (ms); `stale` = true when any
+    // source file on disk is newer than boot (the daemon loads code once and, with
+    // no --watch, serves it until restarted). The comparison runs here (portable
+    // fs.stat) instead of `find -newermt` in the shell (GNU-only, dead on macOS).
+    "/api/boot": {
+      async GET() {
+        const newest = await newestSourceMtime(ASSET_ROOT);
+        return Response.json({ boot: BOOT_MS, stale: isStale(BOOT_MS, newest) });
+      },
+    },
+
     // Universal hook endpoint
     "/api/hook": {
       async POST(req: ApiReq) {
         try {
           const body = await req.json();
           const cwd = body.cwd || "";
+
+          // Reject a malformed cwd (unexpanded "$NAME", relative, or missing on
+          // disk) before resolution — mirrors the doInject guard so no phantom
+          // project is minted and no `.devlog/` files are written (data-integrity).
+          if (cwd && !isRealCwd(cwd)) {
+            console.warn(`[/api/hook] ignoring event with non-existent/relative cwd='${cwd}' — no project created, no files written.`);
+            return Response.json({ ok: true, skipped: "cwd-invalid" });
+          }
 
           // Phase 1 (no lock): decide on a scan and do the disk walk off the
           // mutation lock so it can't freeze concurrent writers for its
@@ -804,7 +509,7 @@ const routeDefs = {
           const effectiveCwd0 = resolved0.cwd;
           let fresh: ProjectProfile | null = null;
           if (effectiveCwd0 && (!snapshot.projects[name0] || Date.now() - new Date(snapshot.projects[name0].lastScan).getTime() > 3600000)) {
-            try { fresh = await scanFreshProfile(effectiveCwd0); } catch {}
+            try { fresh = await scanFreshProfile(effectiveCwd0); } catch (e) { softFail("hook.scanFreshProfile", e); }
           }
 
           return await withData(async (data) => {
@@ -818,7 +523,7 @@ const routeDefs = {
               const isNew = !data.projects[name];
               applyPreservedScan(data, name, fresh);
               if (isNew) await generateStackMd(effectiveCwd, data.projects[name]);
-              runVulnScan(name).catch(() => {});
+              runVulnScan(name).catch(e => softFail("runVulnScan", e));
             }
 
             const entry = parseHookEvent(body);
@@ -851,7 +556,8 @@ const routeDefs = {
             broadcast("hook", { project: name, event: entry.event, tool: entry.tool, file_path: entry.file_path, type: entry.type, description: entry.description, command: entry.command });
             return Response.json({ ok: true });
           });
-        } catch {
+        } catch (e) {
+          softFail("api.hook", e);
           return Response.json({ error: "Invalid" }, { status: 400 });
         }
       },
@@ -898,7 +604,10 @@ const routeDefs = {
               type: "session-summary",
               session_id: sessionId,
               timestamp: new Date().toISOString(),
-              description: `${durationMinutes} دقيقة · ${files.size} ملف · +${added}/-${removed} · ${tagsThisSession.length} تاق`,
+              description: L(
+                `${durationMinutes} min · ${files.size} files · +${added}/-${removed} · ${tagsThisSession.length} tags`,
+                `${durationMinutes} دقيقة · ${files.size} ملف · +${added}/-${removed} · ${tagsThisSession.length} تاق`,
+              ),
               note: JSON.stringify({ durationMinutes, filesChanged: files.size, added, removed, tagsByKind, eventsCount: events.length }),
             };
             pushEvent(data.events, summary);   // honor MAX_EVENTS_LOG cap (R3 P3 #4)
@@ -1004,18 +713,20 @@ const routeDefs = {
 
         // Markdown rendering: grouped sections suitable for a release body.
         const labels: Record<string, string> = {
-          built: "## ميزات / Features",
-          refactor: "## إعادة هيكلة / Refactor",
-          update: "## تحديثات تبعيات / Dependencies",
-          "bug fix": "## إصلاحات / Bug fixes",
-          "security fix": "## أمان / Security",
-          done: "## مهام مغلقة / Tasks closed",
-          dropped: "## مهام أُسقطت / Tasks dropped",
+          built:          L("## Features",     "## ميزات"),
+          refactor:       L("## Refactor",     "## إعادة هيكلة"),
+          update:         L("## Dependencies", "## تحديثات تبعيات"),
+          "bug fix":      L("## Bug fixes",    "## إصلاحات"),
+          "security fix": L("## Security",     "## أمان"),
+          done:           L("## Tasks closed", "## مهام مغلقة"),
+          dropped:        L("## Tasks dropped", "## مهام أُسقطت"),
         };
         const lines: string[] = [];
-        const headerVer = result.sinceVersion ? `بعد ${result.sinceVersion}` : "أول إصدار";
+        const headerVer = result.sinceVersion
+          ? L(`after ${result.sinceVersion}`, `بعد ${result.sinceVersion}`)
+          : L("first release", "أول إصدار");
         lines.push(`# Changelog — ${headerVer}`);
-        lines.push(`> ${result.count} عنصر منذ ${result.since || "البداية"}.`);
+        lines.push(`> ${L(`${result.count} items since`, `${result.count} عنصر منذ`)} ${result.since || L("the beginning", "البداية")}.`);
         lines.push("");
         for (const tag of TYPES) {
           const arr = groups[tag];
@@ -1129,11 +840,11 @@ const routeDefs = {
         const cwd = url.searchParams.get("cwd") || "";
         const pkg = url.searchParams.get("pkg") || "";
         const plain = (s: string) => new Response(s, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
-        if (REGISTRY_CHECK_DISABLED || VULN_CHECK_DISABLED) return plain("فحص الثغرات معطّل (DEVLOG_VULN_CHECK_DISABLED).");
+        if (REGISTRY_CHECK_DISABLED || VULN_CHECK_DISABLED) return plain(L("Vulnerability scanning is disabled (DEVLOG_VULN_CHECK_DISABLED).", "فحص الثغرات معطّل (DEVLOG_VULN_CHECK_DISABLED)."));
         const data = await loadData();
         const { name, cwd: effectiveCwd } = resolveProjectFor(data, cwd);
         const proj = data.projects[name];
-        if (!proj || !pathsEqual(proj.path, effectiveCwd)) return plain("لا مشروع DevLog مسجّل لهذا المسار.");
+        if (!proj || !pathsEqual(proj.path, effectiveCwd)) return plain(L("No DevLog project registered for this path.", "لا مشروع DevLog مسجّل لهذا المسار."));
         const ecosystem = ecoMap[proj.language] || "";
         const directNames = new Set((proj.libraries || []).map(l => l.name));
         const directLibs = (proj.libraries || []).map(l => ({ name: l.name, version: l.version }));
@@ -1167,6 +878,7 @@ const routeDefs = {
           // in the same response (QA #1).
           const storedEntries: { tag: string; content: string }[] = [];
           const closureHints: ClosureMismatch[] = [];
+          const closureTextWarnings: ClosureTextDivergence[] = [];
           const closed: ClosureConfirm[] = [];
           for (const entry of (body.entries || [])) {
             // Semver-intent release: -(release:patch|minor|major) — or a bare
@@ -1204,6 +916,13 @@ const routeDefs = {
             // Stop hook feeds back so Claude re-closes with the right verb.
             const mismatch = diagnoseClosureMismatch(entry.tag, content, data, project);
             if (mismatch) { closureHints.push(mismatch); continue; }
+            // Text-divergence guard (#315): a `#N <tail>` closure whose trailing
+            // description shares no token with the open item — likely a wrong-but-
+            // type-compatible number. The closure still applies (the number/verb
+            // are valid); we only surface a warning so Claude verifies it targeted
+            // the intended item (the slip that hit #310/#311 today).
+            const divergence = diagnoseClosureTextDivergence(entry.tag, content, data, project);
+            if (divergence) closureTextWarnings.push(divergence);
             // Positive closure confirmation (#228): capture {num, text} from a
             // valid `#N` closure (pre-resolution num, post-resolution opener text)
             // so the Stop hook can echo «✓ أُغلق #N — text» back to Claude.
@@ -1336,7 +1055,7 @@ const routeDefs = {
           broadcast("tags", { project });
           // Optional verify nudge (#232): a closure with no test run this session.
           const verifyHint = verifyHintFor(storedEntries, data.events, body.session_id || "");
-          return Response.json({ ok: true, count: (body.entries || []).length, release: releaseResult, releaseIntent, releaseDowngrade, releaseBlocked, rollback, closureHints, closed, verifyHint });
+          return Response.json({ ok: true, count: (body.entries || []).length, release: releaseResult, releaseIntent, releaseDowngrade, releaseBlocked, rollback, closureHints, closureTextWarnings, closed, verifyHint });
           });
         } catch (e: any) {
           console.error("[/api/tags] error:", e?.message, e?.stack);
@@ -1374,14 +1093,14 @@ const routeDefs = {
           const oldName = req.params.name;   // Bun pre-decodes the route param
           const body = await req.json().catch(() => ({})) as { newName?: string };
           const newName = sanitizeProjectName(body.newName || "");
-          if (!newName) return Response.json({ error: "اسم غير صالح" }, { status: 400 });
-          if (newName === oldName) return Response.json({ error: "الاسم لم يتغيّر" }, { status: 400 });
+          if (!newName) return Response.json({ error: L("Invalid name", "اسم غير صالح") }, { status: 400 });
+          if (newName === oldName) return Response.json({ error: L("Name unchanged", "الاسم لم يتغيّر") }, { status: 400 });
 
           // Snapshot (no lock) to resolve the path + pre-validate.
           const snap = await loadData();
           const proj = snap.projects[oldName];
           if (!proj) return Response.json({ error: "Not found" }, { status: 404 });
-          if (snap.projects[newName]) return Response.json({ error: "يوجد مشروع بهذا الاسم" }, { status: 409 });
+          if (snap.projects[newName]) return Response.json({ error: L("A project with this name already exists", "يوجد مشروع بهذا الاسم") }, { status: 409 });
 
           const oldPath = proj.path || "";
           const folderExists = !!oldPath && existsSync(oldPath);
@@ -1395,8 +1114,8 @@ const routeDefs = {
             const sessions = await readActiveSessions();
             const busy = sessions.some(s =>
               s.alive && (pathsEqual(s.cwd, oldPath) || isPathInside(oldPath, s.cwd)));
-            if (busy) return Response.json({ error: "أغلق جلسات Claude العاملة في هذا المجلد أولاً" }, { status: 409 });
-            if (existsSync(newPath)) return Response.json({ error: "يوجد مجلد بهذا الاسم على القرص" }, { status: 409 });
+            if (busy) return Response.json({ error: L("Close the Claude sessions running in this folder first", "أغلق جلسات Claude العاملة في هذا المجلد أولاً") }, { status: 409 });
+            if (existsSync(newPath)) return Response.json({ error: L("A folder with this name already exists on disk", "يوجد مجلد بهذا الاسم على القرص") }, { status: 409 });
           }
 
           // 1) Filesystem folder rename (fail-prone → do it first, abort on error).
@@ -1415,9 +1134,10 @@ const routeDefs = {
               refreshWatchers().catch(() => {});   // re-arm the watcher we released
               const locked = e?.code === "EPERM" || e?.code === "EBUSY" || e?.code === "EACCES";
               const hint = locked
-                ? "المجلد قيد الاستخدام — أغلق أي طرفية أو محرّر (VS Code) أو نافذة مستكشِف مفتوحة داخله ثم أعد المحاولة"
+                ? L("The folder is in use — close any terminal, editor (VS Code), or Explorer window open inside it, then retry",
+                    "المجلد قيد الاستخدام — أغلق أي طرفية أو محرّر (VS Code) أو نافذة مستكشِف مفتوحة داخله ثم أعد المحاولة")
                 : (e?.message || String(e));
-              return Response.json({ error: `تعذّر إعادة تسمية المجلد: ${hint}`, code: e?.code }, { status: 409 });
+              return Response.json({ error: `${L("Could not rename the folder", "تعذّر إعادة تسمية المجلد")}: ${hint}`, code: e?.code }, { status: 409 });
             }
           }
 
@@ -1443,7 +1163,7 @@ const routeDefs = {
             // Roll back the folder rename so disk + data stay consistent.
             if (movedFolder) { try { await fsRename(newPath, oldPath); } catch {} }
             refreshWatchers().catch(() => {});
-            return Response.json({ error: "تعذّر الترحيل (تعارض متزامن)" }, { status: 409 });
+            return Response.json({ error: L("Migration failed (concurrent conflict)", "تعذّر الترحيل (تعارض متزامن)") }, { status: 409 });
           }
 
           // Carry each nested project's memory cards to its new slug dir too.
@@ -1743,7 +1463,7 @@ const routeDefs = {
           if (!projectPath) return Response.json({ error: "Not found" }, { status: 404 });
           // exportStatusMd reads via loadData internally — runs after lock release.
           try { const data = await loadData(); await exportStatusMd(projectPath, data, name); } catch {}
-          runVulnScan(name).catch(() => {});
+          runVulnScan(name).catch(e => softFail("runVulnScan", e));
           return Response.json({ ok: true, project: scanned });
         } catch { return Response.json({ error: "Failed" }, { status: 500 }); }
       },

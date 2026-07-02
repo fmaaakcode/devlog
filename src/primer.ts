@@ -30,7 +30,7 @@ Core tags:
 - \`-(note)\` observation · \`-(decision)\` architectural decision · \`-(insight)\` root cause
 - \`-(doc:report|analysis|plan|comparison|readme)\` name\\n<markdown>
 
-Closure is mandatory: every open item (todo/bug/security/plan step) is closed by \`#N\` in the same response that finishes the work — never copy the text (it breaks matching). \`#N\` numbers arrive in the SessionStart context; type \`?open\` for the full text.
+Closure is mandatory: every open item (todo/bug/security/plan step) is closed by \`#N\` in the same response that finishes the work — never copy the text (it breaks matching). \`#N\` numbers arrive in the SessionStart context; type \`?open\` for the full text, or emit \`-(ask:open)\` yourself to pull the live open list mid-session before closing.
 
 Atomic: one concept per tag; no questions or planning prose inside a tag; multiple items → multiple tags.
 
@@ -51,7 +51,7 @@ DevLog مفعّل. في نهاية كل رد أصدر تاقات \`-(tag) conten
 - \`-(note)\` ملاحظة · \`-(decision)\` قرار معماري · \`-(insight)\` جذر مشكلة
 - \`-(doc:report|analysis|plan|comparison|readme)\` اسم\\n<ماركداون>
 
-الإغلاق إلزامي: كل عنصر مفتوح (todo/bug/security/خطوة خطة) يُغلَق بـ\`#N\` في نفس رد إنجاز العمل — لا تنسخ النص (يكسر المطابقة). أرقام \`#N\` تصلك في سياق SessionStart؛ اكتب \`?open\` لرؤية النصوص الكاملة.
+الإغلاق إلزامي: كل عنصر مفتوح (todo/bug/security/خطوة خطة) يُغلَق بـ\`#N\` في نفس رد إنجاز العمل — لا تنسخ النص (يكسر المطابقة). أرقام \`#N\` تصلك في سياق SessionStart؛ اكتب \`?open\` لرؤية النصوص الكاملة، أو أصدر \`-(ask:open)\` بنفسك لسحب قائمة المفتوح الحيّة أثناء الجلسة قبل الإغلاق.
 
 محتوى ذرّي: مفهوم واحد لكل تاق، بلا أسئلة أو تخطيط داخل التاق؛ عدّة عناصر → عدّة تاقات.
 

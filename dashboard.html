@@ -15,13 +15,13 @@
         <div class="live-banner" id="liveBanner" style="opacity:0"></div>
         <div class="topbar-right">
             <div class="top-actions">
-                <button class="rescan-btn" onclick="rescanProject(activeProject, this)">إعادة مسح</button>
-                <button class="vuln-btn" onclick="vulnScan(activeProject, this)">فحص أمني</button>
-                <button class="inj-btn" onclick="openInjectionPanel(activeProject)">الحقن</button>
-                <button class="inj-btn" onclick="openStandardsPanel(activeProject)">المعايير</button>
-                <button class="kill-srv-btn" onclick="killServer(this)" title="إيقاف السيرفر (يعود تلقائياً مع bun --watch)">إيقاف السيرفر</button>
+                <button class="rescan-btn" data-action="rescan-project">إعادة مسح</button>
+                <button class="vuln-btn" data-action="vuln-scan">فحص أمني</button>
+                <button class="inj-btn" data-action="open-injection-panel">الحقن</button>
+                <button class="inj-btn" data-action="open-standards-panel">المعايير</button>
+                <button class="kill-srv-btn" data-action="kill-server" title="إيقاف السيرفر (يعود تلقائياً مع bun --watch)">إيقاف السيرفر</button>
             </div>
-            <span id="updates-badge" style="display:none;font-size:0.7em;padding:3px 10px;border-radius:5px;background:#1a2a0d;color:#9bd45f;border:1px solid #2a4a15;cursor:pointer;font-weight:600" onclick="openUpdatesPopup()" title="تحديثات الأدوات متاحة"></span>
+            <span id="updates-badge" style="display:none;font-size:0.7em;padding:3px 10px;border-radius:5px;background:#1a2a0d;color:#9bd45f;border:1px solid #2a4a15;cursor:pointer;font-weight:600" data-action="open-updates-popup" title="تحديثات الأدوات متاحة"></span>
             <div class="topbar-logo">DevLog</div>
         </div>
     </div>
@@ -59,30 +59,34 @@
     </div>
 
     <div class="ctx-menu" id="ctxMenu">
-        <div class="ctx-menu-item" id="ctxOpenLabel" onclick="openTargetFile()">فتح في نافذة جديدة</div>
-        <div class="ctx-menu-item" id="ctxIgnoreLabel" onclick="ignoreTarget()"></div>
+        <div class="ctx-menu-item" id="ctxOpenLabel" data-action="open-target-file">فتح في نافذة جديدة</div>
+        <div class="ctx-menu-item" id="ctxIgnoreLabel" data-action="ignore-target"></div>
     </div>
 
-    <div class="inj-modal-bg" id="injModal" onclick="if(event.target===this)closeInjectionPanel()">
-        <div class="inj-modal">
+    <div class="inj-modal-bg" id="injModal" data-action="close-injection-panel">
+        <div class="inj-modal" data-action="noop">
             <div class="inj-header">
                 <span class="inj-title">الحقن — <span id="injProjectName"></span></span>
-                <button class="inj-close" onclick="closeInjectionPanel()">&times;</button>
+                <button class="inj-close" data-action="close-injection-panel">&times;</button>
             </div>
             <div class="inj-body" id="injBody"></div>
         </div>
     </div>
 
-    <div class="inj-modal-bg" id="stdModal" onclick="if(event.target===this)closeStandardsPanel()">
-        <div class="inj-modal">
+    <div class="inj-modal-bg" id="stdModal" data-action="close-standards-panel">
+        <div class="inj-modal" data-action="noop">
             <div class="inj-header">
                 <span class="inj-title">المعايير — <span id="stdProjectName"></span></span>
-                <button class="inj-close" onclick="closeStandardsPanel()">&times;</button>
+                <button class="inj-close" data-action="close-standards-panel">&times;</button>
             </div>
             <div class="inj-body" id="stdBody"></div>
         </div>
     </div>
 
-    <script src="/assets/dashboard.js"></script>
+    <script src="/assets/dashboard-core.js"></script>
+    <script src="/assets/dashboard-data.js"></script>
+    <script src="/assets/dashboard-project.js"></script>
+    <script src="/assets/dashboard-panels.js"></script>
+    <script src="/assets/dashboard-tree-ws.js"></script>
 </body>
 </html>

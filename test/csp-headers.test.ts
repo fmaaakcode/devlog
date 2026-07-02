@@ -60,5 +60,15 @@ describe("regression — security R2 D1: CSP on HTML responses", () => {
       expect(csp).toContain("default-src 'self'");
       expect(csp).toContain("connect-src 'self'");
     });
+
+    // Report #5: all inline handlers/scripts were externalized, so script-src
+    // must be exactly 'self' — no 'unsafe-inline'. This is what turns the manual
+    // esc() discipline into a platform guarantee: injected inline script won't run.
+    test(`GET ${path} has script-src 'self' with NO 'unsafe-inline'`, async () => {
+      const r = await fetch(`${BASE}${path}`);
+      const csp = r.headers.get("content-security-policy") || "";
+      const scriptSrc = csp.split(";").map(s => s.trim()).find(s => s.startsWith("script-src"));
+      expect(scriptSrc).toBe("script-src 'self'");
+    });
   }
 });

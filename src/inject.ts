@@ -202,9 +202,15 @@ export function buildContext(
   const profile = data.projects[project];
   if (!profile) return "";
 
-  // Manual recall: user typed "?open" anywhere in their prompt.
-  // Beats all heuristics — surface full open list regardless of type.
-  const promptHasOpenCmd = type === "UserPromptSubmit" && /\?open\b/i.test(ctx.userPrompt || "");
+  // Manual recall: user typed `?open` as a command. Require it ALONE on a line
+  // (after stripping code fences / inline code) so merely quoting or explaining
+  // `?open` in a longer prompt doesn't false-fire the injection — the trigger a
+  // bare `/\?open\b/` anywhere caused (plugin-review #6). Mirrors the standalone-
+  // line + code-strip guard the assistant-side `-(ask:open)` already uses.
+  const strippedPrompt = (ctx.userPrompt || "")
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/`[^`\n]*`/g, "");
+  const promptHasOpenCmd = type === "UserPromptSubmit" && /^[ \t]*\?open[ \t]*$/im.test(strippedPrompt);
   if (promptHasOpenCmd) {
     const detailed = formatOpenDetailed(data, project);
     const header = L(`## ${project} — everything open`, `## ${project} — كل المفتوح`);

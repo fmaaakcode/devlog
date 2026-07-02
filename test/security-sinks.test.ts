@@ -7,16 +7,23 @@ import { join } from "node:path";
 
 const ROOT = join(import.meta.dir, "..");
 
-test("stack-map.html escapes untrusted tooltip fields (D2)", async () => {
-  const html = await Bun.file(join(ROOT, "stack-map.html")).text();
-  expect(html).toMatch(/function esc\(/);
+test("stack-map.js escapes untrusted tooltip fields (D2)", async () => {
+  // The stack-map script was extracted from stack-map.html to an external file
+  // (report #5) so CSP can drop script-src 'unsafe-inline'; the escaping guard
+  // moved with it.
+  const js = await Bun.file(join(ROOT, "assets", "stack-map.js")).text();
+  expect(js).toMatch(/function esc\(/);
   // node.path / node.description come from DEVLOG_STACK.md (project-controlled).
-  expect(html).toContain("esc(node.path)");
-  expect(html).toContain("esc(node.description)");
+  expect(js).toContain("esc(node.path)");
+  expect(js).toContain("esc(node.description)");
 });
 
 test("dashboard.js allowlists link schemes via safeHref (D3)", async () => {
-  const js = await Bun.file(join(ROOT, "assets", "dashboard.js")).text();
+  // dashboard.js was split into topical files (report #9); check them as one body.
+  const parts = await Promise.all(
+    ["core", "data", "project", "panels", "tree-ws"].map(
+      p => Bun.file(join(ROOT, "assets", `dashboard-${p}.js`)).text()));
+  const js = parts.join("\n");
   expect(js).toMatch(/function safeHref\(/);
   expect(js).toContain("safeHref(p.gitRemote)");
   expect(js).toContain("safeHref(v?.detailsUrl)");

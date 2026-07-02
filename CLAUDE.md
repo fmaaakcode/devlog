@@ -2,6 +2,7 @@
 
 This is the DevLog repo itself. When working here, dogfood the tag protocol: emit
 `-(tag) content` markers at the end of each response and the Stop hook captures them.
+Write the tag content in the user's language.
 
 > This file exists because the DevLog **plugin is disabled for this project**
 > (`.claude/settings.json` → `enabledPlugins.devlog@devlog = false`) so you develop
@@ -20,7 +21,9 @@ This is the DevLog repo itself. When working here, dogfood the tag protocol: emi
 
 **Closure is mandatory** — every open item (todo/bug/security/plan step) is closed by
 `#N` in the same response that finishes the work; never copy the text. `#N` numbers
-arrive in the SessionStart context.
+arrive in the SessionStart context — or emit `-(ask:open)` to pull the live open list
+yourself (bugs/todos/security/plan-steps) mid-session before closing, so you never
+close a stale or wrong number.
 
 **Atomic** — one concept per tag; no questions or planning prose inside a tag.
 

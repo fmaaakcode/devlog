@@ -15,6 +15,11 @@ matter how well-implemented:
    `~/.devlog/`. No telemetry, no accounts, no cloud sync, no "phone home." The only
    outbound calls are the opt-out dependency/vuln/version lookups already documented
    in [SECURITY.md](./SECURITY.md).
+   - *Why `~/.devlog/` and not `${CLAUDE_PLUGIN_DATA}`?* The official per-plugin data
+     dir arrived after this choice. `~/.devlog/` is deliberate: a stable, user-known
+     path that the **plugin and the manual dev mode share**, so both see the same
+     history and it survives plugin updates. Migrating would strand every existing
+     user's data for no gain, so this stays — a conscious decision, not an oversight.
 3. **Single process.** Everything runs inside the one Bun server. No extra daemons,
    sidecars, databases, or background services to install.
 4. **No heavy front-end framework.** The dashboard is hand-written HTML/CSS/JS. No

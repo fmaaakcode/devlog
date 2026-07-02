@@ -3,10 +3,16 @@
 # inject hook fires, so users don't lose tags from sessions started while
 # the server is down. Idempotent: a single curl probe + conditional spawn.
 #
-# Stdin is the SessionStart event payload from Claude Code. We must NOT
-# consume it (the next hook in the chain reads the same stdin), so we
-# pipe it back out unchanged at the end. Errors are swallowed so a hook
-# crash never blocks the session from starting.
+# PIPELINE CONTRACT (bug #310): this script is the LEFT side of a single hook
+# command `ensure-server.sh | curl .../api/inject --data-binary @-`. It first
+# probes/spawns the server (blocking until it binds), THEN re-emits the event
+# payload on stdout via the final `cat`, which the pipe carries to curl. That
+# ordering is the whole fix — same-group hooks run in PARALLEL, so the old
+# two-hook form let the inject curl race ahead of server startup.
+#   ⚠ DO NOT REMOVE the trailing `cat`: it is not vestigial forwarding — it is
+#     the pipe's payload source. Without it, curl reads empty stdin and the
+#     inject POSTs an empty body (silent broken injection).
+# Errors are swallowed so a hook crash never blocks the session from starting.
 
 set +e
 
@@ -32,7 +38,12 @@ fi
 # the SessionStart chain intact (cat), and exit 0 so the session still starts.
 if ! command -v bun >/dev/null 2>&1; then
   {
-    echo "[DevLog] Bun غير مثبّت — DevLog يحتاج Bun ليعمل. ثبّته ثم افتح جلسة جديدة:"
+    # English by default for a global audience; Arabic under DEVLOG_LANG=ar
+    # (parity with the server's i18n). Install commands are language-neutral.
+    case "$DEVLOG_LANG" in
+      ar*) echo "[DevLog] Bun غير مثبّت — DevLog يحتاج Bun ليعمل. ثبّته ثم افتح جلسة جديدة:" ;;
+      *)   echo "[DevLog] Bun is not installed — DevLog needs Bun to run. Install it, then open a new session:" ;;
+    esac
     echo "  Windows:      powershell -c \"irm bun.sh/install.ps1 | iex\""
     echo "  macOS/Linux:  curl -fsSL https://bun.sh/install | bash"
   } >&2
@@ -71,7 +82,24 @@ if ! curl -s -m 1 "http://127.0.0.1:$PORT/api/ping" >/dev/null 2>&1; then
   done
 fi
 
-# Forward stdin to stdout so the next hook in this SessionStart chain
-# (the inject curl) still gets the original event payload.
+# Staleness warning (#326): the daemon loads code once at boot and — in
+# production mode (no --watch) — serves that code until restarted. Editing the
+# source on disk has no effect on the running process, so a "live" check can
+# pass against a freshly-spawned copy while the real daemon still serves old
+# code. The daemon compares mtimes itself (portable fs.stat) and returns
+# `"stale":true` from /api/boot; we just relay a WARNING — never auto-kill (a
+# wrong process could be hit). Silent against a server predating /api/boot (the
+# field is absent → no match) or when nothing on disk is newer.
+if curl -s -m 1 "http://127.0.0.1:$PORT/api/boot" 2>/dev/null | grep -q '"stale":true'; then
+  {
+    echo "[DevLog] ⚠ the running server is OLDER than the code on disk (loaded at boot; no --watch),"
+    echo "         so your latest changes are NOT live yet. Restart it to apply them:"
+    echo "         stop the DevLog server process on port $PORT — it respawns on the next session."
+  } >&2
+fi
+
+# Emit the event payload downstream: the pipe carries this to the inject curl's
+# stdin (`--data-binary @-`). This is the payload source for the POST body, not
+# optional forwarding — see the PIPELINE CONTRACT note at the top. Keep it last.
 cat
 exit 0

@@ -10,8 +10,16 @@ import { join } from "node:path";
 const ROOT = join(import.meta.dir, "..");
 const HARDCODED = /127\.0\.0\.1:7777/;
 
+// dashboard.js was split into topical files (report #9); read them as one body.
+const DASHBOARD_PARTS = ["core", "data", "project", "panels", "tree-ws"];
+async function readDashboardJs(): Promise<string> {
+  const parts = await Promise.all(
+    DASHBOARD_PARTS.map(p => Bun.file(join(ROOT, "assets", `dashboard-${p}.js`)).text()));
+  return parts.join("\n");
+}
+
 test("dashboard.js derives the server origin instead of hardcoding the port", async () => {
-  const js = await Bun.file(join(ROOT, "assets", "dashboard.js")).text();
+  const js = await readDashboardJs();
   expect(js).not.toMatch(HARDCODED);          // no http://127.0.0.1:7777
   expect(js).not.toMatch(/ws:\/\/127\.0\.0\.1:7777/);  // no ws://127.0.0.1:7777
   expect(js).toContain("location.origin");

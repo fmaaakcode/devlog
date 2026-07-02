@@ -201,6 +201,63 @@ export function confirmClosure(tag: string, original: string, resolved: string):
   return { num: parseInt(m[1], 10), text: resolved.slice(0, 100) };
 }
 
+// ── Closure text divergence (#315) ───────────────────────────────────────────
+export interface ClosureTextDivergence { num: number; openerText: string; }
+
+// A few structural words that carry no topical signal, so their presence on both
+// sides shouldn't count as "related". Kept tiny + bilingual (this repo's tags mix
+// Arabic and English); the check is deliberately conservative.
+const CLOSURE_STOPWORDS = new Set([
+  "the", "and", "for", "with", "from", "that", "this", "not", "src",
+  "على", "في", "من", "عند", "إلى", "الى", "لا", "مع", "أو", "او", "كل", "بعد", "قبل", "بلا",
+]);
+// Significant tokens: Unicode letter/number runs of length ≥3, lowercased, minus
+// pure numbers and stopwords. Works across Arabic, Latin, and code identifiers.
+function closureSigTokens(s: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of (s || "").toLowerCase().matchAll(/[\p{L}\p{N}_.]{3,}/gu)) {
+    const tok = m[0];
+    if (/^\d+$/.test(tok) || CLOSURE_STOPWORDS.has(tok)) continue;
+    out.add(tok);
+  }
+  return out;
+}
+
+/**
+ * Flag a `-(bug fix)/-(done)/… #N <tail>` closure whose TRAILING description
+ * shares NO significant token with the open item #N's text — the wrong-but-
+ * type-compatible number slip that both diagnoseClosureMismatch (only bare `#N`)
+ * and the #228 confirmation (only fires for bare `#N`) miss. This is the exact
+ * gap that let `-(bug fix) #310 <cwd-guard text>` silently target the race bug.
+ *
+ * Returns null when: not a closer, no `#N`, no trailing text (bare `#N` has
+ * nothing to compare), `#N` matches no open item of a compatible type, either
+ * side has <3 significant tokens (too short to judge), or they share ≥1 token.
+ * Only ZERO overlap fires, so a legitimately differently-worded fix is never
+ * blocked.
+ */
+export function diagnoseClosureTextDivergence(
+  tag: string, content: string, data: DevLogData, project: string,
+): ClosureTextDivergence | null {
+  const openers = CLOSER_KINDS[tag];
+  if (!openers) return null;
+  const m = content.match(/^#?\s*(\d+)\s+(\S[\s\S]*)$/);   // `#N` + non-empty tail
+  if (!m) return null;
+  const num = parseInt(m[1], 10);
+  const tail = m[2];
+  const tags = data.tags.filter(t => t.project === project);
+  let openerText: string | undefined;
+  for (const t of [...openTodos(tags), ...openBugs(tags), ...openSecurity(tags)]) {
+    if (t.num === num && openers.includes(t.tag)) { openerText = t.content; break; }
+  }
+  if (!openerText) return null;   // no open compatible item — diagnoseClosureMismatch owns that
+  const tailTokens = closureSigTokens(tail);
+  const openerTokens = closureSigTokens(openerText);
+  if (tailTokens.size < 3 || openerTokens.size < 3) return null;
+  for (const tok of tailTokens) if (openerTokens.has(tok)) return null;   // related → fine
+  return { num, openerText: openerText.slice(0, 100) };
+}
+
 // ── Wrong-verb closure diagnosis ─────────────────────────────────────────────
 /** Each openable tag → the verb that actually closes it (for the hint text). */
 const OPENER_TO_CLOSER: Record<string, string> = {
