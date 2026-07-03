@@ -23,7 +23,8 @@ Write the tag content in the user's language.
 `#N` in the same response that finishes the work; never copy the text. `#N` numbers
 arrive in the SessionStart context — or emit `-(ask:open)` to pull the live open list
 yourself (bugs/todos/security/plan-steps) mid-session before closing, so you never
-close a stale or wrong number.
+close a stale or wrong number. To check whether an item is *already* closed (and
+when/how), emit `-(ask:closed) #N` instead of re-investigating finished work.
 
 **Atomic** — one concept per tag; no questions or planning prose inside a tag.
 

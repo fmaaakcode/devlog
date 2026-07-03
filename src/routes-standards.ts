@@ -6,6 +6,7 @@
 // does) so makeStandardsRoutes() needs no injected state. Spread into routeDefs.
 
 import { loadData, openTodos, openBugs, openSecurity, openPlanSteps } from "./data";
+import { closedItems } from "./closed-items";
 import { resolveProjectFor } from "./project-resolve";
 import { pathsEqual } from "./path-utils";
 import { scanCatalog, parseRules, readAcks } from "./standards";
@@ -67,6 +68,34 @@ export function makeStandardsRoutes(): Record<string, unknown> {
         for (const t of openSecurity(tags, { numberedOnly: true })) items.push({ num: t.num as number, tag: t.tag, content: t.content });
         for (const s of openPlanSteps(data, project, { numberedOnly: true })) {
           items.push({ num: s.num as number, tag: "plan-step", content: s.text, planTitle: s.planTitle });
+        }
+        return Response.json({ project, items });
+      },
+    },
+
+    // Inverse of /api/open-items: items that are already CLOSED, with WHEN + how.
+    // Powers `-(ask:closed)` — with `?num=N` it answers "was #N closed, and when?"
+    // in one line so Claude never re-investigates a finished item or re-pulls the
+    // whole open list to confirm one disappeared. Without `num`, returns the 10
+    // most-recent closures as a preview. Sourced from existing closer tags (no new
+    // storage) via the shared resolver, so it agrees with the open view.
+    "/api/closed-items": {
+      async GET(req: ApiReq) {
+        const url = new URL(req.url);
+        const cwd = url.searchParams.get("cwd") || "";
+        const numParam = url.searchParams.get("num");
+        const data = await loadData();
+        const { name: project, cwd: effectiveCwd } = resolveProjectFor(data, cwd);
+        const proj = data.projects[project];
+        if (proj && !pathsEqual(proj.path, effectiveCwd)) {
+          return Response.json({ project, items: [], reason: "cwd-mismatch" });
+        }
+        let items = closedItems(data, project);
+        if (numParam !== null && numParam !== "") {
+          const n = parseInt(numParam, 10);
+          items = Number.isNaN(n) ? [] : items.filter(it => it.num === n);
+        } else {
+          items = items.slice(0, 10); // recent-closures preview
         }
         return Response.json({ project, items });
       },

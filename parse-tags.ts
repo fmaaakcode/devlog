@@ -581,6 +581,59 @@ if (msg && cwd && !stopHookActive) {
   }
 }
 
+// === Part 1.5d: -(ask:closed) — verify a closed item's when/how on demand ===
+// Companion to -(ask:open). DevLog stored WHETHER an item is closed but Claude
+// couldn't see WHEN/HOW, so it re-investigated finished work or re-pulled the
+// entire open list just to confirm one item vanished. `-(ask:closed) #N` answers
+// "was #N closed, and when?" in one line; bare `-(ask:closed)` lists the recent
+// closures. Served like -(ask:open); sourced from existing closer tags (no new
+// storage). Re-runnable across turns via the stopHookActive guard.
+if (msg && cwd && !stopHookActive) {
+  try {
+    const stripped = msg
+      .replace(/```[\s\S]*?```/g, (s: string) => " ".repeat(s.length))
+      .replace(/`[^`\n]*`/g, (s: string) => " ".repeat(s.length));
+    const m = stripped.match(/^[ \t]*-\(ask:closed\)(?:[ \t]+#(\d+))?[ \t]*$/m);
+    if (m) {
+      const num = m[1];
+      const qs = `cwd=${encodeURIComponent(cwd)}${num ? `&num=${num}` : ""}`;
+      const r = await fetch(`${SERVER}/api/closed-items?${qs}`, { signal: AbortSignal.timeout(10000) });
+      if (r.ok) {
+        const { items = [] } = await r.json() as { items?: any[] };
+        const when = (it: any) => it.closedAt
+          ? it.closedAt.slice(0, 16).replace("T", " ")
+          : L("completed in plan (no timestamp)", "مكتمل في الخطة (بلا وقت مسجّل)");
+        let out: string;
+        if (num) {
+          if (!items.length) {
+            out = L(
+              `#${num} is not among the closed items — it may still be open (try -(ask:open)) or the number doesn't exist.`,
+              `#${num} ليس ضمن المغلق — قد يكون مفتوحاً (جرّب -(ask:open)) أو رقماً غير موجود.`);
+          } else {
+            const it = items[0];
+            const by = it.closedBy ? ` -(${it.closedBy})` : "";
+            const plan = it.planTitle ? ` [${it.planTitle}]` : "";
+            out = L(
+              `#${it.num} — ${it.text}${plan}\nClosed: ${when(it)}${by}`,
+              `#${it.num} — ${it.text}${plan}\nأُغلق: ${when(it)}${by}`);
+          }
+        } else {
+          out = items.length
+            ? L(`Recently closed (${items.length}):`, `آخر ما أُغلق (${items.length}):`) + "\n"
+              + items.map((it: any) => `  ${typeof it.num === "number" ? `#${it.num} ` : ""}${it.text} — ${when(it)}${it.closedBy ? ` -(${it.closedBy})` : ""}`).join("\n")
+            : L("No closed items yet.", "لا عناصر مغلقة بعد.");
+        }
+        await log(`ask:closed: served ${items.length} item(s)${num ? ` for #${num}` : ""}`);
+        blockContinue(`\n[devlog closed]\n${out}\n`);
+      } else {
+        await log(`ask:closed: server replied ${r.status}`);
+      }
+    }
+  } catch (e) {
+    await log(`ask:closed error: ${(e as Error).message}`);
+  }
+}
+
 // === Part 1.6: Standards enforcement (force the pull) ===
 // DISABLED (user directive 2026-06-24): the system no longer nags Claude at Stop
 // time for "wrote code without pulling a standard". Enforcement now happens ONLY
@@ -701,12 +754,19 @@ if (cwd && sessionId && !stopHookActive && process.env.DEVLOG_STANDARDS_CHECK !=
   }
 }
 
-// No blocking message fired, but informational notes (rollback / closure-confirm
-// / verify-hint) accrued. Surface them the way the old code did on its no-exit(2)
-// path: stderr + a clean exit(0). Never labelled an error, never forces a turn —
-// a plain transcript note. (A block would have exited above, so this only runs on
-// the no-block path; we cannot also emit JSON to stdout without competing writes.)
-if (feedback.length) process.stderr.write(feedback.join("\n") + "\n");
+// No blocking message fired, but informational notes accrued — chiefly the
+// closure confirmation (`✓ closed #N`). The OLD code wrote these to stderr on
+// exit(0), which Claude Code shows to the USER but does NOT feed back to Claude —
+// so Claude never saw "✓ closed #5" and re-pulled the whole open list to convince
+// itself. Emit them as `hookSpecificOutput.additionalContext` (exit 0): a
+// non-blocking channel Claude reliably reads, without forcing a continuation the
+// way `decision:block` would. (A block would have exited above, so this only runs
+// on the no-block path; one stdout write, no competing JSON.)
+if (feedback.length) {
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: { hookEventName: "Stop", additionalContext: feedback.join("\n") },
+  }));
+}
 
 // === Part 2: Session summary (best-effort, fire-and-forget) ===
 // Lets the dashboard surface "this session: 3 files, +120/-30, 4 tags, 25 min"

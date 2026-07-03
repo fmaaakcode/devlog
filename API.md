@@ -50,6 +50,7 @@
 ## Standards / reports (`routes-standards.ts`)
 - `/api/projects-summary` — lightweight per-project metadata + counts (GET; avoids full `/api/data`)
 - `/api/open-items` — still-open numbered items, the release guard (GET)
+- `/api/closed-items` — closed items with when/how (GET; `?num=N` for one, else 10 most recent) — powers `-(ask:closed)`
 - `/api/standards` — the standards catalog (GET)
 - `/api/dep-freshness` — dependency-freshness verdicts (GET)
 - `/api/audit` — on-demand OSV audit report, plain text (GET)
