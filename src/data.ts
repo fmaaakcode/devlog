@@ -3,6 +3,7 @@ import { mkdir, rename, readdir, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { DevLogData, InjectionConfig, ProjectProfile, TagEntry } from "./types";
+import { normalizeSlashes } from "./path-utils";
 
 export const DEFAULT_INJECTION_CONFIG: InjectionConfig = {
   sessionStart: true,
@@ -57,11 +58,11 @@ async function readJsonOr<T>(path: string, fallback: T): Promise<T> {
 async function readFromDisk(): Promise<DevLogData> {
   // Prefer split layout if projects.json exists.
   if (existsSync(F.projects)) {
-    const projects = await readJsonOr<Record<string, any>>(F.projects, {});
-    const tags = await readJsonOr<any[]>(F.tags, []);
-    const events = await readJsonOr<any[]>(F.events, []);
-    const plans = await readJsonOr<any[]>(F.plans, []);
-    const meta = await readJsonOr<any>(F.meta, {});
+    const projects = await readJsonOr<DevLogData["projects"]>(F.projects, {});
+    const tags = await readJsonOr<DevLogData["tags"]>(F.tags, []);
+    const events = await readJsonOr<DevLogData["events"]>(F.events, []);
+    const plans = await readJsonOr<DevLogData["plans"]>(F.plans, []);
+    const meta = await readJsonOr<Partial<DevLogData>>(F.meta, {});
     return {
       projects,
       tags,
@@ -113,8 +114,8 @@ async function migrateToSplit(data: DevLogData) {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     await rename(DATA_FILE, `${DATA_FILE}.${stamp}.bak`);
     console.log(`[migrate] split layout written; legacy data.json moved to data.json.${stamp}.bak`);
-  } catch (e: any) {
-    console.error("[migrate] backup rename failed:", e?.message);
+  } catch (e) {
+    console.error("[migrate] backup rename failed:", (e as Error)?.message);
   }
 }
 
@@ -253,10 +254,10 @@ let mutationLock: Promise<unknown> = Promise.resolve();
 
 export async function withData<T>(fn: (data: DevLogData) => Promise<T> | T): Promise<T> {
   const prev = mutationLock;
-  let release: () => void = () => {};
+  let release: () => void = () => { /* replaced with the real resolver on the next line */ };
   mutationLock = new Promise<void>(r => { release = r; });
   try {
-    await prev.catch(() => {});            // wait for previous holder, ignore its errors
+    await prev.catch(() => { /* wait for previous holder; its error is not ours */ });
     const data = await loadData();
     const result = await fn(data);
     await saveData(data);
@@ -642,5 +643,5 @@ export function assignNum(data: DevLogData, project: string): number {
 }
 
 export function projectName(cwd: string): string {
-  return cwd.replace(/\\/g, "/").split("/").filter(Boolean).pop() || "unknown";
+  return normalizeSlashes(cwd).split("/").filter(Boolean).pop() || "unknown";
 }

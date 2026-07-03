@@ -106,7 +106,7 @@ export async function runVulnScan(name: string) {
       const s = synthesizeStatus(p.version, nativeLatest.get(p.name));
       const fresh = { isLatest: s.isLatest, latestVersion: s.latestVersion, latestReleaseDate: s.date || "", daysSinceLatest: daysSince(s.date) };
       const pv = vulnByPkg.get(p.name);
-      if (pv && pv.ok && pv.vulns > 0) {
+      if (pv?.ok && pv.vulns > 0) {
         return { name: p.name, version: p.version, status: pv.status, icon: pv.icon, message: pv.message, severity: pv.severity, topVuln: pv.topVuln, fixVersion: pv.fixVersion, vulns: pv.vulns, detailsUrl: pv.detailsUrl, advisories: pv.advisories, direct: true, ...fresh };
       }
       if (pv && !pv.ok) {
@@ -117,7 +117,7 @@ export async function runVulnScan(name: string) {
     // Transitive deps: vuln verdict only (no freshness). Vulnerable ones create
     // security tags + get stored; clean ones pass through ONLY so a previously
     // opened security tag can auto-close (the storage loop skips them to stay bounded).
-    const transitiveResults: any[] = [];
+    const transitiveResults: Record<string, unknown>[] = [];
     for (const [pkgName, pv] of vulnByPkg) {
       if (directNames.has(pkgName) || !pv.ok) continue;
       const version = treePackages.find(t => t.name === pkgName)?.version || "";
@@ -128,6 +128,7 @@ export async function runVulnScan(name: string) {
         transitiveResults.push({ ...base, status: "safe" });
       }
     }
+    // biome-ignore lint/suspicious/noExplicitAny: merged direct+transitive scan results flow loosely through the tag-reconciliation pipeline below; every field is sanitized at storage (sStr/sUrl) and re-validated at each render sink.
     const libResults: { results: any[] } = { results: [...directResults, ...transitiveResults] };
 
     // Phase 2 (with lock): apply mutations on a fresh snapshot.
@@ -137,12 +138,12 @@ export async function runVulnScan(name: string) {
 
     // Store vuln results
     if (libResults?.results) {
-      const vulnMap: Record<string, any> = {};
+      const vulnMap: Record<string, unknown> = {};
       // Sanitize fields from the (external, possibly attacker-controlled) Vuln API
       // at the source — defense-in-depth beyond safeHref at the render sink (D4).
-      const sStr = (v: any, max: number) => typeof v === "string" ? v.slice(0, max) : "";
-      const sUrl = (v: any) => (typeof v === "string" && /^https?:\/\//i.test(v)) ? v.slice(0, 500) : "";
-      const priorVuln: Record<string, any> = project.vulnResults || {};
+      const sStr = (v: unknown, max: number) => typeof v === "string" ? v.slice(0, max) : "";
+      const sUrl = (v: unknown) => (typeof v === "string" && /^https?:\/\//i.test(v)) ? v.slice(0, 500) : "";
+      const priorVuln = project.vulnResults || {};
       for (const pkg of libResults.results) {
         // Indeterminate (registry lookup failed) — latest is unknown. Keep the
         // last known entry rather than overwriting it with a misleading
@@ -160,14 +161,14 @@ export async function runVulnScan(name: string) {
         // Sanitize each advisory at the source too (external OSV data). Cap at 25
         // so a package with a huge advisory list can't bloat the stored dataset.
         const advisories = Array.isArray(pkg.advisories)
-          ? pkg.advisories.slice(0, 25).map((a: any) => ({
+          ? pkg.advisories.slice(0, 25).map((a: Record<string, unknown>) => ({
               id: sStr(a?.id, 60), severity: sStr(a?.severity, 20) || "none",
               summary: sStr(a?.summary, 300), fix: sStr(a?.fix, 50), url: sUrl(a?.url),
             }))
           : [];
         vulnMap[sStr(pkg.name, 100)] = { status: sStr(pkg.status, 20), icon: sStr(pkg.icon, 20), message: sStr(pkg.message, 500), vulns: pkg.vulns, severity: sStr(pkg.severity, 20) || "none", topVuln: pkg.topVuln || null, fixVersion: sStr(pkg.fixVersion, 50), latestVersion: sStr(pkg.latestVersion, 50), isLatest: pkg.isLatest === undefined ? true : pkg.isLatest, unscannableReason: sStr(pkg.unscannableReason, 200), detailsUrl: sUrl(pkg.detailsUrl), daysSinceFix: pkg.daysSinceFix ?? null, daysSinceLatest: pkg.daysSinceLatest ?? null, fixReleaseDate: sStr(pkg.fixReleaseDate, 40), latestReleaseDate: sStr(pkg.latestReleaseDate, 40), advisories, transitive: pkg.direct === false };
       }
-      project.vulnResults = vulnMap;
+      project.vulnResults = vulnMap as typeof project.vulnResults;
       project.vulnScanDate = new Date().toISOString();
     }
 

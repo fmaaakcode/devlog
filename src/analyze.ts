@@ -1,6 +1,8 @@
 import { readdir } from "node:fs/promises";
 import { join, extname, relative } from "node:path";
 import { extractSymbols, type Symbol as CodeSymbol } from "./symbols";
+import { normalizeSlashes } from "./path-utils";
+import { CONTENT_PATTERNS } from "./analyze-patterns";
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "__pycache__", "target", "vendor", ".venv", "venv", "cache", "tmp", "temp", ".cache", ".tmp", "release", "debug", ".devlog", ".claude", "backup", "old", "doc", "docs", "documentation", "examples", "example", "samples", "fixtures", "test", "tests", "__tests__", "external", "third_party", "thirdparty", "3rdparty", "deps", "lib"]);
 const SOURCE_EXT = new Set(["ts", "tsx", "js", "jsx", "py", "rs", "go", "java", "kt", "cs", "cpp", "c", "cc", "cxx", "h", "hpp", "hxx", "rb", "php", "swift", "dart", "vue", "svelte", "css", "html", "htm", "cu", "cuh"]);
@@ -88,7 +90,7 @@ async function collectSourceFiles(dir: string, base: string, depth = 0): Promise
         if (SOURCE_EXT.has(ext)) files.push(full);
       }
     }
-  } catch {}
+  } catch { /* unreadable directory → return what we collected so far */ }
   return files;
 }
 
@@ -319,58 +321,16 @@ function describeFn(name: string, body: string, _params: string, reads: string[]
   return "";
 }
 
+// Table-driven (4.4): the rules live in ./analyze-patterns; this is just the
+// engine that runs them with the context filter. Add a capability = add a row
+// there, not code here.
 function detectPatterns(content: string, _ext: string, ctx: "server" | "client" | "shared" | "unknown"): string[] {
   const patterns: string[] = [];
-
-  // Server-only patterns (don't detect in client code)
-  if (ctx !== "client") {
-    if (/Bun\.serve\b|createServer\b|app\.listen\b|http\.listen\b/i.test(content)) patterns.push("HTTP Server");
-    if (/readFile\b|writeFile\b|readdir\b|Bun\.file\b|Bun\.write\b/i.test(content)) patterns.push("File I/O");
-    if (/(?:import|require|from)\s+['"](?:.*(?:sqlite|postgres|mysql|mongodb|redis|prisma|drizzle))/i.test(content) || /new\s+(?:Database|Pool|Client)\s*\(/i.test(content)) patterns.push("Database");
-    if (/(?:import|require|from)\s+['"](?:.*(?:jwt|bcrypt|passport|auth))/i.test(content) || /verify(?:Token|JWT|Session)\b/i.test(content)) patterns.push("Auth");
-    if (/(?:createHash|encrypt|decrypt)\s*\(/i.test(content)) patterns.push("Crypto");
-    if (/(?:process\.argv|Bun\.argv)\b/.test(content) || /(?:import|require).*(?:commander|yargs|argparse)/.test(content)) patterns.push("CLI");
+  for (const { label, re, ctx: rctx } of CONTENT_PATTERNS) {
+    if (rctx === "server-only" && ctx === "client") continue;
+    if (rctx === "client-only" && ctx === "server") continue;
+    if (re.test(content)) patterns.push(label);
   }
-
-  // Client-only patterns
-  if (ctx !== "server") {
-    if (/document\.|querySelector|getElementById|innerHTML/.test(content)) patterns.push("DOM");
-    if (/canvas|getContext\s*\(\s*['"]2d|WebGL/i.test(content)) patterns.push("Canvas");
-  }
-
-  // Context-independent patterns
-  if (/new\s+WebSocket\b|Bun\.serve.*websocket|\.upgrade\s*\(/i.test(content)) patterns.push("WebSocket");
-  if (/JSON\.parse|JSON\.stringify/i.test(content)) patterns.push("JSON");
-
-  // IPC / Process communication (exclude WebSocket postMessage)
-  if (/child_process|(?<!\.)\bspawn\s*\(|(?<!\.)\bexec\s*\(|(?<!\.)\bfork\s*\(|ipcRenderer|ipcMain|Command::new|std::process/i.test(content)) patterns.push("IPC");
-  // Threading / Workers
-  if (/Worker\b|worker_threads|thread::spawn|std::thread|rayon|tokio::spawn|pthread|Thread\.new|async_std/i.test(content)) patterns.push("Threading");
-  // Windows API
-  if (/winapi|windows-sys|CreateProcess|HWND|WinUser|kernel32|user32|advapi32|RegOpenKey|HKEY_/i.test(content)) patterns.push("Windows API");
-  // OS / System
-  if (/std::fs|std::path|std::env|os\.path|pathlib|sys\.platform/i.test(content)) patterns.push("System");
-  // Event loop / Async runtime
-  if (/tokio|async-std|#\[tokio::main\]|EventLoop|event_loop|select!\s*\{/i.test(content)) patterns.push("Event Loop");
-  // Watcher / File monitoring
-  if (/notify|FSWatcher|watchFile|inotify|chokidar|file.*watch|watch.*file/i.test(content)) patterns.push("File Watcher");
-
-  // C++ specific patterns
-  if (/NVENC|nvEncodeAPI|NvEncoder|nvcuvid|NVDEC/i.test(content)) patterns.push("NVENC/NVDEC");
-  if (/DXGI|IDXGIOutputDuplication|D3D11|ID3D11Device|DirectX/i.test(content)) patterns.push("DXGI/DirectX");
-  if (/WASAPI|IAudioClient|IAudioCaptureClient|IAudioRenderClient/i.test(content)) patterns.push("WASAPI");
-  if (/opus_encode|opus_decode|OpusEncoder|OpusDecoder/i.test(content)) patterns.push("Opus");
-  if (/libsodium|crypto_box|crypto_secretbox|sodium_init|crypto_aead/i.test(content)) patterns.push("E2E Encryption");
-  if (/\bSOCKET\b|WSAStartup|sendto\s*\(|recvfrom\s*\(|SOCK_DGRAM|\bUDP\b(?!\/)|(?<!web|Web)socket\s*\(/i.test(content)) patterns.push("UDP/Networking");
-  if (/STUN|stun_|hole_punch|nat_traversal/i.test(content)) patterns.push("STUN/NAT");
-  if (/FEC|fec_encode|fec_decode|forward_error/i.test(content)) patterns.push("FEC");
-  if (/IOCP|CreateIoCompletionPort|GetQueuedCompletionStatus/i.test(content)) patterns.push("IOCP");
-  if (/cuda|__global__|cudaMalloc|cudaMemcpy|cublas|cusparse/i.test(content)) patterns.push("CUDA");
-  if (/Qt\w+|QApplication|QWidget|QMainWindow|Q_OBJECT/i.test(content)) patterns.push("Qt");
-  if (/CMakeLists|cmake_minimum_required|find_package|target_link/i.test(content)) patterns.push("CMake");
-  if (/OpenGL|glfw|GLEW|glBindBuffer|glDraw/i.test(content)) patterns.push("OpenGL");
-  if (/Vulkan|vkCreate|VkInstance|VkDevice/i.test(content)) patterns.push("Vulkan");
-
   return [...new Set(patterns)];
 }
 
@@ -451,7 +411,7 @@ function extractThreads(content: string, filePath: string): ThreadInfo[] {
   // Rust: thread::spawn / tokio::spawn
   for (const m of content.matchAll(/(?:thread::spawn|tokio::spawn|std::thread::spawn)\s*\(\s*(?:move\s*)?\|?\|?\s*\{?\s*(?:\/\/\s*(.+))?/g)) {
     const comment = m[1]?.trim() || "";
-    const ctx = content.slice(m.index!, Math.min(m.index! + 500, content.length));
+    const ctx = content.slice((m.index ?? 0), Math.min((m.index ?? 0) + 500, content.length));
 
     // Detect purpose
     let purpose = comment;
@@ -550,15 +510,15 @@ function extractIPC(content: string, filePath: string): IPCMessage[] {
     const name = m[1];
     // Only snake_case or lowercase commands (not camelCase property names)
     if (/[A-Z]/.test(name[0]) || (/[a-z]/.test(name[0]) && /[A-Z]/.test(name))) continue;
-    const before = content.slice(Math.max(0, m.index! - 150), m.index!);
-    const after = content.slice(m.index!, Math.min(m.index! + 150, content.length));
+    const before = content.slice(Math.max(0, (m.index ?? 0) - 150), (m.index ?? 0));
+    const after = content.slice((m.index ?? 0), Math.min((m.index ?? 0) + 150, content.length));
     if (/ipc\.postMessage|ipc\.send|invoke\(/i.test(before + after)) {
       add("js→native", name);
     }
   }
   // Pattern 5: Wry/Tauri handler match — "xxx" => { ... } (within ipc context)
   for (const m of content.matchAll(/["'](\w+)["']\s*=>\s*\{/g)) {
-    const before = content.slice(Math.max(0, m.index! - 300), m.index!);
+    const before = content.slice(Math.max(0, (m.index ?? 0) - 300), (m.index ?? 0));
     if (/ipc|handler|command|invoke|match\s+\w*cmd|match\s+\w*action|match\s+\w*type/i.test(before)) {
       add("js→native", m[1]);
     }
@@ -588,7 +548,7 @@ function extractIPC(content: string, filePath: string): IPCMessage[] {
   // or: ipc.postMessage(varName) where varName is assigned "command..."
   for (const m of content.matchAll(/(?:const|let|var)\s+(\w+)\s*=\s*['"`](\w+)[:'"]/g)) {
     // Check if this variable is used with ipc.postMessage nearby
-    const after = content.slice(m.index!, Math.min(m.index! + 500, content.length));
+    const after = content.slice((m.index ?? 0), Math.min((m.index ?? 0) + 500, content.length));
     if (new RegExp(`ipc\\.postMessage\\s*\\(\\s*${m[1]}\\b`).test(after)) {
       add("js→native", m[2]);
     }
@@ -771,7 +731,7 @@ export async function analyzeProject(projectPath: string): Promise<ProjectAnalys
   const allFunctionNames = new Set<string>();
   const fileContents: { fullPath: string; rel: string; ext: string; content: string; symbols: CodeSymbol[]; includes: string[] }[] = [];
   for (const fullPath of sourceFiles) {
-    const rel = relative(projectPath, fullPath).replace(/\\/g, "/");
+    const rel = normalizeSlashes(relative(projectPath, fullPath));
     const ext = extname(fullPath).toLowerCase().replace(".", "");
     try {
       const content = await Bun.file(fullPath).text();
@@ -779,7 +739,7 @@ export async function analyzeProject(projectPath: string): Promise<ProjectAnalys
       fileContents.push({ fullPath, rel, ext, content, symbols, includes });
       // Collect function names from tokenizer symbols
       for (const s of symbols) {
-        const baseName = s.name.includes("::") ? s.name.split("::").pop()! : s.name.includes(".") ? s.name.split(".").pop()! : s.name;
+        const baseName = s.name.includes("::") ? s.name.split("::").pop() ?? s.name : s.name.includes(".") ? s.name.split(".").pop() ?? s.name : s.name;
         allFunctionNames.add(baseName);
         allFunctionNames.add(s.name);
       }
@@ -815,7 +775,7 @@ export async function analyzeProject(projectPath: string): Promise<ProjectAnalys
     // Merge exports from tokenizer symbols
     for (const s of symbols) {
       if (s.isExported) {
-        const baseName = s.name.includes("::") ? s.name.split("::").pop()! : s.name.includes(".") ? s.name.split(".").pop()! : s.name;
+        const baseName = s.name.includes("::") ? s.name.split("::").pop() ?? s.name : s.name.includes(".") ? s.name.split(".").pop() ?? s.name : s.name;
         if (!exports.includes(baseName) && !exports.includes(s.name)) exports.push(baseName);
       }
     }
@@ -839,7 +799,7 @@ export async function analyzeProject(projectPath: string): Promise<ProjectAnalys
 
         const calls = extractCalls(body, allFunctionNames);
         // Remove self-references from calls
-        const baseName = s.name.includes(".") ? s.name.split(".").pop()! : s.name.includes("::") ? s.name.split("::").pop()! : s.name;
+        const baseName = s.name.includes(".") ? s.name.split(".").pop() ?? s.name : s.name.includes("::") ? s.name.split("::").pop() ?? s.name : s.name;
         const filteredCalls = calls.filter(c => c !== baseName && c !== s.name);
         const reads = extractReads(body);
         const writes = extractWrites(body);
@@ -923,9 +883,9 @@ export async function analyzeProject(projectPath: string): Promise<ProjectAnalys
   // `rank` isn't on the scan types (computed post-scan via PageRank), so these
   // two augmentations are deliberately untyped.
   for (const f of files) {
-    (f as any).rank = fileRanks[f.path] || 0;
+    (f as { rank?: number }).rank = fileRanks[f.path] || 0;
     for (const fn of f.functions) {
-      (fn as any).rank = fnRanks[`${f.path}:${fn.name}`] || 0;
+      (fn as { rank?: number }).rank = fnRanks[`${f.path}:${fn.name}`] || 0;
     }
   }
 
@@ -968,7 +928,7 @@ function pageRankFiles(files: FileAnalysis[], graph: Record<string, string[]>): 
   // old `target.includes(normalized)` let a short import like `./data` link to
   // `metadata.ts` and `path` match `path-utils.ts`, corrupting the rank graph —
   // the same collision computeImportedBy was fixed for (R4 code-quality F2).
-  const baseName = (p: string) => p.split("/").pop()!.replace(/\.\w+$/, "");
+  const baseName = (p: string) => (p.split("/").pop() ?? "").replace(/\.\w+$/, "");
   const byBase = new Map<string, string[]>();
   for (const node of nodes) {
     const b = baseName(node);
@@ -1097,7 +1057,7 @@ export function computeImportedBy(
   filePaths: string[],
   graph: Record<string, string[]>,
 ): Record<string, number> {
-  const baseName = (p: string) => p.split("/").pop()!.replace(/\.\w+$/, "");
+  const baseName = (p: string) => (p.split("/").pop() ?? "").replace(/\.\w+$/, "");
   const byBase = new Map<string, string[]>();
   for (const p of filePaths) {
     const b = baseName(p);

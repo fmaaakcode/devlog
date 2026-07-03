@@ -233,7 +233,7 @@ export function summarizeVulns(rawVulns: OsvVuln[], name: string, installed: str
   let vulns = dedupByAlias(rawVulns);
   // Drop advisories the project explicitly ignores (audit.toml / .devlog/vuln-ignore),
   // matching on the id OR any alias. If nothing real is left, the package is safe.
-  if (ignoreIds && ignoreIds.size) {
+  if (ignoreIds?.size) {
     vulns = vulns.filter(v => {
       const ids = [v.id, ...(Array.isArray(v.aliases) ? v.aliases : [])].filter((x): x is string => !!x);
       return !ids.some(id => ignoreIds.has(id));

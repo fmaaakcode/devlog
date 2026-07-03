@@ -13,11 +13,12 @@
 // not a blanket gate.
 
 import { isVersionBehind } from "./registry";
+import { normalizeSlashes } from "./path-utils";
 
 /** Which manifest a path is, or null if it isn't one we check. Extensible:
  *  more build files slot in here by basename. */
 export function manifestKind(filePath: string): "cargo" | "cmake" | "makefile" | null {
-  const base = (filePath || "").replace(/\\/g, "/").split("/").pop()?.toLowerCase();
+  const base = normalizeSlashes(filePath).split("/").pop()?.toLowerCase();
   if (base === "cargo.toml") return "cargo";
   if (base === "cmakelists.txt") return "cmake";
   if (base === "makefile") return "makefile";

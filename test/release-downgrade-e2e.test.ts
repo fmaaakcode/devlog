@@ -16,7 +16,7 @@ const PROJECT_ROOT = join(import.meta.dir, "..");
 async function waitForServer(maxMs = 8000): Promise<void> {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
-    try { if ((await fetch(`${BASE}/api/data`, { signal: AbortSignal.timeout(500) })).ok) return; } catch {}
+    try { if ((await fetch(`${BASE}/api/data`, { signal: AbortSignal.timeout(500) })).ok) return; } catch { /* server not up yet → keep polling */ }
     await Bun.sleep(100);
   }
   throw new Error("server failed to start");
@@ -56,7 +56,7 @@ describe("release downgrade rejected wholesale (E2E)", () => {
     await register(projDir);
   });
   afterEach(async () => {
-    try { server.kill(); } catch {}
+    try { server.kill(); } catch { /* already exited */ }
     await Promise.race([server.exited, Bun.sleep(2000)]);
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(projDir, { recursive: true, force: true });

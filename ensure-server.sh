@@ -19,7 +19,7 @@ set +e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Honor DEVLOG_PORT (default 7777) so the probe and the spawned server agree with
-# the rest of the stack (devlog-supervisor.ps1, parse-tags.js, pre-release-hook.js
+# the rest of the stack (devlog-supervisor.ps1, parse-tags.ts, pre-release-hook.js
 # all read it). A hardcoded 7777 here would probe the wrong port under a custom
 # DEVLOG_PORT, see "dead", and spawn a duplicate server on 7777 every session.
 PORT="${DEVLOG_PORT:-7777}"

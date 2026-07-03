@@ -8,6 +8,8 @@
 // component files, where a `#rrggbb` is unambiguously a colour — NOT inline JSX
 // styles or markup where `#abc` could be an anchor/URL fragment.
 
+import { normalizeSlashes } from "./path-utils";
+
 const UI_EXT = new Set([
   "css", "scss", "sass", "less", "styl",   // stylesheets
   "html", "htm", "vue", "svelte", "astro", // markup / components (have <style>)
@@ -16,7 +18,7 @@ const UI_EXT = new Set([
 const STYLE_EXT = new Set(["css", "scss", "sass", "less", "styl"]);
 
 function extOf(path: string): string {
-  const base = (path || "").replace(/\\/g, "/").split("/").pop() || "";
+  const base = normalizeSlashes(path).split("/").pop() || "";
   const dot = base.lastIndexOf(".");
   return dot < 0 ? "" : base.slice(dot + 1).toLowerCase();
 }

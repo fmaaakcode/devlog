@@ -18,7 +18,7 @@ export function isStale(bootMs: number, newestSourceMs: number): boolean {
 
 /**
  * Newest mtime (ms) among the files whose edits change runtime behavior: every
- * `src/**` .ts/.js plus the two root hooks (`parse-tags.js`, `ensure-server.sh`).
+ * `src/**` .ts/.js plus the two root hooks (`parse-tags.ts`, `ensure-server.sh`).
  * Returns 0 when none exist (a compiled binary has no `src/` on disk) so
  * `isStale` reports false. Best-effort: a stat failure just skips that file.
  */
@@ -31,7 +31,7 @@ export async function newestSourceMtime(root: string): Promise<number> {
     const rel = await readdir(join(root, "src"), { recursive: true });
     for (const r of rel) if (/\.(ts|js)$/.test(r)) await bump(join(root, "src", r as string));
   } catch { /* no src/ (compiled binary) — fall through to the root scripts */ }
-  await bump(join(root, "parse-tags.js"));
+  await bump(join(root, "parse-tags.ts"));
   await bump(join(root, "ensure-server.sh"));
   return newest;
 }

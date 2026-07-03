@@ -71,7 +71,7 @@ async function fetchLatestRelease(repo: string): Promise<{
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (!res.ok) return null;
-    const j = (await res.json()) as any;   // external registry JSON — dynamic shape, validated field-by-field below
+    const j = (await res.json()) as Record<string, unknown>;   // external registry JSON — validated field-by-field below
     return {
       tag: typeof j.tag_name === "string" ? j.tag_name : "",
       date: typeof j.published_at === "string" ? j.published_at : "",
@@ -155,8 +155,8 @@ export function getCachedUpdates(): UpdatesState {
 export function startVersionCheckLoop(): void {
   if (DISABLED) return;
   // Initial check, fire and forget.
-  checkAllToolUpdates().catch(() => {});
+  checkAllToolUpdates().catch(() => { /* fire-and-forget: update-check failures are non-fatal */ });
   setInterval(() => {
-    checkAllToolUpdates().catch(() => {});
+    checkAllToolUpdates().catch(() => { /* fire-and-forget: update-check failures are non-fatal */ });
   }, CHECK_INTERVAL_MS);
 }

@@ -1,7 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import { join } from "node:path";
 
-// #231 regression. parse-tags.js used to handle `-(ask:rules)` in a "Part 0"
+// #231 regression. parse-tags.ts used to handle `-(ask:rules)` in a "Part 0"
 // block that exit(2)'d BEFORE the tags were POSTed to the server. A response
 // emitting both `-(ask:rules)` and a closure (`-(done)/-(security fix) #N`)
 // therefore lost the closure silently — the early exit fired before
@@ -10,7 +10,7 @@ import { join } from "node:path";
 // source-order invariant here (the hook is a side-effectful script with no DOM/
 // server harness, so structural assertions are the testable contract).
 
-const SRC = await Bun.file(join(import.meta.dir, "..", "parse-tags.js")).text();
+const SRC = await Bun.file(join(import.meta.dir, "..", "parse-tags.ts")).text();
 
 describe("parse-tags.js exit(2) ordering (#231)", () => {
   test("tags are POSTed before the ask:rules serve can exit(2)", () => {

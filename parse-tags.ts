@@ -12,7 +12,7 @@ const SERVER = `http://127.0.0.1:${process.env.DEVLOG_PORT || "7777"}`;
 // UI language for enforcement messages shown to the user. English by default for
 // a global audience; DEVLOG_LANG=ar for Arabic. L(en, ar) picks the variant.
 const LANG = (process.env.DEVLOG_LANG || "").trim().toLowerCase().startsWith("ar") ? "ar" : "en";
-const L = (en, ar) => (LANG === "ar" ? ar : en);
+const L = (en: string, ar: string) => (LANG === "ar" ? ar : en);
 
 // Debug log lives next to this script so the project is portable across machines.
 const LOG_DIR = join(import.meta.dir, ".devlog");
@@ -37,7 +37,31 @@ if (DEBUG) {
     if (st.size > 1_000_000) await rename(LOG_PATH, `${LOG_PATH}.1`);
   } catch { /* no log yet, or rotate failed — keep going */ }
 }
-const log = DEBUG ? (line) => appendFile(LOG_PATH, line + "\n", "utf-8") : () => {};
+const log = DEBUG ? (line: string) => appendFile(LOG_PATH, line + "\n", "utf-8") : () => {};
+
+// Stop-hook feedback channel. We speak to Claude via JSON on stdout + exit(0)
+// (`{decision:"block", reason}`), NOT stderr + exit(2). Exit 2 is a "blocking
+// error": Claude Code renders it to the user as a red hook *error*, even though
+// every message this hook emits is normal protocol feedback (a release banner,
+// an open-items list, a closure nudge). JSON-on-exit-0 gives the identical
+// "block the stop, feed the text back, continue the turn" semantics with no
+// error label.
+//
+// Messages accrue in `feedback` so the informational notes written earlier in a
+// run (rollback / closure-confirm / verify-hint) still ride out together with
+// the blocking message — exactly as the old single exit(2) flushed all prior
+// stderr at once. On the no-block path they surface via stderr at the natural
+// exit(0) (unchanged: exit 0 + stderr is never labelled an error, never fed to
+// Claude as one).
+const feedback: string[] = [];
+function flushBlock(): never {
+  process.stdout.write(JSON.stringify({ decision: "block", reason: feedback.join("\n") }));
+  process.exit(0);
+}
+function blockContinue(text: string): never {
+  feedback.push(text);
+  flushBlock();
+}
 
 // Disk queue for /api/tags when the server is unreachable. Without it,
 // every Stop hook during a server outage loses tags forever.
@@ -57,11 +81,11 @@ async function flushTagQueue() {
       });
       if (r.ok) { await rm(fp); await log(`queue-flush: drained ${name}`); }
       else { await log(`queue-flush: server replied ${r.status}, stopping`); return; }
-    } catch (e) { await log(`queue-flush: ${e.message}, stopping`); return; }
+    } catch (e) { await log(`queue-flush: ${(e as Error).message}, stopping`); return; }
   }
 }
 
-async function enqueueTags(body) {
+async function enqueueTags(body: any) {
   const fname = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}.json`;
   await Bun.write(join(QUEUE_DIR, fname), body);
   await log(`queued to disk: ${fname}`);
@@ -77,7 +101,7 @@ let data;
 try {
   data = JSON.parse(raw);
 } catch (e) {
-  await log(`JSON parse error: ${e.message}`);
+  await log(`JSON parse error: ${(e as Error).message}`);
   process.exit(0);
 }
 
@@ -87,7 +111,7 @@ try {
 // a long response). Solution: re-read the transcript JSONL and concatenate
 // every assistant text block since the last user message. Falls back to
 // last_assistant_message if the transcript can't be read.
-async function readTurnFromTranscript(transcriptPath) {
+async function readTurnFromTranscript(transcriptPath: string) {
   if (!transcriptPath) return "";
   try {
     const content = await readFile(transcriptPath, "utf-8");
@@ -120,7 +144,7 @@ async function readTurnFromTranscript(transcriptPath) {
     }
     return buf.trim();
   } catch (e) {
-    await log(`transcript read error: ${e.message}`);
+    await log(`transcript read error: ${(e as Error).message}`);
     return "";
   }
 }
@@ -159,7 +183,7 @@ if (msg) {
         const openRes = await fetch(`${SERVER}/api/open-items?cwd=${encodeURIComponent(cwd)}`, {
           signal: AbortSignal.timeout(3000),
         });
-        const { items: rawItems = [] } = openRes.ok ? await openRes.json() : { items: [] };
+        const { items: rawItems = [] } = openRes.ok ? await openRes.json() as { items?: any[] } : { items: [] };
         // Apply in-flight closures from THIS response. Type-matched: done/
         // dropped close todo+plan-step, bug fix closes bug found, security
         // fix closes security*. Lets Claude close items AND release in the
@@ -179,7 +203,7 @@ if (msg) {
           return true;
         });
         if (items.length > 0) {
-          const byTag = {};
+          const byTag: Record<string, any[]> = {};
           for (const it of items) (byTag[it.tag] ||= []).push(it);
           const out = [];
           out.push("════════ DevLog Release Guard ════════");
@@ -206,12 +230,11 @@ if (msg) {
           out.push("");
           out.push(L("✗ The release tag was NOT recorded.", "✗ الـrelease tag لم يُسجَّل."));
           out.push("══════════════════════════════════════");
-          process.stderr.write(out.join("\n") + "\n");
           await log(`release-guard BLOCKED: open_items=${items.length}`);
-          process.exit(2);
+          blockContinue(out.join("\n"));
         }
       } catch (e) {
-        await log(`release-guard error: ${e.message}`);
+        await log(`release-guard error: ${(e as Error).message}`);
       }
     }
 
@@ -252,9 +275,8 @@ if (msg) {
                 `أصدر نسخة أحدث من ${dg.latest}، أو تأكّد من الرقم.`),
               "═════════════════════════════════════════",
             ].join("\n");
-            process.stderr.write(`\n${out}\n`);
             await log(`release-downgrade rejected: ${dg.version} < ${dg.latest}`);
-            process.exit(2);
+            blockContinue(`\n${out}\n`);
           }
           // Open-items guard fired on the SERVER (defense in depth). Reached when
           // the pre-send guard above was bypassed — server unreachable at pre-check
@@ -262,7 +284,7 @@ if (msg) {
           // stored nothing; tell Claude to close the items, then re-release.
           if (resp.releaseBlocked) {
             const items = resp.releaseBlocked.openItems || [];
-            const byTag = {};
+            const byTag: Record<string, any[]> = {};
             for (const it of items) (byTag[it.tag] ||= []).push(it);
             const out = ["════════ DevLog Release Blocked ════════",
               L(`🛑 ${items.length} open item(s) — the release was NOT recorded (no tag, no HTML, no version bump):`,
@@ -281,9 +303,8 @@ if (msg) {
               L("then re-emit -(release). Or bypass with DEVLOG_RELEASE_GUARD=0.",
                 "ثم أعد إصدار -(release). أو تجاوز بـ DEVLOG_RELEASE_GUARD=0."),
               "═════════════════════════════════════════");
-            process.stderr.write(`\n${out.join("\n")}\n`);
             await log(`release-blocked (server): open_items=${items.length}`);
-            process.exit(2);
+            blockContinue(`\n${out.join("\n")}\n`);
           }
           // Release rollback outcome (QA #2): undoing a release reverses its
           // effects; report them so the manifest state is never silently out of
@@ -294,7 +315,7 @@ if (msg) {
               ? L(`manifest restored to ${rb.restoredTo}`, `استُرجِع المانيفست إلى ${rb.restoredTo}`)
               : L("manifest not restored (no prior reference) — check manually if needed",
                   "لم يُسترجَع المانيفست (لا مرجع سابق) — تحقّق يدوياً إن لزم");
-            process.stderr.write(
+            feedback.push(
               `\n[devlog rollback]\n${L(`↩ Release ${rb.version} removed`, `↩ أُزيل الإصدار ${rb.version}`)}: ${manifest}` +
               `${rb.htmlDeleted ? L(", page deleted", "، حُذِفت الصفحة") : ""}${rb.indexRebuilt ? L(", index rebuilt", "، أُعيد بناء الفهرس") : ""}.\n`);
             await log(`rollback: ${rb.version} restoredTo=${rb.restoredTo}`);
@@ -306,17 +327,17 @@ if (msg) {
           // (closed #229 when #228 was meant — a slip the mismatch check can't
           // see because both are open todos).
           if (Array.isArray(resp.closed) && resp.closed.length) {
-            const lines = resp.closed.map(c => L(`✓ closed #${c.num} — ${c.text}`, `✓ أُغلق #${c.num} — ${c.text}`));
-            process.stderr.write(`\n[devlog closure]\n${lines.join("\n")}\n`);
-            await log(`closure-confirm: ${resp.closed.map(c => c.num).join(", ")}`);
+            const lines = resp.closed.map((c: any) => L(`✓ closed #${c.num} — ${c.text}`, `✓ أُغلق #${c.num} — ${c.text}`));
+            feedback.push(`\n[devlog closure]\n${lines.join("\n")}\n`);
+            await log(`closure-confirm: ${resp.closed.map((c: any) => c.num).join(", ")}`);
           }
           // Optional verify nudge (#232): closed something without running tests
           // this session. Informational only — NO exit(2), never blocks. Mute
           // with DEVLOG_VERIFY_HINT=0.
           if (resp.verifyHint && Array.isArray(resp.verifyHint.closers) && resp.verifyHint.closers.length
               && process.env.DEVLOG_VERIFY_HINT !== "0") {
-            const verbs = [...new Set(resp.verifyHint.closers.map(c => c.tag))].join("/");
-            process.stderr.write(
+            const verbs = [...new Set(resp.verifyHint.closers.map((c: any) => c.tag))].join("/");
+            feedback.push(
               `\n[devlog verify]\n${L(
                 `💡 You closed (${verbs}) without running any test this session. "Verified" = observed evidence (a passing test in the conversation), not reading the code. Run the test to confirm.`,
                 `💡 أغلقتَ (${verbs}) بلا تشغيل أي اختبار في هذه الجلسة. «التحقّق» = دليل مُلاحَظ (اختبار ناجح في المحادثة)، لا قراءة الكود. شغّل الاختبار للتأكيد.`)}\n`);
@@ -330,7 +351,7 @@ if (msg) {
           // re-run won't retrigger). Mute with DEVLOG_CLOSURE_TEXT_CHECK=0.
           if (Array.isArray(resp.closureTextWarnings) && resp.closureTextWarnings.length
               && process.env.DEVLOG_CLOSURE_TEXT_CHECK !== "0") {
-            const lines = resp.closureTextWarnings.map(w =>
+            const lines = resp.closureTextWarnings.map((w: any) =>
               L(`· #${w.num} is about: «${w.openerText}» — your closure text is unrelated. Did you mean a different number?`,
                 `· #${w.num} موضوعه: «${w.openerText}» — نص إغلاقك لا يمتّ له بصلة. هل قصدتَ رقماً آخر؟`));
             const out = [
@@ -343,11 +364,11 @@ if (msg) {
                 "إن كان الرقم خاطئاً: -(undo) #N لإعادة الفتح، ثم أغلِق العنصر المقصود."),
               "═════════════════════════════════════════════════",
             ].join("\n");
-            process.stderr.write(`\n${out}\n`);
-            await log(`closure-text-divergence: ${resp.closureTextWarnings.map(w => w.num).join(", ")}`);
-            // Only self-exit when there's no harder closure mismatch below (that
-            // one exits(2) too); avoid double handling.
-            if (!(Array.isArray(resp.closureHints) && resp.closureHints.length)) process.exit(2);
+            feedback.push(`\n${out}\n`);
+            await log(`closure-text-divergence: ${resp.closureTextWarnings.map((w: any) => w.num).join(", ")}`);
+            // Only self-flush when there's no harder closure mismatch below (that
+            // one blocks too, flushing this along with it); avoid double handling.
+            if (!(Array.isArray(resp.closureHints) && resp.closureHints.length)) flushBlock();
           }
           // Closure mismatch: Claude closed an item that won't actually close —
           // wrong verb for an open item (`-(done)` on a bug), or a #N matching no
@@ -356,7 +377,7 @@ if (msg) {
           // produces no hint next turn (no loop). Checked before release so
           // closures get fixed first (the release-guard would block anyway).
           if (Array.isArray(resp.closureHints) && resp.closureHints.length) {
-            const lines = resp.closureHints.map(h =>
+            const lines = resp.closureHints.map((h: any) =>
               h.kind === "no-match"
                 ? L(`· #${h.num} matches no open item — check the number (closure not applied).`,
                     `· #${h.num} لا يطابق أي عنصر مفتوح — تحقّق من الرقم (الإغلاق لم يُطبَّق).`)
@@ -372,16 +393,15 @@ if (msg) {
                 "صحّح الرقم أو الـverb أعلاه ثم أعد الإغلاق."),
               "═════════════════════════════════════════",
             ].join("\n");
-            process.stderr.write(`\n${out}\n`);
             await log(`closure-mismatch: served ${resp.closureHints.length}`);
-            process.exit(2);
+            blockContinue(`\n${out}\n`);
           }
           if (resp.release) {
             const rel = resp.release;
             const intent = resp.releaseIntent;   // present when the version was computed from -(release:type)
             const sep = L(", ", "، ");
-            const bumps = (rel.bumped || []).map(u => `${u.file} ${u.from}→${u.to}`).join(sep) || L("no manifest to bump", "لا مانيفست لرفعه");
-            const downgrades = (rel.rejected || []).map(u => `${u.file} ${u.current}→${u.attempted}`).join(sep);
+            const bumps = (rel.bumped || []).map((u: any) => `${u.file} ${u.from}→${u.to}`).join(sep) || L("no manifest to bump", "لا مانيفست لرفعه");
+            const downgrades = (rel.rejected || []).map((u: any) => `${u.file} ${u.current}→${u.attempted}`).join(sep);
             const out = [
               "════════ DevLog Release ════════",
               L(`✓ Release ${rel.version} recorded in DevLog.`, `✓ الإصدار ${rel.version} سُجِّل في DevLog.`),
@@ -398,14 +418,13 @@ if (msg) {
                 "تابع خطوات ما بعد الإصدار (مثل بناء الناتج) بدون انتظار المستخدم."),
               "════════════════════════════════",
             ].join("\n");
-            process.stderr.write(`\n${out}\n`);
             await log(`release-response: served ${rel.version}`);
-            process.exit(2);
+            blockContinue(`\n${out}\n`);
           }
-        } catch (e) { await log(`release-response parse error: ${e.message}`); }
+        } catch (e) { await log(`release-response parse error: ${(e as Error).message}`); }
       }
     } catch (e) {
-      await log(`POST error: ${e.message}`);
+      await log(`POST error: ${(e as Error).message}`);
       await enqueueTags(body);
     }
 
@@ -420,21 +439,21 @@ if (msg) {
           signal: AbortSignal.timeout(3000),
         });
         if (openRes.ok) {
-          const { items = [] } = await openRes.json();
+          const { items = [] } = await openRes.json() as { items?: any[] };
           const mod = await import("./src/closure-check.ts");
           const result = mod.checkClosures(entries, items);
           await log(`closure-check: unclosed=${result.unclosed.length} warnings=${result.warnings.length}`);
           if (result.unclosed.length || result.warnings.length) {
             const msg = mod.formatClosureMessage(result);
-            process.stderr.write(`\n[devlog closure-check]\n${msg}\n`);
+            feedback.push(`\n[devlog closure-check]\n${msg}\n`);
             if (result.unclosed.length) {
-              // Exit 2: Claude sees stderr as feedback and must respond again.
-              process.exit(2);
+              // Block: Claude sees the feedback and must respond again.
+              flushBlock();
             }
           }
         }
       } catch (e) {
-        await log(`closure-check error: ${e.message}`);
+        await log(`closure-check error: ${(e as Error).message}`);
       }
     }
   }
@@ -471,17 +490,16 @@ if (msg) {
         const output = await resolveContentTemplates(raw, latestToolchain);
         for (const c of fresh) servedSet.add(c.key);
         await Bun.write(stateFile, JSON.stringify([...servedSet]));
-        await log(`rule-commands: served ${fresh.length} [${fresh.map(c => c.cmd).join(", ")}]`);
+        await log(`rule-commands: served ${fresh.length} [${fresh.map((c: any) => c.cmd).join(", ")}]`);
         if (output.trim()) {
-          // exit(2): Claude sees stderr as feedback and continues this turn
-          // with the rules/confirmation in context.
-          process.stderr.write(`\n[devlog standards]\n${output}\n`);
-          process.exit(2);
+          // block: Claude sees the feedback and continues this turn with the
+          // rules/confirmation in context.
+          blockContinue(`\n[devlog standards]\n${output}\n`);
         }
       }
     }
   } catch (e) {
-    await log(`rule-commands error: ${e.message}`);
+    await log(`rule-commands error: ${(e as Error).message}`);
   }
 }
 
@@ -500,8 +518,8 @@ if (msg && cwd && !stopHookActive) {
     // Strip fenced + inline code first (same as parseRuleCommands) so an `-(audit)`
     // shown as an EXAMPLE inside ``` ``` doesn't trigger a real scan.
     const stripped = msg
-      .replace(/```[\s\S]*?```/g, s => " ".repeat(s.length))
-      .replace(/`[^`\n]*`/g, s => " ".repeat(s.length));
+      .replace(/```[\s\S]*?```/g, (s: string) => " ".repeat(s.length))
+      .replace(/`[^`\n]*`/g, (s: string) => " ".repeat(s.length));
     const m = stripped.match(/^[ \t]*-\(audit\)(?:[ \t]+([^\n]+))?[ \t]*$/m);
     if (m) {
       const arg = (m[1] || "").trim();
@@ -511,15 +529,14 @@ if (msg && cwd && !stopHookActive) {
         const report = await r.text();
         await log(`audit: served (${arg || "all"})`);
         if (report.trim()) {
-          process.stderr.write(`\n[devlog audit]\n${report}\n`);
-          process.exit(2);
+          blockContinue(`\n[devlog audit]\n${report}\n`);
         }
       } else {
         await log(`audit: server replied ${r.status}`);
       }
     }
   } catch (e) {
-    await log(`audit error: ${e.message}`);
+    await log(`audit error: ${(e as Error).message}`);
   }
 }
 
@@ -534,16 +551,16 @@ if (msg && cwd && !stopHookActive) {
 if (msg && cwd && !stopHookActive) {
   try {
     const stripped = msg
-      .replace(/```[\s\S]*?```/g, s => " ".repeat(s.length))
-      .replace(/`[^`\n]*`/g, s => " ".repeat(s.length));
+      .replace(/```[\s\S]*?```/g, (s: string) => " ".repeat(s.length))
+      .replace(/`[^`\n]*`/g, (s: string) => " ".repeat(s.length));
     if (/^[ \t]*-\(ask:open\)[ \t]*$/m.test(stripped)) {
       const r = await fetch(`${SERVER}/api/open-items?cwd=${encodeURIComponent(cwd)}`, { signal: AbortSignal.timeout(10000) });
       if (r.ok) {
-        const { items = [] } = await r.json();
-        const groups = {};
+        const { items = [] } = await r.json() as { items?: any[] };
+        const groups: Record<string, any[]> = {};
         for (const it of items) (groups[it.tag] ||= []).push(it);
-        const section = (label, arr) => (arr && arr.length)
-          ? `\n${label}:\n` + arr.map(it => `  #${it.num} ${it.content}${it.planTitle ? ` (${it.planTitle})` : ""}`).join("\n")
+        const section = (label: string, arr: any[]) => (arr && arr.length)
+          ? `\n${label}:\n` + arr.map((it: any) => `  #${it.num} ${it.content}${it.planTitle ? ` (${it.planTitle})` : ""}`).join("\n")
           : "";
         const sec = [...(groups["security"] || []), ...(groups["security:own"] || []), ...(groups["security:dep"] || [])];
         const body = [
@@ -554,14 +571,13 @@ if (msg && cwd && !stopHookActive) {
         ].filter(Boolean).join("\n");
         const out = body || L("No open items.", "لا عناصر مفتوحة.");
         await log(`ask:open: served ${items.length} item(s)`);
-        process.stderr.write(`\n[devlog open]\n${out}\n`);
-        process.exit(2);
+        blockContinue(`\n[devlog open]\n${out}\n`);
       } else {
         await log(`ask:open: server replied ${r.status}`);
       }
     }
   } catch (e) {
-    await log(`ask:open error: ${e.message}`);
+    await log(`ask:open error: ${(e as Error).message}`);
   }
 }
 
@@ -590,16 +606,16 @@ if (STANDARDS_PULL_ENFORCEMENT && cwd && sessionId && process.env.DEVLOG_STANDAR
         const r = await fetch(`${SERVER}/api/changes/session?session_id=${encodeURIComponent(sessionId)}`, {
           signal: AbortSignal.timeout(3000),
         });
-        const { items = [] } = r.ok ? await r.json() : { items: [] };
+        const { items = [] } = r.ok ? await r.json() as { items?: any[] } : { items: [] };
         codeWrites = items.filter(it => isCodeWrite(it.file_path));
-      } catch (e) { await log(`standards-check changes error: ${e.message}`); }
+      } catch (e) { await log(`standards-check changes error: ${(e as Error).message}`); }
     }
 
     // Relevance-aware: only the catalog categories the written files actually NEED
     // (language/design/cross-cutting, ∩ catalog) and that weren't pulled or
     // auto-served. A C++-only session with no `cpp` category yields ∅ → no nag.
-    const names = catalog.map(c => c.category);
-    const covered = new Set(coveredCategories(served).map(c => c.toLowerCase()));
+    const names = catalog.map((c: any) => c.category);
+    const covered = new Set(coveredCategories(served).map((c: any) => c.toLowerCase()));
     const relevant = new Set();
     for (const it of codeWrites) {
       for (const cat of inferCategories(it.file_path, names)) {
@@ -624,12 +640,11 @@ if (STANDARDS_PULL_ENFORCEMENT && cwd && sessionId && process.env.DEVLOG_STANDAR
         L("(disable once: DEVLOG_STANDARDS_CHECK=0)", "(تعطيل لمرة واحدة: DEVLOG_STANDARDS_CHECK=0)"),
         "════════════════════════════════════════",
       ].join("\n");
-      process.stderr.write(`\n${out}\n`);
       await log(`standards-check BLOCKED: code_writes=${codeWrites.length}, relevantUncovered=${[...relevant].join(",")}`);
-      process.exit(2);
+      blockContinue(`\n${out}\n`);
     }
   } catch (e) {
-    await log(`standards-check error: ${e.message}`);
+    await log(`standards-check error: ${(e as Error).message}`);
   }
 }
 
@@ -642,23 +657,23 @@ if (cwd && sessionId && !stopHookActive && process.env.DEVLOG_STANDARDS_CHECK !=
     const { isEnforcementDisabled, isAcked } = await import("./src/standards.ts");
     if (!isEnforcementDisabled(cwd)) {
       const r0 = await fetch(`${SERVER}/api/changes/session?session_id=${encodeURIComponent(sessionId)}`, { signal: AbortSignal.timeout(3000) });
-      const { items = [] } = r0.ok ? await r0.json() : { items: [] };
+      const { items = [] } = r0.ok ? await r0.json() as { items?: any[] } : { items: [] };
       const MANIFEST = /(?:^|[\\/])(Cargo\.toml|package\.json|go\.mod|pyproject\.toml|requirements\.txt|composer\.json)$/i;
       if (items.some(it => MANIFEST.test(it.file_path || ""))) {
         const r1 = await fetch(`${SERVER}/api/dep-freshness?cwd=${encodeURIComponent(cwd)}`, { signal: AbortSignal.timeout(10000) });
-        const { violations: allViolations = [] } = r1.ok ? await r1.json() : { violations: [] };
+        const { violations: allViolations = [] } = r1.ok ? await r1.json() as { violations?: any[] } : { violations: [] };
         // Drop deps the developer marked intentional (P5): `dep:<name>`.
-        const violations = allViolations.filter(v => !isAcked(cwd, "dep", v.name));
+        const violations = allViolations.filter((v: any) => !isAcked(cwd, "dep", v.name));
         // Dedup per session by violation signature so we nag once, not every turn.
         const safeSid = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
         const sf = join(RULES_STATE_DIR, `${safeSid}.json`);
         let served = [];
         try { served = JSON.parse(await readFile(sf, "utf-8")); } catch {}
-        const sig = "dep-fresh|" + violations.map(v => `${v.name}@${v.installed}`).sort().join(",");
+        const sig = "dep-fresh|" + violations.map((v: any) => `${v.name}@${v.installed}`).sort().join(",");
         if (violations.length && !served.includes(sig)) {
           served.push(sig);
           await Bun.write(sf, JSON.stringify(served));
-          const lines = violations.map(v => v.kind === "behind"
+          const lines = violations.map((v: any) => v.kind === "behind"
             ? L(`· ${v.name} ${v.installed} → use ${v.suggest} (a newer mature version is available)`,
                 `· ${v.name} ${v.installed} → استخدم ${v.suggest} (إصدار أحدث ناضج متاح)`)
             : L(`· ${v.name} ${v.installed} (latest ${v.latest} is ${v.ageDays} days old < 7) → use ${v.suggest}`,
@@ -671,21 +686,27 @@ if (cwd && sessionId && !stopHookActive && process.env.DEVLOG_STANDARDS_CHECK !=
             "",
             L("Install the suggested version (the newest mature release published more than 7 days ago), or confirm the exception reason to the user before finishing.",
               "ثبّت النسخة المقترَحة (أحدث إصدار ناضج مرّ على نشره أكثر من 7 أيام)، أو أكّد للمستخدم سبب الاستثناء قبل الإنهاء."),
-            L(`(intentional? confirm with ${violations.map(v => `-(rule:ack) dep:${v.name}`).join(" / ")})`,
-              `(متعمّد؟ أكّد بـ ${violations.map(v => `-(rule:ack) dep:${v.name}`).join(" / ")})`),
+            L(`(intentional? confirm with ${violations.map((v: any) => `-(rule:ack) dep:${v.name}`).join(" / ")})`,
+              `(متعمّد؟ أكّد بـ ${violations.map((v: any) => `-(rule:ack) dep:${v.name}`).join(" / ")})`),
             L("(disable: DEVLOG_STANDARDS_CHECK=0)", "(تعطيل: DEVLOG_STANDARDS_CHECK=0)"),
             "═════════════════════════════════════════",
           ].join("\n");
-          process.stderr.write(`\n${out}\n`);
           await log(`dep-freshness BLOCKED: ${violations.length} violations`);
-          process.exit(2);
+          blockContinue(`\n${out}\n`);
         }
       }
     }
   } catch (e) {
-    await log(`dep-freshness error: ${e.message}`);
+    await log(`dep-freshness error: ${(e as Error).message}`);
   }
 }
+
+// No blocking message fired, but informational notes (rollback / closure-confirm
+// / verify-hint) accrued. Surface them the way the old code did on its no-exit(2)
+// path: stderr + a clean exit(0). Never labelled an error, never forces a turn —
+// a plain transcript note. (A block would have exited above, so this only runs on
+// the no-block path; we cannot also emit JSON to stdout without competing writes.)
+if (feedback.length) process.stderr.write(feedback.join("\n") + "\n");
 
 // === Part 2: Session summary (best-effort, fire-and-forget) ===
 // Lets the dashboard surface "this session: 3 files, +120/-30, 4 tags, 25 min"
@@ -699,7 +720,7 @@ if (sessionId && cwd) {
       signal: AbortSignal.timeout(3000),
     });
   } catch (e) {
-    await log(`session-summary POST error: ${e.message}`);
+    await log(`session-summary POST error: ${(e as Error).message}`);
   }
 }
 

@@ -159,7 +159,7 @@ export function rewriteDescendantPaths(
   const sep = oldParent.includes("\\") ? "\\" : "/";
   const prefix = oldParent + sep;
   for (const p of Object.values(data.projects)) {
-    if (p.path && p.path.startsWith(prefix)) {
+    if (p.path?.startsWith(prefix)) {
       const np = newParent + p.path.slice(oldParent.length);
       out.push({ name: p.name, oldPath: p.path, newPath: np });
       p.path = np;

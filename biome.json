@@ -2,8 +2,28 @@
   "$schema": "https://biomejs.dev/schemas/2.4.15/schema.json",
   "linter": {
     "enabled": true,
-    "rules": { "recommended": true }
+    "rules": {
+      "recommended": true,
+      "suspicious": {
+        "noEmptyBlockStatements": "error",
+        "noExplicitAny": "error"
+      },
+      "style": {
+        "noNonNullAssertion": "error"
+      }
+    }
   },
   "formatter": { "enabled": false },
-  "assist": { "enabled": false }
+  "assist": { "enabled": false },
+  "overrides": [
+    {
+      "includes": ["test/**"],
+      "linter": {
+        "rules": {
+          "suspicious": { "noExplicitAny": "off", "noTemplateCurlyInString": "off" },
+          "style": { "noNonNullAssertion": "off" }
+        }
+      }
+    }
+  ]
 }

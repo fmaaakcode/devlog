@@ -1,6 +1,6 @@
 import { readdir, readFile, access } from "node:fs/promises";
 import { join, extname, } from "node:path";
-import { claudeConfigDir, claudeProjectSlug } from "./path-utils";
+import { claudeConfigDir, claudeProjectSlug, normalizeSlashes } from "./path-utils";
 import type { ProjectProfile, MemoryFile, RuntimeInfo, DevLogData } from "./types";
 
 // Read the project's git remote URL (origin) without spawning git — we just
@@ -104,7 +104,7 @@ export async function scanDirectory(dirPath: string): Promise<Record<string, num
           counts[ext] = (counts[ext] || 0) + 1;
         }
       }
-    } catch {}
+    } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
   }
 
   await walk(dirPath, 0);
@@ -135,8 +135,12 @@ const NESTED_MANIFEST_DIRS = ["src-tauri", "backend", "server", "api", "frontend
 // We only strip trailing commas — crucially NOT `//`, because base64 integrity
 // hashes ("sha512-…") routinely contain `/` and `//`, and a comment-stripper would
 // corrupt them and break the parse. Tries strict JSON first.
-function parseJsonc(text: string): any {
-  try { return JSON.parse(text); } catch {}
+// One node in an npm/bun lockfile dependency tree (loose — only the fields the
+// tree walker reads; nested arbitrarily deep).
+type LockNode = { version?: unknown; dependencies?: Record<string, LockNode> };
+
+function parseJsonc(text: string): unknown {
+  try { return JSON.parse(text); } catch { /* strict JSON failed → retry below with trailing commas stripped */ }
   const stripped = text.replace(/,(\s*[}\]])/g, "$1");
   try { return JSON.parse(stripped); } catch { return null; }
 }
@@ -163,15 +167,15 @@ export async function enumerateDepTree(dirPath: string): Promise<{ name: string;
   const pkgLock = Bun.file(join(dirPath, "package-lock.json"));
   if (await pkgLock.exists()) {
     try {
-      const j = await pkgLock.json();
+      const j = await pkgLock.json() as { packages?: Record<string, LockNode>; dependencies?: Record<string, LockNode> };
       if (j.packages && typeof j.packages === "object") {
-        for (const [path, info] of Object.entries<any>(j.packages)) {
+        for (const [path, info] of Object.entries(j.packages)) {
           if (!path) continue; // "" is the root project itself
           const name = path.split("node_modules/").pop() || "";
           if (name && info?.version) add(name, String(info.version));
         }
       } else if (j.dependencies && typeof j.dependencies === "object") {
-        const walk = (deps: Record<string, any>) => {
+        const walk = (deps: Record<string, LockNode>) => {
           for (const [name, info] of Object.entries(deps)) {
             if (info?.version) add(name, String(info.version));
             if (info?.dependencies) walk(info.dependencies);
@@ -179,23 +183,24 @@ export async function enumerateDepTree(dirPath: string): Promise<{ name: string;
         };
         walk(j.dependencies);
       }
-    } catch {}
+    } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
   }
 
   // bun: bun.lock (JSONC). `packages` maps a key → [ "name@version", … ].
   const bunLock = Bun.file(join(dirPath, "bun.lock"));
   if (out.length === 0 && await bunLock.exists()) {
     try {
-      const j = parseJsonc(await bunLock.text());
+      const j = parseJsonc(await bunLock.text()) as { packages?: unknown };
       const pkgs = j?.packages;
       if (pkgs && typeof pkgs === "object") {
-        for (const v of Object.values<any>(pkgs)) {
-          const spec = Array.isArray(v) ? v[0] : (typeof v === "string" ? v : "");
-          const at = String(spec || "").lastIndexOf("@");
+        for (const v of Object.values(pkgs)) {
+          const raw = Array.isArray(v) ? v[0] : v;
+          const spec = typeof raw === "string" ? raw : "";
+          const at = spec.lastIndexOf("@");
           if (at > 0) add(spec.slice(0, at), spec.slice(at + 1));
         }
       }
-    } catch {}
+    } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
   }
 
   // Rust: Cargo.lock — every [[package]] is a node in the resolved graph.
@@ -206,7 +211,7 @@ export async function enumerateDepTree(dirPath: string): Promise<{ name: string;
       for (const m of text.matchAll(/\[\[package\]\]\s*\nname\s*=\s*"([^"]+)"\s*\nversion\s*=\s*"([^"]+)"/g)) {
         add(m[1], m[2]);
       }
-    } catch {}
+    } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
   }
 
   return out;
@@ -228,7 +233,7 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<{ fra
       for (const [pkg, name] of fwMap) {
         if (deps[pkg]) { result.framework = `${name} ${String(deps[pkg]).replace(/[\^~>=<\s]/g, "")}`; break; }
       }
-    } catch {}
+    } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
   }
 
   // requirements.txt
@@ -247,7 +252,7 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<{ fra
         const lib = result.libraries.find(l => l.name === pkg);
         if (lib) { result.framework = `${name} ${lib.version.replace(/[\^~>=<\s]/g, "") || ""}`; break; }
       }
-    } catch {}
+    } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
   }
 
   // pyproject.toml
@@ -261,7 +266,7 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<{ fra
           result.libraries.push({ name: m[1], version: m[2]?.replace(/[>=<~!\s]/g, "") || "*" });
         }
       }
-    } catch {}
+    } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
   }
 
   // Cargo.toml — supports both single-crate and workspace layouts.
@@ -325,7 +330,7 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<{ fra
                 for (const e of entries) {
                   if (e.isDirectory()) memberDirs.push(join(parent, e.name));
                 }
-              } catch {}
+              } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
             } else {
               memberDirs.push(join(dirPath, pat));
             }
@@ -333,7 +338,7 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<{ fra
           for (const md of memberDirs) {
             const f = Bun.file(join(md, "Cargo.toml"));
             if (await f.exists()) {
-              try { parseCargoSections(await f.text()); } catch {}
+              try { parseCargoSections(await f.text()); } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
             }
           }
         }
@@ -351,7 +356,7 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<{ fra
             const exact = lockVersions.get(lib.name);
             if (exact) lib.version = exact;
           }
-        } catch {}
+        } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
       }
 
       const rsFw: [string, string][] = [["actix-web","Actix"],["axum","Axum"],["rocket","Rocket"],["wry","Wry (WebView)"],["tauri","Tauri"]];
@@ -359,7 +364,7 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<{ fra
         const lib = result.libraries.find(l => l.name === pkg);
         if (lib) { result.framework = `${name} ${lib.version}`; break; }
       }
-    } catch {}
+    } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
   }
 
   // go.mod
@@ -375,7 +380,7 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<{ fra
         const lib = result.libraries.find(l => l.name.includes(pkg));
         if (lib) { result.framework = `${name} ${lib.version}`; break; }
       }
-    } catch {}
+    } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
   }
 
   // dependencies.json (custom C++ manifest, e.g. vcpkg + vendored)
@@ -394,10 +399,10 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<{ fra
           });
         }
         // Pick GUI framework if present
-        const qt = (pkg.dependencies || []).find((d: any) => /^qt\d?$/i.test(d.name || ""));
+        const qt = (pkg.dependencies || []).find((d: Record<string, unknown>) => /^qt\d?$/i.test(String(d.name ?? "")));
         if (qt) result.framework = `Qt ${qt.version || ""}`.trim();
       }
-    } catch {}
+    } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
   }
 
   // composer.json
@@ -412,7 +417,7 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<{ fra
       }
       if (deps["laravel/framework"]) result.framework = `Laravel ${String(deps["laravel/framework"]).replace(/[\^~>=<\s]/g, "")}`;
       else if (deps["symfony/framework-bundle"]) result.framework = `Symfony ${String(deps["symfony/framework-bundle"]).replace(/[\^~>=<\s]/g, "")}`;
-    } catch {}
+    } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
   }
 
   // Nested-manifest probe: always merge libraries from conventional
@@ -464,9 +469,9 @@ async function readMdFiles(dir: string): Promise<MemoryFile[]> {
         const rawType = get("type");
         const type = ["user", "feedback", "project", "reference"].includes(rawType) ? rawType : "";
         results.push({ file: name, name: get("name"), description: get("description"), type, body });
-      } catch {}
+      } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
     }
-  } catch {}
+  } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
   return results;
 }
 
@@ -491,7 +496,7 @@ export async function detectRuntime(dirPath: string, language: string): Promise<
             const _major = ver.match(/^(\d+)/)?.[1];
             edition = ver ? `TS ${ver}` : "";
           }
-        } catch {}
+        } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
       }
 
       // .bun-version
@@ -514,7 +519,7 @@ export async function detectRuntime(dirPath: string, language: string): Promise<
           const p = await pkgFile.json();
           if (p.engines?.bun) return { name: "Bun", version: p.engines.bun, ...(edition && { edition }) };
           if (p.engines?.node) return { name: "Node", version: p.engines.node, ...(edition && { edition }) };
-        } catch {}
+        } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
       }
       // Fallback: bun.lockb or bun.lock → Bun
       const bunLock = Bun.file(join(dirPath, "bun.lockb"));
@@ -525,7 +530,7 @@ export async function detectRuntime(dirPath: string, language: string): Promise<
       try {
         const proc = Bun.spawnSync(["bun", "--version"], { stdout: "pipe", stderr: "pipe" });
         sysVer = proc.stdout.toString().trim();
-      } catch {}
+      } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
       if (isBun || sysVer) {
         return { name: "Bun", version: sysVer, ...(edition && { edition }) };
       }
@@ -560,7 +565,7 @@ export async function detectRuntime(dirPath: string, language: string): Promise<
         try {
           const proc = Bun.spawnSync(["rustc", "--version"], { stdout: "pipe", stderr: "pipe" });
           version = proc.stdout.toString().match(/(\d+\.\d+[.\d]*)/)?.[1] || "";
-        } catch {}
+        } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
       }
       if (edition || version) return { name: "rustc", version, ...(edition && { edition }) };
     }
@@ -575,7 +580,7 @@ export async function detectRuntime(dirPath: string, language: string): Promise<
           const proc = Bun.spawnSync([cmd, "version"], { stdout: "pipe", stderr: "pipe" });
           const v = proc.stdout.toString().match(/go(\d+\.\d+(?:\.\d+)?)/)?.[1];
           if (v) return { name: "Go", version: v };
-        } catch {}
+        } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
       }
       const goMod = Bun.file(join(dirPath, "go.mod"));
       if (await goMod.exists()) {
@@ -628,11 +633,11 @@ export async function detectRuntime(dirPath: string, language: string): Promise<
         try {
           const pkg = await composer.json();
           if (pkg.require?.php) return { name: "PHP", version: pkg.require.php };
-        } catch {}
+        } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
       }
     }
 
-  } catch {}
+  } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
 
   // Fallback: detect from system commands
   try {
@@ -655,7 +660,7 @@ export async function detectRuntime(dirPath: string, language: string): Promise<
         if (ver) return { name: entry[1], version: ver };
       }
     }
-  } catch {}
+  } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
   return undefined;
 }
 
@@ -674,7 +679,7 @@ export async function scanProject(cwd: string, nameFromPath: (p: string) => stri
       .filter(e => e.isDirectory() && !e.name.startsWith(".") && !SKIP_DIRS.has(e.name))
       .map(e => e.name)
       .sort();
-  } catch {}
+  } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
 
   // Read memory files. The slug is the full cwd with non-alphanumerics → '-'
   // (Claude's own encoding, so nested projects like D:\a\b resolve correctly),
@@ -698,7 +703,7 @@ export async function scanProject(cwd: string, nameFromPath: (p: string) => stri
       const text = await f.text();
       aboutFromFile = text.trim().slice(0, 5000);
     }
-  } catch {}
+  } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
 
   // Detect git remote (.git/config). Optional — projects without a git
   // repo (or without an "origin" remote) get nothing extra in the profile.
@@ -742,7 +747,7 @@ export async function scanProject(cwd: string, nameFromPath: (p: string) => stri
  * the lock for the cheap merge in {@link applyPreservedScan} (remediation R3 P3).
  */
 export async function scanFreshProfile(path: string): Promise<ProjectProfile> {
-  return scanProject(path, (p: string) => p.replace(/\\/g, "/").split("/").filter(Boolean).pop() || "unknown");
+  return scanProject(path, (p: string) => normalizeSlashes(p).split("/").filter(Boolean).pop() || "unknown");
 }
 
 /**

@@ -91,7 +91,7 @@ describe("DEVLOG_STATUS.md export — structural snapshot", () => {
   // writable drive root), red in CI. A path segment with a NUL byte is invalid
   // on every platform, so it forces the same failure deterministically here.
   test("does not throw when the project dir is unwritable", async () => {
-    const badPath = ["", "virtual", String.fromCharCode(0) + "nope", PROJ].join("/");
+    const badPath = ["", "virtual", `${String.fromCharCode(0)}nope`, PROJ].join("/");
     // Should resolve (best-effort skip), not reject.
     await expect(exportStatusMd(badPath, data())).resolves.toBeUndefined();
   });

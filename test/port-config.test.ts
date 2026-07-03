@@ -2,7 +2,7 @@
 // hook must follow DEVLOG_PORT, not hardcode 127.0.0.1:7777. These read the
 // REAL files so reintroducing a hardcoded host:port breaks the build (same
 // style as security-sinks.test.ts). The single allowed source of the default
-// is `process.env.DEVLOG_PORT || "7777"` (data.ts / doctor.ts / parse-tags.js).
+// is `process.env.DEVLOG_PORT || "7777"` (data.ts / doctor.ts / parse-tags.ts).
 
 import { test, expect } from "bun:test";
 import { join } from "node:path";
@@ -25,8 +25,8 @@ test("dashboard.js derives the server origin instead of hardcoding the port", as
   expect(js).toContain("location.origin");
 });
 
-test("parse-tags.js routes every request through one DEVLOG_PORT-derived base", async () => {
-  const src = await Bun.file(join(ROOT, "parse-tags.js")).text();
+test("parse-tags.ts routes every request through one DEVLOG_PORT-derived base", async () => {
+  const src = await Bun.file(join(ROOT, "parse-tags.ts")).text();
   expect(src).not.toMatch(HARDCODED);         // no literal host:port anywhere
   expect(src).toContain("DEVLOG_PORT");       // reads the env override
   // All six call sites must go through the shared `SERVER` constant.

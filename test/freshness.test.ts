@@ -34,10 +34,10 @@ describe("newestSourceMtime (portable mtime gather)", () => {
     mkdirSync(join(root, "src", "sub"), { recursive: true });
     writeFileSync(join(root, "src", "a.ts"), "x");
     writeFileSync(join(root, "src", "sub", "b.ts"), "y");   // nested → recursive walk
-    writeFileSync(join(root, "parse-tags.js"), "z");
+    writeFileSync(join(root, "parse-tags.ts"), "z");
     // Pin an old time on everything, then bump one file to a known-newest time.
     const old = 1_000_000; // seconds
-    for (const p of ["src/a.ts", "src/sub/b.ts", "parse-tags.js"]) utimesSync(join(root, p), old, old);
+    for (const p of ["src/a.ts", "src/sub/b.ts", "parse-tags.ts"]) utimesSync(join(root, p), old, old);
     const newest = 2_000_000; // seconds
     utimesSync(join(root, "src", "sub", "b.ts"), newest, newest);
     const got = await newestSourceMtime(root);

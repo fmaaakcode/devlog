@@ -19,7 +19,23 @@ function capContent(s: unknown): string | undefined {
   return `${s.slice(0, MAX_DIFF_FIELD_BYTES)}\n…[truncated, original ${s.length} chars]`;
 }
 
-export function parseHookEvent(body: any): EventEntry {
+// Shape of a Claude Code hook payload (the fields DevLog reads). Loose + all
+// optional — hooks vary by event; unknown fields are ignored.
+interface HookBody {
+  hook_event_name?: string;
+  tool_name?: string;
+  cwd?: string;
+  session_id?: string;
+  source?: string;
+  agent_id?: string;
+  agent_type?: string;
+  tool_input?: {
+    file_path?: string; content?: string; old_string?: string; new_string?: string;
+    command?: string; description?: string; prompt?: string; subagent_type?: string; subject?: string;
+  };
+}
+
+export function parseHookEvent(body: HookBody): EventEntry {
   const hookEvent = body.hook_event_name || "";
   const toolName = body.tool_name || "";
   const cwd = body.cwd || "";

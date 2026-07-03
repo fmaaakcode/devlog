@@ -325,7 +325,9 @@ function condenseType(tokens: Token[], open: TokenType, close: TokenType, groupT
       stack.push({ startIdx: result.length, line: t.line });
       result.push(t); // placeholder
     } else if (t.type === close && stack.length > 0) {
-      const { startIdx, line } = stack.pop()!;
+      const frame = stack.pop();
+      if (!frame) continue;
+      const { startIdx, line } = frame;
       // Collect everything between open and close as children
       const children = result.splice(startIdx + 1);
       result[startIdx] = {

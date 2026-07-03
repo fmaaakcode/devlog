@@ -16,12 +16,21 @@ export function claudeProjectSlug(cwd: string): string {
   return (cwd || "").replace(/[^a-zA-Z0-9]/g, "-");
 }
 
+// Convert Windows backslashes to forward slashes, nothing else — the single home
+// for the `\` → `/` transform that used to be copy-pasted across ~10 modules.
+// Null-safe (nullish → ""). Preserves casing and trailing slashes; use this for
+// display/storage. For whole-path EQUALITY use normalizePath (which also folds
+// case + trailing slashes).
+export function normalizeSlashes(p: string | null | undefined): string {
+  return (p || "").replace(/\\/g, "/");
+}
+
 // Normalize a filesystem path for case-insensitive equality checks:
 // backslashes → forward slashes, strip trailing slashes, lowercase.
 // Use only when comparing whole paths (not when preserving original casing
 // for display or for case-sensitive filesystems).
 export function normalizePath(p: string): string {
-  return (p || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  return normalizeSlashes(p).replace(/\/+$/, "").toLowerCase();
 }
 
 export function pathsEqual(a: string, b: string): boolean {

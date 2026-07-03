@@ -185,8 +185,8 @@ export async function exportStatusMd(projectPath: string, data: DevLogData, proj
     await Bun.write(join(devlogDir, "DEVLOG_STATUS.md"), md);
     await appendChangelog(devlogDir, tags);
     await exportGithubMd(projectPath, data, name);
-  } catch (e: any) {
-    console.error(`[exportStatusMd] export skipped for ${projectPath}: ${e?.message}`);
+  } catch (e) {
+    console.error(`[exportStatusMd] export skipped for ${projectPath}: ${(e as Error)?.message}`);
   }
 }
 
@@ -484,7 +484,7 @@ export async function generateStackMd(projectPath: string, project: ProjectProfi
   const file = Bun.file(stackFile);
   if (await file.exists()) return;
 
-  try { await mkdir(devlogDir, { recursive: true }); } catch {}
+  try { await mkdir(devlogDir, { recursive: true }); } catch { /* best-effort: a real failure resurfaces at the write below */ }
 
   // Deep analysis
   const analysis = await analyzeProject(projectPath);
@@ -633,7 +633,7 @@ export async function generateStackMd(projectPath: string, project: ProjectProfi
     // Build reverse graph: who imports this file? Match by BASENAME (no ext),
     // not substring — the old `target.path.includes(normalized)` linked `./data`
     // to `metadata.ts` and `path` to `path-utils.ts` (R4 code-quality F2).
-    const baseOf = (p: string) => p.split("/").pop()!.replace(/\.\w+$/, "");
+    const baseOf = (p: string) => (p.split("/").pop() ?? "").replace(/\.\w+$/, "");
     const importedBy: Record<string, string[]> = {};
     for (const f of analysis.files) {
       const sourceName = baseOf(f.path);

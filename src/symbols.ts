@@ -202,7 +202,7 @@ function extractJS(tokens: Token[]): Symbol[] {
               symbols.push({
                 name, kind: "class", params: `{${methods.length} methods}`,
                 isExported, isAsync: false, line: t.line, endLine: t.line + groupLines(body),
-                children: methods.map(m => m.name.split(".").pop()!),
+                children: methods.map(m => m.name.split(".").pop() ?? m.name),
               });
               symbols.push(...methods);
             }
@@ -328,7 +328,8 @@ function extractCpp(tokens: Token[]): Symbol[] {
               if (inner[k].type === TokenType.Identifier && k + 1 < inner.length && inner[k + 1].type === TokenType.Group && inner[k + 1].groupType === "paren") {
                 const mName = inner[k].value;
                 if (["if", "for", "while", "switch", "catch", "return", "sizeof", "decltype"].includes(mName)) continue;
-                sym.children!.push(mName);
+                sym.children ??= [];
+                sym.children.push(mName);
                 // Check if has body (definition) or just declaration
                 let mLines = 0;
                 if (k + 2 < inner.length && inner[k + 2].type === TokenType.Group && inner[k + 2].groupType === "brace") {
@@ -509,7 +510,7 @@ function extractRust(tokens: Token[]): Symbol[] {
         if (j < tokens.length && tokens[j].type === TokenType.Group && tokens[j].groupType === "brace") {
           // Extract methods inside impl block
           if (tokens[j].children) {
-            const implSymbols = extractRust(significantTokens(tokens[j].children!));
+            const implSymbols = extractRust(significantTokens(tokens[j].children ?? []));
             for (const s of implSymbols) {
               if (s.kind === "function") {
                 s.kind = "method";

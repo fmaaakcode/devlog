@@ -25,7 +25,7 @@
 //     parent resolve to the SAME git repository (the real Tauri case). No shared
 //     repo / no git → don't fold.
 
-import { normalizePath, pathsEqual, isPathInside } from "./path-utils";
+import { normalizePath, pathsEqual, isPathInside, normalizeSlashes } from "./path-utils";
 import type { ProjectProfile } from "./types";
 
 type ProjectsMap = Record<string, ProjectProfile>;
@@ -34,7 +34,7 @@ export type GitRootFn = (dir: string) => string | null;
 // Last path segment, mirroring data.ts:projectName. Inlined to keep this module
 // dependency-light (path-utils + types only) and trivially unit-testable.
 function baseName(cwd: string): string {
-  return cwd.replace(/\\/g, "/").split("/").filter(Boolean).pop() || "unknown";
+  return normalizeSlashes(cwd).split("/").filter(Boolean).pop() || "unknown";
 }
 
 // Default git-root resolver: `git -C <dir> rev-parse --show-toplevel`. Returns

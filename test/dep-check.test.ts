@@ -1,6 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import {
-  ageDays, RULE_MIN_AGE_DAYS,
+  ageDays,
   maturedVersion, evaluateDepRich, findDepVerdicts,
 } from "../src/dep-check";
 

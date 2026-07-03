@@ -7,6 +7,7 @@
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { resolve, basename } from "node:path";
+import { normalizeSlashes } from "./path-utils";
 import { spawnSync } from "node:child_process";
 import { openTodos, openBugs, openSecurity } from "./data";
 import type { DevLogData, TagEntry, PlanEntry } from "./types";
@@ -58,7 +59,7 @@ async function fetchData(): Promise<DevLogData | null> {
 
 function findProjectKey(data: DevLogData, targetPath: string): string | null {
   const projects = data.projects || {};
-  const norm = (p: string) => resolve(p).replace(/\\/g, "/").toLowerCase();
+  const norm = (p: string) => normalizeSlashes(resolve(p)).toLowerCase();
   const target = norm(targetPath);
   for (const [name, p] of Object.entries(projects)) {
     if (p?.path && norm(p.path) === target) return name;
@@ -292,11 +293,11 @@ async function main() {
     }
     const hasHigh = report.findings.some(f => f.severity === "high");
     process.exit(hasHigh ? 2 : 0);
-  } catch (e: any) {
+  } catch (e) {
     if (jsonMode) {
-      console.log(JSON.stringify({ error: e.message }));
+      console.log(JSON.stringify({ error: (e as Error).message }));
     } else {
-      console.error(`${C.red}error:${C.reset} ${e.message}`);
+      console.error(`${C.red}error:${C.reset} ${(e as Error).message}`);
     }
     process.exit(1);
   }

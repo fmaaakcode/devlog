@@ -7,8 +7,8 @@
 // PURE REFACTOR — no behavior change. The regression-qa-integration suite
 // (dedup / undo / closure) is the safety net and passes unmodified.
 
-import { join, sep } from "node:path";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { sep } from "node:path";
+import { readFile } from "node:fs/promises";
 import type { DevLogData, PlanStep, TagEntry } from "./types";
 import { normalizeTagContent, assignNum, openTodos, openBugs, openSecurity, openPlanSteps } from "./data";
 import { appendDoc, writeDoc, applyTaskCompletion, applyTaskDrop, extractCheckboxes } from "./doc-store";
@@ -16,6 +16,13 @@ import { writeReleaseHtml, parseVersion } from "./release-html";
 import { compareSemver, computeNextVersion, readManifestVersion, type VersionReject, type BumpType } from "./version-writer";
 import type { RollbackResult } from "./release-rollback";
 import { pathsEqual } from "./path-utils";
+import { currentLang } from "./i18n";
+
+// English-first localization (same per-module pattern as vuln-scan.ts / scanner.ts):
+// user-facing strings default to English for the global audience and switch to
+// Arabic only when DEVLOG_LANG=ar. Keeps a rejection message from reaching an
+// English user in Arabic.
+const L = <T>(en: T, ar: T): T => (currentLang() === "ar" ? ar : en);
 
 // ── Rejections ──────────────────────────────────────────────────────────────
 // Surfaced back to Claude on the next SessionStart (P1.9). Capped at 20.
@@ -104,8 +111,8 @@ export async function handleDocTag(
     if (result.type === "plan" && result.steps.length > 0) {
       registerPlan(data, project, result.slug, result.steps, result.mdPath);
     }
-  } catch (e: any) {
-    console.error(`[/api/tags doc] error:`, e?.message);
+  } catch (e) {
+    console.error(`[/api/tags doc] error:`, (e as Error)?.message);
   }
 }
 
@@ -334,7 +341,7 @@ async function removeTagAt(idx: number, data: DevLogData, project: string): Prom
     try {
       const { rollbackRelease } = await import("./release-rollback");
       return await rollbackRelease(removed, data, project);
-    } catch (e: any) { console.error("[/api/tags undo release-rollback] error:", e?.message); }
+    } catch (e) { console.error("[/api/tags undo release-rollback] error:", (e as Error)?.message); }
   }
   return null;
 }
@@ -358,7 +365,7 @@ export async function applyUndo(content: string, data: DevLogData, project: stri
       const projectPath = data.projects[project]?.path;
       if (projectPath && plan.file_path) {
         try { await applyTaskDrop(projectPath, project, plan.file_path, step.text); }
-        catch (e: any) { console.error("[/api/tags undo plan-step] error:", e?.message); }
+        catch (e) { console.error("[/api/tags undo plan-step] error:", (e as Error)?.message); }
       }
       plan.updatedAt = new Date().toISOString();
       return null;
@@ -391,8 +398,9 @@ export async function applyUndo(content: string, data: DevLogData, project: stri
       .map(i => data.tags[i])
       .map(t => `[${t?.tag}${t?.num ? ` #${t.num}` : ""}] ${(t?.content || "").slice(0, 80)}`)
       .join(" | ");
-    pushRejection(data, project, "undo-ambiguous",
-      `\`-(undo) ${content.slice(0, 60)}\` يطابق ${substrIdxs.length} تاقات. استخدم \`-(undo) #N\` بالرقم لتجنب اللبس. المرشحون: ${candidates}`);
+    pushRejection(data, project, "undo-ambiguous", L(
+      `\`-(undo) ${content.slice(0, 60)}\` matches ${substrIdxs.length} tags. Use \`-(undo) #N\` by number to avoid ambiguity. Candidates: ${candidates}`,
+      `\`-(undo) ${content.slice(0, 60)}\` يطابق ${substrIdxs.length} تاقات. استخدم \`-(undo) #N\` بالرقم لتجنب اللبس. المرشحون: ${candidates}`));
     console.log(`[/api/tags undo] AMBIGUOUS: '${content.slice(0, 60)}' matches ${substrIdxs.length} tags in ${project}; skipping`);
   } else {
     console.log(`[/api/tags undo] no match for '${content.slice(0, 60)}' in ${project}`);
@@ -583,8 +591,8 @@ export async function applyRelease(tagEntry: TagEntry, data: DevLogData, project
   try {
     await writeReleaseHtml(data, project, tagEntry);
     htmlGenerated = true;
-  } catch (e: any) {
-    console.error("[/api/tags release-html] error:", e?.message);
+  } catch (e) {
+    console.error("[/api/tags release-html] error:", (e as Error)?.message);
   }
   // Auto-bump manifest version (package.json / Cargo.toml). The cwd-match guard
   // mirrors doc:* so a release tag with mismatched cwd can't write a foreign repo.
@@ -606,8 +614,8 @@ export async function applyRelease(tagEntry: TagEntry, data: DevLogData, project
       if (rejected.length) {
         console.error(`[/api/tags release] refused downgrade: ${rejected.map(u => `${u.file} ${u.current}→${u.attempted}`).join(", ")}`);
       }
-    } catch (e: any) {
-      console.error("[/api/tags release version-bump] error:", e?.message);
+    } catch (e) {
+      console.error("[/api/tags release version-bump] error:", (e as Error)?.message);
     }
   }
   return { version, bumped, rejected, htmlGenerated };
@@ -651,8 +659,8 @@ export async function syncPlanSteps(tag: string, content: string, data: DevLogDa
           plan.steps.splice(stepIdx, 1);
           if (isDocPlan) await applyTaskDrop(projectPath, project, plan.file_path, step.text);
         }
-      } catch (e: any) {
-        console.error("[/api/tags plan-sync] error:", e?.message);
+      } catch (e) {
+        console.error("[/api/tags plan-sync] error:", (e as Error)?.message);
       }
       plan.updatedAt = new Date().toISOString();
       break;
@@ -669,8 +677,8 @@ export async function syncPlanSteps(tag: string, content: string, data: DevLogDa
           const f = fresh.find(x => norm(x.text) === norm(s.text));
           if (f?.phase) s.phase = f.phase;
         }
-      } catch (e: any) {
-        console.error("[/api/tags phase-backfill] error:", e?.message);
+      } catch (e) {
+        console.error("[/api/tags phase-backfill] error:", (e as Error)?.message);
       }
     }
     const targets = plan.steps.filter(s => s.phase === phaseCode && !s.completed);
@@ -688,8 +696,8 @@ export async function syncPlanSteps(tag: string, content: string, data: DevLogDa
           await applyTaskDrop(projectPath, project, plan.file_path, step.text);
         }
         touched++;
-      } catch (e: any) {
-        console.error("[/api/tags doc-plan-sync phase] error:", e?.message);
+      } catch (e) {
+        console.error("[/api/tags doc-plan-sync phase] error:", (e as Error)?.message);
       }
     }
     if (touched > 0) {

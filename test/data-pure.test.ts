@@ -68,7 +68,7 @@ describe("backfillNums", () => {
     expect(changed).toBe(true);
     const byContent = Object.fromEntries(data.tags.map(t => [t.content, t.num]));
     expect(typeof byContent["open one"]).toBe("number");
-    expect(typeof byContent["leak"]).toBe("number");
+    expect(typeof byContent.leak).toBe("number");
     expect(byContent["closed one"]).toBeUndefined();
     expect(byContent["just a note"]).toBeUndefined();
   });

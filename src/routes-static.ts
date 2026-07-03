@@ -7,7 +7,7 @@
 
 import { STATIC_HTML, STATIC_ASSETS } from "./static-assets";
 import { loadData } from "./data";
-import { pathsEqual, isPathInside } from "./path-utils";
+import { pathsEqual, isPathInside, normalizeSlashes } from "./path-utils";
 import { realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { currentLang } from "./i18n";
@@ -58,12 +58,12 @@ export function makeStaticRoutes({ htmlResponse, DEV_ASSETS, ASSET_ROOT }: Stati
     // .html/.svg project file can never execute in the opened tab.
     "/api/file": async (req: ApiReq) => {
       const url = new URL(req.url);
-      const raw = (url.searchParams.get("path") || "").replace(/\\/g, "/");
+      const raw = normalizeSlashes(url.searchParams.get("path"));
       if (!raw || raw.includes("..")) return new Response("Bad request", { status: 400 });
       const data = await loadData();
       const dir = raw.slice(0, raw.lastIndexOf("/"));
       const inside = Object.values(data.projects).some(p => {
-        const pp = (p.path || "").replace(/\\/g, "/");
+        const pp = normalizeSlashes(p.path);
         return !!pp && (pathsEqual(dir, pp) || isPathInside(pp, raw));
       });
       if (!inside) return new Response("Forbidden", { status: 403 });
@@ -73,10 +73,10 @@ export function makeStaticRoutes({ htmlResponse, DEV_ASSETS, ASSET_ROOT }: Stati
       // symlink inside a tracked project that points outside it. Re-verify the
       // REAL path is still inside a tracked project before reading (R4 bt D5).
       let real: string;
-      try { real = (await realpath(raw)).replace(/\\/g, "/"); }
+      try { real = normalizeSlashes(await realpath(raw)); }
       catch { return new Response("Not found", { status: 404 }); }
       const realInside = Object.values(data.projects).some(p => {
-        const pp = (p.path || "").replace(/\\/g, "/");
+        const pp = normalizeSlashes(p.path);
         return !!pp && (pathsEqual(real, pp) || isPathInside(pp, real));
       });
       if (!realInside) return new Response("Forbidden", { status: 403 });

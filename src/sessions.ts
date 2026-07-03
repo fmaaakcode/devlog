@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { ClaudeSession, DevLogData } from "./types";
 import { projectName } from "./data";
-import { claudeConfigDir } from "./path-utils";
+import { claudeConfigDir, normalizeSlashes } from "./path-utils";
 
 const SESSIONS_DIR = join(claudeConfigDir(), "sessions");
 
@@ -20,13 +20,13 @@ export async function readActiveSessions(): Promise<ClaudeSession[]> {
       sessions.push({
         pid,
         sessionId: raw.sessionId || "",
-        cwd: (raw.cwd || "").replace(/\\/g, "/"),
+        cwd: normalizeSlashes(raw.cwd),
         startedAt: Number(raw.startedAt) || 0,
         kind: raw.kind,
         entrypoint: raw.entrypoint,
         alive: false,
       });
-    } catch {}
+    } catch { /* malformed session record → skip this one, keep the rest */ }
   }
   const aliveSet = await batchCheckAlive(sessions.map(s => s.pid));
   for (const s of sessions) s.alive = aliveSet.has(s.pid);
@@ -53,7 +53,7 @@ async function snapshotAllProcesses(): Promise<WinProc[]> {
     });
     // Hard timeout: a hung WMI query (corrupt repo / system pressure) must not
     // wedge the 10s poll loop forever and leave a zombie powershell (devops R2 #2).
-    const killer = setTimeout(() => { try { proc.kill(); } catch {} }, 4000);
+    const killer = setTimeout(() => { try { proc.kill(); } catch { /* already exited → nothing to kill */ } }, 4000);
     let out: string;
     try {
       out = await new Response(proc.stdout).text();
@@ -62,11 +62,11 @@ async function snapshotAllProcesses(): Promise<WinProc[]> {
     }
     const parsed = JSON.parse(out);
     const arr = Array.isArray(parsed) ? parsed : [parsed];
-    return arr.map((p: any) => ({
+    return arr.map((p: Record<string, unknown>) => ({
       pid: Number(p.ProcessId) || 0,
       ppid: Number(p.ParentProcessId) || 0,
-      name: p.Name || "",
-      command: p.CommandLine || "",
+      name: String(p.Name ?? ""),
+      command: String(p.CommandLine ?? ""),
     }));
   } catch {
     return [];
@@ -97,7 +97,8 @@ export function buildDescendantTree(rootPids: number[], allProcs: WinProc[]): Ma
     const queue = [...(childrenOf.get(root) || [])];
     const seen = new Set<number>();
     while (queue.length) {
-      const pid = queue.shift()!;
+      const pid = queue.shift();
+      if (pid === undefined) break;
       if (seen.has(pid)) continue;
       seen.add(pid);
       descendants.push(pid);
@@ -200,7 +201,7 @@ export async function killProcess(pid: number): Promise<{ ok: boolean; error?: s
     if (code === 0) return { ok: true };
     const err = await new Response(proc.stderr).text();
     return { ok: false, error: err.trim() || `exit ${code}` };
-  } catch (e: any) {
-    return { ok: false, error: String(e?.message || e) };
+  } catch (e) {
+    return { ok: false, error: String((e as Error)?.message || e) };
   }
 }

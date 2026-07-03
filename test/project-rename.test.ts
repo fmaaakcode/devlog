@@ -169,7 +169,7 @@ describe("migrateMemoryDir", () => {
   }
   afterAll(() => {
     delete process.env.CLAUDE_CONFIG_DIR;
-    for (const r of roots) { try { rmSync(r, { recursive: true, force: true }); } catch {} }
+    for (const r of roots) { try { rmSync(r, { recursive: true, force: true }); } catch { /* temp dir cleanup is best-effort */ } }
   });
 
   test("moves all memory cards to the new path's slug dir", async () => {

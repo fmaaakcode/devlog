@@ -6,7 +6,7 @@
 // server on port 7777) and probes the actual code path.
 //
 // ## Why these are NOT unit tests
-//   - Bug #1 is in `parse-tags.js` (Stop-hook script, runs as subprocess).
+//   - Bug #1 is in `parse-tags.ts` (Stop-hook script, runs as subprocess).
 //   - Bugs #2 and #4 live inline in `src/server.ts` `/api/tags` handler.
 // Extracting them into pure functions would be a refactor; the developer
 // approved a single environment-variable seam (`DEVLOG_DATA_DIR`) instead.
@@ -16,7 +16,7 @@
 //     `/api/tags` via `fetch`. We boot the real server on `TEST_PORT = 17777`
 //     via `DEVLOG_PORT`, so they run regardless of whether the developer's
 //     local DevLog server is up on 7777.
-//   - Bug #1 spawns the real `parse-tags.js` script. It now follows
+//   - Bug #1 spawns the real `parse-tags.ts` script. It now follows
 //     `DEVLOG_PORT` (R3 P5-6), so we point it at a mock server on an isolated
 //     port via that env var — no need to own 7777 or stop the local server.
 
@@ -27,7 +27,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const TEST_PORT = 17777;          // isolated server — used by Bugs #2 and #4
-// Bug #1 spawns parse-tags.js, which now follows DEVLOG_PORT (R3 P5-6) instead
+// Bug #1 spawns parse-tags.ts, which now follows DEVLOG_PORT (R3 P5-6) instead
 // of hardcoding 7777 — so this test owns an isolated port and no longer needs
 // the developer to stop their local DevLog server.
 const HOOK_PORT = 17791;
@@ -340,7 +340,7 @@ describe("regression — Bug #4: -(undo) #N must remove plan steps too", () => {
 // ---------------------------------------------------------------------------
 // Bug #1 — Stop hook plan-sync runs serially → up to N×5s freeze
 // ---------------------------------------------------------------------------
-// QA Finding #1: parse-tags.js:174-189 reads every file under
+// QA Finding #1: parse-tags.ts:174-189 reads every file under
 // ~/.claude/plans/*.md and POSTs each to /api/plan in a SERIAL `for…of`
 // loop, each request guarded only by `AbortSignal.timeout(5000)`. When the
 // server is slow or down, the total time is `N × 5s` per turn — invisible
@@ -356,10 +356,10 @@ describe("regression — Bug #4: -(undo) #N must remove plan steps too", () => {
 //   - We stand up a tiny mock HTTP server on an isolated port (HOOK_PORT) that
 //     delays every /api/plan response by 1500ms (the /api/tags +
 //     /api/session-summary endpoints respond instantly), and point
-//     parse-tags.js at it via DEVLOG_PORT.
-//   - We override HOME / USERPROFILE so parse-tags.js reads our tmp
+//     parse-tags.ts at it via DEVLOG_PORT.
+//   - We override HOME / USERPROFILE so parse-tags.ts reads our tmp
 //     `<tmp>/.claude/plans/*.md` instead of the real one.
-//   - We feed parse-tags.js a JSON payload via stdin and measure wall time.
+//   - We feed parse-tags.ts a JSON payload via stdin and measure wall time.
 
 describe("regression — Bug #1: Stop-hook plan sync must not be serial", () => {
   let mockServer: ReturnType<typeof Bun.serve> | null = null;
@@ -375,7 +375,7 @@ describe("regression — Bug #1: Stop-hook plan sync must not be serial", () => 
     if (await isPortBusy(HOOK_PORT)) {
       throw new Error(
         `isolated hook port ${HOOK_PORT} is occupied — something else is using it. ` +
-          `This test boots a mock server there and points parse-tags.js at it via DEVLOG_PORT.`,
+          `This test boots a mock server there and points parse-tags.ts at it via DEVLOG_PORT.`,
       );
     }
 
@@ -412,7 +412,7 @@ describe("regression — Bug #1: Stop-hook plan sync must not be serial", () => 
   });
 
   test(
-    `parse-tags.js syncs ${PLAN_FILES} plan files in well under ${PLAN_FILES} × ${DELAY_MS}ms`,
+    `parse-tags.ts syncs ${PLAN_FILES} plan files in well under ${PLAN_FILES} × ${DELAY_MS}ms`,
     async () => {
       const stdinPayload = JSON.stringify({
         cwd: PROJECT_ROOT,
@@ -422,7 +422,7 @@ describe("regression — Bug #1: Stop-hook plan sync must not be serial", () => 
 
       const t0 = Date.now();
       const proc = spawn({
-        cmd: ["bun", join("parse-tags.js")],
+        cmd: ["bun", join("parse-tags.ts")],
         cwd: PROJECT_ROOT,
         env: {
           ...process.env,
@@ -458,7 +458,7 @@ describe("regression — Bug #1: Stop-hook plan sync must not be serial", () => 
 // that loop is guarded by:
 //     if (!plan.file_path || !plan.file_path.includes(`${sep}.devlog${sep}docs${sep}`)) continue;
 // so it ONLY touches doc:plan steps (files under .devlog/docs/). Native plans
-// synced from ~/.claude/plans/*.md by parse-tags.js are skipped — their step
+// synced from ~/.claude/plans/*.md by parse-tags.ts are skipped — their step
 // is never marked completed and stays open forever.
 //
 // Asymmetry that makes this a silent trap: a doc:plan step DOES close, so the
@@ -478,7 +478,7 @@ describe("regression — Bug R2-1: -(done) #N must close native plan steps", () 
   let server: Subprocess;
 
   // A native plan path: anywhere that is NOT under .devlog/docs/. This mirrors
-  // what parse-tags.js posts when it reads ~/.claude/plans/*.md.
+  // what parse-tags.ts posts when it reads ~/.claude/plans/*.md.
   function nativePlanPath(): string {
     return join(projectDir, ".claude", "plans", "plan-0.md");
   }

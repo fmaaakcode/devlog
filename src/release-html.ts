@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { DevLogData, ProjectProfile, TagEntry } from "./types";
+import type { DevLogData, ProjectProfile, TagEntry, EventEntry } from "./types";
+import { normalizeSlashes } from "./path-utils";
 
 // DEVLOG_HTML_SPEC v1.0 implementation.
 // Output: each project gets `.devlog/releases/{manifest.json, index.html, vX.Y.Z.html}`.
@@ -15,7 +16,7 @@ export function releasesDirFor(projectPath: string): string {
 }
 
 function esc(s: string): string {
-  return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
+  return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] ?? c));
 }
 
 function fmtDate(iso: string): string {
@@ -82,7 +83,7 @@ function lineCount(s: string | undefined | null): number {
   return s.split("\n").length;
 }
 
-function computeDiff(events: any[], project: string, start: number, end: number): DiffStats {
+function computeDiff(events: EventEntry[], project: string, start: number, end: number): DiffStats {
   const inRange = events.filter(e => {
     if (e.project !== project) return false;
     if (e.type !== "change" && e.type !== "create") return false;
@@ -91,7 +92,7 @@ function computeDiff(events: any[], project: string, start: number, end: number)
   });
   const byFile = new Map<string, { added: number; removed: number; edits: number }>();
   for (const e of inRange) {
-    const key = (e.file_path || "(unknown)").replace(/\\/g, "/");
+    const key = normalizeSlashes(e.file_path || "(unknown)");
     const f = byFile.get(key) || { added: 0, removed: 0, edits: 0 };
     // Prefer pre-computed counts (warm/cold retention), else derive from
     // captured strings (hot events still hold the raw content).

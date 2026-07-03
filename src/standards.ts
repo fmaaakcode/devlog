@@ -19,6 +19,7 @@
 import { readdir, readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { normalizeSlashes } from "./path-utils";
 import { homedir } from "node:os";
 import { isUiFile } from "./design-check";
 
@@ -562,7 +563,7 @@ export function gateWriteDecision(g: { isCode: boolean; needed: string[]; covere
 // anything under .devlog, so doc-only or DevLog-internal edits don't trip the gate.
 const NON_CODE_RE = /\.(md|txt|json|lock|toml|ya?ml|csv|svg|png|jpe?g|gif|ico|pdf)$/i;
 export function isCodeWrite(filePath: string): boolean {
-  const f = (filePath || "").replace(/\\/g, "/").toLowerCase();
+  const f = normalizeSlashes(filePath).toLowerCase();
   if (!f) return false;
   if (f.includes("/.devlog/")) return false;
   return !NON_CODE_RE.test(f);
@@ -598,7 +599,7 @@ const EXT_LANG: Record<string, string> = {
 
 /** The language category for a file path, by extension. null when unknown. */
 export function langForFile(filePath: string): string | null {
-  const f = (filePath || "").replace(/\\/g, "/").toLowerCase();
+  const f = normalizeSlashes(filePath).toLowerCase();
   const base = f.slice(f.lastIndexOf("/") + 1);
   const dot = base.lastIndexOf(".");
   if (dot < 0) return null;
