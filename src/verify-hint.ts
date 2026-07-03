@@ -10,8 +10,16 @@ import type { EventEntry } from "./types";
 
 // Commands that count as "ran the suite" this session. Word-boundaried so
 // `latest` / `attestation` never match a bare `test`.
+//
+// The `make`/`ctest` clause (#232-followup) covers C/C++ projects whose suite is
+// a Makefile/CMake target (`make test`, `mingw32-make test`, `make check`,
+// `ctest`). Without it the nudge is UNSATISFIABLE in such repos — no recognized
+// test command exists, so `sessionRanTests` is false forever and the hint
+// re-fires on every closure (the observed verify-loop). The make clause allows
+// flags/vars between the tool and the target (`make -j8 test`, `make CC=gcc
+// check`) but stops at a statement separator so it can't reach across `&&`/`;`.
 const TEST_CMD_RE =
-  /\b(?:bun|npm|pnpm|yarn|deno)\s+(?:run\s+)?test\b|\b(?:vitest|jest|pytest|phpunit|rspec)\b|\b(?:cargo|go|gradle|mvn|dotnet)\s+test\b/i;
+  /\b(?:bun|npm|pnpm|yarn|deno)\s+(?:run\s+)?test\b|\b(?:vitest|jest|pytest|phpunit|rspec|ctest)\b|\b(?:cargo|go|gradle|mvn|dotnet)\s+test\b|\b(?:mingw32-make|gmake|make)\b[^\n&|;]*\b(?:test|check)\b/i;
 
 export function isTestCommand(command: string): boolean {
   return TEST_CMD_RE.test(command || "");

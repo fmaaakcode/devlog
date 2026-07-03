@@ -28,6 +28,15 @@ describe("isTestCommand", () => {
     "npx vitest run",
     "jest --ci",
     "dotnet test",
+    // C/C++ Makefile & CMake suites (#232-followup): the verify-loop repro.
+    "make test",
+    "mingw32-make test",
+    "gmake test",
+    "make -j8 test",
+    "make CC=gcc check",
+    "make check",
+    "ctest",
+    "ctest --output-on-failure",
   ])("matches %p", (cmd) => expect(isTestCommand(cmd)).toBe(true));
 
   test.each([
@@ -36,8 +45,21 @@ describe("isTestCommand", () => {
     "echo latest version",
     "npm run build",
     "ls test",
+    // make/cmake commands that are NOT test runs must stay silent.
+    "make build",
+    "make clean",
+    "make checkstyle",
+    "cmake --version",
     "",
   ])("does not match %p", (cmd) => expect(isTestCommand(cmd)).toBe(false));
+
+  test("make clause stops at a statement separator", () => {
+    // `make lint; run test` must NOT be read as `make ... test` — the `;` breaks
+    // the make clause so a non-test make followed by an unrelated word is silent.
+    expect(isTestCommand("make lint; deploy prod")).toBe(false);
+    // But a genuine `make test` anywhere earlier in a chain still counts.
+    expect(isTestCommand("make test && make install")).toBe(true);
+  });
 });
 
 describe("sessionRanTests", () => {

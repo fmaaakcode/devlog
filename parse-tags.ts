@@ -22,9 +22,15 @@ const QUEUE_DIR = join(LOG_DIR, "tag-queue");
 // re-read (which still contains the command after an exit(2) continuation)
 // doesn't reprocess it and loop forever.
 const RULES_STATE_DIR = join(LOG_DIR, "rules-state");
+// Per-session flag: the verify nudge (#232) fires at most ONCE per session, so a
+// stuck test-detector (or just a chatty closing sequence) can never turn a
+// non-blocking hint into a behavioral loop. The regex is the real fix; this is
+// the belt-and-suspenders that makes the hint loop-proof regardless.
+const VERIFY_STATE_DIR = join(LOG_DIR, "verify-state");
 await mkdir(LOG_DIR, { recursive: true });
 await mkdir(QUEUE_DIR, { recursive: true });
 await mkdir(RULES_STATE_DIR, { recursive: true });
+await mkdir(VERIFY_STATE_DIR, { recursive: true });
 
 // Debug logging is OFF by default (#devops-F2): it ran on EVERY Stop hook with
 // no gate and no rotation, so parse-tags.debug.log crept to 4+MB unbounded.
@@ -336,12 +342,25 @@ if (msg) {
           // with DEVLOG_VERIFY_HINT=0.
           if (resp.verifyHint && Array.isArray(resp.verifyHint.closers) && resp.verifyHint.closers.length
               && process.env.DEVLOG_VERIFY_HINT !== "0") {
-            const verbs = [...new Set(resp.verifyHint.closers.map((c: any) => c.tag))].join("/");
-            feedback.push(
-              `\n[devlog verify]\n${L(
-                `💡 You closed (${verbs}) without running any test this session. "Verified" = observed evidence (a passing test in the conversation), not reading the code. Run the test to confirm.`,
-                `💡 أغلقتَ (${verbs}) بلا تشغيل أي اختبار في هذه الجلسة. «التحقّق» = دليل مُلاحَظ (اختبار ناجح في المحادثة)، لا قراءة الكود. شغّل الاختبار للتأكيد.`)}\n`);
-            await log(`verify-hint: ${resp.verifyHint.closers.length} closer(s), no test run`);
+            // Once-per-session gate: a nudge is a reminder, not a nag. Emitting it
+            // on every closing turn is what let an unsatisfiable detector spin into
+            // a loop; after the first surface we stay quiet for the rest of the
+            // session even if more closures land.
+            const safeSid = (sessionId || "nosession").replace(/[^a-zA-Z0-9_-]/g, "_");
+            const vfile = join(VERIFY_STATE_DIR, `${safeSid}.json`);
+            let alreadyHinted = false;
+            try { alreadyHinted = JSON.parse(await readFile(vfile, "utf-8")).hinted === true; } catch {}
+            if (!alreadyHinted) {
+              const verbs = [...new Set(resp.verifyHint.closers.map((c: any) => c.tag))].join("/");
+              feedback.push(
+                `\n[devlog verify]\n${L(
+                  `💡 You closed (${verbs}) without running any test this session. "Verified" = observed evidence (a passing test in the conversation), not reading the code. Run the test to confirm.`,
+                  `💡 أغلقتَ (${verbs}) بلا تشغيل أي اختبار في هذه الجلسة. «التحقّق» = دليل مُلاحَظ (اختبار ناجح في المحادثة)، لا قراءة الكود. شغّل الاختبار للتأكيد.`)}\n`);
+              await Bun.write(vfile, JSON.stringify({ hinted: true }));
+              await log(`verify-hint: ${resp.verifyHint.closers.length} closer(s), no test run`);
+            } else {
+              await log(`verify-hint: suppressed (already hinted this session)`);
+            }
           }
           // Closure text divergence (#315): the closure APPLIED (valid number +
           // verb), but the trailing description shares no token with the item #N
