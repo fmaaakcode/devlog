@@ -276,7 +276,9 @@ const OPENER_TO_CLOSER: Record<string, string> = {
 };
 
 export interface ClosureMismatch {
-  kind: "wrong-verb" | "no-match"; // wrong verb for an open item, vs no open item at all
+  // wrong verb for an open item · no open item at all · a re-close of work that's
+  // ALREADY closed (idempotent no-op, not an error — the caller drops it silently).
+  kind: "wrong-verb" | "no-match" | "already-closed";
   num: number;
   usedCloser: string;  // the verb Claude emitted, e.g. "done"
   openerTag?: string;  // wrong-verb only: the open item's actual type, e.g. "bug found"
@@ -321,7 +323,21 @@ export function diagnoseClosureMismatch(
     return null;
   }
 
-  // Nothing open matches this number → a phantom closure that closes nothing.
+  // #N isn't OPEN. Before flagging a phantom closure, check whether it names an
+  // item that already EXISTS but is CLOSED — a re-emitted closer (chiefly the Stop
+  // hook re-scanning the same response across a hook-driven continuation, where
+  // done/dropped are exempt from dedup). Numbers are unique per item, so a
+  // numbered openable tag with this #N that we didn't find OPEN above must be
+  // closed; a completed plan step is likewise closed. Re-closing closed work is a
+  // no-op, not a typo → "already-closed", which the caller drops SILENTLY (no
+  // phantom tag, no mismatch nag that would falsely say "closes nothing").
+  const NUMBERED_OPENABLE = new Set(["todo", "bug found", "security", "security:own", "security:dep"]);
+  const closedTagExists = tags.some(t => typeof t.num === "number" && t.num === num && NUMBERED_OPENABLE.has(t.tag));
+  const closedStepExists = data.plans.some(p =>
+    p.project === project && p.steps.some(s => s.num === num && s.completed));
+  if (closedTagExists || closedStepExists) return { kind: "already-closed", num, usedCloser: tag };
+
+  // Nothing open OR closed matches this number → a phantom closure that closes nothing.
   return { kind: "no-match", num, usedCloser: tag };
 }
 

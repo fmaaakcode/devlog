@@ -67,25 +67,71 @@ describe("diagnoseClosureMismatch — wrong-verb", () => {
 });
 
 describe("diagnoseClosureMismatch — no-match (phantom closure)", () => {
-  test("number that doesn't exist → no-match (was: silent junk tag)", () => {
+  test("number that never existed → no-match (was: silent junk tag)", () => {
     const d = data([tag("bug found", "real bug", { num: 4 })]);
     expect(diagnoseClosureMismatch("done", "#999", d, PROJ)).toEqual(
       { kind: "no-match", num: 999, usedCloser: "done" });
   });
 
-  test("already-closed number → no-match (item no longer open)", () => {
+  test("bug fix on a number that never existed → no-match (no phantom bug fix stored)", () => {
+    const d = data([tag("bug found", "real bug", { num: 4 })]);
+    expect(diagnoseClosureMismatch("bug fix", "#9999", d, PROJ)).toEqual(
+      { kind: "no-match", num: 9999, usedCloser: "bug fix" });
+  });
+});
+
+// A re-emitted closer for work that's ALREADY closed is an idempotent no-op, not
+// a typo. It must NOT surface as "no-match" (that false "closes nothing" nag is
+// what blocked the turn and trapped Claude when the Stop hook re-scanned the same
+// response across a continuation — done/dropped bypass dedup by design). The
+// caller drops "already-closed" silently.
+describe("diagnoseClosureMismatch — already-closed (idempotent re-close)", () => {
+  test("re-close a bug already closed by #N → already-closed, not no-match", () => {
     const d = data([
       tag("bug found", "fixed bug", { num: 11 }),
       tag("bug fix", "#11"), // closes #11 by number
     ]);
-    expect(diagnoseClosureMismatch("done", "#11", d, PROJ)).toEqual(
-      { kind: "no-match", num: 11, usedCloser: "done" });
+    expect(diagnoseClosureMismatch("bug fix", "#11", d, PROJ)).toEqual(
+      { kind: "already-closed", num: 11, usedCloser: "bug fix" });
   });
 
-  test("bug fix on a nonexistent number → no-match (no phantom bug fix stored)", () => {
-    const d = data([tag("bug found", "real bug", { num: 4 })]);
-    expect(diagnoseClosureMismatch("bug fix", "#9999", d, PROJ)).toEqual(
-      { kind: "no-match", num: 9999, usedCloser: "bug fix" });
+  test("re-drop a todo already dropped by #N → already-closed", () => {
+    const d = data([
+      tag("todo", "old Astro plan", { num: 1 }),
+      tag("dropped", "old Astro plan"), // dropped #1 resolved to text
+    ]);
+    expect(diagnoseClosureMismatch("dropped", "#1", d, PROJ)).toEqual(
+      { kind: "already-closed", num: 1, usedCloser: "dropped" });
+  });
+
+  test("wrong verb on an already-closed item → still already-closed (re-close is a no-op)", () => {
+    const d = data([
+      tag("bug found", "fixed bug", { num: 11 }),
+      tag("bug fix", "#11"),
+    ]);
+    // `done` can't close a bug, but the bug is already closed → no nag either way.
+    expect(diagnoseClosureMismatch("done", "#11", d, PROJ)).toEqual(
+      { kind: "already-closed", num: 11, usedCloser: "done" });
+  });
+
+  test("re-close a COMPLETED plan step → already-closed (was: no-match)", () => {
+    const plans: PlanEntry[] = [{
+      id: "p1", project: PROJ, title: "Roadmap", file_path: "roadmap.md",
+      timestamp: "2026-06-01T00:00:00Z", updatedAt: "2026-06-01T00:00:00Z",
+      steps: [{ text: "done step", completed: true, num: 21 }],
+    }];
+    expect(diagnoseClosureMismatch("done", "#21", data([], plans), PROJ)).toEqual(
+      { kind: "already-closed", num: 21, usedCloser: "done" });
+  });
+
+  test("already-closed in this project isn't masked by an OPEN same-number in another project", () => {
+    const d = data([
+      tag("bug found", "local closed bug", { num: 6 }),
+      tag("bug fix", "#6"),
+      { id: "z", project: "other", tag: "todo", content: "other open todo", num: 6, timestamp: "2026-06-01T00:00:00Z" },
+    ]);
+    expect(diagnoseClosureMismatch("done", "#6", d, PROJ)).toEqual(
+      { kind: "already-closed", num: 6, usedCloser: "done" });
   });
 });
 
@@ -97,16 +143,6 @@ describe("diagnoseClosureMismatch — valid closures stay null", () => {
       steps: [{ text: "ship the scheduler", completed: false, num: 20 }],
     }];
     expect(diagnoseClosureMismatch("done", "#20", data([], plans), PROJ)).toBeNull();
-  });
-
-  test("done on a COMPLETED plan step → no-match (already done)", () => {
-    const plans: PlanEntry[] = [{
-      id: "p1", project: PROJ, title: "Roadmap", file_path: "roadmap.md",
-      timestamp: "2026-06-01T00:00:00Z", updatedAt: "2026-06-01T00:00:00Z",
-      steps: [{ text: "done step", completed: true, num: 21 }],
-    }];
-    expect(diagnoseClosureMismatch("done", "#21", data([], plans), PROJ)).toEqual(
-      { kind: "no-match", num: 21, usedCloser: "done" });
   });
 
   test("non-numeric content (text closure) → null", () => {

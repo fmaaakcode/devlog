@@ -27,10 +27,20 @@ const RULES_STATE_DIR = join(LOG_DIR, "rules-state");
 // non-blocking hint into a behavioral loop. The regex is the real fix; this is
 // the belt-and-suspenders that makes the hint loop-proof regardless.
 const VERIFY_STATE_DIR = join(LOG_DIR, "verify-state");
+// Per-session, per-turn dedup for the on-demand PULL commands (ask:open /
+// ask:closed / audit). Replaces the blunt `!stopHookActive` guard those used:
+// that flag is turn-level, so it also killed a FRESH pull emitted inside a
+// continuation triggered by a DIFFERENT block (e.g. a closure-mismatch) —
+// leaving Claude with silence exactly when it reached for the live list. We
+// instead dedup by the command string within one turn (keyed on the transcript
+// turn id), so re-emitting the SAME command inside one continuation chain is the
+// only thing suppressed; a new user turn or a different command still serves.
+const ASK_STATE_DIR = join(LOG_DIR, "ask-state");
 await mkdir(LOG_DIR, { recursive: true });
 await mkdir(QUEUE_DIR, { recursive: true });
 await mkdir(RULES_STATE_DIR, { recursive: true });
 await mkdir(VERIFY_STATE_DIR, { recursive: true });
+await mkdir(ASK_STATE_DIR, { recursive: true });
 
 // Debug logging is OFF by default (#devops-F2): it ran on EVERY Stop hook with
 // no gate and no rotation, so parse-tags.debug.log crept to 4+MB unbounded.
@@ -117,12 +127,18 @@ try {
 // a long response). Solution: re-read the transcript JSONL and concatenate
 // every assistant text block since the last user message. Falls back to
 // last_assistant_message if the transcript can't be read.
-async function readTurnFromTranscript(transcriptPath: string) {
-  if (!transcriptPath) return "";
+// Returns the concatenated assistant turn text AND a `turnId` — a stable id for
+// the last GENUINE user message that opened this turn (its transcript uuid or
+// timestamp). The turnId lets the pull-command dedup tell "same turn, already
+// served" (a hook-driven continuation keeps the same boundary) from "new user
+// turn" (boundary changes → re-serve allowed).
+async function readTurnFromTranscript(transcriptPath: string): Promise<{ text: string; turnId: string }> {
+  if (!transcriptPath) return { text: "", turnId: "" };
   try {
     const content = await readFile(transcriptPath, "utf-8");
     const lines = content.split("\n").filter(Boolean);
     let buf = "";
+    let turnId = "";
     for (const line of lines) {
       let obj;
       try { obj = JSON.parse(line); } catch { continue; }
@@ -134,7 +150,11 @@ async function readTurnFromTranscript(transcriptPath: string) {
         // Only reset on a genuine user message (string content or text blocks).
         const isToolResultOnly = Array.isArray(c) && c.length > 0
           && c.every(b => b?.type === "tool_result");
-        if (!isToolResultOnly) buf = "";
+        if (!isToolResultOnly) {
+          buf = "";
+          // Boundary of a new user turn — remember its id as the turn key.
+          turnId = String(obj.uuid || obj.timestamp || turnId || "");
+        }
         continue;
       }
       if (role !== "assistant") continue;
@@ -148,14 +168,14 @@ async function readTurnFromTranscript(transcriptPath: string) {
         }
       }
     }
-    return buf.trim();
+    return { text: buf.trim(), turnId };
   } catch (e) {
     await log(`transcript read error: ${(e as Error).message}`);
-    return "";
+    return { text: "", turnId: "" };
   }
 }
 
-const transcriptMsg = await readTurnFromTranscript(data.transcript_path);
+const { text: transcriptMsg, turnId } = await readTurnFromTranscript(data.transcript_path);
 const msg = transcriptMsg || data.last_assistant_message || "";
 const cwd = data.cwd || "";
 const sessionId = data.session_id || "";
@@ -164,6 +184,25 @@ const sessionId = data.session_id || "";
 const stopHookActive = data.stop_hook_active === true;
 await log(`cwd=${JSON.stringify(cwd)} session_id=${JSON.stringify(sessionId)} msg_len=${msg.length} source=${transcriptMsg ? "transcript" : "last_assistant_message"}`);
 await log(`msg_tail=${JSON.stringify(msg.slice(-300))}`);
+
+// Per-turn dedup for the on-demand pull commands (ask:open / ask:closed /
+// audit). Returns true the FIRST time `command` is requested in the current
+// turn, false on a repeat within the same continuation chain. A new user turn
+// (turnId changes) resets the served set, so the command serves again. Falls
+// back to the legacy `!stopHookActive` guard only when there's no transcript to
+// derive a turnId from (last_assistant_message path).
+async function shouldServeAsk(command: string): Promise<boolean> {
+  if (!turnId) return !stopHookActive;
+  const safeSid = (sessionId || "nosession").replace(/[^a-zA-Z0-9_-]/g, "_");
+  const f = join(ASK_STATE_DIR, `${safeSid}.json`);
+  let state: { turnId?: string; served?: string[] } = {};
+  try { state = JSON.parse(await readFile(f, "utf-8")); } catch {}
+  if (state.turnId !== turnId || !Array.isArray(state.served)) state = { turnId, served: [] };
+  if (state.served!.includes(command)) return false;
+  state.served!.push(command);
+  await Bun.write(f, JSON.stringify(state));
+  return true;
+}
 
 // === Part 1: Parse tags ===
 if (msg) {
@@ -527,12 +566,12 @@ if (msg) {
 // current project back THIS turn via stderr+exit(2). Not a logged tag. Heavy lifting
 // (tree scan + OSV) lives in the server's /api/audit; here we just relay.
 //
-// Re-runnable across turns (an audit tool MUST be — you scan, fix, scan again). The
-// loop guard is `stopHookActive`, NOT a per-session dedup: we serve ONLY on a fresh
-// stop. After our exit(2) the model continues and the next Stop has
-// stop_hook_active=true (the message still contains `-(audit)`) — we skip it, so no
-// infinite loop. A new user turn is a fresh stop again, so the next `-(audit)` fires.
-if (msg && cwd && !stopHookActive) {
+// Re-runnable across turns (an audit tool MUST be — you scan, fix, scan again).
+// The loop guard is per-turn command dedup (shouldServeAsk), NOT the turn-level
+// `stopHookActive`: the old flag also swallowed a fresh `-(audit)` emitted inside
+// a continuation caused by a DIFFERENT block. Now we serve each distinct audit
+// command once per turn; a new user turn re-serves it.
+if (msg && cwd) {
   try {
     // Strip fenced + inline code first (same as parseRuleCommands) so an `-(audit)`
     // shown as an EXAMPLE inside ``` ``` doesn't trigger a real scan.
@@ -540,7 +579,7 @@ if (msg && cwd && !stopHookActive) {
       .replace(/```[\s\S]*?```/g, (s: string) => " ".repeat(s.length))
       .replace(/`[^`\n]*`/g, (s: string) => " ".repeat(s.length));
     const m = stripped.match(/^[ \t]*-\(audit\)(?:[ \t]+([^\n]+))?[ \t]*$/m);
-    if (m) {
+    if (m && await shouldServeAsk(`audit${m[1] ? ` ${m[1].trim()}` : ""}`)) {
       const arg = (m[1] || "").trim();
       const qs = `cwd=${encodeURIComponent(cwd)}${arg ? `&pkg=${encodeURIComponent(arg)}` : ""}`;
       const r = await fetch(`${SERVER}/api/audit?${qs}`, { signal: AbortSignal.timeout(120000) });
@@ -565,14 +604,16 @@ if (msg && cwd && !stopHookActive) {
 // session without the user typing `?open` — so it closed items off a stale
 // SessionStart snapshot (the #310/#311 slip). This serves the LIVE open list THIS
 // turn via stderr+exit(2), authoritative from /api/open-items (same resolver as
-// the SessionStart summary). Re-runnable across turns via the stopHookActive
-// guard (like -(audit)); never a logged tag (not in ALLOWED_TAGS).
-if (msg && cwd && !stopHookActive) {
+// the SessionStart summary). Re-runnable across turns via per-turn command dedup
+// (shouldServeAsk) — a fresh `-(ask:open)` inside a continuation caused by ANY
+// other block still serves; only re-emitting it in the same turn is suppressed.
+// Never a logged tag (not in ALLOWED_TAGS).
+if (msg && cwd) {
   try {
     const stripped = msg
       .replace(/```[\s\S]*?```/g, (s: string) => " ".repeat(s.length))
       .replace(/`[^`\n]*`/g, (s: string) => " ".repeat(s.length));
-    if (/^[ \t]*-\(ask:open\)[ \t]*$/m.test(stripped)) {
+    if (/^[ \t]*-\(ask:open\)[ \t]*$/m.test(stripped) && await shouldServeAsk("ask:open")) {
       const r = await fetch(`${SERVER}/api/open-items?cwd=${encodeURIComponent(cwd)}`, { signal: AbortSignal.timeout(10000) });
       if (r.ok) {
         const { items = [] } = await r.json() as { items?: any[] };
@@ -606,14 +647,14 @@ if (msg && cwd && !stopHookActive) {
 // entire open list just to confirm one item vanished. `-(ask:closed) #N` answers
 // "was #N closed, and when?" in one line; bare `-(ask:closed)` lists the recent
 // closures. Served like -(ask:open); sourced from existing closer tags (no new
-// storage). Re-runnable across turns via the stopHookActive guard.
-if (msg && cwd && !stopHookActive) {
+// storage). Re-runnable across turns via per-turn command dedup (shouldServeAsk).
+if (msg && cwd) {
   try {
     const stripped = msg
       .replace(/```[\s\S]*?```/g, (s: string) => " ".repeat(s.length))
       .replace(/`[^`\n]*`/g, (s: string) => " ".repeat(s.length));
     const m = stripped.match(/^[ \t]*-\(ask:closed\)(?:[ \t]+#(\d+))?[ \t]*$/m);
-    if (m) {
+    if (m && await shouldServeAsk(`ask:closed${m[1] ? ` #${m[1]}` : ""}`)) {
       const num = m[1];
       const qs = `cwd=${encodeURIComponent(cwd)}${num ? `&num=${num}` : ""}`;
       const r = await fetch(`${SERVER}/api/closed-items?${qs}`, { signal: AbortSignal.timeout(10000) });

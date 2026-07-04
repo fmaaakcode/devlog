@@ -103,7 +103,16 @@ export function makeTagsRoutes(): Record<string, unknown> {
             // and store a junk `#N` tag. Skip it and collect a correction the
             // Stop hook feeds back so Claude re-closes with the right verb.
             const mismatch = diagnoseClosureMismatch(tag, content, data, project);
-            if (mismatch) { closureHints.push(mismatch); continue; }
+            if (mismatch) {
+              // "already-closed": a re-emitted closer for work that's already
+              // closed (chiefly the Stop hook re-scanning one response across a
+              // continuation — done/dropped bypass dedup by design). Drop it
+              // silently like a dup: no phantom tag, and crucially NO mismatch
+              // hint. Nagging "closes nothing" for an item that really IS closed
+              // is the false alarm that blocked the turn and trapped Claude.
+              if (mismatch.kind !== "already-closed") closureHints.push(mismatch);
+              continue;
+            }
             // Text-divergence guard (#315): a `#N <tail>` closure whose trailing
             // description shares no token with the open item — likely a wrong-but-
             // type-compatible number. The closure still applies (the number/verb
