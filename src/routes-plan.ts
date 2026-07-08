@@ -62,6 +62,33 @@ export function makePlanRoutes(): Record<string, unknown> {
       },
     },
 
+    // Toggle a plan's «قادمة» state. An upcoming plan's open steps keep their
+    // #N (still closable) but stop blocking releases / triggering closure nags,
+    // and the dashboard shows the plan under the القادمة tab.
+    "/api/plan/:id/upcoming": {
+      async POST(req: ApiReq) {
+        let want = true;
+        try { want = obj(await req.json()).upcoming !== false; } catch { /* empty body → defer */ }
+        return await withData(async (data) => {
+          const plan = data.plans.find(p => p.id === req.params.id);
+          if (!plan) return Response.json({ error: "Not found" }, { status: 404 });
+          // A complete plan (every step done/dropped) gates nothing — deferring
+          // it to «القادمة» only misleads the tabs. Promotion back stays allowed
+          // so a deferred-then-completed plan can still be pulled out.
+          if (want && plan.steps.length > 0 && plan.steps.every(s => s.completed || s.dropped)) {
+            return Response.json(
+              { error: L("plan is complete — nothing to defer", "الخطة مكتملة — لا شيء يُؤجَّل") },
+              { status: 409 },
+            );
+          }
+          if (want) plan.upcoming = true; else delete plan.upcoming;
+          plan.updatedAt = new Date().toISOString();
+          broadcast("plan", { project: plan.project });
+          return Response.json({ ok: true, upcoming: !!plan.upcoming });
+        });
+      },
+    },
+
     // Changelog since last release. Used by the pre-release hook to inject
     // a structured summary of what's shipping. Returns built/refactor/update/
     // bug fix/security fix/done tags emitted AFTER the most recent `-(release)`

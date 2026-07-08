@@ -14,7 +14,7 @@ const SRC = await Bun.file(join(import.meta.dir, "..", "parse-tags.ts")).text();
 
 describe("parse-tags.js exit(2) ordering (#231)", () => {
   test("tags are POSTed before the ask:rules serve can exit(2)", () => {
-    const postIdx = SRC.indexOf("const body = JSON.stringify({ cwd, session_id: sessionId, entries });");
+    const postIdx = SRC.indexOf("const body = JSON.stringify({ cwd, session_id: sessionId, entries: freshEntries });");
     const serveIdx = SRC.indexOf("[devlog standards]");
     expect(postIdx).toBeGreaterThan(-1);
     expect(serveIdx).toBeGreaterThan(-1);

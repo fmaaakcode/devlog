@@ -37,6 +37,27 @@ export function pathsEqual(a: string, b: string): boolean {
   return normalizePath(a) === normalizePath(b);
 }
 
+// Project-relative display list for a tag's touched files (position memory
+// #486): in-tree absolute paths lose the root prefix, out-of-tree absolute
+// paths (session scratchpads recorded under the project) are dropped — the
+// same scoping rule as the release diff — and relative paths (older stores)
+// pass through. Returns undefined when nothing survives, so callers can spread
+// it as an optional field. Shared by ask:retro and the release-page file lines.
+export function projectRelativeFiles(files: string[] | undefined, root: string): string[] | undefined {
+  if (!files?.length) return undefined;
+  const r = normalizeSlashes(root || "");
+  const out: string[] = [];
+  for (const f of files) {
+    const n = normalizeSlashes(f);
+    const isAbs = /^(?:[a-zA-Z]:)?\//.test(n);
+    if (r && isAbs) {
+      if (!(pathsEqual(n, r) || isPathInside(r, n))) continue;
+      out.push(n.slice(r.length).replace(/^\//, "") || n);
+    } else out.push(n);
+  }
+  return out.length ? out : undefined;
+}
+
 // True when `child` is strictly inside `parent` (not equal). Used to detect
 // when a hook's cwd lives under an existing project's path — e.g. Tauri's
 // `src-tauri/` subfolder triggering a phantom second project registration.

@@ -6,7 +6,8 @@
 // live watcher map, so they're injected via deps; everything else is a shared
 // import. Spread into server.ts's routeDefs.
 
-import { loadData, withData } from "./data";
+import { loadData, withData, SECURITY_OPEN_TAGS } from "./data";
+import { orphanCounts, isTombstone, purgeProjectData } from "./maintenance";
 import { broadcast } from "./broadcast";
 import { softFail } from "./soft-fail";
 import { appendAudit } from "./audit";
@@ -21,6 +22,11 @@ import { join, dirname } from "node:path";
 type ApiReq = Bun.BunRequest;
 const L = <T>(en: T, ar: T): T => (currentLang() === "ar" ? ar : en);
 
+// Tag kinds the dashboard's security card enumerates from the tag rows
+// themselves (verdicts only supply their open/closed state) — never windowed
+// out of a ?limit= project-view response, however old they are.
+const ALWAYS_KEPT_TAGS = new Set([...SECURITY_OPEN_TAGS, "bug found", "outdated"]);
+
 export interface ProjectRouteDeps {
   // fs.watch handle management — these mutate the server's live watcher map, so
   // they stay in server.ts and are forwarded here.
@@ -32,6 +38,124 @@ export interface ProjectRouteDeps {
 /** Build the project delete/rename route group. Spread into server.ts's routeDefs. */
 export function makeProjectRoutes({ releaseWatchersUnder, refreshWatchers, renameWithRetry }: ProjectRouteDeps): Record<string, unknown> {
   return {
+    // #375: names living only in the stores (tags/events/plans/worklog) with
+    // no registry entry — leftovers of deleted projects and historical naming
+    // bugs ("D:helper", "v1.3.0", "unknown"). Read-only report, sorted by tag
+    // count; the sweep below is explicit, name-listed, audited + token-gated.
+    "/api/orphan-projects": {
+      async GET() {
+        const data = await loadData();
+        const orphans = [...orphanCounts(data).entries()].map(([name, c]) => ({ name, ...c }))
+          .sort((a, b) => b.tags - a.tags);
+        return Response.json({ orphans, count: orphans.length });
+      },
+    },
+
+    // R3 #4 (lazy dashboard): everything the project view needs for ONE
+    // project in a single response — the full profile plus that project's
+    // tags/events/plans slices. The dashboard opens a project from this
+    // instead of pulling the whole /api/data snapshot, whose payload grows
+    // with every project's history.
+    //
+    // ?limit=N (N>0) windows the tag/event FEED to the latest N — the switch
+    // render is O(rendered DOM), so an unbounded history froze the UI ~300ms
+    // on a 1474-tag project (measured over CDP; an empty project renders in
+    // 14ms). Tags the security card enumerates exhaustively (security/bug
+    // found/outdated) are ALWAYS kept regardless of age: their open/closed
+    // lists and counts come from the tag rows themselves, and windowing them
+    // would silently drop old open vulnerabilities. The todos card is immune
+    // — it renders from /api/verdicts, which is computed server-side over the
+    // full history. No/zero limit → full slices (the "show more" path and
+    // every pre-existing consumer).
+    "/api/project-view/:name": {
+      async GET(req: ApiReq) {
+        const name = req.params.name;
+        const limit = Math.max(0, parseInt(new URL(req.url).searchParams.get("limit") || "0", 10) || 0);
+        const data = await loadData();
+        const profile = data.projects[name];
+        if (!profile) return Response.json({ error: "Not found" }, { status: 404 });
+        const allTags = data.tags.filter(t => t.project === name);
+        const allEvents = data.events.filter(e => e.project === name);
+        let tags = allTags;
+        let events = allEvents;
+        if (limit > 0 && allTags.length > limit) {
+          const recent = new Set(allTags.slice(-limit).map(t => t.id));
+          tags = allTags.filter(t => recent.has(t.id) || ALWAYS_KEPT_TAGS.has(t.tag));
+        }
+        if (limit > 0 && allEvents.length > limit) events = allEvents.slice(-limit);
+        return Response.json({
+          project: name,
+          profile,
+          tags,
+          events,
+          plans: data.plans.filter(p => p.project === name),
+          tagsTotal: allTags.length,
+          eventsTotal: allEvents.length,
+        });
+      },
+    },
+
+    "/api/cleanup-orphans": {
+      async POST(req: ApiReq) {
+        let names: string[] = [];
+        try {
+          const b = await req.json() as { names?: unknown };
+          if (Array.isArray(b?.names)) names = b.names.filter((x): x is string => typeof x === "string");
+        } catch { /* falls through to the 400 below */ }
+        if (!names.length) return Response.json({ error: "names[] required" }, { status: 400 });
+        if (names.length > 500) return Response.json({ error: "too many names (max 500)" }, { status: 413 });
+        return await withData(async (data) => {
+          // Registered names are refused, never deleted — this endpoint only
+          // sweeps store leftovers that have no owning project.
+          const registered = new Set(Object.keys(data.projects));
+          const gone = new Set(names.filter(n => !registered.has(n)));
+          const skipped = names.filter(n => registered.has(n));
+          const removedEntries = purgeProjectData(data, gone);
+          // Audit the OUTCOME, not the request — a "N names" row written before
+          // validation reads as a deletion even when every name was refused.
+          await appendAudit("projects.cleanup-orphans", req, {
+            target: `removed ${gone.size}/${names.length} names (${removedEntries} rows)`,
+          });
+          return Response.json({ ok: true, removed: [...gone], skipped, removedEntries });
+        });
+      },
+    },
+
+    // The opt-in tombstone sweep promised in cleanupMissingProjects: projects
+    // whose folder has been gone for `days`+ (disconnectedSince marker) are
+    // deleted with all their data — but only on this explicit call, never
+    // automatically (a missing path may be an unplugged drive or network
+    // share). Body: { days?: number } (default 30, clamped to [1, 3650] — a
+    // huge value would overflow into a maxAgeMs no marker can ever exceed,
+    // silently making the sweep a permanent no-op).
+    "/api/cleanup-tombstones": {
+      async POST(req: ApiReq) {
+        let days = 30;
+        try {
+          const body = await req.json() as { days?: unknown };
+          if (typeof body?.days === "number" && Number.isFinite(body.days)) days = Math.min(3650, Math.max(1, body.days));
+        } catch { /* empty body → default window */ }
+        const maxAgeMs = days * 24 * 3600 * 1000;
+        return await withData(async (data) => {
+          const removed: string[] = [];
+          // isTombstone re-checks the disk at delete time — the folder may have come
+          // back since the marker was set (stale marker = cleared on next sweep).
+          for (const [name, project] of Object.entries(data.projects)) {
+            if (!isTombstone(project, maxAgeMs)) continue;
+            delete data.projects[name];
+            removed.push(name);
+          }
+          if (removed.length) {
+            purgeProjectData(data, new Set(removed));
+            for (const name of removed) broadcast("delete", { project: name });
+          }
+          // Outcome, not intent — same rule as cleanup-orphans above.
+          await appendAudit("projects.cleanup-tombstones", req, { target: `>${days}d — removed ${removed.length}` });
+          return Response.json({ ok: true, removed, days });
+        });
+      },
+    },
+
     "/api/project/:name": {
       async DELETE(req: ApiReq) {
         const name = req.params.name;   // Bun pre-decodes the route param
@@ -39,10 +163,7 @@ export function makeProjectRoutes({ releaseWatchersUnder, refreshWatchers, renam
         return await withData(async (data) => {
           if (!data.projects[name]) return Response.json({ error: "Not found" }, { status: 404 });
           delete data.projects[name];
-          data.tags = data.tags.filter(t => t.project !== name);
-          data.plans = data.plans.filter(p => p.project !== name);
-          data.events = data.events.filter(e => e.project !== name);
-          data.worklog = data.worklog.filter(w => w.project !== name);
+          purgeProjectData(data, new Set([name]));
           broadcast("delete", { project: name });
           return Response.json({ ok: true });
         });

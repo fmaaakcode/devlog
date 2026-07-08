@@ -1,8 +1,15 @@
+        import { data, activeProject, setActiveProject, headerBuilt, setHeaderBuilt, setCachedTree, setFullRenderNeeded } from "./dashboard-state.js";
+        import { API, esc, safeHref, langColors, destructiveHeaders, uiAlert, uiConfirm, uiPrompt, activeSessionsByProject } from "./dashboard-core.js";
+        import { summaryTagCounts, summaryVulnClass, summaryLastActivity, summaryOrphans, summaryTombstones, summaryUntagged, summaryUntaggedBy, ACTIVE_WINDOW_MS, fetchProjectView, refreshActiveView } from "./dashboard-data.js";
+        import { patchSessions } from "./dashboard-panels.js";
+
         function renderProjectItem(name) {
             const p = data.projects[name];
-            const tagCount = (data.tags || []).filter(t => t.project === name).length;
+            // Counts + vuln verdict come from the summary maps in both modes
+            // (#379) — the server judges, the sidebar displays.
+            const tagCount = summaryTagCounts[name] || 0;
             const color = langColors[p.language] || langColors.default;
-            const vulnCls = projectVulnClass(p);
+            const vulnCls = summaryVulnClass[name] || '';
             const title = vulnCls === 'vuln-danger' ? 'يحتوي مكتبات ذات ثغرات أمنية'
                         : vulnCls === 'vuln-warn' ? 'يحتوي مكتبات غير محدثة'
                         : vulnCls === 'vuln-safe' ? 'كل المكتبات سليمة ومحدثة'
@@ -22,24 +29,22 @@
             </div>`;
         }
 
-        function renderSidebar() {
+        export function renderSidebar() {
             const elActive = document.getElementById("projectListActive");
             const elOther = document.getElementById("projectListOther");
             const names = Object.keys(data.projects);
             if (names.length === 0) {
                 elActive.innerHTML = '<div class="sidebar-empty">لا توجد مشاريع بعد<br>ابدأ العمل في أي مشروع وسيظهر هنا تلقائياً</div>';
                 elOther.innerHTML = '';
+                // #401: the orphan/tombstone sweep must still render with an EMPTY
+                // registry — that corrupted-registry case (names in the stores but no
+                // project entries) is exactly what it was built for. Running it here
+                // also clears a stale row left over from when projects existed.
+                renderMaintRow();
                 return;
             }
-            const lastActivity = {};
-            for (const t of (data.tags || [])) {
-                const ts = +new Date(t.timestamp) || 0;
-                if (ts > (lastActivity[t.project] || 0)) lastActivity[t.project] = ts;
-            }
-            for (const e of (data.events || [])) {
-                const ts = +new Date(e.timestamp) || 0;
-                if (ts > (lastActivity[e.project] || 0)) lastActivity[e.project] = ts;
-            }
+            // Recency ships precomputed in the summary (#379) — both modes.
+            const lastActivity = summaryLastActivity || {};
             const now = Date.now();
             const isActive = (name) => {
                 if ((activeSessionsByProject[name] || []).length > 0) return true;
@@ -61,38 +66,82 @@
 
             elActive.innerHTML = renderCard("نشطة (آخر 7 أيام)", active, "لا توجد مشاريع نشطة");
             elOther.innerHTML = renderCard("باقي المشاريع", other, "لا يوجد");
+            renderMaintRow();
         }
 
-        function projectVulnClass(p) {
-            const vulns = (vulnCache && vulnCache[p.name]) || p.vulnResults || {};
-            const libs = p.libraries || [];
-            let hasDanger = false, hasWarn = false, scannedAny = false;
-            for (const l of libs) {
-                const v = vulns[l.name];
-                if (!v || (v.status === "unscannable" || v.status === "unknown")) continue;
-                scannedAny = true;
-                if (v.icon === 'warning' || v.icon === 'x') { hasDanger = true; break; }
-                if (v.isLatest === false && l.version !== 'latest') hasWarn = true;
+        // Sweep buttons (#375/#380) — visible only when there's something to
+        // clean; counts arrive with the summary in both modes.
+        function renderMaintRow() {
+            const el = document.getElementById('maintRow');
+            if (!el) return;
+            const btn = (action, label) =>
+                `<button data-action="${action}" style="width:100%;text-align:right;background:none;border:1px dashed var(--border);border-radius:6px;color:var(--text2);font-size:0.7em;padding:5px 10px;cursor:pointer;margin-top:6px">${label}</button>`;
+            let h = '';
+            if (summaryTombstones > 0) h += btn('cleanup-tombstones', `🪦 مشاريع مفقودة من القرص 30+ يومًا (${summaryTombstones})`);
+            if (summaryOrphans > 0) h += btn('cleanup-orphans', `🧹 أسماء يتيمة في السجلات (${summaryOrphans})`);
+            // Passive compliance counter (#434) — informational only, no action:
+            // sessions that wrote code but stored no tags (server-computed, ~30d
+            // window). #447: the tooltip names WHICH projects and how many each,
+            // instead of a generic explanation.
+            if (summaryUntagged > 0) {
+                const perProject = Object.entries(summaryUntaggedBy)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([n, c]) => `${n}: ${c}`)
+                    .join(' · ');
+                h += `<div title="${esc(perProject || 'جلسات هادئة عدّلت ملفات ولم تسجّل أي تاق')}" style="width:100%;text-align:right;border:1px dashed var(--border);border-radius:6px;color:var(--text2);font-size:0.7em;padding:5px 10px;margin-top:6px;opacity:0.8">👻 جلسات كتبت كودًا بلا تاقات (${summaryUntagged})</div>`;
             }
-            if (hasDanger) return 'vuln-danger';
-            if (hasWarn) return 'vuln-warn';
-            if (scannedAny) return 'vuln-safe';
-            return '';
+            el.innerHTML = h;
+            el.style.display = h ? '' : 'none';
         }
 
-        async function renameProject(name) {
-            const next = prompt(`إعادة تسمية المشروع "${name}"\nسيُعاد تسمية مجلده على القرص أيضاً (إن وُجد)، وتنتقل التاقات والميموري.`, name);
+        export async function cleanupTombstones() {
+            if (!(await uiConfirm('حذف المشاريع التي اختفى مجلدها من القرص منذ 30+ يومًا نهائيًا بكل بياناتها (تاقات/أحداث/خطط)؟', { okText: 'احذف نهائيًا' }))) return;
+            try {
+                const r = await fetch(`${API}/api/cleanup-tombstones`, {
+                    method: 'POST',
+                    headers: await destructiveHeaders({ 'Content-Type': 'application/json' }),
+                    body: '{}',
+                });
+                const j = await r.json().catch(() => ({}));
+                if (!r.ok) { uiAlert(j.error || 'فشل الكنس'); return; }
+                uiAlert(j.removed?.length ? `حُذفت: ${j.removed.join('، ')}` : 'لا شيء مؤهلًا للحذف (المجلدات عادت أو العلامات حديثة)');
+            } catch { uiAlert('تعذّر الاتصال بالخادم'); }
+            refreshActiveView(true);
+        }
+
+        export async function cleanupOrphans() {
+            try {
+                const r = await fetch(`${API}/api/orphan-projects`);
+                const { orphans } = await r.json();
+                if (!orphans?.length) { uiAlert('لا أسماء يتيمة'); refreshActiveView(true); return; }
+                const names = orphans.map(o => o.name);
+                const sample = names.slice(0, 12).join('، ') + (names.length > 12 ? ` … و${names.length - 12} أخرى` : '');
+                if (!(await uiConfirm(`حذف بيانات ${names.length} اسمًا يتيمًا (تاقات/أحداث/خطط لأسماء غير مسجّلة كمشاريع)؟\n\n${sample}\n\nلا يمسّ أي مشروع مسجّل.`, { okText: 'طهّر اليتائم' }))) return;
+                const res = await fetch(`${API}/api/cleanup-orphans`, {
+                    method: 'POST',
+                    headers: await destructiveHeaders({ 'Content-Type': 'application/json' }),
+                    body: JSON.stringify({ names }),
+                });
+                const j = await res.json().catch(() => ({}));
+                if (!res.ok) { uiAlert(j.error || 'فشل التطهير'); return; }
+                uiAlert(`نُظّف ${j.removed?.length ?? 0} اسمًا (${j.removedEntries ?? 0} سجلًّا حُذف)`);
+            } catch { uiAlert('تعذّر الاتصال بالخادم'); }
+            refreshActiveView(true);
+        }
+
+        export async function renameProject(name) {
+            const next = await uiPrompt(`إعادة تسمية المشروع "${name}"\nسيُعاد تسمية مجلده على القرص أيضاً (إن وُجد)، وتنتقل التاقات والميموري.`, name, { title: 'إعادة تسمية', okText: 'أعد التسمية' });
             if (next === null) return;                 // cancelled
             const newName = next.trim();
             if (!newName || newName === name) return;
             try {
                 const res = await fetch(`${API}/api/project/${encodeURIComponent(name)}/rename`, {
                     method: "POST",
-                    headers: { "Content-Type": "application/json" },
+                    headers: await destructiveHeaders({ "Content-Type": "application/json" }),
                     body: JSON.stringify({ newName }),
                 });
                 const result = await res.json().catch(() => ({}));
-                if (!res.ok) { alert(result.error || "تعذّرت إعادة التسمية"); return; }
+                if (!res.ok) { uiAlert(result.error || "تعذّرت إعادة التسمية"); return; }
                 // Note what the server actually did (folder + memory) so the user
                 // knows whether the on-disk folder moved and if any memory card
                 // was left behind (not overwritten at the destination).
@@ -103,29 +152,33 @@
                 if (mv) bits.push(`نُقل ${mv} بطاقة ميموري`);
                 if (sk) bits.push(`تُخطّي ${sk} بطاقة موجودة مسبقاً`);
                 if (bits.length) console.log("[rename]", bits.join(" · "));
-                if (sk) alert(`تمّت إعادة التسمية.\nتُخطّي ${sk} بطاقة ميموري لوجود نظيرة لها في الوجهة (لم تُطمَس).`);
+                if (sk) uiAlert(`تمّت إعادة التسمية.\nتُخطّي ${sk} بطاقة ميموري لوجود نظيرة لها في الوجهة (لم تُطمَس).`);
                 // The WS "rename" broadcast refreshes data; switch selection if needed.
-                if (activeProject === name) { activeProject = newName; headerBuilt = false; cachedTree = null; }
-                await fetchData(true);
-            } catch { alert("تعذّر الاتصال بالخادم"); }
+                if (activeProject === name) { setActiveProject(newName); setHeaderBuilt(false); setCachedTree(null); }
+                await refreshActiveView(true);
+            } catch { uiAlert("تعذّر الاتصال بالخادم"); }
         }
 
-        async function deleteProject(name) {
-            if (!confirm(`حذف المشروع "${name}"؟\nسيتم حذف جميع التاقات والأحداث المرتبطة به.`)) return;
+        export async function deleteProject(name) {
+            if (!(await uiConfirm(`حذف المشروع "${name}"؟\nسيتم حذف جميع التاقات والأحداث المرتبطة به.`, { okText: "احذف المشروع" }))) return;
             try {
-                const res = await fetch(`${API}/api/project/${encodeURIComponent(name)}`, { method: "DELETE" });
+                const res = await fetch(`${API}/api/project/${encodeURIComponent(name)}`, { method: "DELETE", headers: await destructiveHeaders() });
                 if (res.ok) {
                     delete data.projects[name];
                     data.tags = (data.tags || []).filter(t => t.project !== name);
                     data.plans = (data.plans || []).filter(p => p.project !== name);
                     data.events = (data.events || []).filter(e => e.project !== name);
                     if (activeProject === name) {
-                        activeProject = Object.keys(data.projects)[0] || "";
-                        headerBuilt = false;
-                        cachedTree = null;
+                        setActiveProject(Object.keys(data.projects)[0] || "");
+                        setHeaderBuilt(false);
+                        setCachedTree(null);
                         if (activeProject) {
-                            renderSidebar();
-                            renderProject();
+                            // R3 review: the store holds only the DELETED project's
+                            // slices in lazy mode — rendering the successor from it
+                            // gave a hollow view (summary-stub header, empty cards).
+                            // Fetch the successor's own view; it refreshes verdicts,
+                            // sidebar and render in one pass.
+                            fetchProjectView(activeProject, true);
                         } else {
                             document.getElementById("projectView").style.display = "none";
                             document.getElementById("welcome").style.display = "flex";
@@ -134,33 +187,41 @@
                             renderSidebar();
                         }
                     } else {
-                        renderSidebar();
+                        // The summary maps still hold the deleted project —
+                        // refetch instead of patching them by hand.
+                        refreshActiveView(true);
                     }
                 }
-            } catch {}
+            } catch {
+                // Delete request failed — sidebar stays as-is, user can retry.
+            }
         }
 
-        function selectProject(name) {
-            activeProject = name;
-            fullRenderNeeded = true;
-            headerBuilt = false;
-            cachedTree = null;
+        export function selectProject(name) {
+            setActiveProject(name);
+            setFullRenderNeeded(true);
+            setHeaderBuilt(false);
+            setCachedTree(null);
             document.getElementById("welcome").style.display = "none";
             document.getElementById("projectView").style.display = "flex";
             const newHash = name ? `#project=${encodeURIComponent(name)}` : '';
             if (location.hash !== newHash) history.replaceState(null, '', newHash || location.pathname);
-            renderSidebar();
-            renderProject();
             // Smart auto-rescan if manifests changed since last scan (server fires async, broadcasts via WS)
-            fetch(`${API}/api/check-stale/${encodeURIComponent(name)}`, { method: "POST" }).catch(() => {});
+            fetch(`${API}/api/check-stale/${encodeURIComponent(name)}`, { method: "POST" }).catch(() => {
+                // Fire-and-forget: staleness check is opportunistic.
+            });
+            // The client holds only the summary (or another project's slices) —
+            // R3 #4: fetch just THIS project's view; it renders sidebar +
+            // project once it lands, and surfaces a retry bar on failure.
+            fetchProjectView(name, true);
         }
 
-        function projectFromHash() {
+        export function projectFromHash() {
             const m = location.hash.match(/project=([^&]+)/);
             return m ? decodeURIComponent(m[1]) : null;
         }
 
-        function getProjectTags() {
+        export function getProjectTags() {
             return (data.tags || []).filter(t => t.project === activeProject)
                 .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
         }
@@ -178,19 +239,31 @@
             el.classList.add(flashClass);
         }
 
-        let headerBuilt = false; // track if header structure exists
+        // headerBuilt moved to dashboard-state.js (R3 #3) — data.js resets it too.
 
         // Shared about-button state (#229). buildHeaderOnce renders it and
         // patchHeader live-refreshes it — both must agree on the class + title,
         // so the rule lives here once instead of in two literals that can drift.
         function aboutBtnAttrs(hasAbout) {
             return {
-                cls: 'about-btn ' + (hasAbout ? 'has-about' : 'no-about'),
+                cls: `about-btn ${hasAbout ? 'has-about' : 'no-about'}`,
                 title: hasAbout ? 'مرر الماوس لعرض التفاصيل' : 'لا يوجد about — أرسل -(about) لإضافته',
             };
         }
 
-        function buildHeaderOnce(p, tags) {
+        // Shared git-badge markup (#492): buildHeaderOnce renders it and patchHeader
+        // swaps it live when the remote changes, so both must agree on the markup —
+        // same one-definition rule as aboutBtnAttrs. `data-remote` is the change key.
+        function gitBadgeHtml(p) {
+            const remote = p.gitRemote || '';
+            if (remote) {
+                const href = p.gitRepoSlug ? `https://github.com/${p.gitRepoSlug}` : safeHref(p.gitRemote);
+                return `<a href="${esc(href)}" target="_blank" rel="noopener" id="hdr-git" data-remote="${esc(remote)}" style="font-size:0.7em;padding:2px 8px;border-radius:4px;background:#0d1f2e;color:#7cc4f5;font-weight:600;text-decoration:none" title="${esc(remote)}">🔗 ${esc(p.gitRepoSlug || 'remote')}</a>`;
+            }
+            return `<span id="hdr-git" data-remote="" style="font-size:0.7em;padding:2px 8px;border-radius:4px;background:#1a1a1a;color:var(--text2);font-weight:600" title="No git remote configured">📁 local</span>`;
+        }
+
+        export function buildHeaderOnce(p, tags) {
             const color = langColors[p.language] || langColors.default;
             const lastRelease = tags.find(t => t.tag === "release");
             const versionMatch = lastRelease?.content.match(/v[\d.]+/);
@@ -199,7 +272,9 @@
             // Topbar left: name + version + 3 small badges (lang, framework, runtime) + dependencies button
             document.getElementById("topbarLeft").innerHTML = `
                 <span class="brand-name" id="hdr-name">${esc(p.name)}</span>
-                <span class="brand-version" id="hdr-version" style="${versionStr ? '' : 'display:none'}">${esc(versionStr)}</span>
+                <span class="brand-version" id="hdr-version" data-release-pop="1" data-action="open-releases" style="cursor:pointer;${versionStr ? '' : 'display:none'}" title="">${esc(versionStr)}</span>
+                <span class="brand-version" id="hdr-next-release" data-action="open-release-preview" style="cursor:pointer;border-style:dashed;opacity:0.75" title="معاينة الإصدار القادم قبل إصداره — تُولَّد حيًّا ولا تكتب شيئًا">القادم ⏳</span>
+                <span class="brand-version" id="hdr-client-report" data-action="open-client-report" style="cursor:pointer;opacity:0.85" title="تقرير حالة موجّه للعميل: قدرات النظام وآخر إصدار والاعتمادية — أعداد فقط بلا تفاصيل داخلية أو أمنية">تقرير العميل 🧾</span>
                 <span class="deps-btn unknown" id="hdr-deps">
                     <span class="deps-dot"></span>
                     <span>dependencies</span>
@@ -211,15 +286,20 @@
                     <span class="stats-count" id="hdr-stats-count">0</span>
                     <div class="stats-popup" id="hdr-stats-popup"></div>
                 </span>
+                <span class="stats-btn" id="hdr-feats">
+                    <span>قدرات</span>
+                    <span class="stats-count" id="hdr-feats-count">0</span>
+                    <div class="stats-popup" id="hdr-feats-popup" style="min-width:300px;max-width:420px;text-align:right"></div>
+                </span>
                 <span class="lang-badge" id="hdr-lang" style="background:${color}18; color:${color}">${esc(p.language)}</span>
                 <span class="framework-badge" id="hdr-framework" style="background:#04201a;color:var(--emerald);${p.framework ? '' : 'display:none'}">${esc(p.framework || '')}</span>
-                ${p.runtime ? `<span id="hdr-runtime" style="font-size:0.7em;padding:2px 8px;border-radius:4px;background:#1a1a2e;color:#7c8cf5;font-weight:600">${esc(p.runtime.name || '')}${p.runtime.version ? ' ' + esc(p.runtime.version) : ''}${p.runtime.edition ? ' · ' + esc(p.runtime.edition) : ''}</span>` : ''}
-                ${p.gitRemote ? `<a href="${esc(p.gitRepoSlug ? 'https://github.com/' + p.gitRepoSlug : safeHref(p.gitRemote))}" target="_blank" rel="noopener" id="hdr-git" style="font-size:0.7em;padding:2px 8px;border-radius:4px;background:#0d1f2e;color:#7cc4f5;font-weight:600;text-decoration:none" title="${esc(p.gitRemote)}">🔗 ${esc(p.gitRepoSlug || 'remote')}</a>` : '<span id="hdr-git" style="font-size:0.7em;padding:2px 8px;border-radius:4px;background:#1a1a1a;color:var(--text2);font-weight:600" title="No git remote configured">📁 local</span>'}
+                <span id="hdr-runtime" style="font-size:0.7em;padding:2px 8px;border-radius:4px;background:#1a1a2e;color:#7c8cf5;font-weight:600;${p.runtime ? '' : 'display:none'}">${p.runtime ? `${esc(p.runtime.name || '')}${p.runtime.version ? ` ${esc(p.runtime.version)}` : ''}${p.runtime.edition ? ` · ${esc(p.runtime.edition)}` : ''}` : ''}</span>
+                ${gitBadgeHtml(p)}
                 <span id="hdr-sessions" data-action="open-sessions" data-project="${esc(p.name)}" style="display:none;font-size:0.7em;padding:2px 8px;border-radius:4px;background:#0d2e1f;color:#06d6a0;font-weight:600;cursor:pointer" title="جلسات Claude النشطة"></span>
             `;
             document.getElementById("topbar").classList.add("has-project");
 
-            const hasAbout = !!(p.about && p.about.trim());
+            const hasAbout = !!(p.about?.trim());
             const ab = aboutBtnAttrs(hasAbout);
             // Description text and the about button are SEPARATE siblings: patchHeader
             // updates #hdr-desc-text only, so the about button survives live patches.
@@ -230,11 +310,43 @@
                     <span class="${ab.cls}" data-about-btn="1" id="hdr-about-btn" title="${ab.title}">about</span>
                 </div>
             `;
-            headerBuilt = true;
+            setHeaderBuilt(true);
             patchLibraries(p);
             patchFileExts(p);
             patchSessions(p.name);
             patchStatsButton(p, tags);
+            patchFeaturesButton(p);
+        }
+
+        // «قدرات» header chip — the client-language capability inventory
+        // (feature tags, resolved server-side: updates applied, removed
+        // dropped, each attributed to the release that shipped it). Hover
+        // lists them; click opens the full client report.
+        async function patchFeaturesButton(p) {
+            const btn = document.getElementById('hdr-feats');
+            const popup = document.getElementById('hdr-feats-popup');
+            const countEl = document.getElementById('hdr-feats-count');
+            if (!btn || !popup || !countEl) return;
+            try {
+                const r = await fetch(`${API}/api/features?project=${encodeURIComponent(p.name)}`);
+                const { features = [] } = await r.json();
+                if (countEl.textContent !== String(features.length)) countEl.textContent = features.length;
+                if (!features.length) {
+                    popup.innerHTML = '<div class="stats-section-title">قدرات المشروع</div><div style="font-size:0.75em;color:var(--text2);padding:4px 0">لا قدرات مسجّلة بعد — تُعلَن بوسم <code style="color:var(--gold)">-(feature)</code> عند اكتمال قدرة يلمسها العميل</div>';
+                } else {
+                    const rows = [...features].reverse().map(f => `
+                        <div class="stats-row" style="gap:10px" title="${esc(f.addedAt ? `أُضيفت: ${String(f.addedAt).slice(0, 16).replace('T', ' ')}` : '')}">
+                            <span class="stats-key" style="flex:1;white-space:normal;line-height:1.5">${esc(f.text)}</span>
+                            <span class="stats-value" style="flex-shrink:0;color:${f.sinceVersion ? 'var(--emerald)' : 'var(--gold)'}" title="${f.sinceVersion ? 'الإصدار الذي شحن هذه القدرة' : 'لم تُشحَن في إصدار بعد'}">${f.sinceVersion ? esc(f.sinceVersion) : 'قادمة'}</span>
+                        </div>`).join('');
+                    popup.innerHTML = `<div class="stats-section-title">قدرات المشروع</div><div class="stats-grid">${rows}</div>`;
+                }
+                btn.title = 'ما يقدر عليه النظام اليوم — اضغط لفتح تقرير العميل';
+                btn.onclick = (e) => {
+                    if (e.target.closest('.stats-popup')) return;
+                    window.open(`${API}/api/client-report?project=${encodeURIComponent(p.name)}`, '_blank', 'noopener');
+                };
+            } catch { /* keep the last rendered popup on a transient fetch failure */ }
         }
 
         function patchStatsButton(p, tags) {
@@ -279,13 +391,13 @@
             }
         }
 
-        let vulnCache = {}; // { projectName: { libName: vulnResult } }
+        export const vulnCache = {}; // { projectName: { libName: vulnResult } }
 
         // Public registry page for a package, derived from the project language
         // (same ecosystem map the server scans against). Lets the user click a
         // library to verify the version/date manually. Returns '' for
         // ecosystems with no stable per-package page (C/C++/vcpkg).
-        function registryUrl(language, name) {
+        export function registryUrl(language, name) {
             if (!name) return '';
             const n = encodeURIComponent(name);
             switch (language) {
@@ -304,7 +416,7 @@
             }
         }
 
-        function patchLibraries(p) {
+        export function patchLibraries(p) {
             // Use saved vulnResults from server if no fresh scan in cache
             const vulns = vulnCache[p.name] || p.vulnResults || {};
             patchDepsButton(p, vulns);
@@ -334,7 +446,7 @@
                 const sevColors = { critical: '#ff1744', high: '#ff5252', moderate: '#ff9800', low: '#ffd93d', none: 'var(--pink)' };
                 const sev = (v?.severity || '').toLowerCase();
                 const vulnColor = sevColors[sev] || 'var(--pink)';
-                const vulnTitle = v && v.vulns > 0 ? `${v.vulns} ثغرة${v.topVuln ? ` — ${v.topVuln.id} (${v.topVuln.severity}${v.topVuln.score ? ' ' + v.topVuln.score : ''})` : ''}${sev && sev !== 'none' ? ` — خطورة: ${sev}` : ''}` : '';
+                const vulnTitle = v && v.vulns > 0 ? `${v.vulns} ثغرة${v.topVuln ? ` — ${v.topVuln.id} (${v.topVuln.severity}${v.topVuln.score ? ` ${v.topVuln.score}` : ''})` : ''}${sev && sev !== 'none' ? ` — خطورة: ${sev}` : ''}` : '';
                 const vulnCount = v && v.vulns > 0 ? `<span data-action="show-vulns" data-project="${esc(p.name)}" data-lib="${esc(l.name)}" style="color:${vulnColor};margin-left:4px;font-size:0.85em;cursor:pointer" title="${esc(vulnTitle)} — اضغط للتفاصيل">⚠${v.vulns}${(sev === 'critical' || sev === 'high') ? '!' : ''}</span>` : '';
                 const isOutdated = !isBad && v && v.isLatest === false && l.version !== 'latest';
                 const outdatedBorder = isOutdated ? '#4a3a00' : '';
@@ -462,7 +574,7 @@
             }
         }
 
-        function patchHeader() {
+        export function patchHeader() {
             const p = data.projects[activeProject];
             if (!p || !headerBuilt) return;
             const tags = getProjectTags();
@@ -481,7 +593,7 @@
                 }
                 // Refresh the about button's state live (e.g. an -(about) was just added)
                 // without rebuilding it, so it never blinks out between patches.
-                const hasAbout = !!(p.about && p.about.trim());
+                const hasAbout = !!(p.about?.trim());
                 const aboutBtn = document.getElementById('hdr-about-btn');
                 if (aboutBtn) {
                     const ab = aboutBtnAttrs(hasAbout);
@@ -511,16 +623,32 @@
             if (langEl && langEl.textContent !== p.language) {
                 const color = langColors[p.language] || langColors.default;
                 langEl.textContent = p.language;
-                langEl.style.background = color + '18';
+                langEl.style.background = `${color}18`;
                 langEl.style.color = color;
                 langEl.classList.remove('val-flash'); void langEl.offsetWidth; langEl.classList.add('val-flash');
             }
 
-            // Runtime
+            // Framework — the span always exists (display:none when absent), so a
+            // framework detected by a later rescan appears without a reload.
+            const fwEl = document.getElementById('hdr-framework');
+            if (fwEl) {
+                patch(fwEl, p.framework || '');
+                fwEl.style.display = p.framework ? '' : 'none';
+            }
+
+            // Git badge (#492) — built as <a> or <span> depending on the remote, so
+            // a live change swaps the element wholesale instead of patching text.
+            const gitEl = document.getElementById('hdr-git');
+            if (gitEl && gitEl.dataset.remote !== (p.gitRemote || '')) {
+                gitEl.outerHTML = gitBadgeHtml(p);
+            }
+
+            // Runtime — same always-present pattern as the framework badge.
             const rtEl = document.getElementById('hdr-runtime');
-            if (rtEl && p.runtime) {
-                const rtText = (p.runtime.name || '') + (p.runtime.version ? ' ' + p.runtime.version : '') + (p.runtime.edition ? ' · ' + p.runtime.edition : '');
-                if (rtEl.textContent !== rtText) { patch(rtEl, rtText); }
+            if (rtEl) {
+                const rtText = p.runtime ? (p.runtime.name || '') + (p.runtime.version ? ` ${p.runtime.version}` : '') + (p.runtime.edition ? ` · ${p.runtime.edition}` : '') : '';
+                patch(rtEl, rtText);
+                rtEl.style.display = rtText ? '' : 'none';
             }
 
             // Libraries
@@ -534,5 +662,8 @@
 
             // Stats popup (files, libs, dirs, tags, exts)
             patchStatsButton(p, tags);
+
+            // Capability inventory chip (server-resolved feature list)
+            patchFeaturesButton(p);
         }
 

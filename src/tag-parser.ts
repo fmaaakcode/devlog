@@ -3,8 +3,9 @@
 // be unit-tested without spawning Bun-as-stdin.
 
 export const ALLOWED_TAGS = [
-  "desc", "about", "plan", "built", "todo", "done", "dropped", "undo",
+  "desc", "about", "plan", "built", "todo", "upcoming", "done", "dropped", "undo",
   "bug found", "bug fix", "security fix", "security",
+  "feature update", "feature removed", "feature",
   "release", "release:major", "release:minor", "release:patch", "note", "update", "refactor",
   "decision", "insight",
   "security:dep", "security:own",
@@ -16,6 +17,22 @@ export interface ParsedTag {
   breaking: boolean;
   content: string;
 }
+
+// Headline tags are single-line BY PROTOCOL (atomic content). They must be cut
+// at end-of-line HERE, not just at ingest: a headline tag that ends a reply
+// captures `[\s\S]*?` to end-of-turn, so when a Stop-hook continuation re-reads
+// the grown turn, the SAME tag re-parses with MORE content — a different dedup
+// identity on every re-read. That breach created the #486/#487 duplicate
+// (upcoming re-stored with its tail swallowed + truncated). Single source of
+// truth: tags-service's enforceAtomicContent imports this set and stays as the
+// server-side guard (120-char cap) for clients that don't parse.
+export const SINGLE_LINE_TAGS = new Set([
+  "todo", "upcoming", "done", "dropped",
+  "bug found", "bug fix",
+  "security", "security:own", "security:dep", "security fix",
+  "note", "outdated", "update",
+  "feature", "feature update", "feature removed",
+]);
 
 const FAKE_VERSION = /^v\d+(\.\d+)+\s*$/i;
 const SUSPICIOUS_START = /^[|*`>]/;
@@ -66,9 +83,14 @@ export function parseTags(msg: string): ParsedTag[] {
     if (!m[1].startsWith("doc:")) collected.push({ idx: m.index ?? 0, m });
   }
   collected.sort((a, b) => a.idx - b.idx);
-  const raw: ParsedTag[] = collected.map(({ m }) => ({
-    tag: m[1], breaking: !!m[2], content: m[3].trim(),
-  }));
+  const raw: ParsedTag[] = collected.map(({ m }) => {
+    let content = m[3].trim();
+    // Stable identity for single-line tags: everything past the first line is
+    // turn-echo, not content (see SINGLE_LINE_TAGS). Matches what ingest-side
+    // enforcement would drop anyway, so no stored semantics change.
+    if (SINGLE_LINE_TAGS.has(m[1])) content = content.split(/\r?\n/)[0].trim();
+    return { tag: m[1], breaking: !!m[2], content };
+  });
 
   return raw.filter(({ tag, content }) => {
     if (!content) return false;

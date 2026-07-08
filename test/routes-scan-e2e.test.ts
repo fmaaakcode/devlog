@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const TEST_PORT = 17790;
+const TEST_PORT = 17858;   // unique — was 17790, shared with concurrency.test (#383)
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
 const PROJECT_ROOT = join(import.meta.dir, "..");
 const JSON_HEADERS = { "Content-Type": "application/json" };

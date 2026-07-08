@@ -17,11 +17,37 @@
   "assist": { "enabled": false },
   "overrides": [
     {
+      "includes": ["assets/**"],
+      "linter": {
+        "rules": {
+          "correctness": { "noUnusedVariables": "off" },
+          "style": { "useConst": "off" }
+        }
+      }
+    },
+    {
+      "includes": ["assets/**/*.css"],
+      "linter": {
+        "rules": {
+          "style": { "noDescendingSpecificity": "off" },
+          "complexity": { "noImportantStyles": "off" }
+        }
+      }
+    },
+    {
       "includes": ["test/**"],
       "linter": {
         "rules": {
           "suspicious": { "noExplicitAny": "off", "noTemplateCurlyInString": "off" },
           "style": { "noNonNullAssertion": "off" }
+        }
+      }
+    },
+    {
+      "includes": ["parse-tags.ts"],
+      "linter": {
+        "rules": {
+          "suspicious": { "noExplicitAny": "off" }
         }
       }
     }

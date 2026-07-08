@@ -8,7 +8,8 @@
 // the request body is typed (compile-time casts — zero runtime change) so the
 // module carries no `any`. Spread into server.ts's routeDefs.
 
-import { withData, normalizeTagContent, assignNum } from "./data";
+import { loadData, withData, normalizeTagContent, assignNum } from "./data";
+import { tsToMs } from "./maintenance";
 import { broadcast } from "./broadcast";
 import { resolveProjectFor } from "./project-resolve";
 import { exportStatusMd } from "./export";
@@ -21,6 +22,9 @@ import {
   type ClosureMismatch, type ClosureTextDivergence, type ClosureConfirm,
   type ReleaseDowngrade, type ReleaseBlocked, type ReleaseIntent,
 } from "./tags-service";
+import { applyUpcoming, applyTodoPromotion, type UpcomingChange } from "./upcoming";
+import { sessionTouchedFiles } from "./file-story";
+import { diagnoseFeatureRef, type FeatureRefProblem } from "./features";
 import type { RollbackResult } from "./release-rollback";
 import type { TagEntry } from "./types";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -41,6 +45,25 @@ type Concrete = { tag: string; content: string };
 /** Build the tag-processing route group. Spread into server.ts's routeDefs. */
 export function makeTagsRoutes(): Record<string, unknown> {
   return {
+    // One project's tags, newest-first — the lightweight read for pages that
+    // don't need the whole store (stack-map's activity glow was pulling the
+    // full /api/data payload to use a few dozen tags of one project).
+    "/api/tags/:project": {
+      async GET(req: ApiReq) {
+        const data = await loadData();
+        const url = new URL(req.url);
+        const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "1000", 10) || 1000, 1), 5000);
+        // Sort by timestamp rather than trusting append order — imported or
+        // backfilled stores aren't guaranteed chronological. tsToMs tolerates epoch
+        // numbers alongside ISO strings (the shared rule projects-summary uses too).
+        const tags = data.tags
+          .filter(t => t.project === req.params.project)
+          .sort((a, b) => tsToMs(b.timestamp) - tsToMs(a.timestamp))
+          .slice(0, limit);
+        return Response.json({ tags });
+      },
+    },
+
     "/api/tags": {
       async POST(req: ApiReq) {
         try {
@@ -64,10 +87,26 @@ export function makeTagsRoutes(): Record<string, unknown> {
           // "verify what you closed" would contradict the closure-mismatch hint
           // in the same response (QA #1).
           const storedEntries: { tag: string; content: string }[] = [];
+          // A batch carrying BOTH a release and feature tags (the feature-nudge
+          // continuation appends `-(feature)` AFTER the already-written release
+          // line, so the parser orders it after) must store the features FIRST:
+          // a feature stamped later than its release would be attributed to the
+          // NEXT release by every range-based reader (release page, inventory).
+          // Stable partition — batches without that combination are untouched.
+          let batch = body.entries || [];
+          if (batch.some(e => e.tag === "release" || (typeof e.tag === "string" && e.tag.startsWith("release:")))
+              && batch.some(e => e.tag === "feature")) {
+            batch = [...batch.filter(e => e.tag === "feature"), ...batch.filter(e => e.tag !== "feature")];
+          }
           const closureHints: ClosureMismatch[] = [];
           const closureTextWarnings: ClosureTextDivergence[] = [];
+          const featureHints: FeatureRefProblem[] = [];
           const closed: ClosureConfirm[] = [];
-          for (const entry of (body.entries || [])) {
+          const upcomingChanges: UpcomingChange[] = [];
+          // Position memory (#486): files this session touched since its
+          // previous batch — computed once, stamped on every tag stored below.
+          const touchedFiles = sessionTouchedFiles(data, body.session_id, project);
+          for (const entry of batch) {
             // Semver-intent release: -(release:patch|minor|major) — or a bare
             // -(release) with no version — carries no number. Compute it from the
             // project's highest current version and rewrite the entry into a
@@ -104,13 +143,25 @@ export function makeTagsRoutes(): Record<string, unknown> {
             // Stop hook feeds back so Claude re-closes with the right verb.
             const mismatch = diagnoseClosureMismatch(tag, content, data, project);
             if (mismatch) {
-              // "already-closed": a re-emitted closer for work that's already
-              // closed (chiefly the Stop hook re-scanning one response across a
-              // continuation — done/dropped bypass dedup by design). Drop it
-              // silently like a dup: no phantom tag, and crucially NO mismatch
-              // hint. Nagging "closes nothing" for an item that really IS closed
-              // is the false alarm that blocked the turn and trapped Claude.
+              // "already-closed": a re-emitted closer with the RIGHT verb for work
+              // that's already closed (chiefly the Stop hook re-scanning one response
+              // across a continuation — done/dropped bypass dedup by design). Drop it
+              // silently like a dup: no phantom tag, NO hint — nagging "closes nothing"
+              // for an item that really IS closed is the false alarm that trapped Claude.
+              // Every OTHER kind (wrong-verb, no-match, already-closed-wrong-verb) is a
+              // real signal — the wrong-verb-on-closed case means a likely number typo
+              // aimed at a different open item (#396) — so surface it. Never stored.
               if (mismatch.kind !== "already-closed") closureHints.push(mismatch);
+              continue;
+            }
+            // Feature references (`-(feature update)/-(feature removed) #N`)
+            // that point at no existing feature would silently no-op forever —
+            // skip the junk tag and feed a correction back (mirrors the closure
+            // mismatch path; features are NOT work closures, so they need their
+            // own diagnosis).
+            const featProblem = diagnoseFeatureRef(tag, content, data, project);
+            if (featProblem) {
+              featureHints.push(featProblem);
               continue;
             }
             // Text-divergence guard (#315): a `#N <tail>` closure whose trailing
@@ -173,6 +224,20 @@ export function makeTagsRoutes(): Record<string, unknown> {
               continue;
             }
 
+            // «قادمة»: -(upcoming) creates a deferred todo or defers open #N(s)
+            // in place; -(todo) #N promotes an upcoming item/plan back to the
+            // committed tier. Both are meta operations — outcomes are echoed to
+            // the Stop hook via `upcomingChanges`, no tag of their own is stored
+            // (creation stores its todo inside applyUpcoming).
+            if (tag === "upcoming") {
+              upcomingChanges.push(...applyUpcoming(content, data, project));
+              continue;
+            }
+            if (tag === "todo") {
+              const promoted = applyTodoPromotion(content, data, project);
+              if (promoted) { upcomingChanges.push(promoted); continue; }
+            }
+
             // Dedup: exact match OR fuzzy match on first 60 chars (catches
             // re-emits where only trailing punctuation/words differ).
             // Meta tags (done/dropped/undo) reference OTHER tags and need to
@@ -228,9 +293,10 @@ export function makeTagsRoutes(): Record<string, unknown> {
               timestamp: new Date().toISOString(),
             };
             if (entry.breaking) tagEntry.breaking = true;
+            if (touchedFiles.length) tagEntry.files = touchedFiles;
             // Assign a per-project number to openable tags so Claude can close
             // them by `#N`. Skip closures, meta, and non-tracking tags.
-            const NUMBERED_TAGS = new Set(["todo", "bug found", "security", "security:own", "security:dep"]);
+            const NUMBERED_TAGS = new Set(["todo", "bug found", "security", "security:own", "security:dep", "feature"]);
             if (NUMBERED_TAGS.has(tag) && data.projects[project]) {
               tagEntry.num = assignNum(data, project);
             }
@@ -252,7 +318,7 @@ export function makeTagsRoutes(): Record<string, unknown> {
           broadcast("tags", { project });
           // Optional verify nudge (#232): a closure with no test run this session.
           const verifyHint = verifyHintFor(storedEntries, data.events, body.session_id || "");
-          return Response.json({ ok: true, count: (body.entries || []).length, release: releaseResult, releaseIntent, releaseDowngrade, releaseBlocked, rollback, closureHints, closureTextWarnings, closed, verifyHint });
+          return Response.json({ ok: true, count: (body.entries || []).length, release: releaseResult, releaseIntent, releaseDowngrade, releaseBlocked, rollback, closureHints, closureTextWarnings, featureHints, closed, upcomingChanges, verifyHint });
           });
         } catch (e) {
           const err = e as { message?: string; stack?: string };

@@ -1,0 +1,87 @@
+// Feature-inventory + client-report + retro routes. Read-only reporting group:
+// `/api/features` powers the `-(ask:features)` pull, the release nudge and the
+// dashboard capabilities view; `/api/client-report` renders (and optionally
+// persists) the client-facing status page; `/api/retro` serves the full problem
+// corpus behind `-(ask:retro)`. Spread into server.ts's routeDefs.
+
+import { loadData } from "./data";
+import { resolveProjectFor } from "./project-resolve";
+import { pathsEqual } from "./path-utils";
+import { featureList, featuresSinceLastRelease } from "./features";
+import { collectClientReport, renderClientReportHtml, writeClientReport } from "./client-report";
+import { retroCorpus } from "./retro";
+
+type ApiReq = Bun.BunRequest;
+
+/** `?project=` (dashboard, trusted name) or `?cwd=` (hook, resolved + guarded).
+ *  Returns the project name, or null when the caller can't be matched. */
+async function resolveParam(req: ApiReq): Promise<string | null> {
+  const url = new URL(req.url);
+  const project = url.searchParams.get("project");
+  const data = await loadData();
+  if (project) return data.projects[project] ? project : null;
+  const cwd = url.searchParams.get("cwd") || "";
+  if (!cwd) return null;
+  const { name, cwd: effectiveCwd } = resolveProjectFor(data, cwd);
+  const proj = data.projects[name];
+  if (!proj || !pathsEqual(proj.path, effectiveCwd)) return null;
+  return name;
+}
+
+/** Build the features/client-report route group. Spread into server.ts's routeDefs. */
+export function makeFeatureRoutes(): Record<string, unknown> {
+  return {
+    // The CURRENT capability list (resolved: updates applied, removed dropped,
+    // each attributed to the release that shipped it) + the since-last-release
+    // counters the soft release nudge reads.
+    "/api/features": {
+      async GET(req: ApiReq) {
+        const project = await resolveParam(req);
+        if (!project) return Response.json({ project: null, features: [], sinceLastRelease: { built: 0, features: 0 } });
+        const data = await loadData();
+        return Response.json({
+          project,
+          features: featureList(data, project),
+          sinceLastRelease: featuresSinceLastRelease(data, project),
+        });
+      },
+    },
+
+    // The retrospective corpus behind `-(ask:retro)`: every problem report
+    // (bug/security, open and closed) with dates, age and touched files —
+    // compact enough to analyze in-context. The clustering itself is Claude's
+    // language work, never the server's.
+    "/api/retro": {
+      async GET(req: ApiReq) {
+        const project = await resolveParam(req);
+        if (!project) return Response.json({ project: null, items: [] });
+        const data = await loadData();
+        return Response.json({ project, items: retroCorpus(data, project) });
+      },
+    },
+
+    // The client-facing status page. Default: render and return the HTML
+    // (the dashboard opens it in a tab; the browser saves/prints it).
+    // `?save=1` additionally persists `<project>/.devlog/client-report.html`
+    // and returns the path as JSON — the "give me a file to send" path.
+    "/api/client-report": {
+      async GET(req: ApiReq) {
+        const project = await resolveParam(req);
+        if (!project) return Response.json({ error: "unknown project" }, { status: 404 });
+        const data = await loadData();
+        const url = new URL(req.url);
+        try {
+          if (url.searchParams.get("save") === "1") {
+            const path = await writeClientReport(data, project);
+            return Response.json({ ok: true, path });
+          }
+          const html = renderClientReportHtml(collectClientReport(data, project));
+          return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+        } catch (e) {
+          console.error("[/api/client-report] error:", (e as Error)?.message);
+          return Response.json({ error: (e as Error)?.message || "failed" }, { status: 500 });
+        }
+      },
+    },
+  };
+}

@@ -68,6 +68,18 @@
     font-family: inherit;
   }
   header select:hover { border-color: var(--text2); }
+  header input[type="search"] {
+    background: var(--bg2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 10px;
+    font-size: 12px;
+    font-family: inherit;
+    width: 170px;
+    direction: rtl;
+  }
+  header input[type="search"]:focus { outline: none; border-color: var(--accent); }
   main {
     flex: 1;
     position: relative;
@@ -110,9 +122,14 @@
 <header>
   <a class="back" href="/">← الرئيسية</a>
   <h1 id="title">Stack Map</h1>
+  <span id="stackAge" style="font-size:12px;color:var(--text2)"></span>
   <div class="controls">
+    <input id="searchBox" type="search" placeholder="بحث بالاسم…" autocomplete="off"
+           title="يوهج المطابقات ويقفز إليها — Enter يركّز على الأفضل">
+    <button id="regenStack" title="إعادة توليد DEVLOG_STACK.md من الكود الحالي" style="display:none">تحديث الخريطة</button>
     <select id="layoutMode" title="نوع الترتيب">
-      <option value="force">قوى (عام)</option>
+      <option value="radial">شعاعي (افتراضي)</option>
+      <option value="force">قوى (عناقيد)</option>
       <option value="layered">طبقي (call graph)</option>
     </select>
     <button id="toggleActivity" title="إبراز الملفات النشطة مؤخراً">نشاط: ON</button>

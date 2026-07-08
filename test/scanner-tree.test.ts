@@ -1,6 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import { enumerateDepTree } from "../src/scanner";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -65,6 +65,31 @@ version = "0.11.14"
       const map = new Map((await enumerateDepTree(dir)).map(t => [t.name, t.version]));
       expect(map.get("rsa")).toBe("0.9.10");
       expect(map.get("quinn-proto")).toBe("0.11.14");
+    });
+  });
+
+  test("Tauri layout: Cargo.lock lives in src-tauri/, root has only package-lock — both merged", async () => {
+    await withTmp(async dir => {
+      // Real Tauri shape: JS lockfile at root, Rust lockfile nested. A root-only
+      // probe used to return the JS tree and silently drop every Rust node,
+      // so transitive-crate security tags could never close via vuln-ignore.
+      await writeFile(join(dir, "package-lock.json"), JSON.stringify({
+        lockfileVersion: 3,
+        packages: { "": { name: "x" }, "node_modules/vite": { version: "6.0.0" } },
+      }));
+      await mkdir(join(dir, "src-tauri"));
+      await writeFile(join(dir, "src-tauri", "Cargo.lock"), `[[package]]
+name = "gtk"
+version = "0.18.2"
+
+[[package]]
+name = "tauri"
+version = "2.9.5"
+`);
+      const map = new Map((await enumerateDepTree(dir)).map(t => [t.name, t.version]));
+      expect(map.get("vite")).toBe("6.0.0");     // root lockfile still read
+      expect(map.get("gtk")).toBe("0.18.2");     // nested lockfile now read too
+      expect(map.get("tauri")).toBe("2.9.5");
     });
   });
 

@@ -10,8 +10,11 @@ import dashboardHtmlBundle from "../dashboard.html" with { type: "text" };
 import stackMapHtmlBundle from "../stack-map.html" with { type: "text" };
 import featuresHtmlBundle from "../features.html" with { type: "text" };
 import dashboardCss from "../assets/dashboard.css" with { type: "text" };
-// dashboard.js was split into topical files (report #9) loaded as sequential
-// classic scripts (shared global scope — behavior-identical to the monolith).
+// dashboard.js was split into topical files (report #9); R3 #3 made them ES
+// modules — dashboard-main.js is the entry, dashboard-state.js holds the
+// shared mutable state, and every cross-file reference is an explicit import.
+import dashboardMainJs from "../assets/dashboard-main.js" with { type: "text" };
+import dashboardStateJs from "../assets/dashboard-state.js" with { type: "text" };
 import dashboardCoreJs from "../assets/dashboard-core.js" with { type: "text" };
 import dashboardDataJs from "../assets/dashboard-data.js" with { type: "text" };
 import dashboardProjectJs from "../assets/dashboard-project.js" with { type: "text" };
@@ -32,6 +35,8 @@ type Asset = { text: string; mime: string } | { file: string; mime: string };
 
 export const STATIC_ASSETS: Record<string, Asset> = {
   "dashboard.css": { text: dashboardCss, mime: "text/css; charset=utf-8" },
+  "dashboard-main.js": { text: dashboardMainJs, mime: "application/javascript; charset=utf-8" },
+  "dashboard-state.js": { text: dashboardStateJs, mime: "application/javascript; charset=utf-8" },
   "dashboard-core.js": { text: dashboardCoreJs, mime: "application/javascript; charset=utf-8" },
   "dashboard-data.js": { text: dashboardDataJs, mime: "application/javascript; charset=utf-8" },
   "dashboard-project.js": { text: dashboardProjectJs, mime: "application/javascript; charset=utf-8" },

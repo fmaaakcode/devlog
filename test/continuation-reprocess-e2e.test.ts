@@ -13,32 +13,19 @@
 //     swallowed — silence exactly when Claude reached for the live list.
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { spawn, type Subprocess } from "bun";
+import type { Subprocess } from "bun";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { startServer, waitForServer, runHook as runHookRaw } from "./_helpers";
 
 const TEST_PORT = 17823;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
 const PROJECT_ROOT = join(import.meta.dir, "..");
-const ASK_STATE_DIR = join(PROJECT_ROOT, ".devlog", "ask-state");
+// The per-session turn-ledger file (src/turn-ledger.ts) the hook writes its
+// per-turn dedup state into — scrubbed per test so runs never leak state.
+const TURN_STATE_DIR = join(PROJECT_ROOT, ".devlog", "turn-state");
 
-async function waitForServer(maxMs = 8000): Promise<void> {
-  const deadline = Date.now() + maxMs;
-  while (Date.now() < deadline) {
-    try { if ((await fetch(`${BASE}/api/data`, { signal: AbortSignal.timeout(500) })).ok) return; } catch { /* not up */ }
-    await Bun.sleep(100);
-  }
-  throw new Error("server failed to start");
-}
-function startServer(dataDir: string): Subprocess {
-  return spawn({
-    cmd: ["bun", join("src", "server.ts")],
-    cwd: PROJECT_ROOT,
-    env: { ...process.env, DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT), DEVLOG_VERSION_CHECK_DISABLED: "1" },
-    stdout: "pipe", stderr: "pipe",
-  });
-}
 async function register(cwd: string, sid: string): Promise<void> {
   await fetch(`${BASE}/api/inject?cwd=${encodeURIComponent(cwd)}&session_id=${sid}&type=SessionStart`, { signal: AbortSignal.timeout(4000) });
 }
@@ -71,22 +58,10 @@ function writeTranscript(dir: string, userUuid: string, assistantTexts: string[]
   return p;
 }
 
-async function runHook(cwd: string, sid: string, transcriptPath: string, stopHookActive: boolean): Promise<{ code: number; out: string; err: string }> {
-  const proc = spawn({
-    cmd: ["bun", "parse-tags.ts"],
-    cwd: PROJECT_ROOT,
-    env: { ...process.env, DEVLOG_PORT: String(TEST_PORT), DEVLOG_LANG: "en", DEVLOG_DEBUG: "0" },
-    stdin: "pipe", stdout: "pipe", stderr: "pipe",
-  });
-  proc.stdin.write(JSON.stringify({ cwd, session_id: sid, transcript_path: transcriptPath, stop_hook_active: stopHookActive }));
-  proc.stdin.end();
-  const [code, out, err] = await Promise.all([
-    proc.exited,
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
-  return { code, out, err };
-}
+// Thin adapter over the shared harness: this suite drives the hook via a
+// transcript + stop_hook_active flag (the continuation path).
+const runHook = (cwd: string, sid: string, transcriptPath: string, stopHookActive: boolean) =>
+  runHookRaw(TEST_PORT, { cwd, session_id: sid, transcript_path: transcriptPath, stop_hook_active: stopHookActive });
 
 describe("continuation trap E2E (linked P1/P2 fix)", () => {
   let dataDir: string, projDir: string, sid: string;
@@ -96,8 +71,8 @@ describe("continuation trap E2E (linked P1/P2 fix)", () => {
     sid = `cont-e2e-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     dataDir = mkdtempSync(join(tmpdir(), "cont-e2e-data-"));
     projDir = mkdtempSync(join(tmpdir(), "cont-e2e-proj-"));
-    server = startServer(dataDir);
-    await waitForServer();
+    server = startServer(dataDir, TEST_PORT);
+    await waitForServer(BASE);
     await register(projDir, sid);
   });
   afterEach(async () => {
@@ -105,7 +80,7 @@ describe("continuation trap E2E (linked P1/P2 fix)", () => {
     await Promise.race([server.exited, Bun.sleep(2000)]);
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(projDir, { recursive: true, force: true });
-    rmSync(join(ASK_STATE_DIR, `${sid}.json`), { force: true });
+    rmSync(join(TURN_STATE_DIR, `${sid}.json`), { force: true });
   });
 
   // ── Bug A (P2): re-scanning already-applied closers must NOT nag ────────────

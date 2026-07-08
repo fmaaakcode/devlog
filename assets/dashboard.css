@@ -1428,6 +1428,50 @@
         }
         .inj-close:hover { color: var(--pink); }
 
+        /* ===== Unified confirm/alert dialog (R3 #7) — replaces native
+           alert/confirm, which block the event loop (WS updates freeze
+           behind them). Reuses the .inj-modal shell. ===== */
+        .confirm-modal { width: min(460px, 92vw); }
+        .confirm-msg {
+            padding: 14px 18px 6px;
+            color: var(--text);
+            white-space: pre-wrap;
+            word-break: break-word;
+            line-height: 1.7;
+            font-size: 0.92em;
+        }
+        .confirm-input {
+            margin: 4px 18px 0;
+            padding: 8px 10px;
+            background: var(--bg3);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-family: inherit;
+            font-size: 0.9em;
+        }
+        .confirm-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            padding: 14px 18px 16px;
+        }
+        .confirm-btn {
+            font-size: 0.85em;
+            padding: 6px 16px;
+            border-radius: 6px;
+            background: var(--bg3);
+            color: var(--text);
+            border: 1px solid var(--border);
+            cursor: pointer;
+            font-family: inherit;
+        }
+        .confirm-btn:hover { border-color: var(--text2); }
+        .confirm-btn.danger { border-color: var(--pink); color: var(--pink); }
+        .confirm-btn.danger:hover { background: var(--pink); color: var(--bg2); }
+        .confirm-btn.primary { border-color: var(--gold); color: var(--gold); }
+        .confirm-btn.primary:hover { background: var(--gold); color: var(--bg2); }
+
         /* ===== Vuln advisories modal (reuses .inj-modal-bg / .inj-modal) ===== */
         .vuln-modal-body {
             padding: 12px 16px;

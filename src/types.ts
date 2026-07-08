@@ -80,6 +80,10 @@ export interface EventEntry {
   agent_type?: string;
   agent_id?: string;
   session_id?: string;
+  /** SessionStart only: the project's absolute path at event time. The registry
+   *  (projects.json) is otherwise the sole name→path record — this makes the
+   *  event log a recovery source if the registry is ever lost. */
+  cwd?: string;
   note?: string;
   timestamp: string;
   lines_added?: number;
@@ -110,6 +114,15 @@ export interface TagEntry {
    *  release bumped it. Lets a rollback restore the previous version even when
    *  no earlier release tag exists (QA #2). */
   prevVersion?: string;
+  /** «قادمة» (upcoming): a deferred open item. Still numbered, still closable
+   *  by `#N`, but excluded from the release guard, the built-without-closure
+   *  warnings and the "Open now" counts — recorded ambition, not tracked debt.
+   *  Set by `-(upcoming)` (create or convert), cleared by `-(todo) #N`. */
+  upcoming?: boolean;
+  /** Position memory (#486): files the capturing session touched since its
+   *  previous tag batch (normalized absolute paths, capped). Feeds the
+   *  dashboard file story and the PreToolUse "file history" injection. */
+  files?: string[];
 }
 
 export interface PlanStep {
@@ -120,6 +133,11 @@ export interface PlanStep {
   phase?: string;
   /** Per-project numeric ID, assigned when the step is first registered. */
   num?: number;
+  /** Closed by `-(dropped)` — ARCHIVED in place (not spliced out) so
+   *  already-closed detection and `-(ask:closed)` can still find it (#410).
+   *  A dropped step is closed-but-not-completed: excluded from the open set and
+   *  from status/release rendering, distinct from `completed` (a `[x]`). */
+  dropped?: boolean;
 }
 
 export interface PlanEntry {
@@ -130,6 +148,10 @@ export interface PlanEntry {
   file_path: string;
   timestamp: string;
   updatedAt: string;
+  /** Upcoming plan: its open steps don't block a release or trigger closure
+   *  nags. Toggled from the dashboard or by `-(upcoming) #N` on any of its
+   *  steps (`-(todo) #N` promotes the plan back). */
+  upcoming?: boolean;
 }
 
 export interface InjectionEntry {
@@ -140,6 +162,9 @@ export interface InjectionEntry {
   chars: number;
   session_id?: string;
   timestamp: string;
+  /** PreToolUse file-story injections only: the opened file (normalized), so
+   *  the same file injects at most once per session. */
+  file_path?: string;
 }
 
 export interface InjectionConfig {
@@ -156,6 +181,9 @@ export interface InjectionConfig {
   // description-less forever. Self-silencing: each nudge disappears once its
   // field is set; `about` waits for ≥3 builds before nagging.
   describeNudge: boolean;
+  // Show the «قادمة» (upcoming) awareness line in the SessionStart /
+  // UserPromptSubmit summaries. Off = upcoming items stay dashboard-only.
+  upcomingItems: boolean;
   claudeMd: boolean;
   contextMd: boolean;
   // Standards enforcement (PreToolUse gate + Stop check). Per-project, ON by

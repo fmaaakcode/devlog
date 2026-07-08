@@ -97,7 +97,16 @@ export function makeStaticRoutes({ htmlResponse, DEV_ASSETS, ASSET_ROOT }: Stati
       if (!p?.path) return new Response("Not found", { status: 404 });
       const file = Bun.file(join(p.path, ".devlog", "releases", "index.html"));
       if (!(await file.exists())) return new Response("Not found", { status: 404 });
-      return htmlResponse(file);
+      // Redirect to the slashed form instead of serving here: the generated
+      // pages link each other RELATIVELY (`v3.2.0.html`, `index.html` — they
+      // must also work opened from disk), and a browser resolves those against
+      // `/releases/` when the base lacks a trailing slash — turning a version
+      // click into `/releases/v3.2.0.html`, which reads the FILENAME as a
+      // project name → "Not found". Serving the index at
+      // `/releases/:project/index.html` (the existing :version route) gives
+      // every relative link the right base for free.
+      const url = new URL(req.url);
+      return new Response(null, { status: 301, headers: { Location: `${url.pathname}/index.html` } });
     },
 
     "/releases/:project/:version": async (req: ApiReq) => {
@@ -106,8 +115,28 @@ export function makeStaticRoutes({ htmlResponse, DEV_ASSETS, ASSET_ROOT }: Stati
       const data = await loadData();
       const p = data.projects[project];
       if (!p?.path) return new Response("Not found", { status: 404 });
+      // Live NEXT-release preview (#490): rendered in memory through the same
+      // pipeline as a real release — nothing written, nothing stored. Served
+      // under the project's releases base so the page's relative links (crumb,
+      // prev-version) resolve against the real baked pages.
+      if (version === "preview.html" || version === "preview.json") {
+        const { buildReleasePreview } = await import("./release-preview");
+        const preview = await buildReleasePreview(data, project);
+        if (!preview) return new Response("Not found", { status: 404 });
+        if (version.endsWith(".json")) {
+          const { html: _html, ...rest } = preview;
+          return Response.json({ preview: true, ...rest });
+        }
+        return htmlResponse(preview.html);
+      }
       const file = Bun.file(join(p.path, ".devlog", "releases", version));
       if (!(await file.exists())) return new Response("Not found", { status: 404 });
+      // The machine-readable twin (vX.Y.Z.json) must not be served as HTML.
+      if (version.endsWith(".json")) {
+        return new Response(file, {
+          headers: { "Content-Type": "application/json; charset=utf-8", "X-Content-Type-Options": "nosniff" },
+        });
+      }
       return htmlResponse(file);
     },
   };

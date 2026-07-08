@@ -1,6 +1,7 @@
 import { readdir, readFile, access } from "node:fs/promises";
 import { join, extname, } from "node:path";
 import { claudeConfigDir, claudeProjectSlug, normalizeSlashes } from "./path-utils";
+import { bunSpawnSync } from "./spawn";
 import type { ProjectProfile, MemoryFile, RuntimeInfo, DevLogData } from "./types";
 
 // Read the project's git remote URL (origin) without spawning git — we just
@@ -163,9 +164,22 @@ export async function enumerateDepTree(dirPath: string): Promise<{ name: string;
     out.push({ name, version });
   };
 
+  // Root first, then the same conventional subfolders the library probe walks:
+  // Tauri keeps Cargo.lock in src-tauri/, so a root-only probe returned an EMPTY
+  // tree for the exact layout the vuln-ignore support was built around, and the
+  // OSV scan silently degraded to direct deps only (no transitive coverage, no
+  // auto-close of their security tags).
+  await collectLockfiles(dirPath, add);
+  for (const sub of NESTED_MANIFEST_DIRS) await collectLockfiles(join(dirPath, sub), add);
+  return out;
+}
+
+/** Parse every recognized lockfile directly inside `dirPath` into `add`. */
+async function collectLockfiles(dirPath: string, add: (name: string, version: string) => void): Promise<void> {
   // npm: package-lock.json — v2/v3 keys paths under `packages`, v1 nests `dependencies`.
   const pkgLock = Bun.file(join(dirPath, "package-lock.json"));
-  if (await pkgLock.exists()) {
+  const hasNpmLock = await pkgLock.exists();
+  if (hasNpmLock) {
     try {
       const j = await pkgLock.json() as { packages?: Record<string, LockNode>; dependencies?: Record<string, LockNode> };
       if (j.packages && typeof j.packages === "object") {
@@ -187,8 +201,9 @@ export async function enumerateDepTree(dirPath: string): Promise<{ name: string;
   }
 
   // bun: bun.lock (JSONC). `packages` maps a key → [ "name@version", … ].
+  // Skipped when package-lock.json exists in the SAME dir (one walk per dir).
   const bunLock = Bun.file(join(dirPath, "bun.lock"));
-  if (out.length === 0 && await bunLock.exists()) {
+  if (!hasNpmLock && await bunLock.exists()) {
     try {
       const j = parseJsonc(await bunLock.text()) as { packages?: unknown };
       const pkgs = j?.packages;
@@ -213,8 +228,6 @@ export async function enumerateDepTree(dirPath: string): Promise<{ name: string;
       }
     } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
   }
-
-  return out;
 }
 
 export async function detectPackages(dirPath: string, _depth = 0): Promise<{ framework: string; libraries: { name: string; version: string; dev?: boolean }[] }> {
@@ -528,7 +541,7 @@ export async function detectRuntime(dirPath: string, language: string): Promise<
       // Get version from system
       let sysVer = "";
       try {
-        const proc = Bun.spawnSync(["bun", "--version"], { stdout: "pipe", stderr: "pipe" });
+        const proc = bunSpawnSync(["bun", "--version"], { stdout: "pipe", stderr: "pipe" });
         sysVer = proc.stdout.toString().trim();
       } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
       if (isBun || sysVer) {
@@ -563,7 +576,7 @@ export async function detectRuntime(dirPath: string, language: string): Promise<
       // Fallback: rustc --version
       if (!version) {
         try {
-          const proc = Bun.spawnSync(["rustc", "--version"], { stdout: "pipe", stderr: "pipe" });
+          const proc = bunSpawnSync(["rustc", "--version"], { stdout: "pipe", stderr: "pipe" });
           version = proc.stdout.toString().match(/(\d+\.\d+[.\d]*)/)?.[1] || "";
         } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
       }
@@ -577,7 +590,7 @@ export async function detectRuntime(dirPath: string, language: string): Promise<
         : ["go"];
       for (const cmd of goCandidates) {
         try {
-          const proc = Bun.spawnSync([cmd, "version"], { stdout: "pipe", stderr: "pipe" });
+          const proc = bunSpawnSync([cmd, "version"], { stdout: "pipe", stderr: "pipe" });
           const v = proc.stdout.toString().match(/go(\d+\.\d+(?:\.\d+)?)/)?.[1];
           if (v) return { name: "Go", version: v };
         } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
@@ -653,7 +666,7 @@ export async function detectRuntime(dirPath: string, language: string): Promise<
     };
     const entry = cmds[language];
     if (entry) {
-      const proc = Bun.spawnSync(entry[0].split(" "), { stdout: "pipe", stderr: "pipe" });
+      const proc = bunSpawnSync(entry[0].split(" "), { stdout: "pipe", stderr: "pipe" });
       const out = proc.stdout.toString().trim();
       if (out) {
         const ver = out.match(/(\d+\.\d+[.\d]*)/)?.[1] || "";

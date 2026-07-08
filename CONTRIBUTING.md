@@ -27,6 +27,13 @@ matter how well-implemented:
 
 If you want any of the above, DevLog probably isn't the right base — and that's OK.
 
+## Language policy
+
+The split is deliberate, not accidental: **user-facing dashboard text (labels,
+buttons, confirms, alerts) is Arabic**; **code, comments, commit messages, and the
+public docs (README, API.md, SECURITY.md) are English**. Injection/protocol messages
+follow `DEVLOG_LANG`. Keep new strings on the side their surface already uses.
+
 ## Good contributions
 
 Bug fixes, new tag types, more language coverage for messages/injection
@@ -43,6 +50,15 @@ bun test             # full suite → all green
 ```
 
 CI runs the same gates on Ubuntu, macOS, and Windows.
+
+> [!warning]
+> **Adding a new dashboard asset file?** Static assets (`assets/*`, `*.html`) are
+> imported and baked in at server startup (`src/static-assets.ts` — this is what
+> makes the compiled single-file executable standalone). A newly added file is
+> invisible to a running daemon: **restart the daemon** after adding one, or the
+> live dashboard breaks until you do. Edits to an *existing* asset are milder —
+> the daemon keeps serving the copy it read at startup (stale, not broken) —
+> but still need a restart to show up.
 
 ## Dogfooding
 

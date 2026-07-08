@@ -105,6 +105,20 @@ describe("resolveClosureNumber", () => {
     const data = mkData({ plans: [plan([step("do the step", { num: 9 })], "/plans/p.md")] });
     expect(resolveClosureNumber("done", "#9", data, PROJ)).toBe("do the step");
   });
+  // Tailed closers (#482): `#N <tail>` resolves like a bare `#N` so downstream
+  // matching (dedup, plan sync, export, the ✓ confirmation) sees the opener text.
+  test("`-(done) #5 <tail>` rewrites to the open todo's text (tail dropped)", () => {
+    const data = mkData({ tags: [tag("todo", "ship the thing", { num: 5 })] });
+    expect(resolveClosureNumber("done", "#5 shipped it behind a flag", data, PROJ)).toBe("ship the thing");
+  });
+  test("tailed `#N` falls back to an open plan-step for done/dropped", () => {
+    const data = mkData({ plans: [plan([step("do the step", { num: 9 })], "/plans/p.md")] });
+    expect(resolveClosureNumber("done", "#9 done via the new route", data, PROJ)).toBe("do the step");
+  });
+  test("multi-number leading run passes through unchanged (batch closure path)", () => {
+    const data = mkData({ tags: [tag("todo", "a", { num: 5 }), tag("todo", "b", { num: 6 })] });
+    expect(resolveClosureNumber("done", "#5 #6", data, PROJ)).toBe("#5 #6");
+  });
   test("an already-closed number is skipped (no false rewrite)", () => {
     const data = mkData({ tags: [
       tag("todo", "done already", { num: 3 }),
@@ -200,10 +214,14 @@ describe("syncPlanSteps — native plans (no checkbox file I/O)", () => {
     await syncPlanSteps("done", "write the code", data, PROJ);
     expect(data.plans[0].steps[0].completed).toBe(true);
   });
-  test("Mode 1 dropped removes the matching step", async () => {
+  test("Mode 1 dropped archives the matching step in place (not spliced) (#410)", async () => {
     const data = mkData({ projects: { [PROJ]: project() }, plans: [plan([step("obsolete")], native)] });
     await syncPlanSteps("dropped", "obsolete", data, PROJ);
-    expect(data.plans[0].steps).toHaveLength(0);
+    // Retained so already-closed detection + ask:closed can still find it, but
+    // flagged dropped (closed-but-not-completed).
+    expect(data.plans[0].steps).toHaveLength(1);
+    expect(data.plans[0].steps[0].dropped).toBe(true);
+    expect(data.plans[0].steps[0].completed).toBe(false);
   });
   test("Mode 2 `-(done) P1` closes every open step in that phase", async () => {
     const data = mkData({ projects: { [PROJ]: project() }, plans: [plan([

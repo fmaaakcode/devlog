@@ -50,6 +50,9 @@ export function parseHookEvent(body: HookBody): EventEntry {
     session_id: body.session_id,
     timestamp: now,
   };
+  // Persist the path on session starts only (one per session keeps events
+  // lean) so the event log can rebuild name→path if the registry is lost.
+  if (hookEvent === "SessionStart" && cwd) base.cwd = cwd;
 
   // PostToolUse: Write (create new file)
   if (hookEvent === "PostToolUse" && toolName === "Write") {
@@ -84,9 +87,10 @@ export function parseHookEvent(body: HookBody): EventEntry {
     return base;
   }
 
-  // PostToolUse: Bash
-  if (hookEvent === "PostToolUse" && toolName === "Bash") {
-    base.tool = "Bash";
+  // PostToolUse: Bash / PowerShell (both are shell-command tools; Windows sessions
+  // run tests via PowerShell, so missing it breaks verify hints and recall)
+  if (hookEvent === "PostToolUse" && (toolName === "Bash" || toolName === "PowerShell")) {
+    base.tool = toolName;
     base.type = "command";
     base.command = body.tool_input?.command || "";
     base.description = body.tool_input?.description || "";

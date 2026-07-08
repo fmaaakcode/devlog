@@ -27,6 +27,28 @@ describe("confirmClosure — reports the closed {num, text}", () => {
     expect(r?.text).toHaveLength(100);
   });
 
+  // Tailed closers (#482): `#N <tail>` is the everyday form — it must confirm
+  // like a bare `#N`, otherwise the missing «✓ أُغلق» echo pushes Claude to
+  // re-verify a closure that actually applied.
+  test("tailed closer `#5 <tail>` confirms with the resolved opener text", () => {
+    expect(confirmClosure("done", "#5 fixed the race for real", "wire the dashboard")).toEqual(
+      { num: 5, text: "wire the dashboard" });
+  });
+
+  test("tailed bug fix confirms too", () => {
+    expect(confirmClosure("bug fix", "#12 guarded the scanner loop", "off-by-one in scanner")).toEqual(
+      { num: 12, text: "off-by-one in scanner" });
+  });
+
+  test("multi-number leading run → null (batch close, no single item to echo)", () => {
+    expect(confirmClosure("done", "#5 #6", "#5 #6")).toBeNull();
+    expect(confirmClosure("done", "#5 #6 both shipped", "#5 #6 both shipped")).toBeNull();
+  });
+
+  test("digits + tail without `#` → null (leading-run parser requires `#`)", () => {
+    expect(confirmClosure("done", "12 shipped it", "12 shipped it")).toBeNull();
+  });
+
   test("non-closer verb → null", () => {
     expect(confirmClosure("note", "#8", "whatever")).toBeNull();
     expect(confirmClosure("built", "#8", "whatever")).toBeNull();

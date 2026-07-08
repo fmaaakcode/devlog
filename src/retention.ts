@@ -1,6 +1,38 @@
+import { archiveEvents } from "./event-archive";
 import type { DevLogData, EventEntry } from "./types";
 
 const DAY = 24 * 60 * 60 * 1000;
+const MAX_EVENTS_LOG = 10000;
+// Per-project cap (applied first in pushEvent) is the real fairness limit;
+// MAX_EVENTS_LOG is only a global memory safety net. Sized so the active project
+// can't starve quiet ones: 200 × ~20 projects stays under the global cap.
+const PER_PROJECT_MAX_EVENTS = 200;
+
+/** Append an event to the hot store, honoring the per-project cap first and the
+ *  global MAX_EVENTS_LOG safety net second. Lived in server.ts until the
+ *  file-size ratchet; it belongs with the caps and capEventsPerProject anyway. */
+export function pushEvent(events: EventEntry[], entry: EventEntry) {
+  events.push(entry);
+  // Per-project cap FIRST so a busy project (the one Claude is working in) can't
+  // evict a quiet project's history from a shared global ring (#NNN). Mutate in
+  // place to preserve the caller's array reference.
+  const capped = capEventsPerProject(events, PER_PROJECT_MAX_EVENTS);
+  const evicted: EventEntry[] = [];
+  if (capped.length !== events.length) {
+    const kept = new Set(capped);
+    for (const e of events) if (!kept.has(e)) evicted.push(e);
+    events.splice(0, events.length, ...capped);
+  }
+  // Global memory safety net across many projects.
+  if (events.length > MAX_EVENTS_LOG) {
+    evicted.push(...events.slice(0, events.length - MAX_EVENTS_LOG));
+    events.splice(0, events.length - MAX_EVENTS_LOG);
+  }
+  // Eviction is archival, not deletion (cold archive — the 2026-07-06 changelog
+  // wipe). Fire-and-forget: archiveEvents retries transient locks and logs a
+  // failed batch; re-queuing here would break the cap invariant we just applied.
+  if (evicted.length) void archiveEvents(evicted);
+}
 const HOT_DAYS = 7;
 const WARM_DAYS = 30;
 
@@ -15,9 +47,11 @@ const WARM_DAYS = 30;
  * release page's diffs. Older inter-release events cold-prune on the normal
  * 30-day schedule, so the log can't grow without bound.
  *
- * Returns counts: { warmed, removed, protected }.
+ * Returns counts plus `removedEvents` — the cold-deleted rows themselves, so
+ * the caller can archive them before the store persists the deletion (cold
+ * archive: pruning archives, never deletes).
  */
-export function pruneEvents(data: DevLogData): { warmed: number; removed: number; protected: number } {
+export function pruneEvents(data: DevLogData): { warmed: number; removed: number; protected: number; removedEvents: EventEntry[] } {
   const now = Date.now();
   const hotCutoff = now - HOT_DAYS * DAY;
   const warmCutoff = now - WARM_DAYS * DAY;
@@ -26,9 +60,9 @@ export function pruneEvents(data: DevLogData): { warmed: number; removed: number
   const protectedWindows = computeProtectedWindows(data);
 
   let warmed = 0;
-  let removed = 0;
   let protectedCount = 0;
   const kept: EventEntry[] = [];
+  const removedEvents: EventEntry[] = [];
 
   for (const e of data.events || []) {
     const ts = +new Date(e.timestamp) || 0;
@@ -37,7 +71,7 @@ export function pruneEvents(data: DevLogData): { warmed: number; removed: number
     // Non-change events (commands, sessions, tasks, agents): no content to prune,
     // age out at warm cutoff to keep timeline lean.
     if (!isChange) {
-      if (ts < warmCutoff) { removed++; continue; }
+      if (ts < warmCutoff) { removedEvents.push(e); continue; }
       kept.push(e);
       continue;
     }
@@ -49,8 +83,8 @@ export function pruneEvents(data: DevLogData): { warmed: number; removed: number
       continue;
     }
 
-    // Cold: delete
-    if (ts < warmCutoff) { removed++; continue; }
+    // Cold: leaves the hot store (caller archives)
+    if (ts < warmCutoff) { removedEvents.push(e); continue; }
 
     // Warm: strip content, keep counts
     if (ts < hotCutoff && e.retention !== "warm") {
@@ -74,7 +108,7 @@ export function pruneEvents(data: DevLogData): { warmed: number; removed: number
   }
 
   data.events = kept;
-  return { warmed, removed, protected: protectedCount };
+  return { warmed, removed: removedEvents.length, protected: protectedCount, removedEvents };
 }
 
 /**

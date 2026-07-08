@@ -16,6 +16,12 @@ Write the tag content in the user's language.
 - `-(bug found)` … / close with `-(bug fix) #N`
 - `-(security[:own|:dep])` … / close with `-(security fix) #N`
 - `-(todo)` … / close with `-(done) #N` or `-(dropped) #N`
+- `-(upcoming)` deferred tier: create directly, or `-(upcoming) #N` to defer an open
+  todo/bug (`-(todo) #N` promotes back). Never blocks a release; security never deferrable.
+- `-(feature)` one client-language line per client-visible capability, declared when it
+  lands (not per code step) · `-(feature update) #N new text` · `-(feature removed) #N` ·
+  pull the current inventory with `-(ask:features)`. Not a work item — never blocks
+  anything; a release with work tags but zero features gets a one-time soft reminder.
 - `-(note)` · `-(decision)` · `-(insight)`
 - `-(doc:report|analysis|plan|comparison|readme)` name\n<markdown>
 
@@ -24,7 +30,10 @@ Write the tag content in the user's language.
 arrive in the SessionStart context — or emit `-(ask:open)` to pull the live open list
 yourself (bugs/todos/security/plan-steps) mid-session before closing, so you never
 close a stale or wrong number. To check whether an item is *already* closed (and
-when/how), emit `-(ask:closed) #N` instead of re-investigating finished work.
+when/how), emit `-(ask:closed) #N` instead of re-investigating finished work. For a
+retrospective — every bug/security report ever, open and closed, with ages and files
+("what keeps breaking?") — emit `-(ask:retro)` and codify recurring patterns with
+`-(rule:add)` or `-(insight)`.
 
 **Atomic** — one concept per tag; no questions or planning prose inside a tag.
 

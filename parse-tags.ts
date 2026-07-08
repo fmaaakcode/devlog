@@ -4,6 +4,7 @@ import { readdir, readFile, appendFile, mkdir, rm, stat, rename } from "node:fs/
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { parseTags } from "./src/tag-parser.ts";
+import { entryKey, loadLedger, saveLedger, sweepTurnState } from "./src/turn-ledger.ts";
 
 // Single source for the server base — follows DEVLOG_PORT like data.ts /
 // doctor.ts / pre-release-hook.js instead of hardcoding 7777 in six places (R3 P5).
@@ -18,29 +19,16 @@ const L = (en: string, ar: string) => (LANG === "ar" ? ar : en);
 const LOG_DIR = join(import.meta.dir, ".devlog");
 const LOG_PATH = join(LOG_DIR, "parse-tags.debug.log");
 const QUEUE_DIR = join(LOG_DIR, "tag-queue");
-// Per-session record of standards commands already served, so the transcript
-// re-read (which still contains the command after an exit(2) continuation)
-// doesn't reprocess it and loop forever.
-const RULES_STATE_DIR = join(LOG_DIR, "rules-state");
-// Per-session flag: the verify nudge (#232) fires at most ONCE per session, so a
-// stuck test-detector (or just a chatty closing sequence) can never turn a
-// non-blocking hint into a behavioral loop. The regex is the real fix; this is
-// the belt-and-suspenders that makes the hint loop-proof regardless.
-const VERIFY_STATE_DIR = join(LOG_DIR, "verify-state");
-// Per-session, per-turn dedup for the on-demand PULL commands (ask:open /
-// ask:closed / audit). Replaces the blunt `!stopHookActive` guard those used:
-// that flag is turn-level, so it also killed a FRESH pull emitted inside a
-// continuation triggered by a DIFFERENT block (e.g. a closure-mismatch) —
-// leaving Claude with silence exactly when it reached for the live list. We
-// instead dedup by the command string within one turn (keyed on the transcript
-// turn id), so re-emitting the SAME command inside one continuation chain is the
-// only thing suppressed; a new user turn or a different command still serves.
-const ASK_STATE_DIR = join(LOG_DIR, "ask-state");
+// The turn ledger (src/turn-ledger.ts) — ONE state file per session replacing
+// the three per-mechanism dirs that accumulated as continuation guards
+// (rules-state / verify-state / ask-state). The scope-policy table lives in the
+// module header; every per-turn / per-session dedup below reads and writes the
+// ledger object loaded once after the turnId is known.
+const TURN_STATE_DIR = join(LOG_DIR, "turn-state");
 await mkdir(LOG_DIR, { recursive: true });
 await mkdir(QUEUE_DIR, { recursive: true });
-await mkdir(RULES_STATE_DIR, { recursive: true });
-await mkdir(VERIFY_STATE_DIR, { recursive: true });
-await mkdir(ASK_STATE_DIR, { recursive: true });
+await mkdir(TURN_STATE_DIR, { recursive: true });
+await sweepTurnState(TURN_STATE_DIR);
 
 // Debug logging is OFF by default (#devops-F2): it ran on EVERY Stop hook with
 // no gate and no rotation, so parse-tags.debug.log crept to 4+MB unbounded.
@@ -53,7 +41,7 @@ if (DEBUG) {
     if (st.size > 1_000_000) await rename(LOG_PATH, `${LOG_PATH}.1`);
   } catch { /* no log yet, or rotate failed — keep going */ }
 }
-const log = DEBUG ? (line: string) => appendFile(LOG_PATH, line + "\n", "utf-8") : () => {};
+const log = DEBUG ? (line: string) => appendFile(LOG_PATH, `${line}\n`, "utf-8") : () => { /* debug logging disabled */ };
 
 // Stop-hook feedback channel. We speak to Claude via JSON on stdout + exit(0)
 // (`{decision:"block", reason}`), NOT stderr + exit(2). Exit 2 is a "blocking
@@ -82,7 +70,7 @@ function blockContinue(text: string): never {
 // Disk queue for /api/tags when the server is unreachable. Without it,
 // every Stop hook during a server outage loses tags forever.
 async function flushTagQueue() {
-  let files;
+  let files: string[];
   try { files = (await readdir(QUEUE_DIR)).filter(f => f.endsWith(".json")).sort(); }
   catch { return; }
   for (const name of files) {
@@ -113,7 +101,7 @@ let raw = "";
 for await (const chunk of Bun.stdin.stream()) raw += new TextDecoder().decode(chunk);
 await log(raw.slice(0, 500));
 
-let data;
+let data: any;
 try {
   data = JSON.parse(raw);
 } catch (e) {
@@ -140,7 +128,7 @@ async function readTurnFromTranscript(transcriptPath: string): Promise<{ text: s
     let buf = "";
     let turnId = "";
     for (const line of lines) {
-      let obj;
+      let obj: any;
       try { obj = JSON.parse(line); } catch { continue; }
       const role = obj.message?.role || obj.role;
       const c = obj.message?.content ?? obj.content;
@@ -153,17 +141,28 @@ async function readTurnFromTranscript(transcriptPath: string): Promise<{ text: s
         if (!isToolResultOnly) {
           buf = "";
           // Boundary of a new user turn — remember its id as the turn key.
-          turnId = String(obj.uuid || obj.timestamp || turnId || "");
+          // Fallback ladder (design §4): uuid → timestamp → content hash of the
+          // user text (format-independent, survives a transcript-schema change
+          // that drops both fields) → previous boundary's id.
+          let userText = "";
+          if (typeof c === "string") userText = c;
+          else if (Array.isArray(c)) {
+            userText = c
+              .filter((b): b is { type: string; text: string } => b?.type === "text" && typeof b.text === "string")
+              .map(b => b.text).join("\n");
+          }
+          const hashed = userText ? `h${Bun.hash(userText).toString(36)}` : "";
+          turnId = String(obj.uuid || obj.timestamp || hashed || turnId || "");
         }
         continue;
       }
       if (role !== "assistant") continue;
       if (typeof c === "string") {
-        buf += "\n" + c;
+        buf += `\n${c}`;
       } else if (Array.isArray(c)) {
         for (const block of c) {
           if (block?.type === "text" && typeof block.text === "string") {
-            buf += "\n" + block.text;
+            buf += `\n${block.text}`;
           }
         }
       }
@@ -185,23 +184,30 @@ const stopHookActive = data.stop_hook_active === true;
 await log(`cwd=${JSON.stringify(cwd)} session_id=${JSON.stringify(sessionId)} msg_len=${msg.length} source=${transcriptMsg ? "transcript" : "last_assistant_message"}`);
 await log(`msg_tail=${JSON.stringify(msg.slice(-300))}`);
 
-// Per-turn dedup for the on-demand pull commands (ask:open / ask:closed /
-// audit). Returns true the FIRST time `command` is requested in the current
-// turn, false on a repeat within the same continuation chain. A new user turn
-// (turnId changes) resets the served set, so the command serves again. Falls
-// back to the legacy `!stopHookActive` guard only when there's no transcript to
-// derive a turnId from (last_assistant_message path).
+// The turn ledger — loaded ONCE, now that the turnId is known. The turn section
+// resets when the turnId changes (a genuine new user message); the session
+// section persists for the session's lifetime. Every per-turn / per-session
+// dedup below (posted entries, pull commands, verify hint, dep-freshness
+// signatures) reads this object and persists write-through via saveLedger.
+const { file: ledgerFile, ledger } = await loadLedger(TURN_STATE_DIR, sessionId, turnId);
+
+// Whether `command` may serve THIS turn. Pure CHECK — it does NOT record the
+// service. The caller records it via markAskServed only AFTER the fetch succeeds,
+// so a failed/timed-out pull leaves the command re-servable within the same
+// continuation chain instead of being silently suppressed on re-send (#398).
+// Zero-degree path (no turnId derivable at all): the legacy `!stopHookActive`
+// guard stands in, exactly as before.
 async function shouldServeAsk(command: string): Promise<boolean> {
   if (!turnId) return !stopHookActive;
-  const safeSid = (sessionId || "nosession").replace(/[^a-zA-Z0-9_-]/g, "_");
-  const f = join(ASK_STATE_DIR, `${safeSid}.json`);
-  let state: { turnId?: string; served?: string[] } = {};
-  try { state = JSON.parse(await readFile(f, "utf-8")); } catch {}
-  if (state.turnId !== turnId || !Array.isArray(state.served)) state = { turnId, served: [] };
-  if (state.served!.includes(command)) return false;
-  state.served!.push(command);
-  await Bun.write(f, JSON.stringify(state));
-  return true;
+  return !ledger.turn.servedCommands.includes(command);
+}
+
+// Record that `command` was served this turn (write-through, idempotent). No-op
+// on the legacy path. Call ONLY after a successful serve (fetch returned ok).
+async function markAskServed(command: string): Promise<void> {
+  if (!turnId || ledger.turn.servedCommands.includes(command)) return;
+  ledger.turn.servedCommands.push(command);
+  await saveLedger(ledgerFile, ledger);
 }
 
 // === Part 1: Parse tags ===
@@ -215,6 +221,28 @@ if (msg) {
 
   if (entries.length) {
 
+    // === Delta processing (processTurn P2) ===
+    // Only entries NOT yet posted for THIS turn go out. A hook-driven
+    // continuation re-reads the whole turn text; without the ledger every
+    // already-handled entry was re-sent and the server left to classify the
+    // echoes (the already-closed trap family). Zero-degree path (no turnId):
+    // send everything — the server's whole-history content dedup is the
+    // shield, which is exactly the pre-ledger behavior.
+    const freshEntries = turnId
+      ? entries.filter(e => !ledger.turn.postedKeys.includes(entryKey(e.tag, e.content, e.breaking)))
+      : entries;
+    // Record keys only once the batch is durably handled — POSTed ok OR written
+    // to the disk queue. A network throw before either leaves them fresh, so
+    // the next invocation retries (mirrors #398 for entries).
+    const recordPosted = async () => {
+      if (!turnId || !freshEntries.length) return;
+      for (const e of freshEntries) {
+        const k = entryKey(e.tag, e.content, e.breaking);
+        if (!ledger.turn.postedKeys.includes(k)) ledger.turn.postedKeys.push(k);
+      }
+      await saveLedger(ledgerFile, ledger);
+    };
+
     // === Release guard (strict) ===
     // If this response emits `-(release)`, refuse to persist ANY tag unless
     // open-items count is zero. Open = todos, bugs, security, plan steps —
@@ -222,13 +250,20 @@ if (msg) {
     // work item, period. Address by emitting -(done)/-(dropped)/-(bug fix)/
     // -(security fix) for each #N first, OR set DEVLOG_RELEASE_GUARD=0 for
     // an explicit one-off bypass.
-    const releaseEntry = entries.find(e => e.tag === "release" || (typeof e.tag === "string" && e.tag.startsWith("release:")));
+    // Guard on FRESH entries only: a release already POSTed (banner served) must
+    // not re-trigger the guard from the transcript echo. In-flight closure
+    // subtraction below still scans ALL entries — subtracting an already-applied
+    // closer is a no-op, and a superset can never wrongly block.
+    const releaseEntry = freshEntries.find(e => e.tag === "release" || (typeof e.tag === "string" && e.tag.startsWith("release:")));
     if (releaseEntry && cwd && process.env.DEVLOG_RELEASE_GUARD !== "0") {
       try {
         const openRes = await fetch(`${SERVER}/api/open-items?cwd=${encodeURIComponent(cwd)}`, {
           signal: AbortSignal.timeout(3000),
         });
-        const { items: rawItems = [] } = openRes.ok ? await openRes.json() as { items?: any[] } : { items: [] };
+        const { items: allItems = [] } = openRes.ok ? await openRes.json() as { items?: any[] } : { items: [] };
+        // «قادمة» never blocks a release — the deferred tier exists precisely
+        // so recorded ambition doesn't gate shipping.
+        const rawItems = allItems.filter(it => !it.upcoming);
         // Apply in-flight closures from THIS response. Type-matched: done/
         // dropped close todo+plan-step, bug fix closes bug found, security
         // fix closes security*. Lets Claude close items AND release in the
@@ -249,7 +284,10 @@ if (msg) {
         });
         if (items.length > 0) {
           const byTag: Record<string, any[]> = {};
-          for (const it of items) (byTag[it.tag] ||= []).push(it);
+          for (const it of items) {
+            byTag[it.tag] ||= [];
+            byTag[it.tag].push(it);
+          }
           const out = [];
           out.push("════════ DevLog Release Guard ════════");
           out.push(`-(release) ${releaseEntry.content.slice(0, 120)}`);
@@ -283,7 +321,55 @@ if (msg) {
       }
     }
 
-    const body = JSON.stringify({ cwd, session_id: sessionId, entries });
+    // === Feature nudge (soft, once per turn) ===
+    // A release about to ship with work tags (`built`/`update`) accrued since
+    // the last release but ZERO `-(feature)` declared — likely a forgotten
+    // capability entry for the client-language inventory. WARN, never a hard
+    // guard: patch/refactor/perf releases legitimately carry no new capability.
+    // One block per turn (ledger-deduped); on the continuation Claude either
+    // adds the missing `-(feature)` + re-emits the release, or re-emits the
+    // release alone — either way the batch then posts unhindered. Skipped when
+    // THIS turn already carries a feature tag (counted in-flight, the server
+    // hasn't seen it yet). Mute with DEVLOG_FEATURE_NUDGE=0.
+    if (releaseEntry && cwd && process.env.DEVLOG_FEATURE_NUDGE !== "0"
+        && !entries.some(e => e.tag === "feature")
+        && await shouldServeAsk("feature-nudge")) {
+      try {
+        const r = await fetch(`${SERVER}/api/features?cwd=${encodeURIComponent(cwd)}`, {
+          signal: AbortSignal.timeout(3000),
+        });
+        if (r.ok) {
+          const { sinceLastRelease = { built: 0, features: 0 } } =
+            await r.json() as { sinceLastRelease?: { built: number; features: number } };
+          if (sinceLastRelease.built > 0 && sinceLastRelease.features === 0) {
+            await markAskServed("feature-nudge");
+            const out = [
+              "════════ DevLog Feature Nudge ════════",
+              L(`⚠ ${sinceLastRelease.built} work tag(s) since the last release, but no -(feature) was declared.`,
+                `⚠ ${sinceLastRelease.built} وسم عمل منذ آخر إصدار، دون أي -(feature) مُعلَنة.`),
+              L("Is nothing in this release client-visible? If something is, declare it now:",
+                "هل حقًا لا شيء في هذا الإصدار يلمسه العميل؟ إن وُجد، أعلنه الآن:"),
+              L("  -(feature) <one client-language line per capability>",
+                "  -(feature) <سطر واحد بلغة العميل لكل قدرة>"),
+              L("then re-emit the -(release) line. Purely technical release? Just re-emit -(release) as is.",
+                "ثم أعد سطر -(release). إصدار تقني بحت؟ أعد -(release) كما هو فحسب."),
+              L("(The release was NOT recorded yet. This reminder fires once — it never blocks twice.)",
+                "(الإصدار لم يُسجَّل بعد. هذا التذكير يظهر مرة واحدة — لا يعيق مرتين.)"),
+              "══════════════════════════════════════",
+            ].join("\n");
+            await log(`feature-nudge BLOCKED once: built=${sinceLastRelease.built}, features=0`);
+            blockContinue(`\n${out}\n`);
+          }
+        }
+      } catch (e) {
+        await log(`feature-nudge error: ${(e as Error).message}`);
+      }
+    }
+
+    // The POST itself is unconditional (an all-echo continuation sends an empty
+    // batch — a server-side no-op) so the queue drain, response handling and
+    // broadcast cadence stay byte-identical to the pre-ledger hook.
+    const body = JSON.stringify({ cwd, session_id: sessionId, entries: freshEntries });
     // Drain any prior queued tags first (preserves chronological order).
     await flushTagQueue();
     try {
@@ -295,8 +381,9 @@ if (msg) {
       });
       const respBody = await r.text();
       await log(`POST result: ${r.status} ${respBody.slice(0, 200)}`);
-      if (!r.ok) await enqueueTags(body);
+      if (!r.ok) { await enqueueTags(body); await recordPosted(); }
       else {
+        await recordPosted();
         // Release response: feed the outcome back so Claude knows DevLog
         // processed the release (version bumped, HTML/changelog written) and
         // can continue post-release steps (e.g. build) WITHOUT stopping to ask
@@ -330,7 +417,10 @@ if (msg) {
           if (resp.releaseBlocked) {
             const items = resp.releaseBlocked.openItems || [];
             const byTag: Record<string, any[]> = {};
-            for (const it of items) (byTag[it.tag] ||= []).push(it);
+            for (const it of items) {
+              byTag[it.tag] ||= [];
+              byTag[it.tag].push(it);
+            }
             const out = ["════════ DevLog Release Blocked ════════",
               L(`🛑 ${items.length} open item(s) — the release was NOT recorded (no tag, no HTML, no version bump):`,
                 `🛑 ${items.length} مهمة مفتوحة — لم يُسجَّل الإصدار (لا وسم، لا HTML، لا رفع نسخة):`)];
@@ -376,6 +466,28 @@ if (msg) {
             feedback.push(`\n[devlog closure]\n${lines.join("\n")}\n`);
             await log(`closure-confirm: ${resp.closed.map((c: any) => c.num).join(", ")}`);
           }
+          // «قادمة» outcomes: echo what -(upcoming) / a `-(todo) #N` promotion
+          // actually did. Successes are informational; a no-match or a refused
+          // security deferral blocks once so Claude corrects the number instead
+          // of believing a conversion that never happened.
+          if (Array.isArray(resp.upcomingChanges) && resp.upcomingChanges.length) {
+            const fmt = (c: any) => {
+              const t = c.text ? ` — ${String(c.text).slice(0, 80)}` : "";
+              switch (c.kind) {
+                case "created":          return L(`☾ #${c.num} recorded as upcoming${t}`, `☾ سُجّل #${c.num} ضمن القادمة${t}`);
+                case "deferred":         return L(`☾ #${c.num} moved to upcoming${t}`, `☾ صار #${c.num} من القادمة${t}`);
+                case "promoted":         return L(`⬆ #${c.num} promoted to a tracked todo${t}`, `⬆ رُقّي #${c.num} لالتزام حالي${t}`);
+                case "plan-deferred":    return L(`☾ whole plan «${c.text}» moved to upcoming (via #${c.num})`, `☾ خطة «${c.text}» كاملة صارت قادمة (عبر #${c.num})`);
+                case "plan-promoted":    return L(`⬆ plan «${c.text}» is current again (via #${c.num})`, `⬆ خطة «${c.text}» عادت حالية (عبر #${c.num})`);
+                case "security-refused": return L(`✗ #${c.num} is a security item — security is never deferred; close it with -(security fix)${t}`, `✗ #${c.num} عنصر أمني — الأمن لا يؤجَّل؛ أغلقه بـ-(security fix)${t}`);
+                default:                 return L(`✗ #${c.num} matches no open item — nothing was deferred; check the number`, `✗ #${c.num} لا يطابق أي عنصر مفتوح — لم يُؤجَّل شيء؛ تحقّق من الرقم`);
+              }
+            };
+            const bad = resp.upcomingChanges.some((c: any) => c.kind === "no-match" || c.kind === "security-refused");
+            feedback.push(`\n[devlog upcoming]\n${resp.upcomingChanges.map(fmt).join("\n")}\n`);
+            await log(`upcoming: ${resp.upcomingChanges.map((c: any) => `${c.kind}#${c.num ?? "?"}`).join(", ")}${bad ? " (blocking)" : ""}`);
+            if (bad) flushBlock();
+          }
           // Optional verify nudge (#232): closed something without running tests
           // this session. Informational only — NO exit(2), never blocks. Mute
           // with DEVLOG_VERIFY_HINT=0.
@@ -384,18 +496,15 @@ if (msg) {
             // Once-per-session gate: a nudge is a reminder, not a nag. Emitting it
             // on every closing turn is what let an unsatisfiable detector spin into
             // a loop; after the first surface we stay quiet for the rest of the
-            // session even if more closures land.
-            const safeSid = (sessionId || "nosession").replace(/[^a-zA-Z0-9_-]/g, "_");
-            const vfile = join(VERIFY_STATE_DIR, `${safeSid}.json`);
-            let alreadyHinted = false;
-            try { alreadyHinted = JSON.parse(await readFile(vfile, "utf-8")).hinted === true; } catch {}
-            if (!alreadyHinted) {
+            // session even if more closures land. Session-scope → ledger.session.
+            if (!ledger.session.hintedVerify) {
               const verbs = [...new Set(resp.verifyHint.closers.map((c: any) => c.tag))].join("/");
               feedback.push(
                 `\n[devlog verify]\n${L(
                   `💡 You closed (${verbs}) without running any test this session. "Verified" = observed evidence (a passing test in the conversation), not reading the code. Run the test to confirm.`,
                   `💡 أغلقتَ (${verbs}) بلا تشغيل أي اختبار في هذه الجلسة. «التحقّق» = دليل مُلاحَظ (اختبار ناجح في المحادثة)، لا قراءة الكود. شغّل الاختبار للتأكيد.`)}\n`);
-              await Bun.write(vfile, JSON.stringify({ hinted: true }));
+              ledger.session.hintedVerify = true;
+              await saveLedger(ledgerFile, ledger);
               await log(`verify-hint: ${resp.verifyHint.closers.length} closer(s), no test run`);
             } else {
               await log(`verify-hint: suppressed (already hinted this session)`);
@@ -439,6 +548,9 @@ if (msg) {
               h.kind === "no-match"
                 ? L(`· #${h.num} matches no open item — check the number (closure not applied).`,
                     `· #${h.num} لا يطابق أي عنصر مفتوح — تحقّق من الرقم (الإغلاق لم يُطبَّق).`)
+              : h.kind === "already-closed-wrong-verb"
+                ? L(`· #${h.num} is already closed (a «${h.openerTag}») and -(${h.usedCloser}) can't close that type anyway — you likely meant a different OPEN item; check the number.`,
+                    `· #${h.num} مغلق سابقاً (نوعه «${h.openerTag}») و-(${h.usedCloser}) لا يُغلِق هذا النوع أصلاً — على الأرجح قصدت عنصراً مفتوحاً آخر؛ تحقّق من الرقم.`)
                 : L(`· #${h.num} is a «${h.openerTag}» — close it with -(${h.suggested}) #${h.num}, not -(${h.usedCloser}).`,
                     `· #${h.num} نوعه «${h.openerTag}» — أغلِقه بـ-(${h.suggested}) #${h.num}، لا -(${h.usedCloser}).`));
             const out = [
@@ -452,6 +564,36 @@ if (msg) {
               "═════════════════════════════════════════",
             ].join("\n");
             await log(`closure-mismatch: served ${resp.closureHints.length}`);
+            blockContinue(`\n${out}\n`);
+          }
+          // Feature-reference problems: a -(feature update)/-(feature removed)
+          // whose #N points at no recorded feature (or lost its ref/text). The
+          // server skipped the junk tag; tell Claude so it corrects the number
+          // instead of believing an update that never applied. Fires once — a
+          // corrected reference produces no hint next turn.
+          if (Array.isArray(resp.featureHints) && resp.featureHints.length) {
+            const lines = resp.featureHints.map((h: any) =>
+              h.kind === "no-ref"
+                ? L(`· -(${h.tag}) needs a leading #N naming the feature it targets.`,
+                    `· -(${h.tag}) يحتاج #N في البداية يحدد القدرة المستهدفة.`)
+              : h.kind === "no-text"
+                ? L(`· -(feature update) #${h.num} carries no new text — nothing to update to.`,
+                    `· -(feature update) #${h.num} بلا نص جديد — لا شيء يُحدَّث إليه.`)
+              : h.kind === "already-removed"
+                ? L(`· feature #${h.num} is already removed — check the number.`,
+                    `· القدرة #${h.num} أُزيلت سابقًا — تحقّق من الرقم.`)
+                : L(`· #${h.num} matches no recorded feature — check the number (nothing stored). Pull the list with -(ask:features).`,
+                    `· #${h.num} لا يطابق أي قدرة مسجّلة — تحقّق من الرقم (لم يُخزَّن شيء). اسحب القائمة بـ-(ask:features).`));
+            const out = [
+              "════════ DevLog Feature Reference ════════",
+              L(`⚠ ${resp.featureHints.length} feature tag(s) not recorded:`,
+                `⚠ ${resp.featureHints.length} وسم قدرات لم يُسجَّل:`),
+              ...lines,
+              "",
+              L("Fix the reference above, then re-emit.", "صحّح المرجع أعلاه ثم أعد الإصدار."),
+              "══════════════════════════════════════════",
+            ].join("\n");
+            await log(`feature-hints: served ${resp.featureHints.length}`);
             blockContinue(`\n${out}\n`);
           }
           if (resp.release) {
@@ -468,7 +610,7 @@ if (msg) {
               L(`Version bump: ${bumps}`, `رفع النسخة: ${bumps}`),
               ...(downgrades ? [L(`⚠ Downgrade refused (manifest is newer): ${downgrades}`, `⚠ رُفض تنزيل النسخة (المانيفست أحدث): ${downgrades}`)] : []),
               `HTML/changelog: ${rel.htmlGenerated ? L("generated ✓", "أُنشئ ✓") : L("not generated", "لم يُنشأ")}`,
-              ...(intent && intent.warning ? ["", L(
+              ...(intent?.warning ? ["", L(
                 `⚠ Your accrued changes look ${intent.warning.suggested}-level but you declared ${intent.bump}. Consider -(release:${intent.warning.suggested}) next time.`,
                 `⚠ تغييراتك المتراكمة تبدو بمستوى ${intent.warning.suggested} لكنك أعلنت ${intent.bump}. فكّر بـ-(release:${intent.warning.suggested}) في المرة القادمة.`)] : []),
               "",
@@ -484,6 +626,7 @@ if (msg) {
     } catch (e) {
       await log(`POST error: ${(e as Error).message}`);
       await enqueueTags(body);
+      await recordPosted();
     }
 
     // === Closure check ===
@@ -499,7 +642,9 @@ if (msg) {
         if (openRes.ok) {
           const { items = [] } = await openRes.json() as { items?: any[] };
           const mod = await import("./src/closure-check.ts");
-          const result = mod.checkClosures(entries, items);
+          // «قادمة» items never trigger the built-without-closure block — they
+          // can still be closed explicitly by #N whenever the work happens.
+          const result = mod.checkClosures(entries, items.filter(it => !it.upcoming));
           await log(`closure-check: unclosed=${result.unclosed.length} warnings=${result.warnings.length}`);
           if (result.unclosed.length || result.warnings.length) {
             const msg = mod.formatClosureMessage(result);
@@ -520,8 +665,10 @@ if (msg) {
 // === Part 1.5: Standards rule commands (ask:rules / rule:add / rule:new / rules:list / rule:rm) ===
 // Served in-turn via stderr + exit(2) — the same continuation mechanism the
 // closure-check uses. The standards library lives on local disk
-// (~/.claude/standards), so this works even when the server is down. A
-// per-session state file dedups commands across exit(2) continuations.
+// (~/.claude/standards), so this works even when the server is down. Deduped
+// PER-TURN via the turn ledger (like ask:open/ask:closed/audit), so
+// re-requesting a category in a LATER turn serves again — the old RULES_STATE_DIR
+// session dedup muted it for the whole session (#400).
 //
 // ORDER MATTERS (#231): this runs AFTER Part 1 has POSTed the tags. It used to
 // run first (Part 0) and exit(2) on the first ask:rules — so a response that
@@ -533,12 +680,10 @@ if (msg) {
     const { parseRuleCommands, runRuleCommands } = await import("./src/standards.ts");
     const cmds = parseRuleCommands(msg);
     if (cmds.length) {
-      const safeSid = (sessionId || "nosession").replace(/[^a-zA-Z0-9_-]/g, "_");
-      const stateFile = join(RULES_STATE_DIR, `${safeSid}.json`);
-      let served = [];
-      try { served = JSON.parse(await readFile(stateFile, "utf-8")); } catch {}
-      const servedSet = new Set(served);
-      const fresh = cmds.filter(c => !servedSet.has(c.key));
+      // Per-turn dedup via the turn ledger — namespaced `rules:<key>` so it
+      // never collides with ask:open/ask:closed/audit in the same file (#400).
+      const fresh = [];
+      for (const c of cmds) if (await shouldServeAsk(`rules:${c.key}`)) fresh.push(c);
       if (fresh.length) {
         const { output: raw } = await runRuleCommands(fresh, cwd);
         // Resolve {{latest:lang}}/{{edition:lang}} to live toolchain values so a
@@ -546,8 +691,9 @@ if (msg) {
         const { latestToolchain } = await import("./src/registry.ts");
         const { resolveContentTemplates } = await import("./src/standards.ts");
         const output = await resolveContentTemplates(raw, latestToolchain);
-        for (const c of fresh) servedSet.add(c.key);
-        await Bun.write(stateFile, JSON.stringify([...servedSet]));
+        // Mark only now the commands ran without throwing (mirrors #398): a throw
+        // above is caught below and leaves them re-servable this continuation chain.
+        for (const c of fresh) await markAskServed(`rules:${c.key}`);
         await log(`rule-commands: served ${fresh.length} [${fresh.map((c: any) => c.cmd).join(", ")}]`);
         if (output.trim()) {
           // block: Claude sees the feedback and continues this turn with the
@@ -571,19 +717,25 @@ if (msg) {
 // `stopHookActive`: the old flag also swallowed a fresh `-(audit)` emitted inside
 // a continuation caused by a DIFFERENT block. Now we serve each distinct audit
 // command once per turn; a new user turn re-serves it.
+
+// Fenced + inline code stripped ONCE for all three on-demand pull commands below
+// (audit / ask:open / ask:closed), so a command shown as an EXAMPLE inside ``` ```
+// never triggers a real scan. Was recomputed in each block — three passes over the
+// whole assistant turn per Stop hook (#407).
+const strippedMsg = msg
+  .replace(/```[\s\S]*?```/g, (s: string) => " ".repeat(s.length))
+  .replace(/`[^`\n]*`/g, (s: string) => " ".repeat(s.length));
+
 if (msg && cwd) {
   try {
-    // Strip fenced + inline code first (same as parseRuleCommands) so an `-(audit)`
-    // shown as an EXAMPLE inside ``` ``` doesn't trigger a real scan.
-    const stripped = msg
-      .replace(/```[\s\S]*?```/g, (s: string) => " ".repeat(s.length))
-      .replace(/`[^`\n]*`/g, (s: string) => " ".repeat(s.length));
-    const m = stripped.match(/^[ \t]*-\(audit\)(?:[ \t]+([^\n]+))?[ \t]*$/m);
-    if (m && await shouldServeAsk(`audit${m[1] ? ` ${m[1].trim()}` : ""}`)) {
+    const m = strippedMsg.match(/^[ \t]*-\(audit\)(?:[ \t]+([^\n]+))?[ \t]*$/m);
+    const cmd = m ? `audit${m[1] ? ` ${m[1].trim()}` : ""}` : "";
+    if (m && await shouldServeAsk(cmd)) {
       const arg = (m[1] || "").trim();
       const qs = `cwd=${encodeURIComponent(cwd)}${arg ? `&pkg=${encodeURIComponent(arg)}` : ""}`;
       const r = await fetch(`${SERVER}/api/audit?${qs}`, { signal: AbortSignal.timeout(120000) });
       if (r.ok) {
+        await markAskServed(cmd);   // record only now the fetch succeeded (#398)
         const report = await r.text();
         await log(`audit: served (${arg || "all"})`);
         if (report.trim()) {
@@ -610,24 +762,33 @@ if (msg && cwd) {
 // Never a logged tag (not in ALLOWED_TAGS).
 if (msg && cwd) {
   try {
-    const stripped = msg
-      .replace(/```[\s\S]*?```/g, (s: string) => " ".repeat(s.length))
-      .replace(/`[^`\n]*`/g, (s: string) => " ".repeat(s.length));
-    if (/^[ \t]*-\(ask:open\)[ \t]*$/m.test(stripped) && await shouldServeAsk("ask:open")) {
+    if (/^[ \t]*-\(ask:open\)[ \t]*$/m.test(strippedMsg) && await shouldServeAsk("ask:open")) {
       const r = await fetch(`${SERVER}/api/open-items?cwd=${encodeURIComponent(cwd)}`, { signal: AbortSignal.timeout(10000) });
       if (r.ok) {
+        await markAskServed("ask:open");   // record only now the fetch succeeded (#398)
         const { items = [] } = await r.json() as { items?: any[] };
+        // «قادمة» rides its own section so the committed lists stay an exact
+        // mirror of what the guards enforce. Every line carries its opening
+        // date+time (the "when was this added?" answer, per user request).
+        const since = (it: any) => it.openedAt ? ` [${String(it.openedAt).slice(0, 16).replace("T", " ")}]` : "";
         const groups: Record<string, any[]> = {};
-        for (const it of items) (groups[it.tag] ||= []).push(it);
-        const section = (label: string, arr: any[]) => (arr && arr.length)
-          ? `\n${label}:\n` + arr.map((it: any) => `  #${it.num} ${it.content}${it.planTitle ? ` (${it.planTitle})` : ""}`).join("\n")
+        const upcoming: any[] = [];
+        for (const it of items) {
+          if (it.upcoming) { upcoming.push(it); continue; }
+          groups[it.tag] ||= [];
+          groups[it.tag].push(it);
+        }
+        const line = (it: any) => `  #${it.num} ${it.content}${it.planTitle ? ` (${it.planTitle})` : ""}${since(it)}`;
+        const section = (label: string, arr: any[]) => (arr?.length)
+          ? `\n${label}:\n${arr.map(line).join("\n")}`
           : "";
-        const sec = [...(groups["security"] || []), ...(groups["security:own"] || []), ...(groups["security:dep"] || [])];
+        const sec = [...(groups.security || []), ...(groups["security:own"] || []), ...(groups["security:dep"] || [])];
         const body = [
           section(L("Open bugs", "بقات مفتوحة"), groups["bug found"]),
           section(L("Open security", "ثغرات مفتوحة"), sec),
-          section(L("Open todos", "مهام مفتوحة"), groups["todo"]),
+          section(L("Open todos", "مهام مفتوحة"), groups.todo),
           section(L("Open plan steps", "خطوات خطط مفتوحة"), groups["plan-step"]),
+          section(L("Upcoming (deferred — never block anything)", "قادمة (مؤجلة — لا توقف شيئًا)"), upcoming),
         ].filter(Boolean).join("\n");
         const out = body || L("No open items.", "لا عناصر مفتوحة.");
         await log(`ask:open: served ${items.length} item(s)`);
@@ -650,19 +811,19 @@ if (msg && cwd) {
 // storage). Re-runnable across turns via per-turn command dedup (shouldServeAsk).
 if (msg && cwd) {
   try {
-    const stripped = msg
-      .replace(/```[\s\S]*?```/g, (s: string) => " ".repeat(s.length))
-      .replace(/`[^`\n]*`/g, (s: string) => " ".repeat(s.length));
-    const m = stripped.match(/^[ \t]*-\(ask:closed\)(?:[ \t]+#(\d+))?[ \t]*$/m);
-    if (m && await shouldServeAsk(`ask:closed${m[1] ? ` #${m[1]}` : ""}`)) {
+    const m = strippedMsg.match(/^[ \t]*-\(ask:closed\)(?:[ \t]+#(\d+))?[ \t]*$/m);
+    const cmd = m ? `ask:closed${m[1] ? ` #${m[1]}` : ""}` : "";
+    if (m && await shouldServeAsk(cmd)) {
       const num = m[1];
       const qs = `cwd=${encodeURIComponent(cwd)}${num ? `&num=${num}` : ""}`;
       const r = await fetch(`${SERVER}/api/closed-items?${qs}`, { signal: AbortSignal.timeout(10000) });
       if (r.ok) {
+        await markAskServed(cmd);   // record only now the fetch succeeded (#398)
         const { items = [] } = await r.json() as { items?: any[] };
         const when = (it: any) => it.closedAt
           ? it.closedAt.slice(0, 16).replace("T", " ")
           : L("completed in plan (no timestamp)", "مكتمل في الخطة (بلا وقت مسجّل)");
+        const opened = (it: any) => it.openedAt ? it.openedAt.slice(0, 16).replace("T", " ") : "";
         let out: string;
         if (num) {
           if (!items.length) {
@@ -673,9 +834,10 @@ if (msg && cwd) {
             const it = items[0];
             const by = it.closedBy ? ` -(${it.closedBy})` : "";
             const plan = it.planTitle ? ` [${it.planTitle}]` : "";
+            const openedLine = opened(it) ? L(`\nOpened: ${opened(it)}`, `\nفُتح: ${opened(it)}`) : "";
             out = L(
-              `#${it.num} — ${it.text}${plan}\nClosed: ${when(it)}${by}`,
-              `#${it.num} — ${it.text}${plan}\nأُغلق: ${when(it)}${by}`);
+              `#${it.num} — ${it.text}${plan}${openedLine}\nClosed: ${when(it)}${by}`,
+              `#${it.num} — ${it.text}${plan}${openedLine}\nأُغلق: ${when(it)}${by}`);
           }
         } else {
           out = items.length
@@ -694,6 +856,83 @@ if (msg && cwd) {
   }
 }
 
+// === Part 1.5e: -(ask:features) — pull the current capability inventory ===
+// Companion to -(ask:open) for the feature tier: the client-language "what does
+// the system do today?" list (updates applied, removed dropped, each attributed
+// to the release that shipped it). Lets Claude answer capability questions and
+// pick the right #N for -(feature update)/-(feature removed) without guessing.
+// Served like the other pull commands; never a logged tag.
+if (msg && cwd) {
+  try {
+    if (/^[ \t]*-\(ask:features\)[ \t]*$/m.test(strippedMsg) && await shouldServeAsk("ask:features")) {
+      const r = await fetch(`${SERVER}/api/features?cwd=${encodeURIComponent(cwd)}`, { signal: AbortSignal.timeout(10000) });
+      if (r.ok) {
+        await markAskServed("ask:features");   // record only now the fetch succeeded (#398)
+        const { features = [] } = await r.json() as { features?: any[] };
+        const line = (f: any) => {
+          const num = typeof f.num === "number" ? `#${f.num} ` : "";
+          const since = f.sinceVersion
+            ? L(`since ${f.sinceVersion}`, `منذ ${f.sinceVersion}`)
+            : L("not released yet", "غير مُصدَرة بعد");
+          return `  ${num}${f.text} — ${since}`;
+        };
+        const out = features.length
+          ? `${L(`Current capabilities (${features.length}):`, `قدرات المشروع الحالية (${features.length}):`)}\n${features.map(line).join("\n")}`
+          : L("No capabilities recorded yet — declare one with -(feature) <client-language line>.",
+              "لا قدرات مسجّلة بعد — أعلن واحدة بـ-(feature) <سطر بلغة العميل>.");
+        await log(`ask:features: served ${features.length} item(s)`);
+        blockContinue(`\n[devlog features]\n${out}\n`);
+      } else {
+        await log(`ask:features: server replied ${r.status}`);
+      }
+    }
+  } catch (e) {
+    await log(`ask:features error: ${(e as Error).message}`);
+  }
+}
+
+// === Part 1.5f: -(ask:retro) — pull the full problem corpus ===
+// The retrospective channel: every bug/security report of the project, open and
+// closed, one compact line each (date span, age, touched files). Claude clusters
+// the recurrences in-context ("which problems repeat, which area keeps biting")
+// and codifies what it finds with -(rule:add) or -(insight). Sourced from the
+// tags store — never capped or archived, unlike events — so it reaches the
+// project's first day without touching the cold archive. Served like the other
+// pull commands; never a logged tag.
+if (msg && cwd) {
+  try {
+    if (/^[ \t]*-\(ask:retro\)[ \t]*$/m.test(strippedMsg) && await shouldServeAsk("ask:retro")) {
+      const r = await fetch(`${SERVER}/api/retro?cwd=${encodeURIComponent(cwd)}`, { signal: AbortSignal.timeout(10000) });
+      if (r.ok) {
+        await markAskServed("ask:retro");   // record only now the fetch succeeded (#398)
+        const { items = [] } = await r.json() as { items?: any[] };
+        const day = (s: string) => String(s).slice(0, 10);
+        const line = (it: any) => {
+          const num = typeof it.num === "number" ? `#${it.num} ` : "";
+          const kind = String(it.kind || "").startsWith("security") ? L("sec", "أمان") : L("bug", "خلل");
+          const span = it.closedAt
+            ? `${day(it.openedAt)}→${day(it.closedAt)} (${it.ageDays}${L("d", "ي")})`
+            : `${day(it.openedAt)} ${L(`— OPEN (${it.ageDays}d)`, `— مفتوح (${it.ageDays}ي)`)}`;
+          const files = it.files?.length
+            ? ` — ${it.files.slice(0, 4).join(" · ")}${it.files.length > 4 ? ` (+${it.files.length - 4})` : ""}`
+            : "";
+          return `  ${num}[${kind}] ${span} ${it.text}${files}`;
+        };
+        const out = items.length
+          ? `${L(`Problem corpus (${items.length} reports, oldest first) — cluster the recurrences; codify a confirmed pattern with -(rule:add) or -(insight):`,
+              `سجل المشاكل (${items.length} بلاغًا، الأقدم أولًا) — اعنقد المتكرر؛ ثبّت النمط المؤكد بـ-(rule:add) أو -(insight):`)}\n${items.map(line).join("\n")}`
+          : L("No problem reports recorded for this project yet.", "لا بلاغات مسجّلة لهذا المشروع بعد.");
+        await log(`ask:retro: served ${items.length} item(s)`);
+        blockContinue(`\n[devlog retro]\n${out}\n`);
+      } else {
+        await log(`ask:retro: server replied ${r.status}`);
+      }
+    }
+  } catch (e) {
+    await log(`ask:retro error: ${(e as Error).message}`);
+  }
+}
+
 // === Part 1.6: Standards enforcement (force the pull) ===
 // DISABLED (user directive 2026-06-24): the system no longer nags Claude at Stop
 // time for "wrote code without pulling a standard". Enforcement now happens ONLY
@@ -708,9 +947,11 @@ if (STANDARDS_PULL_ENFORCEMENT && cwd && sessionId && process.env.DEVLOG_STANDAR
     const disabled = isEnforcementDisabled(cwd);
     if (disabled) await log("standards-check: disabled for this project");
     const catalog = await scanCatalog(cwd);
-    const safeSid = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-    let served = [];
-    try { served = JSON.parse(await readFile(join(RULES_STATE_DIR, `${safeSid}.json`), "utf-8")); } catch {}
+    // NOTE: since #413, -(ask:rules) pulls are deduped per turn (now in
+    // ledger.turn.servedCommands), so no session-wide "covered" list exists
+    // anymore. Moot while this block is DISABLED; if it's ever re-enabled,
+    // persist covered categories in ledger.session instead.
+    const served: string[] = [];
 
     let codeWrites = [];
     // Only pay for the session-changes query when a block is otherwise possible.
@@ -777,15 +1018,12 @@ if (cwd && sessionId && !stopHookActive && process.env.DEVLOG_STANDARDS_CHECK !=
         const { violations: allViolations = [] } = r1.ok ? await r1.json() as { violations?: any[] } : { violations: [] };
         // Drop deps the developer marked intentional (P5): `dep:<name>`.
         const violations = allViolations.filter((v: any) => !isAcked(cwd, "dep", v.name));
-        // Dedup per session by violation signature so we nag once, not every turn.
-        const safeSid = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-        const sf = join(RULES_STATE_DIR, `${safeSid}.json`);
-        let served = [];
-        try { served = JSON.parse(await readFile(sf, "utf-8")); } catch {}
-        const sig = "dep-fresh|" + violations.map((v: any) => `${v.name}@${v.installed}`).sort().join(",");
-        if (violations.length && !served.includes(sig)) {
-          served.push(sig);
-          await Bun.write(sf, JSON.stringify(served));
+        // Dedup per session by violation signature so we nag once, not every
+        // turn. Session-scope → ledger.session.servedSignatures.
+        const sig = `dep-fresh|${violations.map((v: any) => `${v.name}@${v.installed}`).sort().join(",")}`;
+        if (violations.length && !ledger.session.servedSignatures.includes(sig)) {
+          ledger.session.servedSignatures.push(sig);
+          await saveLedger(ledgerFile, ledger);
           const lines = violations.map((v: any) => v.kind === "behind"
             ? L(`· ${v.name} ${v.installed} → use ${v.suggest} (a newer mature version is available)`,
                 `· ${v.name} ${v.installed} → استخدم ${v.suggest} (إصدار أحدث ناضج متاح)`)
@@ -862,6 +1100,6 @@ try {
         body: JSON.stringify({ cwd, content, file_path: fp }),
         signal: AbortSignal.timeout(2000),
       });
-    } catch {}
+    } catch { /* best-effort plan sync — server may be down */ }
   }));
-} catch {}
+} catch { /* unreadable plans dir — nothing to sync */ }

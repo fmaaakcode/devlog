@@ -5,7 +5,9 @@
 // env-gate flags are re-derived here (same var, same value — as vuln-scan.ts
 // does) so makeStandardsRoutes() needs no injected state. Spread into routeDefs.
 
-import { loadData, openTodos, openBugs, openSecurity, openPlanSteps } from "./data";
+import { loadData, openTodos, openBugs, openSecurity, openPlanSteps, closedNums, normalizeTagContent, SECURITY_OPEN_TAGS } from "./data";
+import { tsToMs, orphanCounts, isTombstone, untaggedSessionCounts } from "./maintenance";
+import type { TagEntry } from "./types";
 import { closedItems } from "./closed-items";
 import { resolveProjectFor } from "./project-resolve";
 import { pathsEqual } from "./path-utils";
@@ -28,21 +30,107 @@ export function makeStandardsRoutes(): Record<string, unknown> {
     // Lightweight project list for the dashboard header/sidebar (4.1): per-project
     // metadata + counts only — NOT the full tags/events/plans arrays. Lets the
     // dashboard render the project switcher without pulling the whole ~5MB
-    // /api/data snapshot on every open.
+    // /api/data snapshot on every open. lastActivity + vulnClass exist so the
+    // sidebar can render from this alone (its active/other split needs recency,
+    // its color dot needs the vuln verdict — #373).
     "/api/projects-summary": {
       async GET() {
         const data = await loadData();
+        // Newest event per project in one pass (tags are folded in per-project
+        // below, where they're already filtered). tsToMs tolerates epoch numbers
+        // from imported/seeded data alongside the live ISO strings.
+        const lastEvent: Record<string, number> = {};
+        for (const e of data.events) {
+          const t = tsToMs(e.timestamp);
+          if (t > (lastEvent[e.project] || 0)) lastEvent[e.project] = t;
+        }
+        // Group tags once (O(T)) instead of filtering the whole store per
+        // project (O(P×T)) — this endpoint's promise is "lightweight".
+        const tagsByProject = new Map<string, TagEntry[]>();
+        for (const t of data.tags) {
+          let arr = tagsByProject.get(t.project);
+          if (!arr) { arr = []; tagsByProject.set(t.project, arr); }
+          arr.push(t);
+        }
+        // Server twin of the dashboard's projectVulnClass() — same verdict from
+        // the stored vulnResults, so the summary sidebar colors match the full one.
+        const vulnClassFor = (p: (typeof data.projects)[string]): string => {
+          const vulns = p.vulnResults || {};
+          let hasDanger = false;
+          let hasWarn = false;
+          let scannedAny = false;
+          for (const l of p.libraries || []) {
+            const v = vulns[l.name];
+            if (!v || v.status === "unscannable" || v.status === "unknown") continue;
+            scannedAny = true;
+            if (v.icon === "warning" || v.icon === "x") { hasDanger = true; break; }
+            if (v.isLatest === false && l.version !== "latest") hasWarn = true;
+          }
+          return hasDanger ? "vuln-danger" : hasWarn ? "vuln-warn" : scannedAny ? "vuln-safe" : "";
+        };
+        // Protocol-compliance observability (#434): sessions that wrote files but
+        // stored no tags. Passive counter only — never a block (directive 2026-06-24).
+        const untaggedBy = untaggedSessionCounts(data);
         const projects = Object.entries(data.projects).map(([name, p]) => {
-          const tags = data.tags.filter(t => t.project === name);
+          const tags = tagsByProject.get(name) || [];
           const open = openTodos(tags).length + openBugs(tags).length
             + openSecurity(tags).length + openPlanSteps(data, name).length;
+          let lastActivity = lastEvent[name] || 0;
+          for (const t of tags) {
+            const tt = tsToMs(t.timestamp);
+            if (tt > lastActivity) lastActivity = tt;
+          }
           return {
             name, path: p.path, language: p.language, framework: p.framework,
             libraries: p.libraries?.length || 0, tags: tags.length, openItems: open,
-            lastScan: p.lastScan,
+            lastScan: p.lastScan, lastActivity, vulnClass: vulnClassFor(p),
+            untagged: untaggedBy.get(name) || 0,
           };
         });
-        return Response.json({ projects, count: projects.length });
+        // Maintenance counters for the sidebar sweep buttons (#375/#380), from the
+        // SAME helpers the sweep routes execute so the counts can't disagree (#408).
+        const orphans = orphanCounts(data).size;
+        const tombstones = Object.values(data.projects).filter(p => isTombstone(p)).length;
+        let untagged = 0;
+        for (const n of untaggedBy.values()) untagged += n;
+        return Response.json({ projects, count: projects.length, orphans, tombstones, untagged });
+      },
+    },
+
+    // Per-item open/closed verdicts for one project — THE server judgment the
+    // dashboard cards render from (#379). The dashboard used to re-implement
+    // closure resolution in JS ("Mirror of data.ts closedNums"), and every
+    // mirror is a drift point: a rule changed on one side gives a dashboard
+    // that contradicts ask:open / the release guard on the same data. Built on
+    // the same resolvers as /api/open-items, so disagreement is impossible.
+    "/api/verdicts/:project": {
+      async GET(req: ApiReq) {
+        const data = await loadData();
+        const name = req.params.project;
+        const tags = data.tags.filter(t => t.project === name);
+        const openTodoIds = new Set(openTodos(tags).map(t => t.id));
+        const openBugIds = new Set(openBugs(tags).map(t => t.id));
+        const openSecIds = new Set(openSecurity(tags).map(t => t.id));
+        // Done vs dropped matters to the todos card (dropped items disappear,
+        // done items render struck-through) — same text-or-#N closure rule.
+        const droppedTexts = new Set(tags.filter(t => t.tag === "dropped").map(t => normalizeTagContent(t.content)));
+        const droppedNums = closedNums(tags, ["dropped"]);
+        const isDropped = (t: TagEntry) =>
+          droppedTexts.has(normalizeTagContent(t.content)) || (typeof t.num === "number" && droppedNums.has(t.num));
+        const todos = tags.filter(t => t.tag === "todo").map(t => ({
+          id: t.id, num: t.num ?? null, content: t.content, timestamp: t.timestamp,
+          state: openTodoIds.has(t.id) ? "open" : isDropped(t) ? "dropped" : "done",
+          upcoming: !!t.upcoming,
+        }));
+        const bugs = tags.filter(t => t.tag === "bug found").map(t => ({
+          id: t.id, num: t.num ?? null, content: t.content, timestamp: t.timestamp,
+          open: openBugIds.has(t.id), upcoming: !!t.upcoming,
+        }));
+        const security = tags.filter(t => SECURITY_OPEN_TAGS.has(t.tag)).map(t => ({
+          id: t.id, num: t.num ?? null, content: t.content, timestamp: t.timestamp,
+          tag: t.tag, open: openSecIds.has(t.id),
+        }));
+        return Response.json({ project: name, todos, bugs, security });
       },
     },
 
@@ -61,13 +149,18 @@ export function makeStandardsRoutes(): Record<string, unknown> {
         // DEVLOG_STATUS.md export. `numberedOnly` because the guard only tracks
         // numbered items. Type-matched closure (a `-(bug fix) #N` never closes a
         // todo #N) lives inside the shared resolver.
+        // `upcoming: true` marks the «قادمة» tier: still open and closable, but
+        // the hook's release guard + closure-check filter it out. `openedAt`
+        // answers "since when?" for ask:open / ?open (steps inherit the plan's
+        // registration time — steps carry no per-step timestamp).
         const tags = data.tags.filter(t => t.project === project);
-        const items: Array<{ num: number; tag: string; content: string; planTitle?: string }> = [];
-        for (const t of openTodos(tags, { numberedOnly: true })) items.push({ num: t.num as number, tag: "todo", content: t.content });
-        for (const t of openBugs(tags, { numberedOnly: true })) items.push({ num: t.num as number, tag: "bug found", content: t.content });
-        for (const t of openSecurity(tags, { numberedOnly: true })) items.push({ num: t.num as number, tag: t.tag, content: t.content });
+        const items: Array<{ num: number; tag: string; content: string; planTitle?: string; upcoming?: boolean; openedAt?: string }> = [];
+        const up = (t: { upcoming?: boolean }) => (t.upcoming ? { upcoming: true } : {});
+        for (const t of openTodos(tags, { numberedOnly: true })) items.push({ num: t.num as number, tag: "todo", content: t.content, openedAt: t.timestamp, ...up(t) });
+        for (const t of openBugs(tags, { numberedOnly: true })) items.push({ num: t.num as number, tag: "bug found", content: t.content, openedAt: t.timestamp, ...up(t) });
+        for (const t of openSecurity(tags, { numberedOnly: true })) items.push({ num: t.num as number, tag: t.tag, content: t.content, openedAt: t.timestamp });
         for (const s of openPlanSteps(data, project, { numberedOnly: true })) {
-          items.push({ num: s.num as number, tag: "plan-step", content: s.text, planTitle: s.planTitle });
+          items.push({ num: s.num as number, tag: "plan-step", content: s.text, planTitle: s.planTitle, openedAt: s.openedAt, ...(s.planUpcoming ? { upcoming: true } : {}) });
         }
         return Response.json({ project, items });
       },

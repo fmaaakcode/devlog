@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
-import { mkdir, rename, readdir, stat, unlink } from "node:fs/promises";
+import { mkdir, rename } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { DevLogData, InjectionConfig, ProjectProfile, TagEntry } from "./types";
+import type { DevLogData, InjectionConfig, PlanStep, ProjectProfile, TagEntry } from "./types";
 import { normalizeSlashes } from "./path-utils";
 
 export const DEFAULT_INJECTION_CONFIG: InjectionConfig = {
@@ -11,9 +11,13 @@ export const DEFAULT_INJECTION_CONFIG: InjectionConfig = {
   // since last inject (siblings reminder) OR user typed `?open`. Cheap by
   // default — see inject.ts buildContext for the gating.
   userPromptSubmit: true,
-  preToolUseRead: false,
+  // Position memory (#486): inject a file's tag history the first time a
+  // session opens it. On by default — fires only when the file HAS a story,
+  // at most once per file per session; opt out per project via the dashboard.
+  preToolUseRead: true,
   outdatedLibs: true, // surface outdated libs at SessionStart; opt out per project
   describeNudge: true, // nudge for missing desc/about; survives sessionStart off
+  upcomingItems: true, // show the «قادمة» awareness line in the open summaries
   claudeMd: false,
   contextMd: false,
   standardsEnforce: true, // standards enforcement ON by default; opt out per project
@@ -44,7 +48,17 @@ const F = {
   plans:    `${DATA_DIR}/plans.json`,
   meta:     `${DATA_DIR}/meta.json`,
 } as const;
-export const PORT = parseInt(process.env.DEVLOG_PORT || "7777", 10);
+// R3 #6: a garbled DEVLOG_PORT used to flow NaN into Bun.serve (opaque boot
+// failure) and into every list derived from PORT (e.g. allowed hosts). Fall
+// back to the default with a loud line instead — a wrong-but-running port is
+// diagnosable, a NaN boot crash is not. Exported for unit tests.
+export function resolvePort(raw: string | undefined, fallback = 7777): number {
+  const p = parseInt(raw ?? "", 10);
+  if (Number.isInteger(p) && p > 0 && p < 65536) return p;
+  if (raw !== undefined) console.error(`[config] DEVLOG_PORT=${JSON.stringify(raw)} is not a valid TCP port — using ${fallback}`);
+  return fallback;
+}
+export const PORT = resolvePort(process.env.DEVLOG_PORT);
 
 let cache: DevLogData | null = null;
 let loadPromise: Promise<DevLogData> | null = null;
@@ -52,7 +66,38 @@ let loadPromise: Promise<DevLogData> | null = null;
 async function readJsonOr<T>(path: string, fallback: T): Promise<T> {
   const f = Bun.file(path);
   if (!(await f.exists())) return fallback;
-  try { return (await f.json()) as T; } catch { return fallback; }
+  // Read and parse SEPARATELY: only a parse failure means corruption. Lumping
+  // them (the old `f.json()` catch) meant a transient Windows read error —
+  // AV/backup briefly holding the file (EBUSY/EACCES) — took the quarantine
+  // path too: a healthy store renamed away and the server booting an empty
+  // registry that the next save persists (R3 review). Reads get a short retry
+  // for exactly those locks, then PROPAGATE — a loud failed boot with the
+  // store intact beats a quiet boot with the store gone.
+  let text: string;
+  for (let attempt = 1; ; attempt++) {
+    try { text = await f.text(); break; }
+    catch (e) {
+      if (attempt >= 3) {
+        console.error(`[store] ${path} unreadable after ${attempt} attempts (${(e as Error)?.message}) — NOT quarantining; failing this load so the on-disk store stays authoritative.`);
+        throw e;
+      }
+      await Bun.sleep(150 * attempt);
+    }
+  }
+  try { return JSON.parse(text) as T; }
+  catch (e) {
+    // A PRESENT-but-unparseable store is not a soft failure: silently returning
+    // the fallback meant the next save rewrote the file and buried the history
+    // for good (#432). Quarantine the corrupt original under a dated name — the
+    // next save then writes a fresh file while the evidence stays on disk for
+    // manual recovery (`.corrupt-*` never matches the `.bak` pruning) — and say
+    // so loudly; this is the one read failure that must never pass unnoticed.
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const dest = `${path}.corrupt-${stamp}`;
+    try { await rename(path, dest); } catch { /* rename failed → leave it; next save overwrites */ }
+    console.error(`[store] ${path} is corrupt (${(e as Error)?.message}) — quarantined to ${dest}; continuing with an empty store. Restore from the newest .bak if needed.`);
+    return fallback;
+  }
 }
 
 async function readFromDisk(): Promise<DevLogData> {
@@ -165,7 +210,14 @@ async function writeAllSplit(data: DevLogData) {
 export async function loadData(): Promise<DevLogData> {
   if (cache) return cache;
   if (!loadPromise) {
-    loadPromise = readFromDisk().then(d => { cache = d; loadPromise = null; return d; });
+    loadPromise = readFromDisk().then(
+      d => { cache = d; loadPromise = null; return d; },
+      // readJsonOr now propagates unreadable-file errors (transient locks)
+      // instead of quarantining. Clear the in-flight slot so the NEXT call
+      // retries from disk — caching the rejection would wedge every future
+      // loadData behind one transient failure.
+      err => { loadPromise = null; throw err; },
+    );
   }
   return loadPromise;
 }
@@ -173,27 +225,8 @@ export async function loadData(): Promise<DevLogData> {
 let lastCleanup = 0;
 const CLEANUP_INTERVAL = 3600000; // 1 hour
 
-/**
- * Delete migration/drop backup files (`*.bak`, `*.bak-…`, `*.<stamp>.bak`) in the
- * data dir that are older than `maxAgeDays` (#devops footnote). These pile up
- * from past migrations with no retention; a 30-day window mirrors the tombstone
- * policy in cleanupMissingProjects. Returns how many were removed. Best-effort —
- * never throws (a backup that can't be read is simply skipped).
- */
-export async function cleanupOldBackups(dataDir: string, maxAgeDays = 30): Promise<number> {
-  let entries: string[];
-  try { entries = await readdir(dataDir); } catch { return 0; }
-  const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
-  let removed = 0;
-  for (const f of entries) {
-    if (!f.includes(".bak")) continue;
-    const fp = join(dataDir, f);
-    try {
-      if ((await stat(fp)).mtimeMs < cutoff) { await unlink(fp); removed++; }
-    } catch { /* unreadable / already gone — skip */ }
-  }
-  return removed;
-}
+// Backup housekeeping (cleanupOldBackups / backupStores) moved to
+// ./maintenance.ts with the upcoming feature — file-size budget.
 
 export async function cleanupMissingProjects(data: DevLogData): Promise<boolean> {
   if (Date.now() - lastCleanup < CLEANUP_INTERVAL) return false;
@@ -217,6 +250,9 @@ export async function cleanupMissingProjects(data: DevLogData): Promise<boolean>
   if (changed) await saveData(data);
   return changed;
 }
+
+// Maintenance verdicts (orphans / tombstones / purge / untagged sessions) live
+// in ./maintenance — extracted for the file-size budget; pure functions only.
 
 // Write lock to prevent concurrent writes corrupting data.json
 let writing = false;
@@ -259,9 +295,20 @@ export async function withData<T>(fn: (data: DevLogData) => Promise<T> | T): Pro
   try {
     await prev.catch(() => { /* wait for previous holder; its error is not ours */ });
     const data = await loadData();
-    const result = await fn(data);
-    await saveData(data);
-    return result;
+    try {
+      const result = await fn(data);
+      await saveData(data);
+      return result;
+    } catch (err) {
+      // #449: fn mutates the SHARED cache object in place. If it throws after
+      // a partial mutation, nothing is saved (good) — but the cache would keep
+      // the half-applied state, and the next successful save would persist it
+      // to disk with no trace. Drop the cache so the next reader reloads the
+      // last consistent state from disk. Cheaper than structuredClone-ing the
+      // whole store on every mutation just to guard the rare failure path.
+      cache = null;
+      throw err;
+    }
   } finally {
     release();
   }
@@ -316,25 +363,78 @@ export function normalizeTagContent(s: string): string {
 /** Open security tags — `security`, `security:own`, `security:dep` all count. */
 export const SECURITY_OPEN_TAGS = new Set(["security", "security:own", "security:dep"]);
 
-/** Tags that close an open item. */
-export const CLOSURE_TAGS = new Set(["done", "dropped", "bug fix", "security fix"]);
+// ─── Closure vocabulary (single source of truth, #409) ──────────────────────
+// The entire closure grammar derives from ONE table: each OPENER tag → the
+// closer verb(s) that legitimately close it (type-matched). tags-service and
+// closed-items used to keep their own copies (CLOSER_KINDS, OPENER_TO_CLOSER,
+// NUMBERED_OPENABLE, CLOSER_FOR) which could silently drift; they now import
+// these derived views so there is exactly one place to change the vocabulary.
+
+/** Opener tag → closer verb(s) that close it (type-matched). */
+export const CLOSER_FOR: Record<string, string[]> = {
+  "todo": ["done", "dropped"],
+  "bug found": ["bug fix"],
+  "security": ["security fix"],
+  "security:own": ["security fix"],
+  "security:dep": ["security fix"],
+};
+
+/** Closer verb → opener tag(s) it can close (inverse of CLOSER_FOR), so a
+ *  `-(bug fix) #5` never closes a todo #5. */
+export const CLOSER_KINDS: Record<string, string[]> = (() => {
+  const inv: Record<string, string[]> = {};
+  for (const [opener, closers] of Object.entries(CLOSER_FOR)) {
+    for (const c of closers) {
+      if (!inv[c]) inv[c] = [];
+      inv[c].push(opener);
+    }
+  }
+  return inv;
+})();
+
+/** Opener tag → the single verb to SUGGEST when the wrong closer was used (the
+ *  first/primary closer; `dropped` is an alternate for todo, not the suggestion). */
+export const OPENER_TO_CLOSER: Record<string, string> =
+  Object.fromEntries(Object.entries(CLOSER_FOR).map(([o, cs]) => [o, cs[0]]));
+
+/** All numbered openable tags (keys of CLOSER_FOR). */
+export const NUMBERED_OPENABLE = new Set(Object.keys(CLOSER_FOR));
+
+/** Tags that close an open item (keys of CLOSER_KINDS). */
+export const CLOSURE_TAGS = new Set(Object.keys(CLOSER_KINDS));
+
+/**
+ * The LEADING `#N #M …` run of a closer's content, as numbers. Matching stops at
+ * the first token that isn't a `#N`, so `-(done) #5 #6` yields [5, 6] while a
+ * `#N` in trailing prose (`-(done) #5 — same root as bug #11, see PR #312`) does
+ * NOT include #11/#312 — that would silently lose an unrelated open item (R4
+ * code-quality F3). Shared by closedNums (below) and closed-items (#409).
+ */
+export function leadingNums(content: string): number[] {
+  const prefix = (content || "").match(/^(?:\s*#\d+)+/);
+  return prefix ? [...prefix[0].matchAll(/#(\d+)/g)].map(m => parseInt(m[1], 10)) : [];
+}
+
+/**
+ * A closer whose content is a SINGLE bare `#N` (whole content, optional `#`,
+ * surrounding whitespace) → N, else null. Distinct from the leading-run parser:
+ * used by closure resolution / diagnosis / undo, which act on one number only.
+ */
+export function singleHashNum(content: string): number | null {
+  const m = (content || "").match(/^#?\s*(\d+)\s*$/);
+  return m ? parseInt(m[1], 10) : null;
+}
 
 /**
  * Numbers closed via `-(kind) #N`. Pass ONLY the closure kinds that legitimately
  * close the item type ("type-matched"), so a `-(bug fix) #5` never closes a
- * todo #5. Reads only the LEADING run of `#N` tokens, so `-(done) #5 #6` closes
- * both, while a `#N` mentioned in trailing prose (`-(done) #5 — same root as bug
- * #11, see PR #312`) does NOT close #11/#312 — that would silently lose an
- * unrelated open item (R4 code-quality F3). Trailing non-`#N` text is ignored.
+ * todo #5. Uses leadingNums, so trailing non-`#N` prose is ignored.
  */
 export function closedNums(tags: TagEntry[], kinds: string[]): Set<number> {
   const nums = new Set<number>();
   for (const t of tags) {
     if (!kinds.includes(t.tag)) continue;
-    // Only the leading "#5 #6 ..." prefix counts; matching stops at the first
-    // token that isn't a `#N` (or the whitespace between them).
-    const prefix = (t.content || "").match(/^(?:\s*#\d+)+/);
-    if (prefix) for (const m of prefix[0].matchAll(/#(\d+)/g)) nums.add(parseInt(m[1], 10));
+    for (const n of leadingNums(t.content || "")) nums.add(n);
   }
   return nums;
 }
@@ -437,6 +537,23 @@ export interface OpenPlanStep {
   phase?: string;
   planTitle: string;
   planFile: string;
+  /** The owning plan is marked «قادمة» — the step stays open (and closable by
+   *  `#N`) but guards/summaries must not count it as tracked debt. */
+  planUpcoming?: boolean;
+  /** ISO creation time of the owning plan — the best available "opened at"
+   *  for a step (steps carry no per-step timestamp). */
+  openedAt?: string;
+}
+
+/**
+ * A plan step no longer open. Completed (`[x]` / `-(done)`) OR archived by
+ * `-(dropped)`. Dropped steps stay in `plan.steps` (not spliced) so
+ * already-closed detection and `-(ask:closed)` can still find them (#410); every
+ * "is this step open?" check must go through here so the two closure states
+ * can't drift apart the way `s.completed` alone did.
+ */
+export function isStepClosed(s: PlanStep): boolean {
+  return s.completed || !!s.dropped;
 }
 
 /** Plan steps not yet completed and not closed by a `-(done)/-(dropped) #N`. */
@@ -447,10 +564,13 @@ export function openPlanSteps(data: DevLogData, project: string, opts: OpenItemO
   for (const plan of data.plans) {
     if (plan.project !== project) continue;
     for (const s of plan.steps) {
-      if (s.completed) continue;
+      if (isStepClosed(s)) continue;
       if (opts.numberedOnly && typeof s.num !== "number") continue;
       if (typeof s.num === "number" && closedByDone.has(s.num)) continue;
-      out.push({ num: s.num, text: s.text, phase: s.phase, planTitle: plan.title, planFile: plan.file_path });
+      out.push({
+        num: s.num, text: s.text, phase: s.phase, planTitle: plan.title, planFile: plan.file_path,
+        ...(plan.upcoming ? { planUpcoming: true } : {}), openedAt: plan.timestamp,
+      });
     }
   }
   return out;
@@ -599,7 +719,7 @@ export function backfillNums(data: DevLogData): boolean {
       if (p.project !== name) continue;
       for (const s of p.steps) {
         if (typeof s.num === "number") continue;
-        if (s.completed) continue;
+        if (isStepClosed(s)) continue;
         s.num = next++;
         changed = true;
       }

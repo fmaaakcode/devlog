@@ -8,6 +8,8 @@ import { loadData } from "./data";
 import { parseStack } from "./stack-parser";
 import { buildTree } from "./tree";
 import { obj } from "./validators";
+import { generateStackMd } from "./export";
+import { appendAudit } from "./audit";
 import { join } from "node:path";
 
 type ApiReq = Bun.BunRequest;
@@ -22,11 +24,41 @@ export function makeStackRoutes(): Record<string, unknown> {
         const project = data.projects[req.params.project];
         if (!project?.path) return Response.json({ content: "", parsed: null, projectPath: null });
         const file = Bun.file(join(project.path, ".devlog", "DEVLOG_STACK.md"));
-        if (!(await file.exists())) return Response.json({ content: "", parsed: null, projectPath: project.path });
+        if (!(await file.exists())) return Response.json({ content: "", parsed: null, projectPath: project.path, mtime: null });
         const content = await file.text();
         const url = new URL(req.url);
         const parsed = url.searchParams.get("raw") === "1" ? null : parseStack(content);
-        return Response.json({ content, parsed, projectPath: project.path });
+        // mtime lets the UI show how old the scan is — the file is generated
+        // once and can silently drift years behind the code.
+        return Response.json({ content, parsed, projectPath: project.path, mtime: file.lastModified });
+      },
+    },
+
+    // Explicit regeneration (the only path that overwrites an existing
+    // DEVLOG_STACK.md — see generateStackMd's generate-once default).
+    "/api/stack/:project/regenerate": {
+      async POST(req: ApiReq) {
+        const data = await loadData();
+        const name = req.params.project;
+        const project = data.projects[name];
+        if (!project?.path) return Response.json({ error: "not found" }, { status: 404 });
+        await appendAudit("stack.regenerate", req, { target: name });
+        try {
+          // Normalize sparse profiles (hand-seeded or pre-scan registrations)
+          // — the generator dereferences these fields unguarded.
+          await generateStackMd(project.path, {
+            ...project,
+            name: project.name || name,
+            files: project.files || {},
+            libraries: project.libraries || [],
+            language: project.language || "",
+            totalFiles: project.totalFiles || 0,
+          }, true);
+        } catch (e) {
+          return Response.json({ error: (e as Error)?.message || "regenerate failed" }, { status: 500 });
+        }
+        const file = Bun.file(join(project.path, ".devlog", "DEVLOG_STACK.md"));
+        return Response.json({ ok: true, mtime: (await file.exists()) ? file.lastModified : null });
       },
     },
 

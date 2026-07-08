@@ -1,10 +1,11 @@
 // Misc / utility routes, extracted from server.ts (plan fable/round2 task 3.1).
-// The small leftovers that don't belong to a bigger domain: dashboard feature
-// flags, upstream-update info, single-event delete, the confirmed data wipe, and
-// the status.md export (one project + all). All shared imports, so makeMiscRoutes()
-// takes no injected server state. Spread into server.ts's routeDefs.
+// The small leftovers that don't belong to a bigger domain: the data snapshot,
+// liveness + identity probes, dashboard feature flags, upstream-update info,
+// single-event delete, the confirmed data wipe, and the status.md export (one
+// project + all). All shared imports, so makeMiscRoutes() takes no injected
+// server state. Spread into server.ts's routeDefs.
 
-import { loadData, saveData, withData, PLUGIN_MODE, DEFAULT_INJECTION_CONFIG } from "./data";
+import { loadData, saveData, withData, cleanupMissingProjects, DATA_DIR, PORT, PLUGIN_MODE, DEFAULT_INJECTION_CONFIG } from "./data";
 import { broadcast } from "./broadcast";
 import { appendAudit } from "./audit";
 import { exportStatusMd } from "./export";
@@ -17,6 +18,20 @@ type ApiReq = Bun.BunRequest;
 /** Build the misc/utility route group. Spread into server.ts's routeDefs. */
 export function makeMiscRoutes(): Record<string, unknown> {
   return {
+    // cleanupMissingProjects mutates + may saveData, so run it under the lock
+    // rather than on the bare shared cache from a GET handler (R3 P3 #2).
+    "/api/data": { async GET() { const data = await withData(async (d) => { await cleanupMissingProjects(d); return d; }); return Response.json(data); } },
+
+    // Lightweight liveness probe — does NOT serialize the ~5MB dataset like
+    // /api/data does. Used by ensure-server.sh and any supervisor to answer
+    // "is the port alive?" without CPU cost (R4 devops F3).
+    "/api/ping": { GET() { return new Response("ok", { status: 200 }); } },
+
+    // Identity probe for the data-dir single-writer lock (#435): answers "WHICH
+    // daemon is this?" so acquireDaemonLock can tell a live holder from a stale
+    // lock (freed port, pid reuse, foreign server). Localhost-only via guard().
+    "/api/daemon-id": { GET() { return Response.json({ pid: process.pid, dataDir: DATA_DIR, port: PORT }); } },
+
     // Runtime feature flags for the dashboard. Native version scanning is always
     // available (no external server), so the scan button is always enabled.
     "/api/config": {

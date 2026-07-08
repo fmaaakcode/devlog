@@ -10,7 +10,7 @@ import { diagnose } from "../src/doctor";
 // server happens to be up on 7777 (it fails in CI where nothing listens) —
 // boot an isolated subprocess server on a private port with its own data dir.
 // doctor reads DEVLOG_PORT at call time, so pointing the env var here is enough.
-const TEST_PORT = 17782;
+const TEST_PORT = 17857;   // unique — was 17786, shared with routes-processes-e2e (#383)
 const PROJECT_ROOT = join(import.meta.dir, "..");
 
 let server: Subprocess;

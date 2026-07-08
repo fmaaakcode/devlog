@@ -1,10 +1,13 @@
 import { join, isAbsolute } from "node:path";
 import { existsSync, watch } from "node:fs";
-import { loadData, withData, PORT, DATA_DIR, cleanupMissingProjects, cleanupOldBackups, backfillNums, cleanupMalformedSecurityTags, cleanupMalformedOutdatedTags, cleanupOrphanClosures } from "./data";
+import { loadData, withData, PORT, DATA_DIR, backfillNums, cleanupMalformedSecurityTags, cleanupMalformedOutdatedTags, cleanupOrphanClosures } from "./data";
+import { cleanupOldBackups, backupStores } from "./maintenance";
+import { acquireDaemonLock, releaseDaemonLock } from "./daemon-lock";
 import { wsClients, broadcast } from "./broadcast";
 import { rescanPreserve, scanFreshProfile, applyPreservedScan } from "./scanner";
 import { parseHookEvent } from "./hooks";
-import { exportStatusMd, generateStackMd, rebuildChangelogsMigration } from "./export";
+import { exportStatusMd, generateStackMd } from "./export";
+import { rebuildChangelogsMigration } from "./changelog-rebuild";
 import { buildContext, getEffectiveConfig, isDynamicTypeEnabled } from "./inject";
 import { primerFor } from "./primer";
 import { migrateLegacyData } from "./migrate";
@@ -13,13 +16,13 @@ import { rename as fsRename } from "node:fs/promises";
 import { migrateMemoryDir } from "./project-rename";
 import { resolveProjectFor } from "./project-resolve";
 import { startVersionCheckLoop } from "./version-check";
-import { pruneEvents, capEventsPerProject } from "./retention";
-import { pathsEqual, isPathInside } from "./path-utils";
+import { pruneEvents, pushEvent } from "./retention";
+import { archiveEvents } from "./event-archive";
+import { pathsEqual, isPathInside, normalizeSlashes } from "./path-utils";
 import { str } from "./validators";
 import { checkToken, readOrCreateToken, TOKEN_REQUIRED } from "./token";
-import { appendAudit } from "./audit";
 import { scanCatalog, formatCatalogNames } from "./standards";
-import type { ProjectProfile, EventEntry } from "./types";
+import type { ProjectProfile } from "./types";
 import { softFail } from "./soft-fail";
 import { runVulnScan } from "./vuln-scan";
 import { makeStaticRoutes } from "./routes-static";
@@ -32,10 +35,12 @@ import { makeProjectRoutes } from "./routes-projects";
 import { makePlanRoutes } from "./routes-plan";
 import { makeTagsRoutes } from "./routes-tags";
 import { makeStandardsRoutes } from "./routes-standards";
+import { makeFeatureRoutes } from "./routes-features";
 import { makeMiscRoutes } from "./routes-misc";
 import { makeEventRoutes } from "./routes-events";
 import { makeWorkspaceRoutes } from "./routes-workspace";
-import { isStale, newestSourceMtime } from "./freshness";
+import { noteMutation, startAutoRestart } from "./freshness";
+import { makeLifecycleRoutes } from "./routes-lifecycle";
 
 // Wall-clock boot time (evaluated once at module load = server start). Exposed on
 // /api/boot so the SessionStart hook can warn when the running daemon is older
@@ -54,11 +59,6 @@ process.on("unhandledRejection", (e) => { console.error("[fatal:unhandledRejecti
 process.on("uncaughtException", (e) => { console.error("[fatal:uncaughtException]", e); });
 
 const MAX_INJECTIONS_LOG = 100;
-const MAX_EVENTS_LOG = 10000;
-// Per-project cap (applied first in pushEvent) is the real fairness limit;
-// MAX_EVENTS_LOG is only a global memory safety net. Sized so the active project
-// can't starve quiet ones: 200 × ~20 projects stays under the global cap.
-const PER_PROJECT_MAX_EVENTS = 200;
 const RESCAN_DEBOUNCE_MS = 500;
 
 // Rename a path, retrying briefly on Windows lock errors. Closing an fs.watch
@@ -80,19 +80,6 @@ async function renameWithRetry(from: string, to: string, attempts = 6): Promise<
       }
       throw e;
     }
-  }
-}
-
-function pushEvent(events: EventEntry[], entry: EventEntry) {
-  events.push(entry);
-  // Per-project cap FIRST so a busy project (the one Claude is working in) can't
-  // evict a quiet project's history from a shared global ring (#NNN). Mutate in
-  // place to preserve the caller's array reference.
-  const capped = capEventsPerProject(events, PER_PROJECT_MAX_EVENTS);
-  if (capped.length !== events.length) events.splice(0, events.length, ...capped);
-  // Global memory safety net across many projects.
-  if (events.length > MAX_EVENTS_LOG) {
-    events.splice(0, events.length - MAX_EVENTS_LOG);
   }
 }
 
@@ -167,6 +154,9 @@ async function doInject(body: Record<string, unknown>) {
   const cwd = str(body.cwd);
   const type = str(body.hook_event_name) || str(body.type) || "SessionStart";
   const sessionId = str(body.session_id);
+  // Position memory (#486): the file a PreToolUse Read is about to open.
+  const toolInput = body.tool_input as { file_path?: unknown } | undefined;
+  const injFile = type === "PreToolUse" ? normalizeSlashes(str(toolInput?.file_path)) : "";
 
   // Reject a malformed cwd before any resolution/scan/write (data-integrity).
   if (cwd && !isRealCwd(cwd)) {
@@ -225,10 +215,15 @@ async function doInject(body: Record<string, unknown>) {
       runVulnScan(name).catch(e => softFail("runVulnScan", e));
     }
 
-    const entry = parseHookEvent({ ...body, hook_event_name: type });
-    entry.project = name;   // resolved parent name, not raw basename (subfolder fix)
-    pushEvent(data.events, entry);
-    broadcast("hook", { project: name, event: entry.event, tool: entry.tool, file_path: entry.file_path, type: entry.type, description: entry.description, command: entry.command });
+    // PreToolUse is a read probe, not a work event — recording it would seed a
+    // junk "change"-typed entry per file open (parseHookEvent has no branch
+    // for it) and pollute recall/session summaries.
+    if (type !== "PreToolUse") {
+      const entry = parseHookEvent({ ...body, hook_event_name: type });
+      entry.project = name;   // resolved parent name, not raw basename (subfolder fix)
+      pushEvent(data.events, entry);
+      broadcast("hook", { project: name, event: entry.event, tool: entry.tool, file_path: entry.file_path, type: entry.type, description: entry.description, command: entry.command });
+    }
 
     // Injection — conditional on config, project presence, and non-empty content.
     // Defend against folder-name collision: only inject when the stored project
@@ -249,7 +244,13 @@ async function doInject(body: Record<string, unknown>) {
       // describeNudge mirrors outdatedLibs: fire on SessionStart even when the
       // summary is off, so buildContext can emit the standalone desc/about nudge.
       const wantDescribe = type === "SessionStart" && config.describeNudge === true;
-      if (isDynamicTypeEnabled(config, type) || isOpenCmd || wantOutdated || wantDescribe) {
+      // A file's story injects at most once per session — the first Read is
+      // the "position recall" moment; every later Read of the same file would
+      // repeat known context and burn budget.
+      const alreadyInjected = type === "PreToolUse" && !!injFile && data.injections.some(i =>
+        i.type === "PreToolUse" && i.session_id === sessionId && !!sessionId
+        && (i.file_path || "").toLowerCase() === injFile.toLowerCase());
+      if ((isDynamicTypeEnabled(config, type) || isOpenCmd || wantOutdated || wantDescribe) && !alreadyInjected) {
         // Standards catalog names — injected on SessionStart only (awareness
         // that a rules library exists; content is pulled on demand via the
         // -(ask:rules) command handled in the Stop hook). Skipped in the
@@ -261,7 +262,7 @@ async function doInject(body: Record<string, unknown>) {
             if (cat.length) catalogNames = formatCatalogNames(cat);
           } catch (e) { softFail("doInject.scanCatalog", e); }
         }
-        const built = buildContext(data, name, type, { sessionId, userPrompt, catalogNames });
+        const built = buildContext(data, name, type, { sessionId, userPrompt, catalogNames, filePath: injFile });
         // Prepend the protocol primer for plugin sessions (SessionStart only).
         // The `plugin` flag comes per-request from the inject hook (?plugin=1),
         // so the primer reaches every plugin session regardless of which one
@@ -278,6 +279,7 @@ async function doInject(body: Record<string, unknown>) {
             chars: content.length,
             session_id: sessionId || undefined,
             timestamp: new Date().toISOString(),
+            ...(injFile ? { file_path: injFile } : {}),
           });
           if (data.injections.length > MAX_INJECTIONS_LOG) {
             data.injections = data.injections.slice(-MAX_INJECTIONS_LOG);
@@ -293,7 +295,9 @@ async function doInject(body: Record<string, unknown>) {
       }
     }
 
-    if (cwd) await exportStatusMd(cwd, data, name);
+    // Not on PreToolUse: a status.md rewrite per file OPEN would put disk I/O
+    // on the read hot-path for zero new information (no event was recorded).
+    if (cwd && type !== "PreToolUse") await exportStatusMd(cwd, data, name);
   });
 
   return Response.json({
@@ -356,6 +360,9 @@ function wrapRoutes<T extends Record<string, unknown>>(routes: T): T {
         wrapped[method] = async (req: Request, ...rest: unknown[]) => {
           const blocked = guard(req);
           if (blocked) return blocked;
+          // Mutating traffic = "someone is mid-turn" — holds the freshness
+          // watchdog's auto-restart. GETs (dashboard polling) don't count.
+          noteMutation();
           // Bun route handler — variadic shape differs per route, not statically expressible.
           return (handler as (req: Request, ...rest: unknown[]) => unknown)(req, ...rest);
         };
@@ -392,11 +399,6 @@ function htmlResponse(file: unknown) {
   });
 }
 
-// Request type for route handlers: Bun's routed request (adds `params`),
-// with json() kept as `any` since request bodies are dynamic/untrusted JSON
-// (validated at use-site, not via static types).
-type ApiReq = Omit<Bun.BunRequest, "json"> & { json(): Promise<unknown> };
-
 // In dev (`bun src/server.ts`) serve dashboard assets straight from disk so
 // edits show on reload without restarting. In a compiled binary import.meta.dir
 // points into Bun's virtual fs, so fall back to the bytes embedded at build time.
@@ -426,15 +428,6 @@ const routeDefs = {
       },
     },
 
-    // cleanupMissingProjects mutates + may saveData, so run it under the lock
-    // rather than on the bare shared cache from a GET handler (R3 P3 #2).
-    "/api/data": { async GET() { const data = await withData(async (d) => { await cleanupMissingProjects(d); return d; }); return Response.json(data); } },
-
-    // Lightweight liveness probe — does NOT serialize the ~5MB dataset like
-    // /api/data does. Used by ensure-server.sh and any supervisor to answer
-    // "is the port alive?" without CPU cost (R4 devops F3).
-    "/api/ping": { GET() { return new Response("ok", { status: 200 }); } },
-
     // Optional destructive-endpoint token (4.2). Localhost-only via guard(); the
     // dashboard reads it once so it can attach X-DevLog-Token when the feature is
     // enabled. Returns { required:false } (and no token) when it's off.
@@ -444,16 +437,10 @@ const routeDefs = {
       },
     },
 
-    // Daemon freshness (#326): `boot` = server start (ms); `stale` = true when any
-    // source file on disk is newer than boot (the daemon loads code once and, with
-    // no --watch, serves it until restarted). The comparison runs here (portable
-    // fs.stat) instead of `find -newermt` in the shell (GNU-only, dead on macOS).
-    "/api/boot": {
-      async GET() {
-        const newest = await newestSourceMtime(ASSET_ROOT);
-        return Response.json({ boot: BOOT_MS, stale: isStale(BOOT_MS, newest) });
-      },
-    },
+    // Lifecycle routes (boot/freshness verdict, stop, restart) live in
+    // ./routes-lifecycle; `stopAll` releases both loopback listeners so the
+    // successor binds cleanly (hoisted — assigned meaning after Bun.serve).
+    ...makeLifecycleRoutes({ bootMs: BOOT_MS, assetRoot: ASSET_ROOT, stopAll: () => stopAllListeners() }),
 
     // Event / session-capture routes (hook, session-summary) live in
     // ./routes-events (plan 3.1). pushEvent/scheduleRescan/isRealCwd/MANIFEST_FILES
@@ -464,18 +451,6 @@ const routeDefs = {
     // in ./routes-plan (plan 3.1); spread here.
     ...makePlanRoutes(),
 
-    // Stop the server. Used by the dashboard kill button to reload code
-    // changes when running under `bun --watch`. Schedules exit AFTER the
-    // response is flushed so the client receives 200 OK before the socket
-    // closes.
-    "/api/server/stop": {
-      async POST(req: ApiReq) {
-        await appendAudit("server.stop", req);
-        setTimeout(() => process.exit(0), 100);
-        return Response.json({ ok: true, stopping: true });
-      },
-    },
-
     // Open items for a project (todos, bugs, security, plan steps still open).
     // Used by the Stop hook's closure-check to flag unclosed work.
     // Standards / report routes (open-items, standards, dep-freshness, audit)
@@ -485,6 +460,10 @@ const routeDefs = {
     // Tag-processing routes (tags, tag/:id, classify) live in ./routes-tags
     // (plan 3.1) — the protocol pipeline; spread here.
     ...makeTagsRoutes(),
+
+    // Feature-inventory + client-report routes (features, client-report) live
+    // in ./routes-features; spread here.
+    ...makeFeatureRoutes(),
 
     // Project delete/rename routes live in ./routes-projects (plan 3.1). The three
     // fs.watch helpers own the server's live watcher map, so they're injected.
@@ -534,19 +513,52 @@ try {
   console.error("[migrate] error:", (e as Error).message);
 }
 
-Bun.serve({
-  port: PORT,
-  hostname: "127.0.0.1",
-  websocket: {
-    perMessageDeflate: true,
-    open(ws) { wsClients.add(ws); },
-    close(ws) { wsClients.delete(ws); },
-    message(ws, msg) { if (msg === "ping") ws.send("pong"); },
-  },
-  routes: wrapRoutes(routeDefs),
-});
+// Single-writer gate (#435): refuse to boot a second daemon over a data dir a
+// LIVE daemon already serves — two in-memory caches saving to the same files is
+// a silent last-write-wins clobber. Stale locks are taken over transparently.
+{
+  const lock = await acquireDaemonLock(DATA_DIR, PORT);
+  if (!lock.ok) {
+    console.error(`[lock] a live DevLog daemon (pid ${lock.holder.pid}, port ${lock.holder.port}) already serves ${DATA_DIR} — refusing a second writer. Stop it first, or set DEVLOG_DATA_DIR to a different directory.`);
+    process.exit(1);
+  }
+  process.on("exit", () => releaseDaemonLock(DATA_DIR));
+}
 
-console.log(`DevLog running at http://127.0.0.1:${PORT}`);
+const routes = wrapRoutes(routeDefs);
+const websocket = {
+  perMessageDeflate: true,
+  open(ws: Bun.ServerWebSocket) { wsClients.add(ws); },
+  close(ws: Bun.ServerWebSocket) { wsClients.delete(ws); },
+  message(ws: Bun.ServerWebSocket, msg: string | Buffer) { if (msg === "ping") ws.send("pong"); },
+};
+const serverV4 = Bun.serve({ port: PORT, hostname: "127.0.0.1", websocket, routes });
+// #458: Windows resolves `localhost` to ::1 FIRST. With only a 127.0.0.1
+// listener, that ::1 attempt hangs ~200ms per NEW connection before falling
+// back to IPv4 — every dashboard fetch over http://localhost paid it (measured
+// 210ms connect vs 0.5ms on 127.0.0.1). A second loopback listener on ::1 (also
+// loopback-only, same threat model — `[::1]` is already in ALLOWED_HOSTS)
+// answers immediately. Guarded so a host with IPv6 disabled still boots on IPv4.
+let serverV6: Bun.Server<undefined> | null = null;
+try {
+  serverV6 = Bun.serve({ port: PORT, hostname: "::1", websocket, routes });
+} catch (e) {
+  console.error(`[serve] ::1 loopback listener unavailable (localhost may be slow on Windows): ${(e as Error)?.message}`);
+}
+
+// Deterministic port hand-over: release BOTH loopback listeners so the
+// successor binds cleanly. Shared by the manual restart route and the watchdog.
+function stopAllListeners(): void {
+  try { serverV4.stop(true); } catch { /* already closing */ }
+  try { serverV6?.stop(true); } catch { /* already closing */ }
+}
+
+// Freshness watchdog: self-restart when the code on disk is newer than this
+// process AND the system is idle (source quiet + no mutating request).
+// Opt out with DEVLOG_AUTO_RESTART=0; the dashboard banner stays as fallback.
+startAutoRestart({ root: ASSET_ROOT, bootMs: BOOT_MS, stop: stopAllListeners });
+
+console.log(`DevLog running at http://127.0.0.1:${PORT} (also http://localhost:${PORT})`);
 
 // One-time backfill: number any tags/plan steps that pre-date the numbering
 // feature, so existing items get badges in the dashboard + injected context.
@@ -593,7 +605,15 @@ console.log(`DevLog running at http://127.0.0.1:${PORT}`);
   } catch (e) {
     console.error("[cleanup .bak] error:", (e as Error)?.message);
   }
+  // Daily store safety copies (boot + 24h beat): registry + the history
+  // stores nothing else can rebuild; see backupStores's doc.
+  const backed = await backupStores(DATA_DIR);
+  if (backed.length) console.log(`[backup] daily store copies written: ${backed.join(", ")}`);
 })();
+
+setInterval(() => {
+  backupStores(DATA_DIR).catch(e => softFail("backupStores", e));
+}, 24 * 3600 * 1000);
 
 // Background loop that probes GitHub for new releases of devlog + vuln
 // once an hour. Disabled if DEVLOG_VERSION_CHECK_DISABLED=1.
@@ -640,6 +660,13 @@ async function runRetention(reason: string) {
     const r = await withData(async (data) => {
       before = (data.events || []).length;
       const res = pruneEvents(data);
+      // Archive-before-delete: the store must not persist the removal until the
+      // cold archive holds the rows. On a failed archive write, put them back —
+      // they age right past the cutoff again, so the next cycle (6h) retries.
+      if (res.removedEvents.length && !(await archiveEvents(res.removedEvents))) {
+        data.events.unshift(...res.removedEvents);
+        res.removed = 0;
+      }
       after = data.events.length;
       return res;
     });

@@ -13,14 +13,31 @@
 // flip the default.
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { timingSafeEqual } from "node:crypto";
 import { join } from "node:path";
 import { DATA_DIR } from "./data";
 
 export const TOKEN_REQUIRED = process.env.DEVLOG_REQUIRE_TOKEN === "1";
 
-// Paths (by prefix) that require the token when enabled. Kept deliberately tiny —
-// only the irreversible / process-killing operations.
-const PROTECTED_PREFIXES = ["/api/data/clear", "/api/kill-pid/", "/api/server/stop"];
+// Paths (by prefix) that require the token when enabled. Kept deliberately
+// tiny — the irreversible operations (project delete/rename wipe or move data
+// + folders, the tombstone sweep mass-deletes, data/clear empties the store)
+// and the process-killing ones. Note "/api/project/" (trailing slash) does NOT
+// match /api/projects-summary.
+const PROTECTED_PREFIXES = [
+  "/api/data/clear",
+  "/api/kill-pid/",
+  "/api/server/stop",
+  "/api/server/restart",
+  "/api/project/",
+  "/api/cleanup-tombstones",
+  "/api/cleanup-orphans",
+  // #450: tag delete erases a bug/vuln record permanently; plan delete drops
+  // the dashboard entry. Both are DELETE-only routes, so the prefix can't
+  // catch a read. "/api/tag/" (trailing slash) does NOT match /api/tags.
+  "/api/tag/",
+  "/api/plan/",
+];
 
 let cached: string | null = null;
 
@@ -56,6 +73,12 @@ export function isProtectedPath(path: string): boolean {
 export function checkToken(req: Request, path: string): Response | null {
   if (!TOKEN_REQUIRED || !isProtectedPath(path)) return null;
   const provided = req.headers.get("x-devlog-token") || "";
-  if (provided && provided === readOrCreateToken()) return null;
+  // Constant-time comparison: a plain === leaks how many leading bytes match
+  // through response timing, letting a local guesser recover the token byte by
+  // byte. Length check first — timingSafeEqual throws on unequal lengths, and
+  // token length isn't secret (it's a UUID).
+  const expected = Buffer.from(readOrCreateToken());
+  const given = Buffer.from(provided);
+  if (given.length === expected.length && timingSafeEqual(given, expected)) return null;
   return Response.json({ error: "token required (DEVLOG_REQUIRE_TOKEN)" }, { status: 401 });
 }

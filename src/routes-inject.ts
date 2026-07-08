@@ -120,7 +120,7 @@ export function makeInjectRoutes({ doInject, MAX_INJECTIONS_LOG }: InjectRouteDe
           return await withData(async (data) => {
             const project = body.project;
             const patch = body.config || {};
-            const allowed: (keyof InjectionConfig)[] = ["sessionStart", "userPromptSubmit", "preToolUseRead", "outdatedLibs", "describeNudge", "claudeMd", "contextMd", "standardsEnforce"];
+            const allowed: (keyof InjectionConfig)[] = ["sessionStart", "userPromptSubmit", "preToolUseRead", "outdatedLibs", "describeNudge", "upcomingItems", "claudeMd", "contextMd", "standardsEnforce"];
             const clean: Partial<InjectionConfig> = {};
             for (const k of allowed) if (k in patch) clean[k] = !!patch[k];
 

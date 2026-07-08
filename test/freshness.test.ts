@@ -4,7 +4,7 @@
 // macOS.
 
 import { test, expect, describe, afterEach } from "bun:test";
-import { isStale, newestSourceMtime } from "../src/freshness";
+import { isStale, newestSourceMtime, shouldAutoRestart } from "../src/freshness";
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +21,48 @@ describe("isStale (pure verdict)", () => {
   });
   test("no source found (0) is never stale — the compiled-binary case", () => {
     expect(isStale(Date.now(), 0)).toBe(false);
+  });
+});
+
+describe("shouldAutoRestart (the watchdog's pure decision)", () => {
+  // Base: booted at t=0, source edited at t=60s, checked at t=120s, last
+  // mutating request at t=10s, no prior attempt → every guard satisfied.
+  const base = {
+    now: 120_000, bootMs: 0, newestSourceMs: 60_000,
+    lastMutationMs: 10_000, attemptedForMtime: 0,
+  };
+
+  test("restarts when stale + source quiet + idle + first attempt", () => {
+    expect(shouldAutoRestart(base)).toBe(true);
+  });
+
+  test("never when not stale", () => {
+    expect(shouldAutoRestart({ ...base, newestSourceMs: 0 })).toBe(false);
+    expect(shouldAutoRestart({ ...base, bootMs: 70_000 })).toBe(false);
+  });
+
+  test("holds while the source is still settling (edit burst ≠ a version)", () => {
+    expect(shouldAutoRestart({ ...base, newestSourceMs: base.now - 5_000 })).toBe(false);
+  });
+
+  test("holds while mutating traffic is fresh (a session is mid-turn)", () => {
+    expect(shouldAutoRestart({ ...base, lastMutationMs: base.now - 5_000 })).toBe(false);
+  });
+
+  test("one shot per source state — a failed respawn can't loop", () => {
+    expect(shouldAutoRestart({ ...base, attemptedForMtime: base.newestSourceMs })).toBe(false);
+  });
+
+  test("a NEWER edit re-arms after an attempt", () => {
+    expect(shouldAutoRestart({
+      ...base, attemptedForMtime: base.newestSourceMs, newestSourceMs: 90_000,
+    })).toBe(true);
+  });
+
+  test("thresholds are tunable", () => {
+    const c = { ...base, newestSourceMs: base.now - 5_000 };
+    expect(shouldAutoRestart(c)).toBe(false);              // default 20s quiet
+    expect(shouldAutoRestart({ ...c, quietMs: 1_000 })).toBe(true);
   });
 });
 
@@ -55,5 +97,35 @@ describe("newestSourceMtime (portable mtime gather)", () => {
     writeFileSync(join(root, "src", "notes.md"), "ignored");
     utimesSync(join(root, "src", "notes.md"), 9_000_000, 9_000_000);
     expect(await newestSourceMtime(root)).toBe(0); // .md doesn't count
+  });
+
+  // Assets + root html + package.json are import-baked into the server, so
+  // their edits make the daemon stale exactly like src edits (the original
+  // watch list missed them — the 2026-07-04 stale-dashboard sessions).
+  test("counts assets/**/*.js, root *.html and package.json", async () => {
+    const root = mk();
+    mkdirSync(join(root, "assets"), { recursive: true });
+    writeFileSync(join(root, "assets", "app.js"), "a");
+    writeFileSync(join(root, "dashboard.html"), "h");
+    writeFileSync(join(root, "package.json"), "{}");
+    const old = 1_000_000;
+    for (const p of ["assets/app.js", "dashboard.html", "package.json"]) utimesSync(join(root, p), old, old);
+
+    utimesSync(join(root, "assets", "app.js"), 3_000_000, 3_000_000);
+    expect(Math.round(await newestSourceMtime(root) / 1000)).toBe(3_000_000);
+
+    utimesSync(join(root, "dashboard.html"), 4_000_000, 4_000_000);
+    expect(Math.round(await newestSourceMtime(root) / 1000)).toBe(4_000_000);
+
+    utimesSync(join(root, "package.json"), 5_000_000, 5_000_000);
+    expect(Math.round(await newestSourceMtime(root) / 1000)).toBe(5_000_000);
+  });
+
+  test("ignores non-baked files in assets/ (e.g. images)", async () => {
+    const root = mk();
+    mkdirSync(join(root, "assets"), { recursive: true });
+    writeFileSync(join(root, "assets", "photo.jpeg"), "binary");
+    utimesSync(join(root, "assets", "photo.jpeg"), 9_000_000, 9_000_000);
+    expect(await newestSourceMtime(root)).toBe(0);
   });
 });

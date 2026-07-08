@@ -5,31 +5,15 @@
 // exit 0) carrying the closure time.
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { spawn, type Subprocess } from "bun";
+import type { Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { startServer, waitForServer, runHook as runHookRaw } from "./_helpers";
 
 const TEST_PORT = 17812;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
-const PROJECT_ROOT = join(import.meta.dir, "..");
 
-async function waitForServer(maxMs = 8000): Promise<void> {
-  const deadline = Date.now() + maxMs;
-  while (Date.now() < deadline) {
-    try { if ((await fetch(`${BASE}/api/data`, { signal: AbortSignal.timeout(500) })).ok) return; } catch { /* not up yet */ }
-    await Bun.sleep(100);
-  }
-  throw new Error("server failed to start");
-}
-function startServer(dataDir: string): Subprocess {
-  return spawn({
-    cmd: ["bun", join("src", "server.ts")],
-    cwd: PROJECT_ROOT,
-    env: { ...process.env, DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT), DEVLOG_VERSION_CHECK_DISABLED: "1" },
-    stdout: "pipe", stderr: "pipe",
-  });
-}
 async function register(cwd: string): Promise<void> {
   await fetch(`${BASE}/api/inject?cwd=${encodeURIComponent(cwd)}&session_id=closed-e2e&type=SessionStart`, { signal: AbortSignal.timeout(4000) });
 }
@@ -42,18 +26,9 @@ async function post(cwd: string, entries: any[]): Promise<any> {
 async function getJson(path: string): Promise<any> {
   return (await fetch(`${BASE}${path}`)).json();
 }
-async function runHook(cwd: string, message: string): Promise<{ code: number; out: string }> {
-  const proc = spawn({
-    cmd: ["bun", "parse-tags.ts"],
-    cwd: PROJECT_ROOT,
-    env: { ...process.env, DEVLOG_PORT: String(TEST_PORT), DEVLOG_LANG: "en", DEVLOG_DEBUG: "0" },
-    stdin: "pipe", stdout: "pipe", stderr: "pipe",
-  });
-  proc.stdin.write(JSON.stringify({ cwd, session_id: "closed-e2e", last_assistant_message: message }));
-  proc.stdin.end();
-  const [code, out] = await Promise.all([proc.exited, new Response(proc.stdout).text()]);
-  return { code, out };
-}
+// Thin adapter over the shared harness: last_assistant_message path, fixed sid.
+const runHook = (cwd: string, message: string) =>
+  runHookRaw(TEST_PORT, { cwd, session_id: "closed-e2e", last_assistant_message: message });
 
 describe("closed-items route + -(ask:closed) hook (E2E)", () => {
   let dataDir: string, projDir: string, server: Subprocess;
@@ -61,8 +36,8 @@ describe("closed-items route + -(ask:closed) hook (E2E)", () => {
   beforeEach(async () => {
     dataDir = mkdtempSync(join(tmpdir(), "closed-e2e-data-"));
     projDir = mkdtempSync(join(tmpdir(), "closed-e2e-proj-"));
-    server = startServer(dataDir);
-    await waitForServer();
+    server = startServer(dataDir, TEST_PORT);
+    await waitForServer(BASE);
     await register(projDir);
   });
   afterEach(async () => {

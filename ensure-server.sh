@@ -93,7 +93,8 @@ fi
 if curl -s -m 1 "http://127.0.0.1:$PORT/api/boot" 2>/dev/null | grep -q '"stale":true'; then
   {
     echo "[DevLog] ⚠ the running server is OLDER than the code on disk (loaded at boot; no --watch),"
-    echo "         so your latest changes are NOT live yet. Restart it to apply them:"
+    echo "         so your latest changes are NOT live yet. The daemon self-restarts within ~1 min"
+    echo "         once idle (watchdog; DEVLOG_AUTO_RESTART=0 disables) — or restart it yourself:"
     echo "         stop the DevLog server process on port $PORT — it respawns on the next session."
   } >&2
 fi

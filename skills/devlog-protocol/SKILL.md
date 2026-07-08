@@ -31,6 +31,8 @@ Three hooks enforce these rules mechanically — you don't need to remember, the
 | `-(bug found)` / `-(bug fix)` | Open + close (close by `#N`) |
 | `-(security)` / `-(security:own)` / `-(security:dep)` / `-(security fix)` | Open + close (close by `#N`) |
 | `-(todo)` / `-(done) #N` / `-(dropped) #N` | Open a todo, close it, or cancel it |
+| `-(upcoming)` | Deferred tier — see «Upcoming» below |
+| `-(feature)` / `-(feature update) #N` / `-(feature removed) #N` | Capability inventory — see «Features» below |
 | `-(note)` | Observation worth keeping |
 | `-(decision)` | Architectural decision + rationale |
 | `-(insight)` | Root-cause finding from investigation |
@@ -65,6 +67,59 @@ Every open tag has a closure, emitted in the **same response** as the work.
 **Verify before closing.** "Verified" = observed evidence in this conversation (a passing test in the transcript, a successful tool result, explicit user confirmation). Reading code and concluding "it should work" is **not** verification. If you can't verify this turn, leave it open and emit a `-(note)` stating what's needed.
 
 `-(built)` is not a closure — if work maps to a plan step, also emit `-(done) #N`. Don't fake-close security tags: if you reviewed but didn't fix, say so; don't emit `-(security fix)`.
+
+## Upcoming — the deferred tier («قادمة»)
+
+Two tiers of open work: **committed** (todo/bug/plan-step — the guard enforces closure and blocks releases) and **upcoming** (recorded ambition — visible everywhere, enforced nowhere). Use upcoming for ideas worth keeping that nobody is committing to now, instead of parking them outside DevLog.
+
+| Command | Effect |
+|---|---|
+| `-(upcoming) X` | Create a deferred item directly (numbered like a todo) |
+| `-(upcoming) #N` | Defer the open todo/bug `#N` in place — same number, history intact |
+| `-(todo) #N` | Promote upcoming `#N` back to a committed todo |
+| `-(done) #N` / `-(bug fix) #N` | Close an upcoming item directly — no promotion needed |
+
+Rules: a `#N` that is an open **plan step** defers/promotes the whole plan. **Security items are never deferrable** — fix them or leave them open. Upcoming items don't block `-(release)`, don't trigger the closure-check, and don't count in "Open now"; they appear as one awareness line at SessionStart (toggle: لوحة الحقن → «سطر القادمة»), in the القادمة tabs on the dashboard's tasks/plans cards, in `?open` / `-(ask:open)` under their own section, and each release page snapshots them in a «قادم» section.
+
+## Features — the capability inventory («قدرات»)
+
+Work tags record developer-language deltas; clients ask in capability language
+("does the system support X?"). `-(feature)` declares ONE client-visible
+capability, in the user's language, **when it lands** — not per code step.
+Features are numbered like todos but are **facts, not debt**: they never block a
+release, never trigger closure checks, and aren't part of `ask:open`.
+
+| Command | Effect |
+|---|---|
+| `-(feature) <one client-language line>` | Declare a capability (numbered) |
+| `-(feature update) #N <new text>` | The capability evolved — new wording |
+| `-(feature removed) #N` | The capability no longer exists |
+| `-(ask:features)` | Pull the CURRENT inventory (updates applied, removed dropped, each attributed to the release that shipped it) — served in-turn, not logged |
+
+The current list = every feature not removed; each is attributed to the first
+release cut after it landed («منذ vX.Y.Z» / unreleased). It renders as the
+«قدرات جديدة» section of release pages, the «قدرات» header chip on the
+dashboard, and the backbone of the client report (`/api/client-report` — the
+dashboard's «تقرير العميل» button; open work appears there as a count only and
+security as a reassurance line, never details).
+
+**Soft release nudge**: a `-(release)` with work tags (`built`/`update`) accrued
+since the last release but ZERO new `-(feature)` gets ONE reminder (the release
+is held back once); declare the missed capability + re-emit the release, or
+re-emit as-is for a purely technical release. Mute with `DEVLOG_FEATURE_NUDGE=0`.
+
+## Retrospective — the problem corpus (`ask:retro`)
+
+`-(ask:retro)` pulls EVERY problem report of the project — bugs and security,
+open and closed — one compact line each: `#N [kind] opened→closed (age) text —
+files`, oldest first, sourced from the tags store (never capped or rotated, so
+it reaches the project's first day). Served in-turn like the other pull
+commands; never a logged tag.
+
+Its purpose is analysis, not bookkeeping: cluster the recurrences yourself
+("which problems repeat, which files keep appearing") and codify a confirmed
+pattern with `-(rule:add)` (make it enforceable) or `-(insight)` (record the
+root cause). DevLog serves the data; the clustering is your language work.
 
 ## Doc tags
 

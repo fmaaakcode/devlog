@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { writeFile, utimes, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cleanupOldBackups } from "../src/data";
+import { cleanupOldBackups } from "../src/maintenance";
 
 let DIR: string;
 beforeEach(() => { DIR = mkdtempSync(join(tmpdir(), "bak-")); });

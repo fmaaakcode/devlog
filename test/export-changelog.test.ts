@@ -8,7 +8,8 @@ import { describe, test, expect, beforeEach, afterAll } from "bun:test";
 import { mkdir, rm, readFile, writeFile } from "node:fs/promises";
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { exportStatusMd, rebuildChangelog, rebuildChangelogsMigration, dedupTags } from "../src/export";
+import { exportStatusMd, dedupTags } from "../src/export";
+import { rebuildChangelog, rebuildChangelogsMigration } from "../src/changelog-rebuild";
 import type { DevLogData, TagEntry, ProjectProfile } from "../src/types";
 
 const TMP = join(import.meta.dir, ".tmp-changelog");

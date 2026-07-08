@@ -111,3 +111,23 @@ describe("parseTags — security:* and doc:* alternatives", () => {
     expect(out.map(t => t.tag)).toEqual(["decision", "insight"]);
   });
 });
+
+describe("parseTags — single-line tags cut at end-of-line (#486/#487 duplicate)", () => {
+  test("a terminal headline tag does NOT swallow later turn text on re-read", () => {
+    // A Stop-hook continuation re-reads the whole turn: the reply that FOLLOWS
+    // a terminal `-(upcoming)`/`-(todo)` used to become part of its content,
+    // changing the dedup identity and re-storing the item under a new #N.
+    const turn1 = "shipped it\n\n-(upcoming) charts view for the dashboard";
+    const turn2 = `${turn1}\nGreat, item recorded. You can promote it later.`;
+    const [a] = parseTags(turn1);
+    const [b] = parseTags(turn2);
+    expect(a.tag).toBe("upcoming");
+    expect(b.content).toBe(a.content);              // identity stable across re-reads
+    expect(b.content).toBe("charts view for the dashboard");
+  });
+
+  test("body tags (built/decision/about) keep their multi-line content", () => {
+    const out = parseTags("-(decision) chose X\nbecause Y outlives Z");
+    expect(out[0].content).toBe("chose X\nbecause Y outlives Z");
+  });
+});

@@ -20,6 +20,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const SRC = join(import.meta.dir, "..", "src");
+const ASSETS = join(import.meta.dir, "..", "assets");
 const DEFAULT_MAX = 800;
 
 // Files still above DEFAULT_MAX, capped at their current size so they can only
@@ -28,33 +29,46 @@ const DEFAULT_MAX = 800;
 // routes-*.ts groups, so it now holds under the normal ceiling like any module.
 const GRANDFATHERED: Record<string, number> = {
   "analyze.ts": 1078,  // heuristics engine; content-pattern table split out (task 4.4) — ratchet as more tables move
-  "export.ts": 898,    // status/changelog/stack generators
+  "export.ts": 841,    // status/stack generators — ratcheted down when the changelog rebuild moved to changelog-rebuild.ts
 };
 
-const lineCount = (file: string) => readFileSync(join(SRC, file), "utf8").split("\n").length;
+// R3 #5: the dashboard JS was outside the budget and quietly re-ran the
+// server.ts story (stack-map.js hit 1280 lines). Same ratchet, same rules —
+// caps sit at the size when the guard landed and only go down.
+const GRANDFATHERED_ASSETS: Record<string, number> = {
+  "dashboard-tree-ws.js": 984,   // process tree + WS client — ratcheted down when buildTodosHtml moved to panels (upcoming feature)
+  "stack-map.js": 1290,          // the whole stack-map page
+};
 
-describe("src/ file-size budget (anti-bloat ratchet)", () => {
-  const files = readdirSync(SRC).filter(f => f.endsWith(".ts"));
+const lineCount = (dir: string, file: string) => readFileSync(join(dir, file), "utf8").split("\n").length;
 
-  for (const file of files) {
-    const budget = GRANDFATHERED[file] ?? DEFAULT_MAX;
-    test(`${file} ≤ ${budget} lines`, () => {
-      const lines = lineCount(file);
-      if (lines > budget) {
-        throw new Error(
-          `${file} is ${lines} lines (budget ${budget}). Extract a cohesive module ` +
-          `(e.g. a routes-*.ts group) instead of growing it. Only raise the budget ` +
-          `with a deliberate, reviewed reason — never to silence this test.`,
-        );
-      }
-      expect(lines).toBeLessThanOrEqual(budget);
+function budgetSuite(label: string, dir: string, ext: string, grandfathered: Record<string, number>) {
+  describe(`${label} file-size budget (anti-bloat ratchet)`, () => {
+    const files = readdirSync(dir).filter(f => f.endsWith(ext));
+
+    for (const file of files) {
+      const budget = grandfathered[file] ?? DEFAULT_MAX;
+      test(`${file} ≤ ${budget} lines`, () => {
+        const lines = lineCount(dir, file);
+        if (lines > budget) {
+          throw new Error(
+            `${file} is ${lines} lines (budget ${budget}). Extract a cohesive module ` +
+            `instead of growing it. Only raise the budget ` +
+            `with a deliberate, reviewed reason — never to silence this test.`,
+          );
+        }
+        expect(lines).toBeLessThanOrEqual(budget);
+      });
+    }
+
+    test("a grandfathered file that dropped under DEFAULT_MAX should graduate out of the map", () => {
+      const stragglers = Object.keys(grandfathered).filter(f => lineCount(dir, f) <= DEFAULT_MAX);
+      // If this fails, delete those keys from the map — they now hold under the
+      // normal ceiling and shouldn't keep a special allowance.
+      expect(stragglers).toEqual([]);
     });
-  }
-
-  test("a grandfathered file that dropped under DEFAULT_MAX should graduate out of the map", () => {
-    const stragglers = Object.keys(GRANDFATHERED).filter(f => lineCount(f) <= DEFAULT_MAX);
-    // If this fails, delete those keys from GRANDFATHERED — they now hold under the
-    // normal ceiling and shouldn't keep a special allowance.
-    expect(stragglers).toEqual([]);
   });
-});
+}
+
+budgetSuite("src/", SRC, ".ts", GRANDFATHERED);
+budgetSuite("assets/", ASSETS, ".js", GRANDFATHERED_ASSETS);

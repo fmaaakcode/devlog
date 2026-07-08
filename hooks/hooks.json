@@ -16,7 +16,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|PowerShell",
         "hooks": [
           { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/pre-release-hook.sh\"", "timeout": 15 }
         ]
@@ -26,11 +26,17 @@
         "hooks": [
           { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/pre-standards.sh\"", "timeout": 15 }
         ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/inject?plugin=1\" -H \"Content-Type: application/json\" --data-binary @-", "timeout": 10 }
+        ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Write|Edit|Read|Bash|Agent|EnterPlanMode|ExitPlanMode",
+        "matcher": "Write|Edit|Read|Bash|PowerShell|Agent|EnterPlanMode|ExitPlanMode",
         "hooks": [
           { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/hook\" -H \"Content-Type: application/json\" --data-binary @-", "timeout": 10 }
         ]

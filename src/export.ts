@@ -1,8 +1,8 @@
 import { mkdir, appendFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { DevLogData, ProjectProfile, TagEntry } from "./types";
 import { projectName, normalizeTagContent, openTodos, openBugs, openSecurity, SECURITY_OPEN_TAGS } from "./data";
+import { changelogLine } from "./changelog-rebuild";
 import { analyzeProject } from "./analyze";
 
 // True when two strings share a long common prefix that covers most of both
@@ -25,12 +25,6 @@ function fuzzyMatch(a: string, b: string): boolean {
   // shared prefix (re-emit detection) collapses two entries.
   return sharedPrefixClose(na, nb);
 }
-
-const tagIcon: Record<string, string> = {
-  built: "✅", "bug fix": "🔧", security: "🔒", release: "📦",
-  update: "📦", refactor: "♻️", note: "📝", "bug found": "🔴",
-  plan: "📋", todo: "📌", done: "✔️", outdated: "⏳",
-};
 
 export function dedupTags(list: TagEntry[]): TagEntry[] {
   const seen: string[] = [];
@@ -105,18 +99,27 @@ export async function exportStatusMd(projectPath: string, data: DevLogData, proj
   // path was dropped with the move to the shared resolver so all four consumers
   // agree on what "open" means.
   const numPrefix = (n?: number) => typeof n === "number" ? `\`#${n}\` ` : "";
+  // «قادمة» rides its own section below so the open lists mirror the guards.
+  const currentTodoTags = openTodoTags.filter(t => !t.upcoming);
+  const currentBugTags = openBugTags.filter(t => !t.upcoming);
+  const upcomingTags = [...openTodoTags, ...openBugTags].filter(t => t.upcoming);
   if (todos.length) {
     lines.push("## المهام");
-    for (const t of openTodoTags) lines.push(`- [ ] ${numPrefix(t.num)}${t.content}`);
+    for (const t of currentTodoTags) lines.push(`- [ ] ${numPrefix(t.num)}${t.content}`);
     for (const t of closedTodoTags) lines.push(`- [x] ${numPrefix(t.num)}${t.content}`);
+    lines.push("");
+  }
+  if (upcomingTags.length) {
+    lines.push("## قادمة (مؤجلة — لا توقف الإصدار)");
+    for (const t of upcomingTags) lines.push(`- ☾ ${numPrefix(t.num)}${t.content} — منذ ${t.timestamp.slice(0, 10)}`);
     lines.push("");
   }
 
   // Open issues
-  if (openSecurityTags.length || openBugTags.length) {
+  if (openSecurityTags.length || currentBugTags.length) {
     lines.push("## مشاكل مفتوحة");
     for (const s of openSecurityTags) lines.push(`- 🔒 ${numPrefix(s.num)}${s.content}`);
-    for (const b of openBugTags) lines.push(`- 🔴 ${numPrefix(b.num)}${b.content}`);
+    for (const b of currentBugTags) lines.push(`- 🔴 ${numPrefix(b.num)}${b.content}`);
     lines.push("");
   }
   if (outdatedTags.length) {
@@ -161,13 +164,11 @@ export async function exportStatusMd(projectPath: string, data: DevLogData, proj
 
   // Plan steps
   for (const plan of plans) {
-    const done = plan.steps.filter(s => s.completed).length;
-    const total = plan.steps.length;
-    if (total > 0) {
-      lines.push(`## ${plan.title} (${done}/${total})`);
-      for (const s of plan.steps) {
-        lines.push(`- [${s.completed ? "x" : " "}] ${numPrefix(s.num)}${s.text}`);
-      }
+    const visible = plan.steps.filter(s => !s.dropped);  // dropped = archived, omit from status view (#410)
+    const done = visible.filter(s => s.completed).length;
+    if (visible.length > 0) {
+      lines.push(`## ${plan.title} (${done}/${visible.length})`);
+      for (const s of visible) lines.push(`- [${s.completed ? "x" : " "}] ${numPrefix(s.num)}${s.text}`);
       lines.push("");
     }
   }
@@ -476,13 +477,13 @@ export async function exportGithubMd(projectPath: string, data: DevLogData, proj
   await Bun.write(join(projectPath, ".devlog", "DEVLOG_GITHUB.md"), lines.join("\n"));
 }
 
-export async function generateStackMd(projectPath: string, project: ProjectProfile) {
+export async function generateStackMd(projectPath: string, project: ProjectProfile, force = false) {
   const devlogDir = join(projectPath, ".devlog");
   const stackFile = join(devlogDir, "DEVLOG_STACK.md");
 
-  // Only generate if doesn't exist yet
+  // Generate-once by default (may carry manual edits); force = explicit regen.
   const file = Bun.file(stackFile);
-  if (await file.exists()) return;
+  if (!force && await file.exists()) return;
 
   try { await mkdir(devlogDir, { recursive: true }); } catch { /* best-effort: a real failure resurfaces at the write below */ }
 
@@ -834,64 +835,5 @@ async function appendChangelog(devlogDir: string, tags: TagEntry[]) {
   await Bun.write(idxFp, JSON.stringify({ ids: [...logged], lastDay }));
 }
 
-// One physical line per entry, tagged with the stable tag `id` (#F1). The old
-// format wrote `t.content` raw, so a multi-line body (built/refactor/decision…)
-// spanned several lines: the dedup regex — which needs `- … (HH:MM)` on ONE
-// line — matched none of them, so the entry never entered `logged` and was
-// RE-APPENDED on every POST (the changelog ballooned to 70MB). Flattening +
-// the `<!-- id -->` marker (already parsed by the dedup loop) makes the match
-// byte-exact and immune to newlines.
-function changelogLine(t: TagEntry): string {
-  const icon = tagIcon[t.tag] || "•";
-  const time = t.timestamp.split("T")[1]?.slice(0, 5) || "";
-  const flat = (t.content || "").replace(/\s*\n\s*/g, " ⏎ ");
-  return `- ${icon} **${t.tag}** ${flat} (${time}) <!-- id:${t.id} -->\n`;
-}
-
-/**
- * One-time GC (#F1): rebuild every existing project changelog from data.tags,
- * deduped by id, collapsing the runaway duplicate history (the helper project's
- * file had reached 70MB / 527K lines). Idempotent via the
- * `changelog_rebuild_v1` migration flag. Only touches files that already exist
- * (won't create changelogs for projects that never had one). Returns how many
- * were rebuilt; mutates data.migrations (caller persists).
- */
-export async function rebuildChangelogsMigration(data: DevLogData): Promise<number> {
-  if (!data.migrations) data.migrations = {};
-  if (data.migrations.changelog_rebuild_v1) return 0;
-  let rebuilt = 0;
-  for (const [name, profile] of Object.entries(data.projects)) {
-    if (!profile.path) continue;
-    const devlogDir = join(profile.path, ".devlog");
-    if (!existsSync(join(devlogDir, "DEVLOG_CHANGELOG.md"))) continue;
-    try {
-      await rebuildChangelog(devlogDir, data.tags.filter(t => t.project === name));
-      rebuilt++;
-    } catch (e) {
-      console.error(`[migrate changelog] ${name}:`, (e as Error)?.message);
-    }
-  }
-  data.migrations.changelog_rebuild_v1 = true;
-  return rebuilt;
-}
-
-// Rebuild a project's changelog from scratch, deduped by stable id (#F1 GC).
-// Used by the one-time migration to collapse the runaway duplicate history.
-export async function rebuildChangelog(devlogDir: string, tags: TagEntry[]): Promise<number> {
-  const seen = new Set<string>();
-  const unique = tags
-    .filter(t => { if (seen.has(t.id)) return false; seen.add(t.id); return true; })
-    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-  let out = "# سجل التغييرات\n";
-  let lastDay = "";
-  for (const t of unique) {
-    const day = t.timestamp.split("T")[0];
-    if (day !== lastDay) { out += `\n## ${day}\n`; lastDay = day; }
-    out += changelogLine(t);
-  }
-  await Bun.write(join(devlogDir, "DEVLOG_CHANGELOG.md"), out);
-  // Keep the append-path dedup index in sync with the freshly rebuilt file.
-  await Bun.write(join(devlogDir, ".changelog-index.json"),
-    JSON.stringify({ ids: unique.map(t => t.id), lastDay }));
-  return unique.length;
-}
+// changelogLine + rebuildChangelog(sMigration) moved to ./changelog-rebuild.ts
+// with the upcoming feature — file-size budget.

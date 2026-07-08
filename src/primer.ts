@@ -27,10 +27,12 @@ Core tags:
 - \`-(bug found)\` … / close with \`-(bug fix) #N\`
 - \`-(security)\` / \`-(security:own)\` / \`-(security:dep)\` … / close with \`-(security fix) #N\`
 - \`-(todo)\` … / close with \`-(done) #N\` or cancel with \`-(dropped) #N\`
+- \`-(upcoming)\` deferred tier: create directly, or \`-(upcoming) #N\` to defer an open todo/bug (\`-(todo) #N\` promotes back). Never blocks a release; security is never deferrable.
+- \`-(feature)\` one client-language line per capability the client can see, declared when it lands (not per code step) · \`-(feature update) #N new text\` · \`-(feature removed) #N\` · pull the current inventory with \`-(ask:features)\`
 - \`-(note)\` observation · \`-(decision)\` architectural decision · \`-(insight)\` root cause
 - \`-(doc:report|analysis|plan|comparison|readme)\` name\\n<markdown>
 
-Closure is mandatory: every open item (todo/bug/security/plan step) is closed by \`#N\` in the same response that finishes the work — never copy the text (it breaks matching). \`#N\` numbers arrive in the SessionStart context; type \`?open\` for the full text, or emit \`-(ask:open)\` yourself to pull the live open list mid-session before closing. To check whether an item is ALREADY closed (and when/how), emit \`-(ask:closed) #N\` — don't grep \`.devlog/\` files or re-investigate finished work; that trace is authoritative.
+Closure is mandatory: every open item (todo/bug/security/plan step) is closed by \`#N\` in the same response that finishes the work — never copy the text (it breaks matching). \`#N\` numbers arrive in the SessionStart context; type \`?open\` for the full text, or emit \`-(ask:open)\` yourself to pull the live open list mid-session before closing. To check whether an item is ALREADY closed (and when/how), emit \`-(ask:closed) #N\` — don't grep \`.devlog/\` files or re-investigate finished work; that trace is authoritative. For a retrospective (EVERY bug/security report, open and closed, with ages and files — "what keeps breaking?") emit \`-(ask:retro)\` and codify recurring patterns with \`-(rule:add)\` or \`-(insight)\`.
 
 Atomic: one concept per tag; no questions or planning prose inside a tag; multiple items → multiple tags.
 
@@ -48,10 +50,12 @@ DevLog مفعّل. في نهاية كل رد أصدر تاقات \`-(tag) conten
 - \`-(bug found)\` … / أغلِقه بـ \`-(bug fix) #N\`
 - \`-(security)\` / \`-(security:own)\` / \`-(security:dep)\` … / أغلِقه بـ \`-(security fix) #N\`
 - \`-(todo)\` … / أغلِقه بـ \`-(done) #N\` أو ألغِه بـ \`-(dropped) #N\`
+- \`-(upcoming)\` طبقة المؤجَّل: أنشئ مباشرة، أو \`-(upcoming) #N\` لتأجيل todo/bug مفتوح (\`-(todo) #N\` يرقّيه). لا توقف الإصدار أبداً؛ الأمن لا يؤجَّل.
+- \`-(feature)\` سطر واحد بلغة العميل لكل قدرة يلمسها العميل، يُعلَن عند اكتمالها (لا لكل خطوة كود) · \`-(feature update) #N نص جديد\` · \`-(feature removed) #N\` · اسحب القائمة الحالية بـ\`-(ask:features)\`
 - \`-(note)\` ملاحظة · \`-(decision)\` قرار معماري · \`-(insight)\` جذر مشكلة
 - \`-(doc:report|analysis|plan|comparison|readme)\` اسم\\n<ماركداون>
 
-الإغلاق إلزامي: كل عنصر مفتوح (todo/bug/security/خطوة خطة) يُغلَق بـ\`#N\` في نفس رد إنجاز العمل — لا تنسخ النص (يكسر المطابقة). أرقام \`#N\` تصلك في سياق SessionStart؛ اكتب \`?open\` لرؤية النصوص الكاملة، أو أصدر \`-(ask:open)\` بنفسك لسحب قائمة المفتوح الحيّة أثناء الجلسة قبل الإغلاق. وللتأكّد أنّ عنصراً أُغلق بالفعل (ومتى/كيف) أصدر \`-(ask:closed) #N\` — لا تـgrep ملفات \`.devlog/\` ولا تعيد التحقيق في عمل مُنجَز؛ هذا الأثر هو المرجع.
+الإغلاق إلزامي: كل عنصر مفتوح (todo/bug/security/خطوة خطة) يُغلَق بـ\`#N\` في نفس رد إنجاز العمل — لا تنسخ النص (يكسر المطابقة). أرقام \`#N\` تصلك في سياق SessionStart؛ اكتب \`?open\` لرؤية النصوص الكاملة، أو أصدر \`-(ask:open)\` بنفسك لسحب قائمة المفتوح الحيّة أثناء الجلسة قبل الإغلاق. وللتأكّد أنّ عنصراً أُغلق بالفعل (ومتى/كيف) أصدر \`-(ask:closed) #N\` — لا تـgrep ملفات \`.devlog/\` ولا تعيد التحقيق في عمل مُنجَز؛ هذا الأثر هو المرجع. وللتحليل الرجعي (كل بلاغات bug/security، المفتوح والمغلق، بالأعمار والملفات — «ما الذي يتكرر كسره؟») أصدر \`-(ask:retro)\` وثبّت الأنماط المتكررة بـ\`-(rule:add)\` أو \`-(insight)\`.
 
 محتوى ذرّي: مفهوم واحد لكل تاق، بلا أسئلة أو تخطيط داخل التاق؛ عدّة عناصر → عدّة تاقات.
 

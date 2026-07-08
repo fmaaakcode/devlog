@@ -9,7 +9,7 @@
  *
  * Behavior:
  *   - Reads PreToolUse JSON from stdin.
- *   - If tool != Bash, exit 0.
+ *   - If tool is not a shell (Bash/PowerShell), exit 0.
  *   - If command doesn't look like a release op, exit 0.
  *   - Otherwise: fetch /api/changelog/since-last-release?format=md and run
  *     doctor (--json). Print both to stderr and exit 2 so Claude must
@@ -33,7 +33,7 @@ const ACK_TTL_MS = 10 * 60 * 1000;
 await mkdir(LOG_DIR, { recursive: true });
 await mkdir(ACK_DIR, { recursive: true });
 
-const log = (s) => Bun.write(join(LOG_DIR, "pre-release.debug.log"), `${new Date().toISOString()} ${s}\n`, { append: true }).catch(() => {});
+const log = (s) => Bun.write(join(LOG_DIR, "pre-release.debug.log"), `${new Date().toISOString()} ${s}\n`, { append: true }).catch(() => { /* logging is best-effort */ });
 
 if (process.env.DEVLOG_RELEASE_GUARD === "0") process.exit(0);
 
@@ -43,7 +43,7 @@ let body;
 try { body = JSON.parse(raw); } catch { process.exit(0); }
 
 const tool = body.tool_name || body.tool || "";
-if (tool !== "Bash") process.exit(0);
+if (tool !== "Bash" && tool !== "PowerShell") process.exit(0);
 
 const cmd = body.tool_input?.command || "";
 // Release-ish commands. Conservative — we want to catch the moments a user-
@@ -71,7 +71,7 @@ if (existsSync(ackFile)) {
       await log(`ack-pass: ${ackFile}`);
       process.exit(0);
     }
-  } catch {}
+  } catch { /* unreadable ack file — treat as no ack */ }
 }
 
 // Strict policy: any open item blocks. Fetch open-items first.
@@ -115,7 +115,10 @@ out.push("");
 // Strict block: ANY open item refuses the release.
 if (openItems.length > 0) {
   const byTag = {};
-  for (const it of openItems) (byTag[it.tag] ||= []).push(it);
+  for (const it of openItems) {
+    byTag[it.tag] ||= [];
+    byTag[it.tag].push(it);
+  }
   out.push(`🛑 ${openItems.length} مهمة مفتوحة — لا يجوز إصدار release بوجود أي مهمة مفتوحة:`);
   for (const [tag, arr] of Object.entries(byTag)) {
     out.push(`  ${tag} (${arr.length}):`);
@@ -130,7 +133,7 @@ if (openItems.length > 0) {
   out.push("");
 }
 
-if (doctorReport && doctorReport.findings?.length) {
+if (doctorReport?.findings?.length) {
   const med = doctorReport.findings.filter(f => f.severity === "medium");
   if (med.length) {
     out.push(`⚠ ${med.length} تحذيرات متوسطة من doctor:`);
@@ -157,9 +160,9 @@ if (blocked) {
   out.push("✗ مرفوض: لا يجوز إصدار release بوجود مهام مفتوحة أو مشاكل حرجة.");
 } else {
   out.push("ℹ️ اقرأ الـchangelog أعلاه ثم أعد تنفيذ الأمر — سيمر هذه المرة (TTL 10 دقائق).");
-  try { await writeFile(ackFile, String(Date.now()), "utf8"); } catch {}
+  try { await writeFile(ackFile, String(Date.now()), "utf8"); } catch { /* ack is best-effort; worst case the briefing repeats */ }
 }
 out.push("══════════════════════════════════════");
 
-process.stderr.write(out.join("\n") + "\n");
+process.stderr.write(`${out.join("\n")}\n`);
 process.exit(2);

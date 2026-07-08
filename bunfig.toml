@@ -1,0 +1,4 @@
+# [test].preload runs before any test file or its imports — see
+# test/_isolation.preload.ts for why data isolation must happen there.
+[test]
+preload = ["./test/_isolation.preload.ts"]

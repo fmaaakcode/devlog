@@ -9,8 +9,12 @@
 
 import { sep } from "node:path";
 import { readFile } from "node:fs/promises";
+import { SINGLE_LINE_TAGS } from "./tag-parser";
 import type { DevLogData, PlanStep, TagEntry } from "./types";
-import { normalizeTagContent, assignNum, openTodos, openBugs, openSecurity, openPlanSteps } from "./data";
+import {
+  normalizeTagContent, assignNum, openTodos, openBugs, openSecurity, openPlanSteps,
+  CLOSER_KINDS, OPENER_TO_CLOSER, NUMBERED_OPENABLE, singleHashNum, leadingNums, isStepClosed,
+} from "./data";
 import { appendDoc, writeDoc, applyTaskCompletion, applyTaskDrop, extractCheckboxes } from "./doc-store";
 import { writeReleaseHtml, parseVersion } from "./release-html";
 import { compareSemver, computeNextVersion, readManifestVersion, type VersionReject, type BumpType } from "./version-writer";
@@ -117,12 +121,9 @@ export async function handleDocTag(
 }
 
 // ── Atomic-content enforcement ────────────────────────────────────────────--
-const HEADLINE_TAGS = new Set([
-  "todo", "done", "dropped",
-  "bug found", "bug fix",
-  "security", "security:own", "security:dep", "security fix",
-  "note", "outdated", "update",
-]);
+// One source with the parser (#486/#487 duplicate): the same tags the parser
+// cuts at end-of-line are the ones ingest collapses to a single capped line.
+const HEADLINE_TAGS = SINGLE_LINE_TAGS;
 const BODY_TAGS = new Set(["built", "refactor", "decision", "insight", "about"]);
 
 /**
@@ -142,26 +143,44 @@ export function enforceAtomicContent(tag: string, content: string): string {
   return content;
 }
 
+// «قادمة» (upcoming) — the deferred tier — lives in ./upcoming.ts (extracted
+// for the file-size budget): applyUpcoming / applyTodoPromotion / UpcomingChange.
+
 // ── Closure-by-number resolution ──────────────────────────────────────────--
-const CLOSER_KINDS: Record<string, string[]> = {
-  "done": ["todo"],
-  "dropped": ["todo"],
-  "bug fix": ["bug found"],
-  "security fix": ["security", "security:own", "security:dep"],
-};
+// CLOSER_KINDS / OPENER_TO_CLOSER / NUMBERED_OPENABLE and the #N parsers are the
+// single source of truth in data.ts (#409); imported above.
 
 /**
- * `-(done) #5` / `-(bug fix) 12` → rewrite content to the open item's text so
- * all downstream matching (dedup, plan sync, export) uses one code path. Falls
- * back to an open plan-step lookup for done/dropped. Returns content unchanged
- * if the tag isn't a closer or the content isn't a bare number.
+ * The single number a closer TARGETS: a bare `#N` (as singleHashNum), or exactly
+ * ONE leading `#N` followed by prose — the everyday closer form
+ * (`-(bug fix) #12 fixed the race`). Shared by closure diagnosis, resolution,
+ * and confirmation so all three see the same forms. Tails used to bypass all of
+ * them because only the bare form was understood while APPLICATION accepted
+ * tails via leadingNums — first silently storing junk with zero feedback (the
+ * diagnosis gap caught live during processturn-week P4), then applying valid
+ * tailed closures without the «✓ أُغلق» echo, pushing Claude to re-verify
+ * (#482). Multi-number leading runs still return null: they keep today's
+ * batch-closure behavior rather than letting one number speak for the run.
+ */
+function singleClosureNum(content: string): number | null {
+  const bare = singleHashNum(content);
+  if (bare !== null) return bare;
+  const nums = leadingNums(content);
+  return nums.length === 1 ? nums[0] : null;
+}
+
+/**
+ * `-(done) #5` / `-(bug fix) 12` / `-(done) #5 <tail>` → rewrite content to the
+ * open item's text so all downstream matching (dedup, plan sync, export) uses
+ * one code path. Falls back to an open plan-step lookup for done/dropped.
+ * Returns content unchanged if the tag isn't a closer or the content doesn't
+ * carry a single target number (text / `Pn` / multi-number closures).
  */
 export function resolveClosureNumber(tag: string, content: string, data: DevLogData, project: string): string {
   const closerOpeners = CLOSER_KINDS[tag];
   if (!closerOpeners) return content;
-  const m = content.match(/^#?\s*(\d+)\s*$/);
-  if (!m) return content;
-  const num = parseInt(m[1], 10);
+  const num = singleClosureNum(content);
+  if (num === null) return content;
   const fixedTexts = new Set(
     data.tags
       .filter(t => t.project === project && (
@@ -181,7 +200,7 @@ export function resolveClosureNumber(tag: string, content: string, data: DevLogD
   if (tag === "done" || tag === "dropped") {
     for (const plan of data.plans) {
       if (plan.project !== project) continue;
-      const step = plan.steps.find(s => s.num === num && !s.completed);
+      const step = plan.steps.find(s => s.num === num && !isStepClosed(s));
       if (step) return step.text;
     }
   }
@@ -196,16 +215,17 @@ export interface ClosureConfirm { num: number; text: string; }
  * report the {num, text} it actually closed so the Stop hook can echo back
  * «✓ أُغلق #N — text». Echoing the TEXT is the point: it lets Claude (and the
  * user) catch a wrong-but-COMPATIBLE number — closing #229 when #228 was meant,
- * which diagnoseClosureMismatch can't flag because both are open todos. Only
- * bare `#N` closers are confirmed; text / `Pn` closures return null (their
- * outcome isn't a single numbered item). `resolved` is the post-resolution
- * content (the opener's text); pass the pre-resolution content as `original`.
+ * which diagnoseClosureMismatch can't flag because both are open todos. Bare
+ * `#N` and single `#N <tail>` closers are confirmed (#482); text / `Pn` /
+ * multi-number closures return null (their outcome isn't a single numbered
+ * item). `resolved` is the post-resolution content (the opener's text); pass
+ * the pre-resolution content as `original`.
  */
 export function confirmClosure(tag: string, original: string, resolved: string): ClosureConfirm | null {
   if (!CLOSER_KINDS[tag]) return null;
-  const m = original.match(/^#?\s*(\d+)\s*$/);
-  if (!m) return null;
-  return { num: parseInt(m[1], 10), text: resolved.slice(0, 100) };
+  const num = singleClosureNum(original);
+  if (num === null) return null;
+  return { num, text: resolved.slice(0, 100) };
 }
 
 // ── Closure text divergence (#315) ───────────────────────────────────────────
@@ -233,9 +253,10 @@ function closureSigTokens(s: string): Set<string> {
 /**
  * Flag a `-(bug fix)/-(done)/… #N <tail>` closure whose TRAILING description
  * shares NO significant token with the open item #N's text — the wrong-but-
- * type-compatible number slip that both diagnoseClosureMismatch (only bare `#N`)
- * and the #228 confirmation (only fires for bare `#N`) miss. This is the exact
- * gap that let `-(bug fix) #310 <cwd-guard text>` silently target the race bug.
+ * type-compatible number slip that neither diagnoseClosureMismatch nor the #228
+ * confirmation can catch (both accept any single `#N`, valid or not for THIS
+ * item). This is the exact gap that let `-(bug fix) #310 <cwd-guard text>`
+ * silently target the race bug.
  *
  * Returns null when: not a closer, no `#N`, no trailing text (bare `#N` has
  * nothing to compare), `#N` matches no open item of a compatible type, either
@@ -266,22 +287,15 @@ export function diagnoseClosureTextDivergence(
 }
 
 // ── Wrong-verb closure diagnosis ─────────────────────────────────────────────
-/** Each openable tag → the verb that actually closes it (for the hint text). */
-const OPENER_TO_CLOSER: Record<string, string> = {
-  "todo": "done",
-  "bug found": "bug fix",
-  "security": "security fix",
-  "security:own": "security fix",
-  "security:dep": "security fix",
-};
-
 export interface ClosureMismatch {
-  // wrong verb for an open item · no open item at all · a re-close of work that's
-  // ALREADY closed (idempotent no-op, not an error — the caller drops it silently).
-  kind: "wrong-verb" | "no-match" | "already-closed";
+  // wrong verb for an OPEN item · no open item at all · a re-close of work that's
+  // ALREADY closed with the RIGHT verb (idempotent no-op — the caller drops it
+  // silently) · a re-close of already-closed work with the WRONG verb (a likely
+  // number typo aimed at a different open item — surfaced, not swallowed) (#396).
+  kind: "wrong-verb" | "no-match" | "already-closed" | "already-closed-wrong-verb";
   num: number;
   usedCloser: string;  // the verb Claude emitted, e.g. "done"
-  openerTag?: string;  // wrong-verb only: the open item's actual type, e.g. "bug found"
+  openerTag?: string;  // (already-closed-)wrong-verb: the item's actual type, e.g. "bug found"
   suggested?: string;  // wrong-verb only: the verb that WOULD close it, e.g. "bug fix"
 }
 
@@ -294,18 +308,21 @@ export interface ClosureMismatch {
  *   - `no-match`: `#N` matches no open item at all (typo'd / already-closed
  *     number) — would otherwise store a phantom `#N` closure that closes nothing.
  *
- * Returns null when the closure is fine: not a closer verb, content isn't a bare
- * `#N` (text / `Pn` closures resolve elsewhere), the verb is correct for the
- * open item, or `#N` is an open plan step (a valid `done`/`dropped` target).
+ * Returns null when the closure is fine: not a closer verb, content carries no
+ * single diagnosable `#N` (text / `Pn` / multi-number closures resolve
+ * elsewhere), the verb is correct for the open item, or `#N` is an open plan
+ * step (a valid `done`/`dropped` target).
  */
 export function diagnoseClosureMismatch(
   tag: string, content: string, data: DevLogData, project: string,
 ): ClosureMismatch | null {
   const compatible = CLOSER_KINDS[tag];
   if (!compatible) return null;                  // not a closer verb
-  const m = content.match(/^#?\s*(\d+)\s*$/);
-  if (!m) return null;                           // not a bare #N (text / Pn closure)
-  const num = parseInt(m[1], 10);
+  // Bare `#N` OR one leading `#N` + prose tail — the tail form used to bypass
+  // this whole diagnosis while the application path accepted it (caught live
+  // during processturn-week P4 dogfooding).
+  const num = singleClosureNum(content);
+  if (num === null) return null;                 // text / Pn / multi-number closure
   const tags = data.tags.filter(t => t.project === project);
 
   // An open todo / bug / security with this number?
@@ -324,18 +341,35 @@ export function diagnoseClosureMismatch(
   }
 
   // #N isn't OPEN. Before flagging a phantom closure, check whether it names an
-  // item that already EXISTS but is CLOSED — a re-emitted closer (chiefly the Stop
-  // hook re-scanning the same response across a hook-driven continuation, where
-  // done/dropped are exempt from dedup). Numbers are unique per item, so a
+  // item that already EXISTS but is CLOSED — a re-emitted closer. (Since the
+  // turn ledger, a hook continuation no longer re-sends already-posted closers;
+  // what reaches here is a genuine cross-turn re-close — a pasted stale number
+  // or a re-emitted line — plus the ledger's zero-degree fallback path.)
+  // Numbers are unique per item, so a
   // numbered openable tag with this #N that we didn't find OPEN above must be
   // closed; a completed plan step is likewise closed. Re-closing closed work is a
   // no-op, not a typo → "already-closed", which the caller drops SILENTLY (no
   // phantom tag, no mismatch nag that would falsely say "closes nothing").
-  const NUMBERED_OPENABLE = new Set(["todo", "bug found", "security", "security:own", "security:dep"]);
-  const closedTagExists = tags.some(t => typeof t.num === "number" && t.num === num && NUMBERED_OPENABLE.has(t.tag));
+  const closedTag = tags.find(t => typeof t.num === "number" && t.num === num && NUMBERED_OPENABLE.has(t.tag));
+  // A dropped step is closed too (isStepClosed), not just a completed one — a
+  // `-(dropped)` no longer splices the step away, so re-emitting the closer over
+  // a hook continuation resolves to already-closed instead of a false no-match (#395).
   const closedStepExists = data.plans.some(p =>
-    p.project === project && p.steps.some(s => s.num === num && s.completed));
-  if (closedTagExists || closedStepExists) return { kind: "already-closed", num, usedCloser: tag };
+    p.project === project && p.steps.some(s => s.num === num && isStepClosed(s)));
+  if (closedTag || closedStepExists) {
+    // The item exists but is CLOSED. Re-closing with the RIGHT verb is a pure
+    // idempotent no-op → silent "already-closed" (kept as the second,
+    // ledger-independent shield per processturn-design §7). But re-closing
+    // with the WRONG verb for the
+    // item's type signals Claude typo'd the NUMBER — it meant a different, still-
+    // OPEN item — so surface it instead of swallowing it (#396). Plan steps are
+    // closed by done/dropped; a tag by its own type-matched closer (CLOSER_KINDS).
+    const compatibleWithClosed = closedTag
+      ? compatible.includes(closedTag.tag)
+      : (tag === "done" || tag === "dropped");
+    if (compatibleWithClosed) return { kind: "already-closed", num, usedCloser: tag };
+    return { kind: "already-closed-wrong-verb", num, usedCloser: tag, openerTag: closedTag?.tag ?? "plan-step" };
+  }
 
   // Nothing open OR closed matches this number → a phantom closure that closes nothing.
   return { kind: "no-match", num, usedCloser: tag };
@@ -365,9 +399,8 @@ async function removeTagAt(idx: number, data: DevLogData, project: string): Prom
 // Returns the RollbackResult when the undone tag was a release (so the caller
 // can surface the outcome — QA #2), else null.
 export async function applyUndo(content: string, data: DevLogData, project: string): Promise<RollbackResult | null> {
-  const numMatch = content.match(/^#?\s*(\d+)\s*$/);
-  if (numMatch) {
-    const num = parseInt(numMatch[1], 10);
+  const num = singleHashNum(content);
+  if (num !== null) {
     const idx = data.tags.findIndex(t => t.project === project && t.num === num);
     if (idx >= 0) { return await removeTagAt(idx, data, project); }
     // Fallback: #N may be a plan-step number, not a tag (tags + steps share
@@ -589,12 +622,14 @@ export function detectReleaseOpenItems(
   const stillOpen = (num: number | undefined, closed: Set<number>) =>
     typeof num !== "number" || !closed.has(num);
 
+  // «قادمة» never blocks a release — that's the whole point of the tier. The
+  // release page snapshots them in its own «قادم» section instead.
   const tags = data.tags.filter(t => t.project === project);
   const out: ReleaseOpenItem[] = [];
-  for (const t of openTodos(tags)) if (stillOpen(t.num, inflightDone)) out.push({ num: t.num, tag: "todo", content: t.content });
-  for (const t of openBugs(tags)) if (stillOpen(t.num, inflightBugFix)) out.push({ num: t.num, tag: "bug found", content: t.content });
+  for (const t of openTodos(tags)) if (!t.upcoming && stillOpen(t.num, inflightDone)) out.push({ num: t.num, tag: "todo", content: t.content });
+  for (const t of openBugs(tags)) if (!t.upcoming && stillOpen(t.num, inflightBugFix)) out.push({ num: t.num, tag: "bug found", content: t.content });
   for (const t of openSecurity(tags)) if (stillOpen(t.num, inflightSecFix)) out.push({ num: t.num, tag: t.tag, content: t.content });
-  for (const s of openPlanSteps(data, project)) if (stillOpen(s.num, inflightDone)) out.push({ num: s.num, tag: "plan-step", content: s.text, planTitle: s.planTitle });
+  for (const s of openPlanSteps(data, project)) if (!s.planUpcoming && stillOpen(s.num, inflightDone)) out.push({ num: s.num, tag: "plan-step", content: s.text, planTitle: s.planTitle });
   return out.length ? { openItems: out } : null;
 }
 
@@ -663,8 +698,10 @@ export async function syncPlanSteps(tag: string, content: string, data: DevLogDa
     if (!plan.file_path) continue;
     const isDocPlan = plan.file_path.includes(`${sep}.devlog${sep}docs${sep}`);
 
-    // Mode 1: exact text match (preferred — most precise)
-    const stepIdx = plan.steps.findIndex(s => norm(s.text) === norm(content));
+    // Mode 1: exact text match on an OPEN step (preferred — most precise). A
+    // dropped step is now retained in plan.steps (#410), so exclude closed steps —
+    // otherwise a re-emitted text closer would re-process already-closed work.
+    const stepIdx = plan.steps.findIndex(s => !isStepClosed(s) && norm(s.text) === norm(content));
     if (stepIdx >= 0) {
       const step = plan.steps[stepIdx];
       try {
@@ -672,7 +709,7 @@ export async function syncPlanSteps(tag: string, content: string, data: DevLogDa
           step.completed = true;
           if (isDocPlan) await applyTaskCompletion(projectPath, project, plan.file_path, step.text, true);
         } else {
-          plan.steps.splice(stepIdx, 1);
+          step.dropped = true;  // archive in place, don't splice (#410)
           if (isDocPlan) await applyTaskDrop(projectPath, project, plan.file_path, step.text);
         }
       } catch (e) {
@@ -697,7 +734,7 @@ export async function syncPlanSteps(tag: string, content: string, data: DevLogDa
         console.error("[/api/tags phase-backfill] error:", (e as Error)?.message);
       }
     }
-    const targets = plan.steps.filter(s => s.phase === phaseCode && !s.completed);
+    const targets = plan.steps.filter(s => s.phase === phaseCode && !isStepClosed(s));
     if (targets.length === 0) continue;
 
     let touched = 0;
@@ -707,8 +744,7 @@ export async function syncPlanSteps(tag: string, content: string, data: DevLogDa
           step.completed = true;
           await applyTaskCompletion(projectPath, project, plan.file_path, step.text, true);
         } else {
-          const i = plan.steps.indexOf(step);
-          if (i >= 0) plan.steps.splice(i, 1);
+          step.dropped = true;  // archive in place, don't splice (#410)
           await applyTaskDrop(projectPath, project, plan.file_path, step.text);
         }
         touched++;

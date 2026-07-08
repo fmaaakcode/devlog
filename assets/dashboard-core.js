@@ -1,21 +1,108 @@
+        // R3 #3: ES module. Shared mutable state lives in dashboard-state.js;
+        // cross-file functions are explicit imports — a renamed or missing one
+        // now fails at load with a visible import error instead of a swallowed
+        // TypeError at click time.
+        import { data, activeProject, showCompletedPlans, setShowCompletedPlans, setTodosTab, setPlansTab } from "./dashboard-state.js";
+        import { rescanProject, vulnScan, expandHistory, refreshActiveView } from "./dashboard-data.js";
+        import { selectProject, deleteProject, renameProject, cleanupTombstones, cleanupOrphans, vulnCache } from "./dashboard-project.js";
+        import { openSessionsPanel, killPid, killServer, refreshProcesses, renderActivePlanCard, renderTodosCard, hidePlan, togglePlanUpcoming, renderProject, planExpanded } from "./dashboard-panels.js";
+        import { setLogFilter, clearInjectionOverride, toggleInjection, showInjectionContent, switchInjScope, openInjectionPanel, openStandardsPanel, closeInjectionPanel, closeStandardsPanel, openUpdatesPopup, openTargetFile, ignoreTarget } from "./dashboard-tree-ws.js";
+
         // Derive from where the dashboard is served, so it follows DEVLOG_PORT
         // instead of hardcoding 7777 (R3 P5).
-        const API = location.origin;
-        let data = { projects: {}, events: [], tags: [], plans: [], worklog: [] };
-        let activeProject = null;
+        export const API = location.origin;
 
         // Foreground colors for tool badges — single source (was duplicated in
         // updateCards + renderFiles with a drifted Agent shade) (R3 P7). The
         // dark background tints near the file tree are a separate concept.
-        const TOOL_FG_COLORS = { Create: 'var(--emerald)', Edit: 'var(--gold)', Read: 'var(--blue)', Bash: 'var(--pink)', Agent: '#bb86fc', Plan: 'var(--gold)' };
+        export const TOOL_FG_COLORS = { Create: 'var(--emerald)', Edit: 'var(--gold)', Read: 'var(--blue)', Bash: 'var(--pink)', PowerShell: 'var(--pink)', Agent: '#bb86fc', Plan: 'var(--gold)' };
 
         // Allow only http(s) links; blocks javascript:/data: URIs coming from an
         // untrusted git remote (.git/config) or vuln API (security audit D3).
-        function safeHref(url) {
+        export function safeHref(url) {
             const u = String(url || "").trim();
             return /^https?:\/\//i.test(u) ? u : "#";
         }
-        let logFilter = "all";
+
+        // Destructive endpoints may demand X-DevLog-Token (DEVLOG_REQUIRE_TOKEN=1).
+        // Every mutating button goes through this — the server was enforcing the
+        // gate while the dashboard's own buttons never attached the header, so
+        // enabling the feature silently broke them (401). One cached /api/token
+        // fetch serves the session; with the feature off it adds nothing.
+        let tokenHeaderCache = null;
+        export async function destructiveHeaders(extra) {
+            if (tokenHeaderCache === null) {
+                try {
+                    const t = await (await fetch(`${API}/api/token`)).json();
+                    tokenHeaderCache = (t.required && t.token) ? { 'X-DevLog-Token': t.token } : {};
+                } catch { tokenHeaderCache = {}; }
+            }
+            return { ...(extra || {}), ...tokenHeaderCache };
+        }
+        // R3 #7: native alert/confirm/prompt block the event loop — WebSocket
+        // updates freeze behind them — and can't be styled. Same .inj-modal
+        // shell as the other dialogs, resolving a Promise instead of blocking.
+        // Message and title go in via textContent, never innerHTML, so callers
+        // can pass server-derived text without an XSS path.
+        // Teardown hook for the dialog currently on screen. Replacing a pending
+        // dialog used to `old.remove()` the DOM only — its Promise never
+        // settled (the awaiting flow hung forever) and its document keydown
+        // listener leaked, so a later Enter could fire BOTH dialogs' actions
+        // (R3 review #1). Now a replacement runs the same teardown as a normal
+        // cancel: resolve, unlisten, remove.
+        let closeActiveDialog = null;
+        function uiDialog(message, { title = "تنبيه", okText = "حسنًا", cancelText = null, danger = false, input = null } = {}) {
+            return new Promise((resolve) => {
+                if (closeActiveDialog) closeActiveDialog();
+                const wrap = document.createElement("div");
+                wrap.id = "confirmModal";
+                wrap.className = "inj-modal-bg open";
+                const box = document.createElement("div");
+                box.className = "inj-modal confirm-modal";
+                box.dataset.action = "noop";
+                box.innerHTML = '<div class="inj-header"><span class="inj-title"></span><button class="inj-close" title="إغلاق">✕</button></div><div class="confirm-msg"></div><div class="confirm-actions"></div>';
+                box.querySelector(".inj-title").textContent = title;
+                box.querySelector(".confirm-msg").textContent = message;
+                let inputEl = null;
+                if (input !== null) {
+                    inputEl = document.createElement("input");
+                    inputEl.className = "confirm-input";
+                    inputEl.value = input;
+                    box.querySelector(".confirm-msg").after(inputEl);
+                }
+                // cancel value: false for confirm, null for prompt, true for plain alert
+                const cancelValue = input !== null ? null : !cancelText;
+                const okValue = () => inputEl ? inputEl.value.trim() : true;
+                const done = (v) => { closeActiveDialog = null; document.removeEventListener("keydown", onKey); wrap.remove(); resolve(v); };
+                const onKey = (e) => {
+                    if (e.key === "Escape") done(cancelValue);
+                    else if (e.key === "Enter") done(okValue());
+                };
+                const actions = box.querySelector(".confirm-actions");
+                const mk = (label, val, cls) => {
+                    const b = document.createElement("button");
+                    b.className = cls;
+                    b.textContent = label;
+                    b.onclick = () => done(typeof val === "function" ? val() : val);
+                    actions.appendChild(b);
+                    return b;
+                };
+                if (cancelText) mk(cancelText, cancelValue, "confirm-btn");
+                const okBtn = mk(okText, okValue, `confirm-btn ${danger ? "danger" : "primary"}`);
+                box.querySelector(".inj-close").onclick = () => done(cancelValue);
+                wrap.addEventListener("click", (e) => { if (e.target === wrap) done(cancelValue); });
+                document.addEventListener("keydown", onKey);
+                closeActiveDialog = () => done(cancelValue);
+                wrap.appendChild(box);
+                document.body.appendChild(wrap);
+                (inputEl || okBtn).focus();
+                if (inputEl) inputEl.select();
+            });
+        }
+        export const uiAlert = (message, title = "تنبيه") => uiDialog(message, { title });
+        export const uiConfirm = (message, opts = {}) => uiDialog(message, { title: opts.title || "تأكيد", okText: opts.okText || "نعم، نفّذ", cancelText: opts.cancelText || "إلغاء", danger: opts.danger !== false });
+        // prompt() replacement: resolves the trimmed string, or null on cancel.
+        export const uiPrompt = (message, initial, opts = {}) => uiDialog(message, { title: opts.title || "إدخال", okText: opts.okText || "موافق", cancelText: "إلغاء", danger: false, input: initial ?? "" });
 
         // Delegated listener for [data-action] elements. Replaces the old
         // onclick="fn('${esc(x)}')" pattern, which was XSS-prone because
@@ -31,6 +118,8 @@
             else if (action === "delete-project") { e.stopPropagation(); deleteProject(project); }
             else if (action === "rename-project") { e.stopPropagation(); renameProject(project); }
             else if (action === "open-sessions") openSessionsPanel(project);
+            else if (action === "cleanup-tombstones") cleanupTombstones();
+            else if (action === "cleanup-orphans") cleanupOrphans();
             else if (action === "kill-pid") killPid(parseInt(el.dataset.pid, 10), project);
             else if (action === "refresh-processes") refreshProcesses(project);
             else if (action === "toggle-plan") {
@@ -43,8 +132,17 @@
                 hidePlan(el.dataset.planId, el.dataset.planTitle);
             }
             else if (action === "toggle-completed-plans") {
-                showCompletedPlans = !showCompletedPlans;
+                setShowCompletedPlans(!showCompletedPlans);
                 renderActivePlanCard(activeProject);
+            }
+            // الحالية/القادمة tabs (tasks + plans cards) + plan defer/promote.
+            // Each tab switch redraws ITS card only, without the live-update
+            // flash — cards are independent; switching one must not reload the rest.
+            else if (action === "set-todos-tab") { setTodosTab(el.dataset.key); renderTodosCard(false); }
+            else if (action === "set-plans-tab") { setPlansTab(el.dataset.key); renderActivePlanCard(activeProject, false); }
+            else if (action === "toggle-plan-upcoming") {
+                e.stopPropagation();
+                togglePlanUpcoming(el.dataset.planId, el.dataset.upcoming === 'true');
             }
             else if (action === "delete-tag") {
                 e.stopPropagation();
@@ -53,6 +151,8 @@
             // Converted from inline onclick (R3 P7) — keeps CSP free of the
             // remaining unsafe-inline handlers.
             else if (action === "set-log-filter") setLogFilter(el.dataset.key);
+            // History window (R8 perf): refetch this project's view unwindowed.
+            else if (action === "expand-history") { expandHistory(activeProject); refreshActiveView(true); }
             else if (action === "close-sessions-modal") { const m = document.getElementById('sessionsModal'); if (m) m.remove(); }
             else if (action === "clear-injection-override") clearInjectionOverride();
             else if (action === "toggle-injection") toggleInjection(el.dataset.key, el.dataset.value === 'true');
@@ -71,6 +171,15 @@
             else if (action === "open-standards-panel") openStandardsPanel(activeProject);
             else if (action === "kill-server") killServer(el);
             else if (action === "open-updates-popup") openUpdatesPopup();
+            // #448: the version chip's click-through to the full releases page
+            // (the hover popover shows the latest summary inline).
+            else if (action === "open-releases") window.open(`${API}/releases/${encodeURIComponent(activeProject)}`, "_blank", "noopener");
+            // #490: live preview of the NEXT release — served under the same
+            // base as the baked pages so its relative links resolve.
+            else if (action === "open-release-preview") window.open(`${API}/releases/${encodeURIComponent(activeProject)}/preview.html`, "_blank", "noopener");
+            // Client-facing status report — rendered live server-side; the
+            // browser tab is the review/print/save surface.
+            else if (action === "open-client-report") window.open(`${API}/api/client-report?project=${encodeURIComponent(activeProject)}`, "_blank", "noopener");
             else if (action === "open-target-file") openTargetFile();
             else if (action === "ignore-target") ignoreTarget();
             else if (action === "close-injection-panel") closeInjectionPanel();
@@ -79,17 +188,17 @@
 
         async function deleteTag(tagId, kind) {
             const label = kind === "security" ? "ثغرة" : kind === "bug" ? "خلل" : "تاق";
-            if (!confirm(`حذف هذه الـ${label} نهائياً؟\nاستخدم هذا فقط للـfalse positive أو الإدخال الخاطئ. للإصلاح الفعلي استخدم -(security fix) #N أو -(bug fix) #N.`)) return;
+            if (!(await uiConfirm(`حذف هذه الـ${label} نهائياً؟\nاستخدم هذا فقط للـfalse positive أو الإدخال الخاطئ. للإصلاح الفعلي استخدم -(security fix) #N أو -(bug fix) #N.`, { okText: "احذف نهائيًا" }))) return;
             try {
-                const res = await fetch(`${API}/api/tag/${encodeURIComponent(tagId)}`, { method: "DELETE" });
+                const res = await fetch(`${API}/api/tag/${encodeURIComponent(tagId)}`, { method: "DELETE", headers: await destructiveHeaders() });
                 if (res.ok) {
                     data.tags = (data.tags || []).filter(t => t.id !== tagId);
-                    if (typeof renderProject === "function") renderProject();
+                    renderProject();
                 } else {
-                    alert("فشل الحذف");
+                    uiAlert("فشل الحذف");
                 }
             } catch (e) {
-                alert("خطأ: " + e.message);
+                uiAlert(`خطأ: ${e.message}`);
             }
         }
 
@@ -112,7 +221,7 @@
         // (matches the server-side sanitization at store time). fallbackText (the
         // tag headline) is shown when there's no scanned detail for the library.
         function showVulnsModal(project, lib, fallbackText) {
-            const vulns = (vulnCache && vulnCache[project]) || (data.projects[project] && data.projects[project].vulnResults) || {};
+            const vulns = (vulnCache?.[project]) || (data.projects[project]?.vulnResults) || {};
             const v = vulns[lib];
             const sevColors = { critical: '#ff1744', high: '#ff5252', moderate: '#ff9800', low: '#ffd93d', none: 'var(--text2)' };
             let titleCount = '';
@@ -202,7 +311,7 @@
             function showFromAbout(btn) {
                 const proj = data.projects[activeProject];
                 if (!proj) return;
-                const has = proj.about && proj.about.trim();
+                const has = proj.about?.trim();
                 show(btn, {
                     name: proj.name,
                     description: proj.description || "",
@@ -210,14 +319,33 @@
                 });
             }
 
+            // #448: hovering the header version shows the latest release's
+            // summary right here (the release tag already carries it) instead
+            // of the user digging release .html files out of the folder;
+            // clicking opens the full releases page (open-releases action).
+            function showFromRelease(el) {
+                const rel = (data.tags || [])
+                    .filter(t => t.project === activeProject && t.tag === "release")
+                    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
+                if (!rel) return;
+                const when = new Date(rel.timestamp).toLocaleDateString("en-GB", { year: "numeric", month: "2-digit", day: "2-digit" });
+                show(el, {
+                    name: rel.content.match(/v[\d.]+/)?.[0] || "آخر إصدار",
+                    description: `صدر ${when} — اضغط لفتح صفحة الريليزات`,
+                    body: rel.content,
+                });
+            }
+
             const isHoverable = (target) =>
-                target && target.closest && (target.closest(".mem-row") || target.closest("[data-about-btn]") || target.closest("#memPopover"));
+                target?.closest && (target.closest(".mem-row") || target.closest("[data-about-btn]") || target.closest("[data-release-pop]") || target.closest("#memPopover"));
 
             document.addEventListener("mouseover", (e) => {
                 const row = e.target.closest(".mem-row");
                 if (row) { showFromRow(row); return; }
                 const aboutBtn = e.target.closest("[data-about-btn]");
                 if (aboutBtn) { showFromAbout(aboutBtn); return; }
+                const relEl = e.target.closest("[data-release-pop]");
+                if (relEl) { showFromRelease(relEl); return; }
                 if (e.target.closest("#memPopover")) cancelHide();
             });
             document.addEventListener("mouseout", (e) => {
@@ -237,19 +365,19 @@
                 if (left + pw > window.innerWidth - 8) left = window.innerWidth - pw - 8;
                 let top = r.top;
                 if (top + ph > window.innerHeight - 8) top = Math.max(8, window.innerHeight - ph - 8);
-                el.style.left = Math.max(8, left) + "px";
-                el.style.top = top + "px";
+                el.style.left = `${Math.max(8, left)}px`;
+                el.style.top = `${top}px`;
             }
         })();
 
-        const langColors = {
+        export const langColors = {
             TypeScript: "#3178c6", JavaScript: "#f7df1e", Python: "#3776ab",
             Rust: "#dea584", Go: "#00add8", Java: "#ed8b00", "C#": "#68217a",
             PHP: "#777bb4", Ruby: "#cc342d", Swift: "#fa7343", Dart: "#0175c2",
             Vue: "#42b883", Svelte: "#ff3e00", default: "#118ab2"
         };
 
-        const tagLabels = {
+        export const tagLabels = {
             plan: "خطة", built: "بناء", todo: "مهمة", done: "منجز", dropped: "ملغي",
             "bug found": "خلل", "bug fix": "إصلاح", security: "أمني", "security fix": "إصلاح أمني",
             release: "إصدار", note: "ملاحظة", update: "تحديث", refactor: "إعادة هيكلة", outdated: "قديم",
@@ -257,19 +385,8 @@
             "security:dep": "أمني (تبعية)", "security:own": "أمني (كود)"
         };
 
-        const tagDotColors = {
-            plan: "var(--blue)", built: "var(--emerald)", todo: "var(--gold)",
-            done: "var(--emerald)", dropped: "var(--text2)",
-            "bug found": "var(--pink)", "bug fix": "var(--emerald)",
-            security: "var(--pink)", "security fix": "var(--emerald)", outdated: "var(--gold)",
-            release: "var(--gold)", note: "var(--text2)",
-            update: "var(--emerald)", refactor: "var(--blue)",
-            decision: "#06b6d4", insight: "#a78bfa",
-            "security:dep": "var(--gold)", "security:own": "var(--pink)"
-        };
-
         // Filter groups for log tab
-        const filterGroups = {
+        export const filterGroups = {
             all: null,
             build: ["built", "refactor", "update"],
             bugs: ["bug found", "bug fix"],
@@ -278,7 +395,7 @@
             knowledge: ["decision", "insight", "note"],
             other: ["release"]
         };
-        const filterLabels = {
+        export const filterLabels = {
             all: "الكل", build: "البناء", bugs: "الأخطاء",
             security: "الأمان", tasks: "المهام", knowledge: "معرفة", other: "أخرى"
         };
@@ -287,47 +404,34 @@
         // as a security item. The dashboard used to filter `t.tag === "security"`
         // alone, silently dropping `security:own`/`security:dep` from every count
         // and list (e.g. project-x #103 showed open in ?open but vanished here).
-        const SEC_OPEN_TAGS = new Set(["security", "security:own", "security:dep"]);
+        export const SEC_OPEN_TAGS = new Set(["security", "security:own", "security:dep"]);
 
-        function esc(s) {
+        export function esc(s) {
             if (!s) return "";
             return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
         }
         // Compact display: tags may now hold body up to 2000 chars; the dashboard
         // shows only the first line + ~120 chars to keep rows scannable.
-        function tagSummary(s, max = 120) {
+        export function tagSummary(s, max = 120) {
             if (!s) return "";
             const firstLine = s.split("\n")[0];
-            return firstLine.length > max ? firstLine.slice(0, max - 1) + "…" : firstLine;
+            return firstLine.length > max ? `${firstLine.slice(0, max - 1)}…` : firstLine;
         }
-        // Mirror of export.ts fuzzyMatch: same prefix logic so the dashboard
-        // closes a todo whenever the corresponding done would close it in the
-        // generated DEVLOG_STATUS.md. Avoids the "I emitted done but it's
-        // still open" frustration.
-        // Mirror of export.ts sharedPrefixClose: a shared prefix only counts as a
-        // match when it covers most of both strings (≥25 chars AND ≥80% of the
-        // longer), so "… Finding #2" and "… Finding #3" don't close each other.
-        function sharedPrefixClose(na, nb) {
-            if (na.length <= 10 || nb.length <= 10) return false;
-            let i = 0;
-            const min = Math.min(na.length, nb.length);
-            while (i < min && na[i] === nb[i]) i++;
-            return i >= 25 && i >= 0.8 * Math.max(na.length, nb.length);
-        }
-        function isDoneFuzzy(itemLow, doneTextsArr) {
-            if (doneTextsArr.has(itemLow)) return true;
-            for (const d of doneTextsArr) {
-                if (sharedPrefixClose(itemLow, d)) return true;
-            }
-            return false;
-        }
-        function timeStr(ts) {
+        // The client-side closure/fuzzy mirrors (sharedPrefixClose, isDoneFuzzy,
+        // normTag, fuzzy, closedNumSet) were removed in #379 — open/closed
+        // judgments now come from GET /api/verdicts/:project, the same
+        // resolvers behind ask:open and the release guard, so the dashboard
+        // can no longer drift from the server on the same data.
+        export function timeStr(ts) {
             return new Date(ts).toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit", hour12: false });
         }
-        function tagClass(tag) { return tag.replace(/[\s:]+/g, ""); }
+        // Opened-at line for hover tooltips (security card's open lists; mirrors
+        // the tasks card's addedTitle and ?open/ask:closed's «فُتح» line).
+        export const openedTitle = (ts) => ts ? `فُتحت: ${String(ts).slice(0, 16).replace('T', ' ')}` : '';
+        export function tagClass(tag) { return tag.replace(/[\s:]+/g, ""); }
         // For closure tags whose content is `#N` or `Pn(.m)`, show a richer
         // label by looking up the original item. Falls back to raw content.
-        function resolveTagDisplay(t, allTags, plans) {
+        export function resolveTagDisplay(t, allTags, plans) {
             const c = (t.content || "").trim();
             const numM = c.match(/^#?\s*(\d+)\s*$/);
             if (numM) {
@@ -349,41 +453,13 @@
             }
             return c;
         }
-        // Same normalization the server uses for closure matching: strip
-        // inline-code backticks, collapse whitespace, lowercase, trim. Without
-        // it the dashboard disagrees with the server about which todos are
-        // open whenever the original text contains backticks or stray spaces.
-        function normTag(s) {
-            return s.replace(/`[^`\n]*`/g, ' ').replace(/`/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
-        }
-        function fuzzy(a, b) {
-            const na = normTag(a), nb = normTag(b);
-            return na === nb || na.includes(nb) || nb.includes(na) || sharedPrefixClose(na, nb);
-        }
-        // Mirror of data.ts closedNums: numbers closed via `-(kind) #N` for the
-        // given (type-matched) closure kinds. The dashboard MUST honor numeric
-        // closures — the tag protocol tells Claude to close by `#N`, and that
-        // closure's content ("#4") never text-matches the item, so without this
-        // every #N-closed todo/bug/security shows open on the dashboard forever
-        // even though the server (?open, export, doctor) treats it as closed.
-        function closedNumSet(tags, kinds) {
-            const nums = new Set();
-            for (const t of tags) {
-                if (!kinds.includes(t.tag)) continue;
-                for (const m of (t.content || '').matchAll(/#(\d+)/g)) nums.add(parseInt(m[1], 10));
-            }
-            return nums;
-        }
-
         // ===== Data fetching =====
 
-        let lastDataHash = '';
-        let fullRenderNeeded = true;
-        let activeSessionsByProject = {};
+        export let activeSessionsByProject = {};
 
-        async function refreshActiveSessions() {
+        export async function refreshActiveSessions() {
             try {
-                const r = await fetch(API + "/api/sessions");
+                const r = await fetch(`${API}/api/sessions`);
                 const j = await r.json();
                 const map = {};
                 for (const s of (j.items || [])) {
@@ -392,6 +468,57 @@
                     map[name].push(s.pid);
                 }
                 activeSessionsByProject = map;
-            } catch {}
+            } catch {
+                // Keep the last known session map on transient fetch failures.
+            }
         }
 
+
+        // ===== Daemon freshness banner =====
+        // /api/boot (#326) answers "is the running process older than the code
+        // on disk?" — assets are import-baked, so a stale daemon serves a stale
+        // dashboard too. Checked at load + every 5 minutes; the button drives
+        // POST /api/server/restart (token-aware) and reloads once the
+        // replacement answers /api/ping.
+        async function checkDaemonFreshness() {
+            try {
+                const r = await fetch(`${API}/api/boot`);
+                if (!r.ok) return;
+                const { stale } = await r.json();
+                const existing = document.getElementById('freshnessBar');
+                if (!stale) { if (existing) existing.remove(); return; }
+                if (existing) return;
+                const bar = document.createElement('div');
+                bar.id = 'freshnessBar';
+                bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:1000;display:flex;gap:12px;align-items:center;justify-content:center;padding:7px 16px;font-size:13px;background:#2a2210;color:#ffd166;border-bottom:1px solid #c98500';
+                const msg = document.createElement('span');
+                msg.textContent = 'الخادم يشغّل نسخة أقدم من الكود الموجود على القرص — أعد التشغيل لاستلام التحديث';
+                const btn = document.createElement('button');
+                btn.textContent = 'إعادة تشغيل الخادم';
+                btn.style.cssText = 'background:#c98500;color:#161718;border:0;border-radius:6px;padding:4px 12px;font-size:12px;cursor:pointer;font-family:inherit';
+                btn.onclick = async () => {
+                    btn.disabled = true;
+                    btn.textContent = 'يعيد التشغيل…';
+                    try {
+                        await fetch(`${API}/api/server/restart`, { method: 'POST', headers: await destructiveHeaders() });
+                    } catch {
+                        // The dying server may drop the connection mid-response;
+                        // the ping loop below decides success or failure.
+                    }
+                    // Poll until the replacement answers, then hard-reload so
+                    // the fresh assets load. Give up after ~20s.
+                    for (let i = 0; i < 28; i++) {
+                        await new Promise(res => setTimeout(res, 700));
+                        try {
+                            const p = await fetch(`${API}/api/ping`, { signal: AbortSignal.timeout(600) });
+                            if (p.ok) { location.reload(); return; }
+                        } catch { /* still swapping */ }
+                    }
+                    btn.textContent = 'تعذّرت الإعادة — أعد تشغيل الخادم يدويًا';
+                };
+                bar.append(msg, btn);
+                document.body.prepend(bar);
+            } catch { /* daemon predates /api/boot or busy — try next beat */ }
+        }
+        checkDaemonFreshness();
+        setInterval(checkDaemonFreshness, 5 * 60 * 1000);

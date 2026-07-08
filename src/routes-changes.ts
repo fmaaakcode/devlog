@@ -8,6 +8,8 @@
 
 import { loadData } from "./data";
 import { normalizeSlashes } from "./path-utils";
+import { buildFileStory, fileMatches } from "./file-story";
+import { listArchiveMonths, readArchiveMonth } from "./event-archive";
 import type { EventEntry } from "./types";
 
 type ApiReq = Bun.BunRequest;
@@ -68,6 +70,37 @@ export function makeChangesRoutes(): Record<string, unknown> {
         }
         items = items.slice(-n).reverse().map(summarizeChange);
         return Response.json({ items, count: items.length });
+      },
+    },
+
+    // Position memory (#486): one file's full timeline — tags whose capture
+    // window touched it + its change events. ?deep=1 additionally sweeps the
+    // cold archive (monthly files, on demand only) for events past retention.
+    // GET /api/file-story?project=X&path=src/foo.ts[&deep=1]
+    "/api/file-story": {
+      async GET(req: ApiReq) {
+        const url = new URL(req.url);
+        const project = url.searchParams.get("project") || "";
+        const path = url.searchParams.get("path") || "";
+        if (!project || !path) return Response.json({ error: "project and path required" }, { status: 400 });
+        const data = await loadData();
+        const story = buildFileStory(data, project, path);
+        const archived: EventEntry[] = [];
+        if (url.searchParams.get("deep") === "1") {
+          for (const month of await listArchiveMonths()) {
+            for (const e of await readArchiveMonth(month)) {
+              if (e.project === project && (e.type === "change" || e.type === "create")
+                && e.file_path && fileMatches(e.file_path, path)) archived.push(e);
+            }
+          }
+          archived.reverse();
+        }
+        return Response.json({
+          file: story.file,
+          tags: story.tags,
+          events: story.events.map(summarizeChange),
+          archived: archived.map(summarizeChange),
+        });
       },
     },
 

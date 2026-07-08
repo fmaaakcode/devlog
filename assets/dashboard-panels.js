@@ -1,4 +1,99 @@
-        async function patchSessions(projectName) {
+        import { data, activeProject, headerBuilt, showCompletedPlans, plansTab, todosTab } from "./dashboard-state.js";
+        import { API, esc, timeStr, destructiveHeaders, uiAlert, uiConfirm } from "./dashboard-core.js";
+        import { currentVerdicts, updateCard } from "./dashboard-data.js";
+        import { getProjectTags, patchHeader, buildHeaderOnce } from "./dashboard-project.js";
+        import { renderFiles } from "./dashboard-tree-ws.js";
+
+        // ===== المهام card + the shared الحالية/القادمة tabs =====
+        // (moved here from dashboard-tree-ws.js with the upcoming feature — that
+        // file sits at its size budget; the plans card below shares cardTabs.)
+
+        export function cardTabs(active, action, counts) {
+            const btn = (key, label, n) =>
+                `<button class="log-filter${active === key ? ' active' : ''}" data-action="${action}" data-key="${key}">${label}${n ? ` <span class="tab-badge tab-badge-default">${n}</span>` : ''}</button>`;
+            return `<div class="log-filters">${btn('current', 'الحالية', counts.current)}${btn('upcoming', 'القادمة', counts.upcoming)}</div>`;
+        }
+        const daysAgoStr = (ts) => {
+            const d = Math.floor((Date.now() - new Date(ts)) / 86400000);
+            return d <= 0 ? 'اليوم' : d === 1 ? 'منذ يوم' : d === 2 ? 'منذ يومين' : `منذ ${d} يوم`;
+        };
+        const addedTitle = (ts) => ts ? `أُضيف: ${String(ts).slice(0, 16).replace('T', ' ')}` : '';
+
+        // Targeted refresh for the tasks card alone — the الحالية/القادمة tab
+        // switch must not redraw the whole project (that re-fetched the changes
+        // card and reset every card's scroll, reading as a full reload).
+        export function renderTodosCard(flash = true) {
+            updateCard('cardTodos', buildTodosHtml(getProjectTags()), flash);
+        }
+
+        export function buildTodosHtml(tags) {
+            // Server verdicts (#379): each item renders exactly as ask:open and
+            // the release guard see it — the client closure mirror is gone (it
+            // had already drifted: it honored a trailing "#N" in prose, the
+            // server only reads the leading run).
+            const { v } = currentVerdicts();
+            const openTodos = [], closedTodos = [], upcoming = [];
+            const push = (t, isOpen, isDone, isBug) => {
+                const item = (t.content || "").trim();
+                if (!item) return;
+                const entry = { text: item, num: typeof t.num === "number" ? t.num : null, ts: t.timestamp, bug: isBug };
+                if (isOpen && t.upcoming) upcoming.push(entry);
+                else if (isDone) closedTodos.push(entry);
+                else if (isOpen) openTodos.push(entry);
+            };
+            if (v) {
+                for (const t of v.todos) { if (t.state !== 'dropped') push(t, t.state === 'open', t.state === 'done', false); }
+                // Deferred bugs live here (القادمة tab), not in the security card.
+                for (const b of v.bugs) { if (b.open && b.upcoming) push(b, true, false, true); }
+            } else {
+                // No verdict snapshot → list every todo tag as OPEN, not an empty
+                // (false all-clear) list; a transient /api/verdicts gap must not hide work (#394).
+                for (const t of tags.filter(x => x.tag === 'todo')) push(t, true, false, false);
+            }
+            const numBadge = (n) => n != null
+                ? `<span style="font-size:0.85em;color:var(--text2);font-family:'Cascadia Code',Consolas,monospace;flex-shrink:0">#${n}</span>`
+                : '';
+            const notes = tags.filter(t => t.tag === "note").slice(0, 5);
+            let inner = '';
+            if (todosTab === 'upcoming') {
+                for (const t of upcoming) {
+                    inner += `<div style="display:flex;align-items:center;gap:5px;padding:2px 0;font-size:0.7em;direction:rtl" title="${esc(addedTitle(t.ts))}">
+                        <span style="flex-shrink:0;color:var(--gold)">☾</span>
+                        ${numBadge(t.num)}
+                        <span style="flex:1">${t.bug ? '🐛 ' : ''}${esc(t.text)}</span>
+                        <span style="color:var(--text2);font-size:0.85em;flex-shrink:0">${t.ts ? daysAgoStr(t.ts) : ''}</span>
+                    </div>`;
+                }
+                if (!inner) inner = '<div style="font-size:0.7em;color:var(--text2)">لا توجد عناصر قادمة — أنشئ واحدًا بـ<code style="color:var(--gold)">-(upcoming)</code> أو حوّل مهمة بـ<code style="color:var(--gold)">-(upcoming) #N</code></div>';
+            } else {
+                for (const t of openTodos) {
+                    inner += `<div style="display:flex;align-items:center;gap:5px;padding:2px 0;font-size:0.7em;direction:rtl" title="${esc(addedTitle(t.ts))}">
+                        <span style="width:10px;height:10px;border:1.5px solid var(--border);border-radius:2px;flex-shrink:0"></span>
+                        ${numBadge(t.num)}
+                        <span style="flex:1">${esc(t.text)}</span>
+                    </div>`;
+                }
+                for (const t of closedTodos) {
+                    inner += `<div style="display:flex;align-items:center;gap:5px;padding:2px 0;font-size:0.7em;direction:rtl;opacity:0.5" title="${esc(addedTitle(t.ts))}">
+                        <span style="width:10px;height:10px;background:var(--emerald);border-radius:2px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:0.6em;color:var(--bg)">&#10003;</span>
+                        ${numBadge(t.num)}
+                        <span style="flex:1;text-decoration:line-through;color:var(--text2)">${esc(t.text)}</span>
+                    </div>`;
+                }
+                if (notes.length) {
+                    inner += '<div style="margin-top:6px;border-top:1px solid var(--border);padding-top:4px">';
+                    for (const n of notes) {
+                        inner += `<div style="font-size:0.7em;color:var(--text2);padding:2px 0;direction:rtl">📝 ${esc(n.content)}</div>`;
+                    }
+                    inner += '</div>';
+                }
+                if (!inner) inner = '<div style="font-size:0.7em;color:var(--text2)">لا توجد مهام</div>';
+            }
+            const tabs = cardTabs(todosTab, 'set-todos-tab', { current: openTodos.length, upcoming: upcoming.length });
+            return `<div style="font-size:0.6em;color:var(--text2);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">المهام</div>${tabs}<div style="overflow-y:auto;flex:1;min-height:0">${inner}</div>`;
+        }
+
+        export async function patchSessions(projectName) {
             const el = document.getElementById('hdr-sessions');
             if (!el) return;
             try {
@@ -31,7 +126,7 @@
             }
         }
 
-        async function openSessionsPanel(projectName) {
+        export async function openSessionsPanel(projectName) {
             const [sRes, pRes] = await Promise.all([
                 fetch(`/api/sessions?project=${encodeURIComponent(projectName)}`).then(r => r.json()),
                 fetch(`/api/processes?project=${encodeURIComponent(projectName)}`).then(r => r.json()),
@@ -88,62 +183,61 @@
             modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
         }
 
-        async function killPid(pid, projectName) {
-            if (!confirm(`قتل العملية ${pid}؟`)) return;
+        export async function killPid(pid, projectName) {
+            if (!(await uiConfirm(`قتل العملية ${pid}؟`, { okText: "اقتل العملية" }))) return;
             // Visible failure on network error instead of a silent unhandled
             // rejection (R3 P7), matching the alert pattern used elsewhere.
             try {
-                const r = await fetch(`${API}/api/kill-pid/${pid}`, { method: 'POST' }).then(r => r.json());
+                const r = await fetch(`${API}/api/kill-pid/${pid}`, { method: 'POST', headers: await destructiveHeaders() }).then(r => r.json());
                 if (r.ok) openSessionsPanel(projectName);
-                else alert('فشل: ' + (r.error || 'غير معروف'));
+                else uiAlert(`فشل: ${r.error || 'غير معروف'}`);
             } catch (e) {
-                alert('فشل الاتصال بالخادم: ' + (e?.message || e));
+                uiAlert(`فشل الاتصال بالخادم: ${e?.message || e}`);
             }
         }
 
-        async function refreshProcesses(projectName) {
+        export async function refreshProcesses(projectName) {
             try {
                 await fetch(`${API}/api/processes/refresh`, { method: 'POST' });
                 openSessionsPanel(projectName);
             } catch (e) {
-                alert('فشل تحديث العمليات: ' + (e?.message || e));
+                uiAlert(`فشل تحديث العمليات: ${e?.message || e}`);
             }
         }
 
-        function updateSidebarStats() {
+        export function updateSidebarStats() {
             const el = document.getElementById('centerStats');
             if (!activeProject) { el.style.display = 'none'; return; }
             const tags = getProjectTags();
             const builts = tags.filter(t => t.tag === "built").length;
-            const todos = tags.filter(t => t.tag === "todo");
-            const dones = new Set(tags.filter(t => t.tag === "done").map(d => normTag(d.content)));
-            const dropped = new Set(tags.filter(t => t.tag === "dropped").map(d => normTag(d.content)));
-            const bugFounds = tags.filter(t => t.tag === "bug found");
-            const bugFixes = tags.filter(t => t.tag === "bug fix");
             const plans = (data.plans || []).filter(p => p.project === activeProject);
 
-            const doneNums = closedNumSet(tags, ["done", "dropped"]);
-            let openTodos = 0;
-            for (const t of todos) {
-                // Atomic todos: don't split on commas — a prose comma would fragment the item, and the fragment never matches the whole-string done/dropped, leaving it open forever.
-                for (const item of [t.content.trim()].filter(Boolean)) {
-                    const low = normTag(item);
-                    const closedByNum = typeof t.num === 'number' && doneNums.has(t.num);
-                    if (!dones.has(low) && !dropped.has(low) && !closedByNum) openTodos++;
-                }
-            }
+            // Open/closed counts come from the server verdicts (#379) — the same
+            // resolvers behind ask:open and the release guard, so these numbers can
+            // no longer contradict them. With NO snapshot (verdicts never fetched
+            // for this project) default every item to OPEN by counting raw tags —
+            // a transient /api/verdicts failure must never read as a green zero (#394).
+            const { v, stale: verdictsStale } = currentVerdicts();
+            const SEC_TAGS = new Set(['security', 'security:own', 'security:dep']);
+            // «قادمة» items are deferred by design — they count neither as open
+            // debt nor into the progress bars (parity with the release guard).
+            const liveTodos = v ? v.todos.filter(t => t.state !== 'dropped' && !(t.upcoming && t.state === 'open'))
+                                : tags.filter(t => t.tag === 'todo' && !t.upcoming).map(() => ({ state: 'open' }));
+            const openTodos = liveTodos.filter(t => t.state === 'open').length;
+            const bugsAll = v ? v.bugs.filter(b => !(b.open && b.upcoming))
+                              : tags.filter(t => t.tag === 'bug found' && !t.upcoming).map(() => ({ open: true }));
+            const openBugs = bugsAll.filter(b => b.open).length;
+            const openSec = v ? v.security.filter(s => s.open).length
+                              : tags.filter(t => SEC_TAGS.has(t.tag)).length;
+            const outdatedCount = tags.filter(t => t.tag === "outdated").length;
 
             let totalSteps = 0, doneSteps = 0;
-            for (const plan of plans) { totalSteps += plan.steps.length; doneSteps += plan.steps.filter(s => s.completed).length; }
-            totalSteps += todos.length; doneSteps += (todos.length - openTodos);
-
-            const bugFixNums = closedNumSet(tags, ["bug fix"]);
-            const openBugs = bugFounds.filter(b => !(typeof b.num === 'number' && bugFixNums.has(b.num)) && !bugFixes.some(f => fuzzy(f.content, b.content))).length;
-            const secTags = tags.filter(t => SEC_OPEN_TAGS.has(t.tag));
-            const secFixes = tags.filter(t => t.tag === "security fix");
-            const secFixNums = closedNumSet(tags, ["security fix"]);
-            const openSec = secTags.filter(s => !(typeof s.num === 'number' && secFixNums.has(s.num)) && !secFixes.some(f => fuzzy(f.content, s.content))).length;
-            const outdatedCount = tags.filter(t => t.tag === "outdated").length;
+            for (const plan of plans) {
+                if (plan.upcoming) continue;  // deferred plans sit outside the progress story
+                const vs = plan.steps.filter(s => !s.dropped);  // dropped steps are archived, not open (#410)
+                totalSteps += vs.length; doneSteps += vs.filter(s => s.completed).length;
+            }
+            totalSteps += liveTodos.length; doneSteps += (liveTodos.length - openTodos);
 
             // New separate card: 5 stat numbers
             const numbersEl = document.getElementById('statsNumbers');
@@ -156,6 +250,14 @@
                     <div><div class="ss-val" style="color:${outdatedCount > 0 ? 'var(--gold)' : 'var(--emerald)'}">${outdatedCount}</div><div class="ss-label">قديمة</div></div>
                 `;
                 numbersEl.style.display = 'flex';
+                // Staleness indicator: dim + tooltip whenever /api/verdicts failed and
+                // these numbers aren't live — either the last good snapshot or the
+                // assumed-open fallback — so they're never silently trusted as live (#414).
+                numbersEl.style.opacity = verdictsStale ? '0.5' : '1';
+                numbersEl.title = verdictsStale
+                    ? (v ? 'أحكام قديمة — تعذّر تحديث /api/verdicts؛ تُعرض آخر لقطة سليمة'
+                         : 'تعذّر جلب /api/verdicts — تُعرض العناصر كمفتوحة افتراضًا')
+                    : '';
             }
 
             // Existing capsule: bars only
@@ -165,11 +267,10 @@
                 const tip = `تنفيذ الخطط والمهام: ${doneSteps}/${totalSteps} (${pct}%)`;
                 bars.push(`<div class="progress-track" title="${tip}"><div class="progress-fill" style="width:${pct}%;background:var(--emerald)"></div></div>`);
             }
-            if (bugFounds.length > 0) {
-                const bugFixNums = closedNumSet(tags, ["bug fix"]);
-                const fixedCount = bugFounds.filter(b => (typeof b.num === 'number' && bugFixNums.has(b.num)) || bugFixes.some(f => fuzzy(f.content, b.content))).length;
-                const pct = Math.min(100, Math.round((fixedCount / bugFounds.length) * 100));
-                const tip = `إصلاح الأخطاء المكتشفة: ${fixedCount}/${bugFounds.length} (${pct}%)`;
+            if (bugsAll.length > 0) {
+                const fixedCount = bugsAll.length - openBugs;
+                const pct = Math.min(100, Math.round((fixedCount / bugsAll.length) * 100));
+                const tip = `إصلاح الأخطاء المكتشفة: ${fixedCount}/${bugsAll.length} (${pct}%)`;
                 bars.push(`<div class="progress-track" title="${tip}"><div class="progress-fill" style="width:${pct}%;background:var(--pink)"></div></div>`);
             }
             if (bars.length > 0) {
@@ -184,24 +285,35 @@
         // Per-plan expanded state (planId → bool). Most-recent plan defaults
         // to expanded; toggled by clicking the header. Survives re-renders so
         // a live tags update doesn't slam every plan shut on the user.
-        const planExpanded = {};
-        let showCompletedPlans = false;
+        export const planExpanded = {};
+        // showCompletedPlans moved to dashboard-state.js (R3 #3) — core toggles it.
 
-        function renderActivePlanCard(project) {
+        export function renderActivePlanCard(project, flash = true) {
             const el = document.getElementById('cardActivePlan');
             if (!el) return;
-            const allPlans = (data.plans || [])
-                .filter(p => p.project === project && p.steps && p.steps.length > 0)
+            const everyPlan = (data.plans || [])
+                // "has a non-dropped step" (not just length>0): dropped steps are now
+                // retained (#410), so a fully-dropped plan must still read as empty.
+                .filter(p => p.project === project && p.steps && p.steps.some(s => !s.dropped))
                 .sort((a, b) => +new Date(b.updatedAt || b.timestamp) - +new Date(a.updatedAt || a.timestamp));
+            // الحالية/القادمة split: a deferred plan lives in its own tab and
+            // stops reading as active work (its steps don't gate anything).
+            const upcomingPlans = everyPlan.filter(p => p.upcoming);
+            const allPlans = everyPlan.filter(p => !p.upcoming);
 
-            const isComplete = p => p.steps.every(s => s.completed);
+            const isComplete = p => p.steps.every(s => s.completed || s.dropped);  // dropped counts as closed (#410)
             const completedPlans = allPlans.filter(isComplete);
-            const projectPlans = showCompletedPlans ? allPlans : allPlans.filter(p => !isComplete(p));
+            const currentPlans = showCompletedPlans ? allPlans : allPlans.filter(p => !isComplete(p));
+            const projectPlans = plansTab === 'upcoming' ? upcomingPlans : currentPlans;
 
-            const header = `<div style="font-size:0.6em;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">الخطط النشطة${projectPlans.length > 1 ? ` (${projectPlans.length})` : ''}</div>`;
+            const header = `<div style="font-size:0.6em;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">الخطط النشطة${projectPlans.length > 1 ? ` (${projectPlans.length})` : ''}</div>`
+                + cardTabs(plansTab, 'set-plans-tab', { current: currentPlans.length, upcoming: upcomingPlans.length });
 
-            if (projectPlans.length === 0 && completedPlans.length === 0) {
-                updateCard('cardActivePlan', header + `<div style="font-size:0.7em;color:var(--text2)">لا توجد خطط نشطة. أرسل <code style="color:var(--gold);font-family:'Cascadia Code',monospace">-(doc:plan) name</code> لبدء واحدة.</div>`);
+            if (projectPlans.length === 0 && (plansTab === 'upcoming' || completedPlans.length === 0)) {
+                const hint = plansTab === 'upcoming'
+                    ? 'لا خطط قادمة — أجّل خطة بزر ☾ أو بـ<code style="color:var(--gold);font-family:\'Cascadia Code\',monospace">-(upcoming) #N</code> على إحدى خطواتها.'
+                    : 'لا توجد خطط نشطة. أرسل <code style="color:var(--gold);font-family:\'Cascadia Code\',monospace">-(doc:plan) name</code> لبدء واحدة.';
+                updateCard('cardActivePlan', `${header}<div style="font-size:0.7em;color:var(--text2)">${hint}</div>`, flash);
                 return;
             }
 
@@ -211,15 +323,27 @@
             }
 
             const sections = projectPlans.map((plan) => {
-                const done = plan.steps.filter(s => s.completed).length;
-                const total = plan.steps.length;
+                const visible = plan.steps.filter(s => !s.dropped);  // archived dropped steps stay out of the view (#410)
+                const done = visible.filter(s => s.completed).length;
+                const total = visible.length;
                 const pct = total > 0 ? Math.round((done / total) * 100) : 0;
                 const expanded = !!planExpanded[plan.id];
                 const arrow = expanded ? '▾' : '◂';
+                // ☾ defer is meaningless on a complete plan (its steps gate
+                // nothing) — disable it instead of offering a confusing no-op.
+                // ⬆ promote stays live so a deferred-then-completed plan can
+                // still be pulled back. The server rejects a complete defer
+                // with 409 anyway (routes-plan); this is the UI half.
+                const complete = isComplete(plan);
+                const deferBtn = plan.upcoming
+                    ? `<button data-action="toggle-plan-upcoming" data-plan-id="${esc(plan.id)}" data-upcoming="false" title="ترقية إلى الخطط الحالية" style="background:none;border:none;color:var(--emerald);cursor:pointer;font-size:0.85em;padding:0 4px;flex-shrink:0">⬆</button>`
+                    : complete
+                        ? `<button disabled title="الخطة مكتملة — التأجيل للخطط غير المكتملة فقط" style="background:none;border:none;color:var(--text2);opacity:0.35;cursor:default;font-size:0.85em;padding:0 4px;flex-shrink:0">☾</button>`
+                        : `<button data-action="toggle-plan-upcoming" data-plan-id="${esc(plan.id)}" data-upcoming="true" title="تأجيل إلى القادمة (لا توقف الإصدار)" style="background:none;border:none;color:var(--gold);cursor:pointer;font-size:0.85em;padding:0 4px;flex-shrink:0">☾</button>`;
 
                 const sortedSteps = [
-                    ...plan.steps.filter(s => !s.completed),
-                    ...plan.steps.filter(s => s.completed),
+                    ...visible.filter(s => !s.completed),
+                    ...visible.filter(s => s.completed),
                 ];
                 const stepRows = expanded ? sortedSteps.map(s => {
                     const numHtml = typeof s.num === "number"
@@ -239,6 +363,7 @@
                         <span style="font-size:0.7em;color:var(--text2);width:10px">${arrow}</span>
                         <span style="flex:1;font-size:0.78em;color:var(--text);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(plan.title)}">${esc(plan.title)}</span>
                         <span style="color:var(--text2);font-weight:400;font-size:0.7em;flex-shrink:0">${done}/${total}</span>
+                        ${deferBtn}
                         <button data-action="hide-plan" data-plan-id="${esc(plan.id)}" data-plan-title="${esc(plan.title)}" title="إخفاء من الداشبورد (الملفات تبقى)" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:0.85em;padding:0 4px;flex-shrink:0">👁️</button>
                     </div>
                     <div style="height:3px;background:var(--bg3)"><div style="width:${pct}%;height:100%;background:var(--emerald);transition:width 0.3s"></div></div>
@@ -246,7 +371,7 @@
                 </div>`;
             }).join("");
 
-            const completedToggle = completedPlans.length > 0
+            const completedToggle = plansTab === 'current' && completedPlans.length > 0
                 ? `<div data-action="toggle-completed-plans" style="margin-top:6px;padding:5px 8px;font-size:0.7em;color:var(--text2);cursor:pointer;border-top:1px solid var(--border);user-select:none;text-align:center">
                      ${showCompletedPlans ? '◂ إخفاء' : '▾ إظهار'} ${completedPlans.length} خطة مكتملة
                    </div>`
@@ -255,37 +380,62 @@
             updateCard('cardActivePlan',
                 header
                 + `<div style="overflow-y:auto;flex:1;min-height:0">${sections}</div>`
-                + completedToggle
+                + completedToggle,
+                flash,
             );
         }
 
-        async function killServer(btn) {
-            if (!confirm("إيقاف السيرفر؟\nإذا كان مُشغَّلاً بـ`bun --watch` فسيعود تلقائياً، وإلا ستحتاج تشغيله يدوياً.")) return;
+        export async function killServer(btn) {
+            if (!(await uiConfirm("إيقاف السيرفر؟\nإذا كان مُشغَّلاً بـ`bun --watch` فسيعود تلقائياً، وإلا ستحتاج تشغيله يدوياً.", { okText: "أوقف السيرفر" }))) return;
             btn.classList.add("loading");
             btn.textContent = "...جاري الإيقاف";
             try {
-                await fetch(`${API}/api/server/stop`, { method: "POST", headers: { "Content-Type": "application/json" } });
+                await fetch(`${API}/api/server/stop`, { method: "POST", headers: await destructiveHeaders({ "Content-Type": "application/json" }) });
             } catch { /* expected — server died mid-response */ }
             setTimeout(() => location.reload(), 1500);
         }
 
-        async function hidePlan(planId, planTitle) {
-            if (!confirm(`إخفاء الخطة "${planTitle}" من الداشبورد؟\nالملفات (.md/.html) تبقى — يمكن استعادتها بإعادة إرسال -(doc:plan) بنفس الاسم.`)) return;
+        // Defer a plan to «القادمة» or promote it back. Optimistic local patch —
+        // the WS "plan" broadcast re-syncs the authoritative state right after.
+        export async function togglePlanUpcoming(planId, upcoming) {
             try {
-                const res = await fetch(`${API}/api/plan/${encodeURIComponent(planId)}`, { method: "DELETE" });
+                const res = await fetch(`${API}/api/plan/${encodeURIComponent(planId)}/upcoming`, {
+                    method: "POST",
+                    headers: await destructiveHeaders({ "Content-Type": "application/json" }),
+                    body: JSON.stringify({ upcoming }),
+                });
+                if (!res.ok) {
+                    let msg = "فشل تبديل حالة الخطة";
+                    try { const j = await res.json(); if (j.error) msg = j.error; } catch { /* non-JSON error body */ }
+                    uiAlert(msg);
+                    return;
+                }
+                const p = (data.plans || []).find(x => x.id === planId);
+                if (p) { if (upcoming) p.upcoming = true; else delete p.upcoming; }
+                renderActivePlanCard(activeProject);
+                updateSidebarStats();
+            } catch (e) {
+                uiAlert(`خطأ: ${e.message}`);
+            }
+        }
+
+        export async function hidePlan(planId, planTitle) {
+            if (!(await uiConfirm(`إخفاء الخطة "${planTitle}" من الداشبورد؟\nالملفات (.md/.html) تبقى — يمكن استعادتها بإعادة إرسال -(doc:plan) بنفس الاسم.`, { okText: "أخفِ الخطة" }))) return;
+            try {
+                const res = await fetch(`${API}/api/plan/${encodeURIComponent(planId)}`, { method: "DELETE", headers: await destructiveHeaders() });
                 if (res.ok) {
                     data.plans = (data.plans || []).filter(p => p.id !== planId);
                     delete planExpanded[planId];
                     renderActivePlanCard(activeProject);
                 } else {
-                    alert("فشل الإخفاء");
+                    uiAlert("فشل الإخفاء");
                 }
             } catch (e) {
-                alert("خطأ: " + e.message);
+                uiAlert(`خطأ: ${e.message}`);
             }
         }
 
-        async function renderChangesCard(project) {
+        export async function renderChangesCard(project) {
             const el = document.getElementById('cardChanges');
             if (!el) return;
             el.innerHTML = `<div style="font-size:0.6em;color:var(--text2);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">التغييرات في الكود</div><div id="changesList" style="overflow-y:auto;flex:1;min-height:0;direction:ltr;font-size:0.72em">جاري التحميل…</div>`;
@@ -319,15 +469,74 @@
                         <div style="display:flex;gap:6px;align-items:center;flex-shrink:0">
                             ${adds}${dels}
                             <span style="color:var(--text2);font-size:0.85em">${esc(time)}</span>
+                            <button class="ch-story" data-file="${esc(it.file_path || '')}" title="قصة الملف" style="background:transparent;border:1px solid var(--border);color:var(--text2);border-radius:6px;padding:1px 6px;cursor:pointer;font-family:inherit">📍</button>
                         </div>
                     </div>`;
                 }).join('');
                 list.querySelectorAll('.ch-row').forEach(row => {
                     row.addEventListener('click', () => openDiffModal(row.dataset.id));
                 });
+                list.querySelectorAll('.ch-story').forEach(btn => {
+                    btn.addEventListener('click', ev => { ev.stopPropagation(); openFileStoryModal(project, btn.dataset.file); });
+                });
             } catch (e) {
                 const list = document.getElementById('changesList');
                 if (list) list.innerHTML = `<div style="color:var(--pink)">فشل تحميل التغييرات: ${esc(String(e.message || e))}</div>`;
+            }
+        }
+
+        // ذاكرة الموضع (#486): قصة ملف واحد — التاقات التي لمسته + تعديلاته
+        // (deep=1 يسحب أيضًا أحداث الأرشيف البارد عند الطلب).
+        async function openFileStoryModal(project, filePath) {
+            try {
+                const r = await fetch(`${API}/api/file-story?project=${encodeURIComponent(project)}&path=${encodeURIComponent(filePath)}&deep=1`);
+                if (!r.ok) return;
+                const s = await r.json();
+                const fname = (s.file || '').split('/').pop();
+                const tagRows = (s.tags || []).map(t => `
+                    <div style="padding:7px 10px;border-bottom:1px solid var(--border)">
+                        <div style="display:flex;gap:8px;align-items:baseline">
+                            <span style="color:var(--gold);font-size:0.85em">${esc(t.tag)}${typeof t.num === 'number' ? ` #${t.num}` : ''}</span>
+                            <span style="color:var(--text2);font-size:0.75em">${esc(timeStr(t.timestamp))}</span>
+                        </div>
+                        <div style="color:var(--text);font-size:0.9em;margin-top:2px">${esc(t.content)}</div>
+                    </div>`).join('') || `<div style="color:var(--text2);padding:10px;font-size:0.9em">لا تاقات مرتبطة بهذا الملف بعد</div>`;
+                const evs = [...(s.events || []), ...(s.archived || [])];
+                const evRows = evs.map(e => `
+                    <div class="fs-ev" data-id="${esc(e.id)}" data-full="${e.has_full_content ? '1' : ''}" style="display:flex;gap:10px;align-items:center;padding:5px 10px;border-bottom:1px solid var(--border);${e.has_full_content ? 'cursor:pointer' : ''}">
+                        <span style="color:var(--text2);font-size:0.8em">${esc(timeStr(e.timestamp))}</span>
+                        <span style="color:var(--text2);font-size:0.85em">${esc(e.action || '')}</span>
+                        ${e.lines_added > 0 ? `<span style="color:var(--emerald);font-size:0.85em">+${e.lines_added}</span>` : ''}
+                        ${e.lines_removed > 0 ? `<span style="color:var(--pink);font-size:0.85em">−${e.lines_removed}</span>` : ''}
+                        ${e.has_full_content ? '' : `<span style="color:var(--text2);font-size:0.75em">·archived</span>`}
+                    </div>`).join('') || `<div style="color:var(--text2);padding:10px;font-size:0.9em">لا تعديلات مسجلة</div>`;
+                const overlay = document.createElement('div');
+                overlay.id = 'fileStoryOverlay';
+                overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:30px';
+                overlay.innerHTML = `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;width:100%;max-width:700px;max-height:100%;display:flex;flex-direction:column">
+                    <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px">
+                        <span>📍</span>
+                        <span style="font-family:'Cascadia Code',Consolas,monospace;color:var(--gold);font-size:0.9em;direction:ltr">${esc(fname)}</span>
+                        <span style="color:var(--text2);font-size:0.72em;direction:ltr;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.file || '')}</span>
+                        <button id="fsClose" style="margin-right:auto;background:transparent;border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 12px;cursor:pointer;font-family:inherit;flex-shrink:0">إغلاق</button>
+                    </div>
+                    <div style="overflow:auto;flex:1">
+                        <div style="padding:8px 10px;color:var(--text2);font-size:0.8em;border-bottom:1px solid var(--border)">التاقات (${(s.tags || []).length})</div>
+                        ${tagRows}
+                        <div style="padding:8px 10px;color:var(--text2);font-size:0.8em;border-bottom:1px solid var(--border)">التعديلات (${evs.length})</div>
+                        ${evRows}
+                    </div>
+                </div>`;
+                document.body.appendChild(overlay);
+                const close = () => overlay.remove();
+                overlay.addEventListener('click', ev => { if (ev.target === overlay) close(); });
+                overlay.querySelector('#fsClose').addEventListener('click', close);
+                document.addEventListener('keydown', function once(ev) { if (ev.key === 'Escape') { close(); document.removeEventListener('keydown', once); } });
+                overlay.querySelectorAll('.fs-ev[data-full="1"]').forEach(rw => {
+                    rw.addEventListener('click', () => openDiffModal(rw.dataset.id));
+                });
+            } catch (e) {
+                uiAlert(`فشل تحميل قصة الملف: ${e.message}`);
             }
         }
 
@@ -358,7 +567,9 @@
                 overlay.addEventListener('click', ev => { if (ev.target === overlay) close(); });
                 overlay.querySelector('#diffClose').addEventListener('click', close);
                 document.addEventListener('keydown', function once(ev) { if (ev.key === 'Escape') { close(); document.removeEventListener('keydown', once); } });
-            } catch {}
+            } catch {
+                // Diff fetch failed — just don't open the overlay.
+            }
         }
 
         // Compute a unified-style line diff. Trims common prefix/suffix lines,
@@ -396,7 +607,7 @@
             return out.join('');
         }
 
-        function renderProject() {
+        export function renderProject() {
             const p = data.projects[activeProject];
             if (!p) return;
 
@@ -418,13 +629,13 @@
 
         // ===== File Tree Renderer =====
 
-        const extIcons = {
+        export const extIcons = {
             ts: "#3178c6", js: "#f7df1e", py: "#3776ab", rs: "#dea584",
             go: "#00add8", html: "#e34f26", css: "#1572b6", json: "#ffd166",
             md: "#777777", sh: "#4eaa25", toml: "#9c4121", yaml: "#cb171e",
             yml: "#cb171e", sql: "#336791", vue: "#42b883", svelte: "#ff3e00",
         };
 
-        let ctxTargetPath = '';
-        let ctxTargetFile = '';
+        // ctxTargetPath/ctxTargetFile moved to dashboard-state.js (R3 #3) —
+        // tree-ws sets them on right-click and reads them in the actions.
 

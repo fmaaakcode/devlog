@@ -8,8 +8,8 @@ import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { resolve, basename } from "node:path";
 import { normalizeSlashes } from "./path-utils";
-import { spawnSync } from "node:child_process";
-import { openTodos, openBugs, openSecurity } from "./data";
+import { spawnSync } from "./spawn";
+import { openTodos, openBugs, openSecurity, isStepClosed } from "./data";
 import type { DevLogData, TagEntry, PlanEntry } from "./types";
 
 // Read at call time (not module load) so the value honors a DEVLOG_PORT set
@@ -49,7 +49,9 @@ function daysAgo(ts: string): number {
 // /api/data returns the full DevLogData snapshot (R3 P4 — was `any`).
 async function fetchData(): Promise<DevLogData | null> {
   try {
-    const r = await fetch(`http://localhost:${devlogPort()}/api/data`);
+    // #458: 127.0.0.1, not localhost — on Windows `localhost` resolves to ::1
+    // first and hangs ~200ms per connection before falling back to IPv4.
+    const r = await fetch(`http://127.0.0.1:${devlogPort()}/api/data`);
     if (!r.ok) return null;
     return await r.json() as DevLogData;
   } catch {
@@ -113,7 +115,8 @@ async function diagnose(projectPath: string): Promise<DoctorReport> {
   stats.openItems = openItems.length;
 
   // ─── Check 1: stale open items ─────────────────────────────────
-  const staleOpen = openItems.filter(t => daysAgo(t.timestamp) > STALE_OPEN_DAYS);
+  // «قادمة» is expected to age (deferred by design) — never "stale".
+  const staleOpen = openItems.filter(t => !t.upcoming && daysAgo(t.timestamp) > STALE_OPEN_DAYS);
   if (staleOpen.length) {
     findings.push({
       severity: staleOpen.length >= 5 ? "high" : "medium",
@@ -126,8 +129,9 @@ async function diagnose(projectPath: string): Promise<DoctorReport> {
 
   // ─── Check 2: stale plans (low completion + no recent activity) ─
   const stalePlans = plans.filter(p => {
+    if (p.upcoming) return false;  // deferred plans age by design
     const total = p.steps?.length || 0;
-    const closed = (p.steps || []).filter(s => s.completed).length;
+    const closed = (p.steps || []).filter(isStepClosed).length;
     const pct = total ? closed / total : 1;
     return pct < 0.5 && daysAgo(p.updatedAt || p.timestamp) > STALE_PLAN_DAYS;
   });
@@ -139,7 +143,7 @@ async function diagnose(projectPath: string): Promise<DoctorReport> {
       detail: "إما أن تكمَّل، أو تنقّى من الخطوات الميتة، أو يُحذف الـplan كاملاً.",
       items: stalePlans.map(p => {
         const total = p.steps?.length || 0;
-        const closed = (p.steps || []).filter(s => s.completed).length;
+        const closed = (p.steps || []).filter(isStepClosed).length;
         return `${p.title} (${closed}/${total}, ${Math.round(daysAgo(p.updatedAt || p.timestamp))}d)`;
       }),
     });

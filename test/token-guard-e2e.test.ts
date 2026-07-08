@@ -77,4 +77,59 @@ describe("token ON (DEVLOG_REQUIRE_TOKEN=1) — destructive routes are gated", (
     const r = await fetch(`${BASE}/api/ping`);
     expect(r.status).toBe(200);
   });
+
+  // The irreversible data operations joined the protected list (they predate
+  // it): project delete/rename and the tombstone sweep gate exactly like
+  // kill-pid, and the "/api/project/" prefix must NOT swallow projects-summary.
+  test("DELETE /api/project/:name without the token → 401, with it → passes the gate", async () => {
+    const r = await fetch(`${BASE}/api/project/__none__`, { method: "DELETE" });
+    expect(r.status).toBe(401);
+    const token = (await (await fetch(`${BASE}/api/token`)).json()).token as string;
+    const r2 = await fetch(`${BASE}/api/project/__none__`, {
+      method: "DELETE", headers: { "X-DevLog-Token": token },
+    });
+    expect(r2.status).toBe(404);   // token accepted → reached the handler
+  });
+
+  test("POST /api/cleanup-tombstones without the token → 401", async () => {
+    const r = await fetch(`${BASE}/api/cleanup-tombstones`, { method: "POST", headers: JSON_HEADERS, body: "{}" });
+    expect(r.status).toBe(401);
+  });
+
+  test("POST /api/cleanup-orphans without the token → 401", async () => {
+    const r = await fetch(`${BASE}/api/cleanup-orphans`, { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ names: ["x"] }) });
+    expect(r.status).toBe(401);
+  });
+
+  test("GET /api/projects-summary stays open (prefix does not overmatch)", async () => {
+    const r = await fetch(`${BASE}/api/projects-summary`);
+    expect(r.status).toBe(200);
+  });
+
+  // #450: tag delete (erases a bug/vuln record permanently) and plan delete
+  // joined the protected list — they were the only destructive routes left
+  // outside it while the LESS dangerous cleanup-orphans was already gated.
+  test("DELETE /api/tag/:id without the token → 401, with it → passes the gate", async () => {
+    const r = await fetch(`${BASE}/api/tag/__none__`, { method: "DELETE" });
+    expect(r.status).toBe(401);
+    const token = (await (await fetch(`${BASE}/api/token`)).json()).token as string;
+    const r2 = await fetch(`${BASE}/api/tag/__none__`, { method: "DELETE", headers: { "X-DevLog-Token": token } });
+    expect(r2.status).toBe(404);   // token accepted → reached the handler
+  });
+
+  test("DELETE /api/plan/:id without the token → 401, with it → passes the gate", async () => {
+    const r = await fetch(`${BASE}/api/plan/__none__`, { method: "DELETE" });
+    expect(r.status).toBe(401);
+    const token = (await (await fetch(`${BASE}/api/token`)).json()).token as string;
+    const r2 = await fetch(`${BASE}/api/plan/__none__`, { method: "DELETE", headers: { "X-DevLog-Token": token } });
+    expect(r2.status).toBe(404);   // token accepted → reached the handler
+  });
+
+  test("POST /api/tags (hook ingest) stays open — '/api/tag/' must not overmatch it", async () => {
+    const r = await fetch(`${BASE}/api/tags`, {
+      method: "POST", headers: JSON_HEADERS,
+      body: JSON.stringify({ cwd: PROJECT_ROOT, entries: [] }),
+    });
+    expect(r.status).toBe(200);   // reached the handler, no token gate
+  });
 });

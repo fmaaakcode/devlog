@@ -26,6 +26,7 @@
 //     repo / no git → don't fold.
 
 import { normalizePath, pathsEqual, isPathInside, normalizeSlashes } from "./path-utils";
+import { bunSpawnSync } from "./spawn";
 import type { ProjectProfile } from "./types";
 
 type ProjectsMap = Record<string, ProjectProfile>;
@@ -45,7 +46,7 @@ function baseName(cwd: string): string {
 export const gitToplevel: GitRootFn = (dir: string): string | null => {
   if (!dir) return null;
   try {
-    const r = Bun.spawnSync(["git", "-C", dir, "rev-parse", "--show-toplevel"], {
+    const r = bunSpawnSync(["git", "-C", dir, "rev-parse", "--show-toplevel"], {
       stdout: "pipe", stderr: "ignore",
     });
     if (r.exitCode !== 0) return null;

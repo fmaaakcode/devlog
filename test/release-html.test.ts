@@ -1,5 +1,8 @@
 import { test, expect, describe } from "bun:test";
-import { isRealVersion, generateManifest, generateProjectIndex, generateReleaseHtml } from "../src/release-html";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { isRealVersion, generateManifest, generateProjectIndex, generateReleaseHtml, collectRelease, writeReleaseHtml } from "../src/release-html";
 
 describe("isRealVersion", () => {
   test("accepts semantic versions", () => {
@@ -193,5 +196,161 @@ describe("generateReleaseHtml", () => {
     expect(html).toContain("+15/-2");
     expect(html).toContain("src/a.ts");
     expect(html).toContain("src/b.ts");
+  });
+
+  test("diff excludes ABSOLUTE paths outside the project tree (scratchpad noise) and relativizes inside ones", () => {
+    const target = { tag: "release", project: "p", content: "v1.0.0", timestamp: "2026-04-02T00:00:00Z" };
+    const data: any = {
+      projects: { p: baseProject },   // path: /x
+      tags: [target],
+      events: [
+        { project: "p", type: "change", file_path: "/x/src/real.ts", lines_added: 7, lines_removed: 1, timestamp: "2026-04-01T00:00:00Z" },
+        { project: "p", type: "create", file_path: "C:/Users/u/AppData/Local/Temp/claude/sess/scratchpad/measure.ts", content: "a\nb\nc", timestamp: "2026-04-01T01:00:00Z" },
+      ],
+    };
+    const html = generateReleaseHtml(data, "p", target as any);
+    expect(html).toContain("src/real.ts");          // relativized (no /x prefix)
+    expect(html).not.toContain("/x/src/real.ts");
+    expect(html).not.toContain("scratchpad");       // out-of-tree file dropped
+    expect(html).toContain("+7/-1");                // its lines not counted either
+  });
+
+  test("identical re-emitted tags are deduped in sections", () => {
+    const target = { tag: "release", project: "p", content: "v1.0.0", timestamp: "2026-04-02T00:00:00Z" };
+    const data: any = {
+      projects: { p: baseProject },
+      tags: [
+        target,
+        { tag: "built", project: "p", content: "same feature twice", timestamp: "2026-04-01T00:00:00Z" },
+        { tag: "built", project: "p", content: "same feature twice", timestamp: "2026-04-01T02:00:00Z" },
+      ],
+      events: [],
+    };
+    const html = generateReleaseHtml(data, "p", target as any);
+    expect(html.split("same feature twice").length - 1).toBe(1);
+    expect(html).toContain('<span class="dl-count">1</span>');
+  });
+
+  test("a tailed `#N cure` fix pairs the bug's text (problem) with the closer tail (cure)", () => {
+    const target = { tag: "release", project: "p", content: "v1.0.0", timestamp: "2026-04-02T00:00:00Z" };
+    const data: any = {
+      projects: { p: baseProject },
+      tags: [
+        target,
+        { tag: "bug found", project: "p", num: 9, content: "race in the scanner corrupts the cache", timestamp: "2026-03-30T00:00:00Z" },
+        { tag: "bug fix", project: "p", content: "#9 serialized writes behind the existing lock", timestamp: "2026-04-01T00:00:00Z" },
+      ],
+      events: [],
+    };
+    const html = generateReleaseHtml(data, "p", target as any);
+    expect(html).toContain("race in the scanner corrupts the cache");   // the problem headline
+    expect(html).toContain("dl-cure");
+    expect(html).toContain("serialized writes behind the existing lock"); // the cure line
+  });
+
+  test("context line reports days and sessions of the shipped work", () => {
+    const target = { tag: "release", project: "p", content: "v1.0.0", timestamp: "2026-04-03T00:00:00Z" };
+    const data: any = {
+      projects: { p: baseProject },
+      tags: [
+        target,
+        { tag: "built", project: "p", content: "f1", session_id: "s1", timestamp: "2026-04-01T05:00:00Z" },
+        { tag: "built", project: "p", content: "f2", session_id: "s2", timestamp: "2026-04-02T05:00:00Z" },
+      ],
+      events: [],
+    };
+    const html = generateReleaseHtml(data, "p", target as any);
+    expect(html).toContain("السياق:");
+    expect(html).toContain("جلستين");
+  });
+
+  test("standalone CSS mirrors the dashboard surface palette (no navy seam)", () => {
+    const target = { tag: "release", project: "p", content: "v1.0.0", timestamp: "2026-04-02T00:00:00Z" };
+    const data: any = { projects: { p: baseProject }, tags: [target], events: [] };
+    const html = generateReleaseHtml(data, "p", target as any);
+    expect(html).toContain("--bg:#161718");
+    expect(html).toContain("--border:#363737");
+    expect(html).not.toContain("#0a1820");
+  });
+});
+
+describe("collectRelease (the machine-readable facts)", () => {
+  const baseProject: any = {
+    name: "p", path: "/x", description: "", about: "", language: "TS",
+    blueprint: [], libraries: [], files: {}, directories: [], totalFiles: 0, lastScan: "",
+  };
+
+  test("facts carry version, sections by stable keys, diff and context — what the JSON twin serializes", () => {
+    const target = { tag: "release", project: "p", content: "v2.0.0 — big one", timestamp: "2026-04-05T00:00:00Z" };
+    const data: any = {
+      projects: { p: baseProject },
+      tags: [
+        target,
+        { tag: "release", project: "p", content: "v1.0.0", timestamp: "2026-04-01T00:00:00Z" },
+        { tag: "built", project: "p", content: "the feature", session_id: "s1", timestamp: "2026-04-03T00:00:00Z" },
+        { tag: "bug found", project: "p", num: 4, content: "the problem", timestamp: "2026-04-03T01:00:00Z" },
+        { tag: "bug fix", project: "p", content: "#4 the cure", timestamp: "2026-04-04T00:00:00Z" },
+      ],
+      events: [{ project: "p", type: "change", file_path: "/x/src/a.ts", lines_added: 3, lines_removed: 1, session_id: "s1", timestamp: "2026-04-03T02:00:00Z" }],
+    };
+    const facts = collectRelease(data, "p", target as any);
+    expect(facts.version).toBe("v2.0.0");
+    expect(facts.summary).toBe("big one");
+    expect(facts.prevVersion).toBe("v1.0.0");
+    expect(facts.context.sessions).toBe(1);
+    expect(facts.diff.files).toEqual([{ path: "src/a.ts", added: 3, removed: 1, edits: 1 }]);
+    const byKey = Object.fromEntries(facts.sections.map(s => [s.key, s.items]));
+    expect(byKey.built).toEqual([{ text: "the feature" }]);
+    expect(byKey.fixes).toEqual([{ text: "the problem", cure: "the cure" }]);
+  });
+});
+
+// The regeneration guard — regen must NEVER erase a baked diff the capped
+// events store can no longer reproduce (the 2026-07-06 bulk-regen data loss).
+describe("writeReleaseHtml regeneration guard", () => {
+  const project = (path: string): any => ({
+    name: "p", path, description: "", about: "", language: "TS",
+    blueprint: [], libraries: [], files: {}, directories: [], totalFiles: 0, lastScan: "",
+  });
+  const target: any = { tag: "release", project: "p", content: "v1.0.0", timestamp: "2026-04-02T00:00:00Z" };
+
+  test("empty recompute adopts the previously persisted diff (events pruned)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rel-guard-"));
+    try {
+      const relDir = join(dir, ".devlog", "releases");
+      mkdirSync(relDir, { recursive: true });
+      writeFileSync(join(relDir, "v1.0.0.json"), JSON.stringify({
+        diff: { filesChanged: 3, added: 40, removed: 9, files: [{ path: "src/kept.ts", added: 40, removed: 9, edits: 2 }] },
+        context: { days: 2, sessions: 5 },
+      }));
+      const data: any = { projects: { p: project(dir) }, tags: [target], plans: [], events: [] };  // pruned store
+      await writeReleaseHtml(data, "p", target);
+
+      const html = await Bun.file(join(relDir, "v1.0.0.html")).text();
+      expect(html).toContain("src/kept.ts");            // baked diff survived the regen
+      expect(html).toContain("3 ملف · +40/-9");
+      const json = await Bun.file(join(relDir, "v1.0.0.json")).json();
+      expect(json.diff.filesChanged).toBe(3);           // twin still carries it for the NEXT regen
+      expect(json.context.sessions).toBe(5);            // richer context preserved too
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("a real recompute wins over the persisted diff (guard only fills emptiness)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rel-guard-"));
+    try {
+      const relDir = join(dir, ".devlog", "releases");
+      mkdirSync(relDir, { recursive: true });
+      writeFileSync(join(relDir, "v1.0.0.json"), JSON.stringify({
+        diff: { filesChanged: 1, added: 1, removed: 1, files: [{ path: "stale.ts", added: 1, removed: 1, edits: 1 }] },
+      }));
+      const data: any = {
+        projects: { p: project(dir) }, tags: [target], plans: [],
+        events: [{ project: "p", type: "change", file_path: join(dir, "src/fresh.ts"), lines_added: 6, lines_removed: 2, timestamp: "2026-04-01T00:00:00Z" }],
+      };
+      await writeReleaseHtml(data, "p", target);
+      const html = await Bun.file(join(relDir, "v1.0.0.html")).text();
+      expect(html).toContain("src/fresh.ts");
+      expect(html).not.toContain("stale.ts");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

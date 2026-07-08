@@ -4,6 +4,8 @@ import { join } from "node:path";
 import type { ClaudeSession, DevLogData } from "./types";
 import { projectName } from "./data";
 import { claudeConfigDir, normalizeSlashes } from "./path-utils";
+import { bunSpawn } from "./spawn";
+import { ttlCached } from "./ttl-cache";
 
 const SESSIONS_DIR = join(claudeConfigDir(), "sessions");
 
@@ -40,14 +42,28 @@ interface WinProc {
   command: string;
 }
 
-async function snapshotAllProcesses(): Promise<WinProc[]> {
+// One snapshot serves every caller in a 2s window (and every caller while one
+// is in flight): /api/sessions and /api/processes each took their own ~370ms
+// PowerShell spawn, and the dashboard header fires BOTH on every project
+// switch. "Which PIDs are alive right now" tolerates 2s of staleness — it
+// only feeds liveness indicators and the 10–60s adaptive poll. An empty
+// result (hung WMI / parse failure) is never cached, so a transient failure
+// isn't served as "everything is dead" for the rest of the window.
+const SNAPSHOT_TTL_MS = 2000;
+const snapshotAllProcesses = ttlCached(SNAPSHOT_TTL_MS, snapshotAllProcessesUncached, procs => procs.length > 0);
+
+async function snapshotAllProcessesUncached(): Promise<WinProc[]> {
   // Process/session tracking is Windows-only (powershell + WMI). On macOS/Linux,
   // return empty instead of spawning a missing `powershell` every poll cycle
   // (code-quality R2 #3). The dashboard still works; only process panels stay empty.
   if (process.platform !== "win32") return [];
   const script = "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress";
   try {
-    const proc = Bun.spawn(["powershell", "-NoProfile", "-Command", script], {
+    // windowsHide (defaulted by the spawn wrapper, #406): without a parent console
+    // (daemon respawned detached by /api/server/restart) every powershell poll pops
+    // a visible console window that flashes on screen — CREATE_NO_WINDOW keeps it
+    // silent either way.
+    const proc = bunSpawn(["powershell", "-NoProfile", "-Command", script], {
       stdout: "pipe",
       stderr: "ignore",
     });
@@ -194,7 +210,7 @@ export async function refreshDescendants(data: DevLogData): Promise<void> {
 export async function killProcess(pid: number): Promise<{ ok: boolean; error?: string }> {
   if (process.platform !== "win32") return { ok: false, error: "process kill is Windows-only" };
   try {
-    const proc = Bun.spawn(["taskkill", "/PID", String(pid), "/F", "/T"], {
+    const proc = bunSpawn(["taskkill", "/PID", String(pid), "/F", "/T"], {
       stdout: "pipe", stderr: "pipe",
     });
     const code = await proc.exited;

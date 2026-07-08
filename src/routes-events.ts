@@ -7,12 +7,13 @@
 // isRealCwd, MANIFEST_FILES) stay in server.ts and are injected via deps; the rest
 // are shared imports. Spread into server.ts's routeDefs.
 
-import { loadData, withData } from "./data";
+import { loadData, withData, isStepClosed } from "./data";
 import { resolveProjectFor } from "./project-resolve";
 import { scanFreshProfile, applyPreservedScan } from "./scanner";
 import { generateStackMd, exportStatusMd } from "./export";
 import { runVulnScan } from "./vuln-scan";
 import { parseHookEvent } from "./hooks";
+import { listArchiveMonths, readArchiveMonth } from "./event-archive";
 import { softFail } from "./soft-fail";
 import { broadcast } from "./broadcast";
 import { normalizeSlashes } from "./path-utils";
@@ -85,7 +86,7 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
               const desc = entry.description.toLowerCase();
               for (const plan of data.plans.filter(p => p.project === name)) {
                 for (const step of plan.steps) {
-                  if (!step.completed && desc.includes(step.text.toLowerCase().slice(0, 20))) {
+                  if (!isStepClosed(step) && desc.includes(step.text.toLowerCase().slice(0, 20))) {
                     step.completed = true;
                     plan.updatedAt = new Date().toISOString();
                   }
@@ -96,7 +97,7 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
             // Auto-rescan if manifest changed, file created, or file deleted (debounced)
             const changedFile = normalizeSlashes(entry.file_path).split("/").pop() || "";
             const bashCmd = (entry.command || "").toLowerCase();
-            const isDelete = entry.tool === "Bash" && (bashCmd.includes("rm ") || bashCmd.includes("del "));
+            const isDelete = entry.type === "command" && (bashCmd.includes("rm ") || bashCmd.includes("del ") || bashCmd.includes("remove-item"));
             const isCreate = entry.tool === "Create";
             if ((MANIFEST_FILES.includes(changedFile) || isDelete || isCreate) && effectiveCwd) {
               scheduleRescan(effectiveCwd, name);
@@ -110,6 +111,22 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
           softFail("api.hook", e);
           return Response.json({ error: "Invalid" }, { status: 400 });
         }
+      },
+    },
+
+    // Cold archive read-path — the ONLY consumer of the monthly archive files;
+    // the hot path never opens them. No ?month → list available months;
+    // ?month=YYYY-MM → that month's events, optionally filtered by ?project.
+    "/api/events/archive": {
+      async GET(req: ApiReq) {
+        const url = new URL(req.url);
+        const month = url.searchParams.get("month");
+        if (!month) return Response.json({ months: await listArchiveMonths() });
+        if (!/^\d{4}-\d{2}$/.test(month)) return Response.json({ error: "month must be YYYY-MM" }, { status: 400 });
+        const project = url.searchParams.get("project");
+        let events = await readArchiveMonth(month);
+        if (project) events = events.filter(e => e.project === project);
+        return Response.json({ month, count: events.length, events });
       },
     },
 

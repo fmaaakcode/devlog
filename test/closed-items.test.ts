@@ -113,6 +113,24 @@ describe("closedItems resolver (src/closed-items.ts)", () => {
     expect(byNum.get(12)?.closedAt).toBeUndefined();
   });
 
+  test("dropped plan step surfaces via the text its closer was rewritten to (#410/#399)", () => {
+    // resolveClosureNumber rewrites `-(dropped) #20` to the step's TEXT, so the
+    // stored closer carries no leading #N — it must be matched by text, and the
+    // step must be archived (dropped:true) not spliced away, or ask:closed never
+    // sees it at all (the pre-#410 gap).
+    const steps: PlanStep[] = [{ text: "archived step", completed: false, dropped: true, num: 20 }];
+    const plan: PlanEntry = {
+      id: "p2", project: PROJ, title: "drop plan", steps, file_path: "/plans/d.md",
+      timestamp: "2026-06-01T00:00:00Z", updatedAt: "2026-06-01T00:00:00Z",
+    };
+    const tags = [tag("dropped", "archived step", { timestamp: "2026-06-07T09:00:00Z" })];
+    const it = closedItems(baseData(tags, [plan]), PROJ).find(i => i.num === 20);
+    expect(it?.kind).toBe("plan-step");
+    expect(it?.closedBy).toBe("dropped");
+    expect(it?.closedAt).toBe("2026-06-07T09:00:00Z");
+    expect(it?.planTitle).toBe("drop plan");
+  });
+
   test("empty when nothing is closed", () => {
     const tags = [tag("todo", "just open", { num: 1 })];
     expect(closedItems(baseData(tags), PROJ)).toEqual([]);

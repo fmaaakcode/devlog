@@ -1,9 +1,15 @@
+        import { data, activeProject, cachedTree, setCachedTree, setLogFilterValue, fullRenderNeeded, setFullRenderNeeded, ctxTargetPath, ctxTargetFile, setCtxTarget } from "./dashboard-state.js";
+        import { API, esc, timeStr, openedTitle, SEC_OPEN_TAGS, TOOL_FG_COLORS, uiAlert } from "./dashboard-core.js";
+        import { fetchSummary, refreshActiveView, currentVerdicts, buildTagsHtml } from "./dashboard-data.js";
+        import { getProjectTags, projectFromHash, selectProject, registryUrl } from "./dashboard-project.js";
+        import { extIcons, renderActivePlanCard, renderChangesCard, buildTodosHtml } from "./dashboard-panels.js";
+
         function renderTreeNodes(nodes, basePath) {
             let html = '';
             for (const node of nodes) {
                 if (node.type === "dir") {
                     const count = countFiles(node);
-                    const fullPath = basePath + '/' + node.name;
+                    const fullPath = `${basePath}/${node.name}`;
                     html += `<div class="tree-node">
                         <div class="tree-dir" data-path="${esc(fullPath)}">
                             <span class="arrow">&#9660;</span>
@@ -24,7 +30,7 @@
         // Context menu
         document.addEventListener('click', () => {
             document.getElementById('ctxMenu').style.display = 'none';
-            document.querySelectorAll('.ctx-selected').forEach(el => el.classList.remove('ctx-selected'));
+            document.querySelectorAll('.ctx-selected').forEach(el => { el.classList.remove('ctx-selected'); });
         });
         document.addEventListener('contextmenu', (e) => {
             const tree = e.target.closest('.tree');
@@ -35,14 +41,12 @@
 
             if (dir) {
                 e.preventDefault();
-                ctxTargetPath = dir.getAttribute('data-path') || '';
-                ctxTargetFile = '';
+                setCtxTarget(dir.getAttribute('data-path') || '', '');
                 document.getElementById('ctxIgnoreLabel').textContent = 'تجاهل هذا المجلد';
                 document.getElementById('ctxOpenLabel').style.display = 'none';
             } else if (file) {
                 e.preventDefault();
-                ctxTargetPath = file.getAttribute('data-dir') || '';
-                ctxTargetFile = file.getAttribute('data-name') || '';
+                setCtxTarget(file.getAttribute('data-dir') || '', file.getAttribute('data-name') || '');
                 document.getElementById('ctxIgnoreLabel').textContent = 'تجاهل هذا الملف';
                 document.getElementById('ctxOpenLabel').style.display = 'block';
             } else {
@@ -57,16 +61,16 @@
             if (filePopupController) filePopupController.abort();
             const fp = document.getElementById('filePopup');
             if (fp) fp.style.display = 'none';
-            document.querySelectorAll('.ctx-selected').forEach(el => el.classList.remove('ctx-selected'));
+            document.querySelectorAll('.ctx-selected').forEach(el => { el.classList.remove('ctx-selected'); });
             (dir || file).classList.add('ctx-selected');
 
             const menu = document.getElementById('ctxMenu');
             menu.style.display = 'block';
-            menu.style.left = e.clientX + 'px';
-            menu.style.top = e.clientY + 'px';
+            menu.style.left = `${e.clientX}px`;
+            menu.style.top = `${e.clientY}px`;
         });
 
-        async function ignoreTarget() {
+        export async function ignoreTarget() {
             document.getElementById('ctxMenu').style.display = 'none';
             const winPath = ctxTargetPath.replace(/\//g, '\\');
             const body = ctxTargetFile
@@ -103,16 +107,18 @@
                     }
                 }
                 // Refresh data + header to reflect updated file stats
-                fullRenderNeeded = true;
-                cachedTree = null;
-                fetchData(true);
-            } catch {}
+                setFullRenderNeeded(true);
+                setCachedTree(null);
+                refreshActiveView(true);
+            } catch {
+                // Best-effort: the tree stays stale until the next WS pulse.
+            }
         }
 
         // Open the right-clicked file's content in a new browser tab. The server
         // serves it as text/plain + nosniff, so even .html/.svg files just show
         // as text and never execute.
-        function openTargetFile() {
+        export function openTargetFile() {
             document.getElementById('ctxMenu').style.display = 'none';
             if (!ctxTargetFile) return;
             const full = `${ctxTargetPath.replace(/\\/g, '/')}/${ctxTargetFile}`;
@@ -126,14 +132,14 @@
         let lastMouse = { x: 0, y: 0 };
         document.addEventListener('mousemove', (e) => { lastMouse = { x: e.clientX, y: e.clientY }; });
         document.addEventListener('mouseover', (e) => {
-            const file = e.target.closest && e.target.closest('.tree-file');
+            const file = e.target.closest?.('.tree-file');
             if (!file) return;
             clearTimeout(filePopupHideTimer);
             clearTimeout(filePopupTimer);
             filePopupTimer = setTimeout(() => showFilePopup(file), 280);
         });
         document.addEventListener('mouseout', (e) => {
-            const file = e.target.closest && e.target.closest('.tree-file');
+            const file = e.target.closest?.('.tree-file');
             if (!file) return;
             clearTimeout(filePopupTimer);
             // Delayed hide: gives the cursor time to travel into the popup so the
@@ -185,8 +191,8 @@
             let x = lastMouse.x + 16, y = lastMouse.y + 16;
             if (x + rect.width + pad > window.innerWidth) x = lastMouse.x - rect.width - 16;
             if (y + rect.height + pad > window.innerHeight) y = window.innerHeight - rect.height - pad;
-            popup.style.left = Math.max(pad, x) + 'px';
-            popup.style.top = Math.max(pad, y) + 'px';
+            popup.style.left = `${Math.max(pad, x)}px`;
+            popup.style.top = `${Math.max(pad, y)}px`;
         }
 
         function countFiles(node) {
@@ -200,48 +206,17 @@
 
         // ===== Main View =====
 
-        let cachedTree = null;
+        // cachedTree moved to dashboard-state.js (R3 #3) — data/project reset it too.
 
-        async function renderFiles(project, tags) {
+        export async function renderFiles(project, tags) {
             const el = document.getElementById("panel-files");
 
             // Build tags HTML (only tags)
-            let tagsHtml = '';
-            if (tags && tags.length > 0) {
-                const filtered = logFilter === "all" ? tags : tags.filter(t => filterGroups[logFilter]?.includes(t.tag));
-
-                tagsHtml += '<div class="log-filters">';
-                for (const [key, label] of Object.entries(filterLabels)) {
-                    const count = key === "all" ? tags.length : tags.filter(t => filterGroups[key].includes(t.tag)).length;
-                    if (key !== "all" && count === 0) continue;
-                    tagsHtml += `<button class="log-filter${logFilter === key ? ' active' : ''}" data-action="set-log-filter" data-key="${esc(key)}">${esc(label)} <span class="tab-badge tab-badge-default">${count}</span></button>`;
-                }
-                tagsHtml += '</div>';
-
-                let inner = '';
-                const projectPlans = (data.plans || []).filter(p => p.project === activeProject);
-                for (const t of filtered) {
-                    const tc = tagClass(t.tag);
-                    const display = resolveTagDisplay(t, tags, projectPlans);
-                    const sec = t.tag === 'security'
-                        ? ` data-action="show-vulns-tag" data-project="${esc(activeProject)}" data-content="${esc(t.content)}" style="cursor:pointer;text-decoration:underline dotted"`
-                        : '';
-                    const ttl = t.tag === 'security' ? `${display} — اضغط لتفاصيل الثغرات` : display;
-                    inner += `<div class="log-item${t.breaking ? ' is-breaking' : ''}">
-                        <div class="log-bar bar-${tc}"></div>
-                        <span class="log-tag tag-${tc}">${esc(tagLabels[t.tag] || t.tag)}</span>
-                        <span class="log-content"${sec} title="${esc(ttl)}">${esc(tagSummary(display))}</span>
-                        <span class="log-time">${timeStr(t.timestamp)}</span>
-                    </div>`;
-                }
-                if (inner) tagsHtml += `<div style="overflow-y:auto;flex:1">${inner}</div>`;
-            }
-
             // Build events HTML (raw hooks)
             // Build todos + security HTML — shared builders, identical to the
             // surgical poll/WS path so neither card can diverge on refresh.
             const todosCardHtml = buildTodosHtml(tags);
-            let secHtml = buildSecurityHtml(tags, project);
+            const secHtml = buildSecurityHtml(tags, project);
 
             // Build the card layout once, BEFORE any await. The file tree used
             // to be fetched at the top of this block and a slow/failed
@@ -274,7 +249,7 @@
             // always render even when the tree request is in flight or fails.
             document.getElementById('cardSecurity').innerHTML = `<div style="overflow-y:auto;flex:1;min-height:0">${secHtml}</div>`;
             document.getElementById('cardTodos').innerHTML = todosCardHtml;
-            document.getElementById('cardTags').innerHTML = `<div style="font-size:0.6em;color:var(--text2);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">التاقات</div><div style="overflow-y:auto;flex:1;min-height:0">${tagsHtml || '<div style="color:var(--text2);font-size:0.7em">لا توجد تاقات</div>'}</div>`;
+            document.getElementById('cardTags').innerHTML = buildTagsHtml(tags);
             renderChangesCard(activeProject);
             renderActivePlanCard(activeProject);
             // `project` here is the project OBJECT (renderFiles(p, …)); buildEventsHtml
@@ -291,7 +266,7 @@
                 if (!cachedTree || fullRenderNeeded) {
                     const res = await fetch(`${API}/api/tree/${encodeURIComponent(activeProject)}`);
                     const { tree } = await res.json();
-                    cachedTree = tree;
+                    setCachedTree(tree);
                 }
                 const tree = cachedTree;
                 const total = tree ? countFiles({ type: "dir", children: tree }) : 0;
@@ -317,7 +292,7 @@
         const typeLabels = { user: 'مستخدم', feedback: 'ملاحظة', project: 'مشروع', reference: 'مرجع' };
         const typeColors = { user: 'var(--blue)', feedback: 'var(--gold)', project: 'var(--emerald)', reference: '#bb86fc' };
 
-        function buildDocsHtml(project) {
+        export function buildDocsHtml(project) {
             const mem = project.memoryFiles || [];
             const docs = project.docFiles || [];
             const total = mem.length + docs.length;
@@ -364,7 +339,7 @@
         // The two inline copies had already diverged (item-new highlight on the
         // surgical path, absent on the full render). Returns the complete card
         // (header + scroll container + rows), exactly like buildTodosHtml.
-        function buildEventsHtml(allEvents, project) {
+        export function buildEventsHtml(allEvents, project) {
             const projEvents = (allEvents || []).filter(e => e.project === project).slice(-50).reverse();
             let inner = '';
             for (const e of projEvents) {
@@ -380,56 +355,14 @@
             return `<div style="font-size:0.6em;color:var(--text2);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px;direction:rtl">الأحداث</div><div style="overflow-y:auto;flex:1;min-height:0">${inner || '<div style="color:var(--text2);font-size:0.7em;direction:rtl">لا توجد أحداث</div>'}</div>`;
         }
 
-        function buildTodosHtml(tags) {
-            const doneTexts = new Set(tags.filter(t => t.tag === "done").map(d => normTag(d.content)));
-            const droppedTexts = new Set(tags.filter(t => t.tag === "dropped").map(d => normTag(d.content)));
-            const doneNums = closedNumSet(tags, ["done"]);
-            const droppedNums = closedNumSet(tags, ["dropped"]);
-            const openTodos = [], closedTodos = [];
-            for (const t of tags.filter(t => t.tag === "todo")) {
-                const item = (t.content || "").trim();
-                if (!item) continue;
-                const low = normTag(item);
-                const num = typeof t.num === "number" ? t.num : null;
-                if (droppedTexts.has(low) || isDoneFuzzy(low, droppedTexts) || (num !== null && droppedNums.has(num))) continue;
-                const entry = { text: item, num };
-                if (isDoneFuzzy(low, doneTexts) || (num !== null && doneNums.has(num))) closedTodos.push(entry);
-                else openTodos.push(entry);
-            }
-            const numBadge = (n) => n != null
-                ? `<span style="font-size:0.85em;color:var(--text2);font-family:'Cascadia Code',Consolas,monospace;flex-shrink:0">#${n}</span>`
-                : '';
-            const notes = tags.filter(t => t.tag === "note").slice(0, 5);
-            let inner = '';
-            for (const t of openTodos) {
-                inner += `<div style="display:flex;align-items:center;gap:5px;padding:2px 0;font-size:0.7em;direction:rtl">
-                    <span style="width:10px;height:10px;border:1.5px solid var(--border);border-radius:2px;flex-shrink:0"></span>
-                    ${numBadge(t.num)}
-                    <span style="flex:1">${esc(t.text)}</span>
-                </div>`;
-            }
-            for (const t of closedTodos) {
-                inner += `<div style="display:flex;align-items:center;gap:5px;padding:2px 0;font-size:0.7em;direction:rtl;opacity:0.5">
-                    <span style="width:10px;height:10px;background:var(--emerald);border-radius:2px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:0.6em;color:var(--bg)">&#10003;</span>
-                    ${numBadge(t.num)}
-                    <span style="flex:1;text-decoration:line-through;color:var(--text2)">${esc(t.text)}</span>
-                </div>`;
-            }
-            if (notes.length) {
-                inner += '<div style="margin-top:6px;border-top:1px solid var(--border);padding-top:4px">';
-                for (const n of notes) {
-                    inner += `<div style="font-size:0.7em;color:var(--text2);padding:2px 0;direction:rtl">📝 ${esc(n.content)}</div>`;
-                }
-                inner += '</div>';
-            }
-            return `<div style="font-size:0.6em;color:var(--text2);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">المهام</div><div style="overflow-y:auto;flex:1;min-height:0">${inner || '<div style="font-size:0.7em;color:var(--text2)">لا توجد مهام</div>'}</div>`;
-        }
+        // buildTodosHtml + the الحالية/القادمة cardTabs live in dashboard-panels.js
+        // (moved with the upcoming feature — this file sits at its size budget).
 
-        function buildSecurityHtml(tags, project) {
+        export function buildSecurityHtml(tags, project) {
             // Pull vuln dates by package name (parsed from tag content like
             // "sysinfo@0.38.4 — احدث: 0.39.1"). Used to show release dates +
             // the "wait before upgrading" supply-chain warning (Vuln v0.6.0).
-            const vulnResults = (project && project.vulnResults) || {};
+            const vulnResults = (project?.vulnResults) || {};
             const parsePkg = (content) => {
                 // Optional leading @ + the rest of the name (slashes allowed) so
                 // scoped npm packages like "@biomejs/biome@2.4.15" parse — the
@@ -466,7 +399,7 @@
                           ${isFresh ? '⏳ ' : ''}${esc(dateLabel)}${typeof days === 'number' ? ` منذ ${days} يوم` : ''}${datePart ? ` · ${esc(datePart)}` : ''}
                        </div>` : '';
                 const verStyle = strike ? 'text-decoration:line-through;color:var(--text2)' : `color:${accent}`;
-                const url = registryUrl(project && project.language, parsed.name);
+                const url = registryUrl(project?.language, parsed.name);
                 const nameEl = url
                     ? `<a href="${esc(url)}" target="_blank" rel="noopener" title="فتح صفحة المكتبة للتأكد يدوياً" style="color:${accent};font-weight:600;text-decoration:none;cursor:pointer">${esc(parsed.name)}</a>`
                     : `<span style="color:${accent};font-weight:600">${esc(parsed.name)}</span>`;
@@ -481,23 +414,35 @@
                 </div>`;
             };
             const securityTags = tags.filter(t => SEC_OPEN_TAGS.has(t.tag));
-            const securityFixes = tags.filter(t => t.tag === "security fix");
             const bugFounds = tags.filter(t => t.tag === "bug found");
-            const bugFixes = tags.filter(t => t.tag === "bug fix");
             const outdatedTags = tags.filter(t => t.tag === "outdated");
 
-            const secFixNums = closedNumSet(tags, ["security fix"]);
-            const bugFixNums = closedNumSet(tags, ["bug fix"]);
-            const secClosed = s => (typeof s.num === 'number' && secFixNums.has(s.num)) || securityFixes.some(f => fuzzy(f.content, s.content));
-            const bugClosed = b => (typeof b.num === 'number' && bugFixNums.has(b.num)) || bugFixes.some(f => fuzzy(f.content, b.content));
+            // Open/fixed split comes from the server verdicts by tag id (#379);
+            // a missing verdict (transient fetch race) defaults to "open" — the
+            // safe direction for security items. currentVerdicts serves the last
+            // good snapshot through a transient failure instead of an all-open flash (#414).
+            const { v } = currentVerdicts();
+            const openById = new Map();
+            const upcomingIds = new Set();
+            if (v) {
+                for (const x of v.security) openById.set(x.id, x.open);
+                for (const x of v.bugs) { openById.set(x.id, x.open); if (x.upcoming) upcomingIds.add(x.id); }
+            }
+            const secClosed = s => openById.get(s.id) === false;
+            const bugClosed = b => openById.get(b.id) === false;
+            // Deferred («قادمة») bugs render in the tasks card's القادمة tab, not
+            // here — an item the user parked must not read as pressing red debt.
+            const isUpcoming = b => (v ? upcomingIds.has(b.id) : !!b.upcoming);
             const openSec = securityTags.filter(s => !secClosed(s));
             const closedSec = securityTags.filter(secClosed);
-            const openBugs = bugFounds.filter(b => !bugClosed(b));
+            const openBugs = bugFounds.filter(b => !bugClosed(b) && !isUpcoming(b));
             const closedBugs = bugFounds.filter(bugClosed);
 
-            const totalIssues = securityTags.length + bugFounds.length;
+            // Totals derive from the rendered lists so a deferred bug (excluded
+            // above) can't skew the counts or the progress bar.
             const totalFixed = closedSec.length + closedBugs.length;
             const totalOpen = openSec.length + openBugs.length;
+            const totalIssues = totalFixed + totalOpen;
 
             if (totalIssues === 0 && outdatedTags.length === 0) {
                 return '<div style="color:var(--text2);font-size:0.75em;padding:10px;text-align:center">لا توجد مشاكل أمنية</div>';
@@ -530,7 +475,7 @@
                     const sattr = clickable
                         ? ` data-action="show-vulns-tag" data-project="${esc(activeProject)}" data-content="${esc(s.content)}" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--pink);cursor:pointer;text-decoration:underline dotted"`
                         : ` style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--pink)"`;
-                    const stitle = clickable ? `${s.content} — اضغط لتفاصيل الثغرات` : s.content;
+                    const stitle = [clickable ? `${s.content} — اضغط لتفاصيل الثغرات` : s.content, openedTitle(s.timestamp)].filter(Boolean).join('\n');
                     h += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:0.72em">
                         <span style="color:var(--pink)">!</span>
                         ${numCode(s.num)}
@@ -545,13 +490,27 @@
                     h += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:0.72em">
                         <span style="color:var(--pink)">!</span>
                         ${numCode(b.num)}
-                        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--pink)" title="${esc(b.content)}">${esc(b.content)}</span>
+                        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--pink)" title="${esc([b.content, openedTitle(b.timestamp)].filter(Boolean).join('\n'))}">${esc(b.content)}</span>
                         ${delBtn(b.id, 'bug')}
                     </div>`;
                 }
             }
+            // Order rule (user directive 2026-07-06): everything OPEN/actionable
+            // first — open security, open bugs, then the outdated libraries —
+            // and the CLOSED (historic) lists always sit at the bottom.
+            if (outdatedTags.length > 0) {
+                // Supply-chain safety: when latest is very fresh (< 7 days),
+                // libRow renders the gold ⏳ warning. Recent npm/crates
+                // compromises (event-stream, nx, ua-parser-js) stayed live
+                // for hours-to-days before discovery — rapid auto-upgrades
+                // were the attack vector.
+                h += '<div style="font-size:0.7em;color:var(--text2);margin:8px 0 4px">مكتبات قديمة</div>';
+                for (const o of outdatedTags) {
+                    h += libRow(o.content, 'latest', { accent: 'var(--gold)', icon: '&#8635;' });
+                }
+            }
             if (closedSec.length > 0) {
-                h += '<div style="font-size:0.7em;color:var(--text2);margin:8px 0 4px">ثغرات مُصلحة</div>';
+                h += '<div style="font-size:0.7em;color:var(--text2);margin:8px 0 4px;border-top:1px solid var(--border);padding-top:8px">ثغرات مُصلحة</div>';
                 for (const s of closedSec) {
                     h += libRow(s.content, 'fix', { accent: 'var(--emerald)', icon: '&#10003;', strike: true, opacity: 0.6 });
                 }
@@ -565,17 +524,6 @@
                     </div>`;
                 }
             }
-            if (outdatedTags.length > 0) {
-                // Supply-chain safety: when latest is very fresh (< 7 days),
-                // libRow renders the gold ⏳ warning. Recent npm/crates
-                // compromises (event-stream, nx, ua-parser-js) stayed live
-                // for hours-to-days before discovery — rapid auto-upgrades
-                // were the attack vector.
-                h += '<div style="font-size:0.7em;color:var(--text2);margin:8px 0 4px;border-top:1px solid var(--border);padding-top:8px">مكتبات قديمة</div>';
-                for (const o of outdatedTags) {
-                    h += libRow(o.content, 'latest', { accent: 'var(--gold)', icon: '&#8635;' });
-                }
-            }
             return h;
         }
 
@@ -583,8 +531,8 @@
 
 
 
-        function setLogFilter(filter) {
-            logFilter = filter;
+        export function setLogFilter(filter) {
+            setLogFilterValue(filter);
             const p = data.projects[activeProject];
             if (p) renderFiles(p, getProjectTags());
         }
@@ -593,7 +541,7 @@
 
         // ===== Injection Panel =====
 
-        let injState = {
+        const injState = {
             project: null,
             scope: "global", // "global" | "project"
             config: null,    // { sessionStart, userPromptSubmit, ... }
@@ -607,12 +555,13 @@
             preToolUseRead:   { label: "PreToolUse(Read)", sub: "حقن ذاكرة الملف قبل قراءته",                   dynamic: true },
             outdatedLibs:     { label: "مكتبات منتهية",     sub: "تنبيه كلود بكل المكتبات القديمة عند بدء الجلسة", dynamic: true },
             describeNudge:    { label: "تذكير الوصف",       sub: "تنبيه كلود لإضافة desc/about الناقصَين. يعمل حتى مع إطفاء «حقن البداية»", dynamic: true },
+            upcomingItems:    { label: "سطر القادمة",       sub: "عرض العناصر المؤجلة (قادمة) في ملخص بداية الجلسة — للعلم فقط، لا توقف شيئًا", dynamic: true },
             claudeMd:         { label: "CLAUDE.md",        sub: "كتابة ملخص المشروع في ملف CLAUDE.md (قيد التطوير)", dynamic: false },
             contextMd:        { label: ".devlog/context.md", sub: "كتابة سياق إضافي في ملف (قيد التطوير)",       dynamic: false },
             standardsEnforce: { label: "إجبار المعايير",   sub: "يمنع كتابة الكود حتى يسحب كلود معايير المشروع. أوقفه للمشاريع المطبَّقة أصلاً (السحب اليدوي يبقى متاحاً)." },
         };
 
-        async function openInjectionPanel(project) {
+        export async function openInjectionPanel(project) {
             injState.project = project;
             injState.scope = "global";
             document.getElementById('injProjectName').textContent = project;
@@ -622,28 +571,28 @@
             renderInjectionPanel();
         }
 
-        function closeInjectionPanel() {
+        export function closeInjectionPanel() {
             document.getElementById('injModal').classList.remove('open');
         }
 
         // ===== Standards Viewer (read-only catalog browser) =====
         const STD_AXIS_ORDER = ["languages", "runtimes", "frameworks", "platforms", "app-types", "cross-cutting", "(root)"];
 
-        async function openStandardsPanel(project) {
+        export async function openStandardsPanel(project) {
             document.getElementById('stdProjectName').textContent = project || '';
             document.getElementById('stdModal').classList.add('open');
             const body = document.getElementById('stdBody');
             body.innerHTML = '<div class="inj-empty">جارٍ التحميل…</div>';
-            const cwd = (data.projects && data.projects[project] && data.projects[project].path) || '';
+            const cwd = (data.projects?.[project]?.path) || '';
             try {
                 const res = await fetch(`${API}/api/standards?cwd=${encodeURIComponent(cwd)}`);
                 body.innerHTML = renderStandards(await res.json());
-            } catch (e) {
+            } catch {
                 body.innerHTML = '<div class="inj-empty">فشل تحميل المعايير</div>';
             }
         }
 
-        function closeStandardsPanel() {
+        export function closeStandardsPanel() {
             document.getElementById('stdModal').classList.remove('open');
         }
 
@@ -652,7 +601,10 @@
             if (!cats.length) return '<div class="inj-empty">الكتالوج فارغ — أضف ملفات .md في ~/.claude/standards/</div>';
             const c = j.counts || {};
             const byAxis = {};
-            for (const cat of cats) (byAxis[cat.axis] = byAxis[cat.axis] || []).push(cat);
+            for (const cat of cats) {
+                if (!byAxis[cat.axis]) byAxis[cat.axis] = [];
+                byAxis[cat.axis].push(cat);
+            }
             const axes = Object.keys(byAxis).sort((a, b) => {
                 const ia = STD_AXIS_ORDER.indexOf(a), ib = STD_AXIS_ORDER.indexOf(b);
                 return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
@@ -667,7 +619,7 @@
                     const scope = cat.scope === 'project' ? '<span class="std-scope">خاص بالمشروع</span>' : '<span class="std-scope std-global">عام</span>';
                     const enforced = cat.enforcedBy ? `<span class="std-enforced" title="يحجب فعلاً">🛡 ${esc(cat.enforcedBy)}</span>` : '';
                     html += `<div class="std-cat"><div class="std-cat-head"><span class="std-cat-name">${esc(cat.category)}</span>${scope}${enforced}</div>`;
-                    if (cat.rules && cat.rules.length) {
+                    if (cat.rules?.length) {
                         html += '<div class="std-rules">';
                         for (const r of cat.rules) html += `<div class="std-rule">${kindBadge(r.kind)}<span>${esc(r.text)}</span></div>`;
                         html += '</div>';
@@ -729,7 +681,7 @@
                 ? `<div class="inj-override-note">⚙️ هذا المشروع له إعدادات خاصة تطغى على العام <button class="inj-clear-override" data-action="clear-injection-override">إزالة التخصيص</button></div>`
                 : "";
 
-            const dynamicRows = ["sessionStart","userPromptSubmit","preToolUseRead","outdatedLibs","describeNudge"].map(k => {
+            const dynamicRows = ["sessionStart","userPromptSubmit","preToolUseRead","outdatedLibs","describeNudge","upcomingItems"].map(k => {
                 const m = injTypeMeta[k];
                 return `<div class="inj-toggle-row">
                     <div>
@@ -810,13 +762,13 @@
             `;
         }
 
-        async function switchInjScope(scope) {
+        export async function switchInjScope(scope) {
             injState.scope = scope;
             await loadInjectionConfig();
             renderInjectionPanel();
         }
 
-        async function toggleInjection(key, val) {
+        export async function toggleInjection(key, val) {
             const patch = { [key]: val === 'true' || val === true };
             const body = injState.scope === "project"
                 ? { project: injState.project, config: patch }
@@ -830,13 +782,13 @@
             renderInjectionPanel();
         }
 
-        async function clearInjectionOverride() {
+        export async function clearInjectionOverride() {
             await fetch(`${API}/api/injection/config?project=${encodeURIComponent(injState.project)}`, { method: "DELETE" });
             await loadInjectionConfig();
             renderInjectionPanel();
         }
 
-        function showInjectionContent(id) {
+        export function showInjectionContent(id) {
             const item = injState.history.find(h => h.id === id);
             if (!item) return;
             const w = window.open("", "_blank", "width=780,height=600");
@@ -861,7 +813,9 @@
                 if (!r.ok) return;
                 const c = await r.json();
                 document.body.dataset.vulnEnabled = c.vulnEnabled ? "true" : "false";
-            } catch {}
+            } catch {
+                // Unreachable server: keep the current flag until the next probe.
+            }
         }
 
         // Tool-update probe: render a small badge if a newer release exists
@@ -875,7 +829,9 @@
                 if (!r.ok) return;
                 updatesState = await r.json();
                 renderUpdatesBadge();
-            } catch {}
+            } catch {
+                // Best-effort probe: no badge is a fine fallback.
+            }
         }
         function renderUpdatesBadge() {
             const badge = document.getElementById("updates-badge");
@@ -883,38 +839,50 @@
             const tools = (updatesState.tools || []).filter(t => t.hasUpdate);
             if (tools.length === 0) { badge.style.display = "none"; return; }
             const names = tools.map(t => `${t.name} → v${t.latestVersion}`).join("، ");
-            badge.textContent = `🔄 ${tools.length === 1 ? "تحديث" : tools.length + " تحديثات"} متاحة`;
+            badge.textContent = `🔄 ${tools.length === 1 ? "تحديث" : `${tools.length} تحديثات`} متاحة`;
             badge.title = `${names}\n(انقر للتفاصيل)`;
             badge.style.display = "inline-block";
         }
-        function openUpdatesPopup() {
+        export function openUpdatesPopup() {
             if (!updatesState) return;
             const tools = (updatesState.tools || []).filter(t => t.hasUpdate);
             if (tools.length === 0) return;
             const lines = tools.map(t => {
                 const date = t.latestReleaseDate ? new Date(t.latestReleaseDate).toLocaleDateString() : "";
-                return `${t.name}: v${t.localVersion || "?"} → v${t.latestVersion}${date ? " (" + date + ")" : ""}\n${t.latestUrl || ""}`;
+                return `${t.name}: v${t.localVersion || "?"} → v${t.latestVersion}${date ? ` (${date})` : ""}\n${t.latestUrl || ""}`;
             }).join("\n\n");
             // Show the right upgrade path: a plugin install updates from inside
             // Claude Code, a clone updates with git.
             const how = updatesState.pluginMode
                 ? "\n\nللتحديث داخل Claude Code:\n/plugin marketplace update"
                 : "\n\nللتحديث:\ngit pull ثم أعد تشغيل الخادم";
-            alert("تحديثات متاحة:\n\n" + lines + how);
+            uiAlert(`تحديثات متاحة:\n\n${lines}${how}`, "تحديثات متاحة");
         }
 
-        fetchConfig();
-        fetchUpdates();
-        setInterval(fetchConfig, 60_000);
-        setInterval(fetchUpdates, 15 * 60_000);   // re-poll the cache every 15 min
-        fetchData();
+        // Bootstrap moved into initDashboard() (R3 #3): with modules, this file
+        // evaluates BEFORE dashboard-core.js in the cycle order, so running the
+        // initial fetch here hit core's `const API` in its TDZ — a ReferenceError
+        // swallowed by fetchData's catch, leaving a blank page with a clean
+        // console. The entry point calls init AFTER the whole graph evaluated.
+        export function initDashboard() {
+            fetchConfig();
+            fetchUpdates();
+            setInterval(fetchConfig, 60_000);
+            setInterval(fetchUpdates, 15 * 60_000);   // re-poll the cache every 15 min
+            // #373: the landing screen needs only the sidebar → summary (KBs).
+            // R3 #4: a #project= deep-link opens through selectProject, which
+            // lazy-fetches that one project's view instead of the full store.
+            const fromHash = projectFromHash();
+            if (fromHash) selectProject(fromHash); else fetchSummary();
+            wsConnect();
+        }
 
         // WebSocket
         // ===== Live Banner =====
 
         let liveBannerTimeout = null;
-        const toolColors = { Create: '#04201a', Edit: '#2a2008', Read: '#082030', Bash: '#2a0a18', Agent: '#1a0a2a', Plan: '#2a2008' };
-        const toolTextColors = { Create: 'var(--emerald)', Edit: 'var(--gold)', Read: 'var(--blue)', Bash: 'var(--pink)', Agent: '#bb86fc', Plan: 'var(--gold)' };
+        const toolColors = { Create: '#04201a', Edit: '#2a2008', Read: '#082030', Bash: '#2a0a18', PowerShell: '#2a0a18', Agent: '#1a0a2a', Plan: '#2a2008' };
+        const toolTextColors = { Create: 'var(--emerald)', Edit: 'var(--gold)', Read: 'var(--blue)', Bash: 'var(--pink)', PowerShell: 'var(--pink)', Agent: '#bb86fc', Plan: 'var(--gold)' };
 
         function showLiveBanner(msg) {
             const banner = document.getElementById('liveBanner');
@@ -953,7 +921,7 @@
             document.querySelectorAll('.tree-file').forEach(el => {
                 const dir = (el.getAttribute('data-dir') || '').replace(/\\/g, '/');
                 const name = el.getAttribute('data-name') || '';
-                const full = dir + '/' + name;
+                const full = `${dir}/${name}`;
                 if (norm === full || norm.endsWith(full)) {
                     el.classList.add(isNew ? 'new-file' : 'active-file');
                 }
@@ -984,19 +952,23 @@
                         showLiveBanner(msg.payload);
                     }
                     // Tree-changing events need full render; others use surgical patch
-                    if (msg.type === "scan" || (msg.type === "hook" && msg.payload && (msg.payload.tool === "Create" || msg.payload.type === "create" || (msg.payload.tool === "Bash" && /rm |del /i.test(msg.payload.command || msg.payload.description || ''))))) {
-                        fullRenderNeeded = true;
-                        cachedTree = null;
+                    if (msg.type === "scan" || (msg.type === "hook" && msg.payload && (msg.payload.tool === "Create" || msg.payload.type === "create" || ((msg.payload.tool === "Bash" || msg.payload.tool === "PowerShell") && /rm |del |remove-item/i.test(msg.payload.command || msg.payload.description || ''))))) {
+                        setFullRenderNeeded(true);
+                        setCachedTree(null);
                     }
-                    // Debounce data refresh
+                    // Debounce data refresh — summary is enough while no
+                    // project is open (#373); an open project refreshes its
+                    // own lazy view, never the whole store (R3 #4).
                     if (!refreshQueued) {
                         refreshQueued = true;
                         setTimeout(() => {
                             refreshQueued = false;
-                            fetchData();
+                            refreshActiveView();
                         }, 500);
                     }
-                } catch {}
+                } catch {
+                    // Malformed WS frame: skip it, the next pulse resyncs.
+                }
             };
             ws.onclose = () => {
                 clearInterval(pingInterval);
@@ -1004,8 +976,8 @@
                 wsRetry = Math.min(wsRetry * 1.5, 15000);
             };
             ws.onerror = () => {
-                try { ws.close(); } catch {}
+                try { ws.close(); } catch {
+                    // Socket already dead — onclose handles the reconnect.
+                }
             };
         }
-
-        wsConnect();

@@ -4,6 +4,7 @@ import {
   openTodos, openBugs, openSecurity, openPlanSteps, openOutdatedLibs, type OpenPlanStep,
 } from "./data";
 import { currentLang } from "./i18n";
+import { formatFileStoryContext } from "./file-story";
 
 const MAX_BUILT = 5;
 
@@ -38,70 +39,101 @@ function ageAgo(days: number): string {
 
 // Compact list of #N references grouped by category. Replaces the verbose
 // "list every item with full text" approach — terse summaries fit the
-// SessionStart and UserPromptSubmit budgets.
-function formatOpenSummary(data: DevLogData, project: string): string[] {
+// SessionStart and UserPromptSubmit budgets. «قادمة» items are NOT part of
+// "Open now" (they're deferred by design); they get one awareness line at the
+// end, gated by the `upcomingItems` toggle.
+function formatOpenSummary(data: DevLogData, project: string, showUpcoming: boolean): string[] {
   const tags = data.tags.filter(t => t.project === project);
-  const todos = openTodos(tags);
-  const bugs = openBugs(tags);
+  const todos = openTodos(tags).filter(t => !t.upcoming);
+  const bugs = openBugs(tags).filter(t => !t.upcoming);
   const security = openSecurity(tags);
-  const planSteps = openPlanSteps(data, project, { numberedOnly: true })
+  const allSteps = openPlanSteps(data, project, { numberedOnly: true });
+  const planSteps = allSteps.filter(s => !s.planUpcoming)
     .map(s => ({ num: s.num as number, planTitle: s.planTitle }));
+  const upcoming = [
+    ...[...openTodos(tags), ...openBugs(tags)].filter(t => t.upcoming),
+    ...allSteps.filter(s => s.planUpcoming),
+  ];
 
   const total = todos.length + bugs.length + security.length + planSteps.length;
-  if (total === 0) return [];
+  if (total === 0 && !(showUpcoming && upcoming.length)) return [];
 
   const fmt = (items: TagEntry[]) =>
     items.map(t => typeof t.num === "number" ? `#${t.num}` : safe(t.content.slice(0, 30))).join(", ");
 
   const out: string[] = [];
-  out.push(L(`## Open now (${total})`, `## المفتوح حالياً (${total})`));
-  if (todos.length)    out.push(`todos: ${fmt(todos)}`);
-  if (bugs.length)     out.push(`bugs: ${fmt(bugs)}`);
-  if (security.length) out.push(`security: ${fmt(security)}`);
-  if (planSteps.length) {
-    const byPlan: Record<string, number[]> = {};
-    for (const s of planSteps) { byPlan[s.planTitle] ||= []; byPlan[s.planTitle].push(s.num); }
-    for (const [title, nums] of Object.entries(byPlan)) {
-      out.push(`plan "${safe(title)}": ${nums.map(n => `#${n}`).join(", ")}`);
+  if (total > 0) {
+    out.push(L(`## Open now (${total})`, `## المفتوح حالياً (${total})`));
+    if (todos.length)    out.push(`todos: ${fmt(todos)}`);
+    if (bugs.length)     out.push(`bugs: ${fmt(bugs)}`);
+    if (security.length) out.push(`security: ${fmt(security)}`);
+    if (planSteps.length) {
+      const byPlan: Record<string, number[]> = {};
+      for (const s of planSteps) { byPlan[s.planTitle] ||= []; byPlan[s.planTitle].push(s.num); }
+      for (const [title, nums] of Object.entries(byPlan)) {
+        out.push(`plan "${safe(title)}": ${nums.map(n => `#${n}`).join(", ")}`);
+      }
     }
   }
-  out.push(L(
-    "> Rule: close with `#N` only. Copying the text breaks the match on a single differing byte.",
-    "> القاعدة: أَغلِق بـ`#N` فقط. نسخ النص يَكسر الإغلاق ببايت واحد مختلف."));
+  if (showUpcoming && upcoming.length) {
+    const nums = upcoming.map(u => typeof u.num === "number" ? `#${u.num}` : "").filter(Boolean).join(", ");
+    out.push(L(
+      `upcoming (deferred, blocks nothing): ${nums} — pick one up with \`-(todo) #N\`.`,
+      `قادمة (مؤجلة، لا توقف شيئًا): ${nums} — تبنَّ واحدة بـ\`-(todo) #N\`.`));
+  }
+  if (total > 0) {
+    out.push(L(
+      "> Rule: close with `#N` only. Copying the text breaks the match on a single differing byte.",
+      "> القاعدة: أَغلِق بـ`#N` فقط. نسخ النص يَكسر الإغلاق ببايت واحد مختلف."));
+  }
   return out;
 }
 
-// Detailed list (full text + #N) — used when the user explicitly types
-// "?open" in their prompt. Costs more tokens but recovers full context.
+// Detailed list (full text + #N + opened-at date) — used when the user
+// explicitly types "?open" in their prompt. Costs more tokens but recovers
+// full context. «قادمة» items ride their own section at the end.
 function formatOpenDetailed(data: DevLogData, project: string): string[] {
   const tags = data.tags.filter(t => t.project === project);
-  const todos = openTodos(tags);
-  const bugs = openBugs(tags);
+  const todos = openTodos(tags).filter(t => !t.upcoming);
+  const bugs = openBugs(tags).filter(t => !t.upcoming);
   const security = openSecurity(tags);
+  const upcomingTags = [...openTodos(tags), ...openBugs(tags)].filter(t => t.upcoming);
   const numPrefix = (t: TagEntry) => typeof t.num === "number" ? `#${t.num} — ` : "";
+  // "when was this added?" — every detailed line carries its opening date+time.
+  const since = (iso?: string) => iso ? ` [${iso.slice(0, 16).replace("T", " ")}]` : "";
 
   const parts: string[] = [];
   if (todos.length) {
     parts.push(L(`## Remaining todos (${todos.length})`, `## مهام باقية (${todos.length})`));
-    for (const t of todos) parts.push(`- ${numPrefix(t)}${safe(t.content)}`);
+    for (const t of todos) parts.push(`- ${numPrefix(t)}${safe(t.content)}${since(t.timestamp)}`);
   }
   if (bugs.length) {
     parts.push(L(`## Open bugs (${bugs.length})`, `## أخطاء مفتوحة (${bugs.length})`));
-    for (const t of bugs) parts.push(`- ${numPrefix(t)}${safe(t.content)}`);
+    for (const t of bugs) parts.push(`- ${numPrefix(t)}${safe(t.content)}${since(t.timestamp)}`);
   }
   if (security.length) {
     parts.push(L(`## Open security (${security.length})`, `## ثغرات مفتوحة (${security.length})`));
-    for (const t of security) parts.push(`- ${numPrefix(t)}${safe(t.content)}`);
+    for (const t of security) parts.push(`- ${numPrefix(t)}${safe(t.content)}${since(t.timestamp)}`);
   }
+  const upcomingSteps: OpenPlanStep[] = [];
   const stepsByPlan = new Map<string, OpenPlanStep[]>();
   for (const s of openPlanSteps(data, project, { numberedOnly: true })) {
+    if (s.planUpcoming) { upcomingSteps.push(s); continue; }
     const arr = stepsByPlan.get(s.planTitle) || [];
     arr.push(s);
     stepsByPlan.set(s.planTitle, arr);
   }
   for (const [title, open] of stepsByPlan) {
     parts.push(L(`## Plan "${safe(title)}" (${open.length} open)`, `## خطة "${safe(title)}" (${open.length} مفتوحة)`));
-    for (const s of open) parts.push(`- #${s.num} — ${safe(s.text)}`);
+    for (const s of open) parts.push(`- #${s.num} — ${safe(s.text)}${since(s.openedAt)}`);
+  }
+  if (upcomingTags.length || upcomingSteps.length) {
+    const n = upcomingTags.length + upcomingSteps.length;
+    parts.push(L(
+      `## Upcoming (${n}) — deferred, blocks nothing; promote with \`-(todo) #N\``,
+      `## قادمة (${n}) — مؤجلة لا توقف شيئًا؛ رقِّها بـ\`-(todo) #N\``));
+    for (const t of upcomingTags) parts.push(`- ${numPrefix(t)}${safe(t.content)}${since(t.timestamp)}`);
+    for (const s of upcomingSteps) parts.push(`- #${s.num} — ${safe(s.text)} (${safe(s.planTitle)})${since(s.openedAt)}`);
   }
   // Outdated libraries — only those whose newer version is >1 week old. These
   // have no `#N` (the vuln scan owns them), so they're shown for awareness; a
@@ -197,10 +229,17 @@ export function buildContext(
   data: DevLogData,
   project: string,
   type: string = "SessionStart",
-  ctx: { sessionId?: string; userPrompt?: string; catalogNames?: string } = {},
+  ctx: { sessionId?: string; userPrompt?: string; catalogNames?: string; filePath?: string } = {},
 ): string {
   const profile = data.projects[project];
   if (!profile) return "";
+
+  // Position memory (#486): PreToolUse Read injects a compact "what happened
+  // to THIS file?" story. File-scoped, unlike everything below — short-circuit.
+  // Once-per-file-per-session gating lives in doInject (owner of the log).
+  if (type === "PreToolUse") {
+    return formatFileStoryContext(data, project, ctx.filePath || "");
+  }
 
   // Manual recall: user typed `?open` as a command. Require it ALONE on a line
   // (after stripping code fences / inline code) so merely quoting or explaining
@@ -237,7 +276,7 @@ export function buildContext(
       t.project === project && t.tag === "built" && +new Date(t.timestamp) > last,
     );
     if (closures.length === 0 && builtSince.length < 2) return "";
-    const summary = formatOpenSummary(data, project);
+    const summary = formatOpenSummary(data, project, getEffectiveConfig(data, project).upcomingItems);
     if (!summary.length) return "";
     const headerLine = closures.length > 0
       ? L(`✓ ${closures.length} item(s) closed since the last reminder`,
@@ -321,7 +360,7 @@ export function buildContext(
     }
   }
 
-  const openSummary = formatOpenSummary(data, project);
+  const openSummary = formatOpenSummary(data, project, config.upcomingItems);
   if (openSummary.length) {
     parts.push("");
     parts.push(...openSummary);

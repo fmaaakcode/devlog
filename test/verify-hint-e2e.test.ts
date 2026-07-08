@@ -8,7 +8,8 @@
 //   2. it does NOT surface again later in the same session, even on more closes.
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { spawn, type Subprocess } from "bun";
+import type { Subprocess } from "bun";
+import { startServer, waitForServer, runHook as runHookRaw } from "./_helpers";
 import { mkdtempSync, rmSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,27 +18,12 @@ import { join } from "node:path";
 const TEST_PORT = 17814;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
 const PROJECT_ROOT = join(import.meta.dir, "..");
-// Where the hook records "already nudged this session" (parse-tags.ts
-// VERIFY_STATE_DIR). We use a unique session id per test and scrub its file so a
-// prior run can never leak state into a fresh assertion.
-const VERIFY_STATE_DIR = join(PROJECT_ROOT, ".devlog", "verify-state");
+// Where the hook records "already nudged this session" — the session section of
+// the turn ledger (src/turn-ledger.ts, `session.hintedVerify`). We use a unique
+// session id per test and scrub its ledger file so a prior run can never leak
+// state into a fresh assertion.
+const TURN_STATE_DIR = join(PROJECT_ROOT, ".devlog", "turn-state");
 
-async function waitForServer(maxMs = 8000): Promise<void> {
-  const deadline = Date.now() + maxMs;
-  while (Date.now() < deadline) {
-    try { if ((await fetch(`${BASE}/api/data`, { signal: AbortSignal.timeout(500) })).ok) return; } catch { /* not up */ }
-    await Bun.sleep(100);
-  }
-  throw new Error("server failed to start");
-}
-function startServer(dataDir: string): Subprocess {
-  return spawn({
-    cmd: ["bun", join("src", "server.ts")],
-    cwd: PROJECT_ROOT,
-    env: { ...process.env, DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT), DEVLOG_VERSION_CHECK_DISABLED: "1" },
-    stdout: "pipe", stderr: "pipe",
-  });
-}
 async function register(cwd: string, sid: string): Promise<void> {
   await fetch(`${BASE}/api/inject?cwd=${encodeURIComponent(cwd)}&session_id=${sid}&type=SessionStart`, { signal: AbortSignal.timeout(4000) });
 }
@@ -54,19 +40,10 @@ async function openTodo(cwd: string, sid: string, content: string): Promise<numb
   return t.num;
 }
 
-// Run the real Stop hook with `message` as the assistant's final turn.
-async function runHook(cwd: string, sid: string, message: string): Promise<{ code: number; out: string }> {
-  const proc = spawn({
-    cmd: ["bun", "parse-tags.ts"],
-    cwd: PROJECT_ROOT,
-    env: { ...process.env, DEVLOG_PORT: String(TEST_PORT), DEVLOG_LANG: "en", DEVLOG_DEBUG: "0" },
-    stdin: "pipe", stdout: "pipe", stderr: "pipe",
-  });
-  proc.stdin.write(JSON.stringify({ cwd, session_id: sid, last_assistant_message: message }));
-  proc.stdin.end();
-  const [code, out] = await Promise.all([proc.exited, new Response(proc.stdout).text()]);
-  return { code, out };
-}
+// Run the real Stop hook with `message` as the assistant's final turn (adapter
+// over the shared harness).
+const runHook = (cwd: string, sid: string, message: string) =>
+  runHookRaw(TEST_PORT, { cwd, session_id: sid, last_assistant_message: message });
 
 // The additionalContext string the hook injects on the no-block path.
 function additionalContext(out: string): string {
@@ -82,8 +59,8 @@ describe("verify-nudge is once-per-session (loop fix)", () => {
     dataDir = mkdtempSync(join(tmpdir(), "verify-e2e-data-"));
     projDir = mkdtempSync(join(tmpdir(), "verify-e2e-proj-"));
     sid = `verify-e2e-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    server = startServer(dataDir);
-    await waitForServer();
+    server = startServer(dataDir, TEST_PORT);
+    await waitForServer(BASE);
     await register(projDir, sid);
   });
   afterEach(async () => {
@@ -91,8 +68,8 @@ describe("verify-nudge is once-per-session (loop fix)", () => {
     await Promise.race([server.exited, Bun.sleep(2000)]);
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(projDir, { recursive: true, force: true });
-    // Scrub the per-session state file this test wrote into the repo's .devlog.
-    try { await rm(join(VERIFY_STATE_DIR, `${sid}.json`), { force: true }); } catch { /* no state file */ }
+    // Scrub the per-session ledger file this test wrote into the repo's .devlog.
+    try { await rm(join(TURN_STATE_DIR, `${sid}.json`), { force: true }); } catch { /* no state file */ }
   });
 
   test("first close with no test run injects the verify hint once, then stays quiet", async () => {
