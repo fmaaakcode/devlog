@@ -28,8 +28,20 @@ PORT="${DEVLOG_PORT:-7777}"
 
 # ?plugin=1 marks a plugin-delivered session for /api/inject (compact primer);
 # manual settings.json installs call the script with no argument.
+# --bun-home <dir> overrides the root probed for the Bun fallback below
+# (default: DEVLOG_BUN_HOME env, then $HOME). Tests MUST use the argument, not
+# the env var: argv provably crosses into Git Bash children everywhere, while
+# the v3.8.0 CI-red saga burned two rounds on env-only overrides whose
+# propagation on the Windows runner we could never prove either way.
 QUERY=""
-[ "$1" = "--plugin" ] && QUERY="?plugin=1"
+BUN_HOME="${DEVLOG_BUN_HOME:-$HOME}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --plugin) QUERY="?plugin=1" ;;
+    --bun-home) shift; [ -n "$1" ] && BUN_HOME="$1" ;;
+  esac
+  shift
+done
 
 # Drain the hook event payload from stdin exactly once, up front. Every exit
 # path below must leave stdin consumed and reply on stdout — never on stderr.
@@ -55,11 +67,10 @@ fi
 # on disk — a real user hit exactly this minutes after following our own install
 # hint, and no amount of "close all windows" fixes it short of a reboot. Probe
 # the default install location as a fallback before giving up.
-# DEVLOG_BUN_HOME overrides the probed root (default $HOME): tests point it at
-# an empty dir for deterministic isolation — HOME overrides don't survive into
-# Git Bash children on the Windows CI runner, where setup-bun's real install at
-# ~/.bun/bin made the "no bun" scenario silently find bun (CI-red on v3.8.0).
-[ -d "${DEVLOG_BUN_HOME:-$HOME}/.bun/bin" ] && PATH="$PATH:${DEVLOG_BUN_HOME:-$HOME}/.bun/bin"
+# The probed root is injectable (--bun-home / DEVLOG_BUN_HOME, see above) so
+# tests can point it at an empty dir: on the Windows CI runner the real
+# ~/.bun/bin from setup-bun made the "no bun" scenario silently find bun.
+[ -d "$BUN_HOME/.bun/bin" ] && PATH="$PATH:$BUN_HOME/.bun/bin"
 
 # First-run dependency check: DevLog's server + hooks run on Bun. When it isn't
 # on PATH the server can never start and every DevLog hook no-ops. The hint MUST

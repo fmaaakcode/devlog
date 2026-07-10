@@ -62,17 +62,34 @@ async function runScript(opts: { env?: Record<string, string>; args?: string[]; 
 }
 
 describe.skipIf(!BASH)("ensure-server.sh stdout contract", () => {
-  // DEVLOG_BUN_HOME points the script's ~/.bun/bin fallback at an empty dir —
-  // these tests simulate a machine with no bun anywhere. Overriding HOME is NOT
-  // enough: it doesn't survive into Git Bash children on the Windows CI runner,
-  // where setup-bun's real ~/.bun/bin made this scenario silently find bun.
+  // `--bun-home` points the script's ~/.bun/bin fallback at an empty dir —
+  // these tests simulate a machine with no bun anywhere. Passed as an ARGUMENT,
+  // not an env var: two CI-red rounds on the Windows runner (HOME, then
+  // DEVLOG_BUN_HOME) died on unprovable env propagation into Git Bash children;
+  // argv provably crosses everywhere. The guard test below pins the env
+  // question itself so a future failure names the real culprit.
   let bareHome: string;
   beforeAll(() => { bareHome = mkdtempSync(join(tmpdir(), "ensure-hook-home-")); });
   afterAll(() => { rmSync(bareHome, { recursive: true, force: true }); });
 
+  test("assumption guard: custom env vars DO reach Git Bash children", async () => {
+    // DEVLOG_LANG (and PORT) ride the environment in production. If this fails
+    // on some runner, the bug is env propagation — migrate those to arguments
+    // too; do NOT paper over the scenario tests.
+    const proc = spawn({
+      cmd: [BASH as string, "-c", 'printf "%s" "$DEVLOG_ENV_PROBE"'],
+      env: { ...process.env, DEVLOG_ENV_PROBE: "probe-7f2" },
+      stdout: "pipe", stderr: "pipe",
+    });
+    const [code, out] = await Promise.all([proc.exited, new Response(proc.stdout).text()]);
+    expect(code).toBe(0);
+    expect(out).toBe("probe-7f2");
+  });
+
   test("Bun missing → systemMessage JSON on stdout, exit 0 (English default)", async () => {
     const { code, out, err } = await runScript({
-      env: { PATH: NO_BUN_PATH, DEVLOG_BUN_HOME: msysPath(bareHome), DEVLOG_LANG: "en" },
+      args: ["--bun-home", msysPath(bareHome)],
+      env: { PATH: NO_BUN_PATH, DEVLOG_LANG: "en", DEVLOG_PORT: "17915" },
     });
     expect(code).toBe(0);
     const parsed = JSON.parse(out.trim());
@@ -86,7 +103,8 @@ describe.skipIf(!BASH)("ensure-server.sh stdout contract", () => {
 
   test("Bun missing under DEVLOG_LANG=ar → Arabic systemMessage", async () => {
     const { code, out } = await runScript({
-      env: { PATH: NO_BUN_PATH, DEVLOG_BUN_HOME: msysPath(bareHome), DEVLOG_LANG: "ar" },
+      args: ["--bun-home", msysPath(bareHome)],
+      env: { PATH: NO_BUN_PATH, DEVLOG_LANG: "ar", DEVLOG_PORT: "17915" },
     });
     expect(code).toBe(0);
     const parsed = JSON.parse(out.trim());
@@ -95,24 +113,29 @@ describe.skipIf(!BASH)("ensure-server.sh stdout contract", () => {
     expect(parsed.systemMessage).toContain("bun.sh/install");
   });
 
-  test("stale PATH but bun at <bun-home>/.bun/bin → fallback finds it, no message", async () => {
+  test("stale PATH but bun at <bun-home>/.bun/bin → fallback finds OUR shim, no message", async () => {
     // A shim standing in for the real binary at the default install location:
     // `command -v bun` must succeed via the fallback even though PATH is stale.
-    // Injected via DEVLOG_BUN_HOME so the assertion exercises OUR shim, not a
-    // real ~/.bun/bin that happens to exist on the machine (the CI-red trap:
-    // this test once passed on the Windows runner for the wrong reason).
+    // The shim drops a marker file when executed, so this asserts the fallback
+    // found THE SHIM — not a real ~/.bun/bin that happens to exist on the
+    // machine (the CI-red trap: this test once passed on the Windows runner
+    // for the wrong reason and couldn't tell anyone).
     const home = mkdtempSync(join(tmpdir(), "ensure-hook-bunhome-"));
     try {
       const binDir = join(home, ".bun", "bin");
+      const marker = join(home, "shim-ran.marker");
       mkdirSync(binDir, { recursive: true });
-      writeFileSync(join(binDir, "bun"), "#!/bin/sh\nexit 0\n");
+      writeFileSync(join(binDir, "bun"), `#!/bin/sh\n: > "${msysPath(marker)}"\nexit 0\n`);
       chmodSync(join(binDir, "bun"), 0o755);
       const { code, out } = await runScript({
-        env: { PATH: NO_BUN_PATH, DEVLOG_BUN_HOME: msysPath(home), DEVLOG_PORT: "17914", DEVLOG_LANG: "en" },
+        args: ["--bun-home", msysPath(home)],
+        env: { PATH: NO_BUN_PATH, DEVLOG_PORT: "17914", DEVLOG_LANG: "en" },
       });
       expect(code).toBe(0);
       // No install hint — and the dead test port means no inject response either.
       expect(out).not.toContain("systemMessage");
+      // The fingerprint: our shim actually executed (spawn path went through it).
+      expect(existsSync(marker)).toBe(true);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
