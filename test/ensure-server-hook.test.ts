@@ -11,7 +11,7 @@
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { spawn, type Subprocess } from "bun";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -54,27 +54,56 @@ async function runScript(opts: { env?: Record<string, string>; args?: string[]; 
 }
 
 describe.skipIf(!BASH)("ensure-server.sh stdout contract", () => {
+  // An empty HOME keeps the $HOME/.bun/bin fallback from finding a real bun
+  // on the dev machine — these tests simulate a machine with no bun anywhere.
+  let bareHome: string;
+  beforeAll(() => { bareHome = mkdtempSync(join(tmpdir(), "ensure-hook-home-")); });
+  afterAll(() => { rmSync(bareHome, { recursive: true, force: true }); });
+
   test("Bun missing → systemMessage JSON on stdout, exit 0 (English default)", async () => {
     const { code, out, err } = await runScript({
-      env: { PATH: NO_BUN_PATH, DEVLOG_LANG: "en" },
+      env: { PATH: NO_BUN_PATH, HOME: bareHome, DEVLOG_LANG: "en" },
     });
     expect(code).toBe(0);
     const parsed = JSON.parse(out.trim());
     expect(parsed.systemMessage).toContain("Bun is not installed");
     expect(parsed.systemMessage).toContain("bun.sh/install");
+    // Stale-PATH wording (#525): a new session in an old window isn't enough.
+    expect(parsed.systemMessage).toContain("NEW terminal window");
     // The message must NOT ride the discarded channel anymore.
     expect(err).not.toContain("Bun is not installed");
   });
 
   test("Bun missing under DEVLOG_LANG=ar → Arabic systemMessage", async () => {
     const { code, out } = await runScript({
-      env: { PATH: NO_BUN_PATH, DEVLOG_LANG: "ar" },
+      env: { PATH: NO_BUN_PATH, HOME: bareHome, DEVLOG_LANG: "ar" },
     });
     expect(code).toBe(0);
     const parsed = JSON.parse(out.trim());
     expect(parsed.systemMessage).toContain("Bun غير مثبّت");
+    expect(parsed.systemMessage).toContain("نافذة طرفية جديدة");
     expect(parsed.systemMessage).toContain("bun.sh/install");
   });
+
+  test("stale PATH but bun at $HOME/.bun/bin → fallback finds it, no message", async () => {
+    // A shim standing in for the real binary at the default install location:
+    // `command -v bun` must succeed via the fallback even though PATH is stale.
+    const home = mkdtempSync(join(tmpdir(), "ensure-hook-bunhome-"));
+    try {
+      const binDir = join(home, ".bun", "bin");
+      mkdirSync(binDir, { recursive: true });
+      writeFileSync(join(binDir, "bun"), "#!/bin/sh\nexit 0\n");
+      chmodSync(join(binDir, "bun"), 0o755);
+      const { code, out } = await runScript({
+        env: { PATH: NO_BUN_PATH, HOME: home, DEVLOG_PORT: "17914", DEVLOG_LANG: "en" },
+      });
+      expect(code).toBe(0);
+      // No install hint — and the dead test port means no inject response either.
+      expect(out).not.toContain("systemMessage");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 15000);
 
   test("autostart off + dead port → stdin drained, empty stdout, exit 0", async () => {
     const { code, out } = await runScript({

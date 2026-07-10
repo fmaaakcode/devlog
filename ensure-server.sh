@@ -50,16 +50,26 @@ if [ "$DEVLOG_AUTOSTART_OFF" = "1" ]; then
   exit 0
 fi
 
+# Stale-PATH tolerance: a terminal (or Explorer) that predates the Bun install
+# hands the hook its old PATH, so `command -v bun` goes blind even though Bun is
+# on disk — a real user hit exactly this minutes after following our own install
+# hint, and no amount of "close all windows" fixes it short of a reboot. Probe
+# the default install location as a fallback before giving up.
+[ -d "$HOME/.bun/bin" ] && PATH="$PATH:$HOME/.bun/bin"
+
 # First-run dependency check: DevLog's server + hooks run on Bun. When it isn't
 # on PATH the server can never start and every DevLog hook no-ops. The hint MUST
 # ride stdout as systemMessage JSON — stderr from an exit-0 hook is discarded by
 # Claude Code, which is exactly how this failure used to be invisible. Exit 0
 # keeps the session starting normally; install commands are language-neutral,
-# prose follows DEVLOG_LANG (parity with the server's i18n).
+# prose follows DEVLOG_LANG (parity with the server's i18n). "New terminal
+# window" wording is deliberate (#525): a new session inside a pre-install
+# window inherits the same stale PATH (custom install dirs still need it —
+# default installs are covered by the fallback above).
 if ! command -v bun >/dev/null 2>&1; then
   case "$DEVLOG_LANG" in
-    ar*) printf '%s' '{"systemMessage":"[DevLog] Bun غير مثبّت — DevLog يحتاج Bun ليعمل. ثبّته ثم افتح جلسة جديدة:\n  Windows:      powershell -c \"irm bun.sh/install.ps1 | iex\"\n  macOS/Linux:  curl -fsSL https://bun.sh/install | bash"}' ;;
-    *)   printf '%s' '{"systemMessage":"[DevLog] Bun is not installed — DevLog needs Bun to run. Install it, then open a new session:\n  Windows:      powershell -c \"irm bun.sh/install.ps1 | iex\"\n  macOS/Linux:  curl -fsSL https://bun.sh/install | bash"}' ;;
+    ar*) printf '%s' '{"systemMessage":"[DevLog] Bun غير مثبّت — DevLog يحتاج Bun ليعمل. ثبّته ثم افتح نافذة طرفية جديدة وجلسة جديدة:\n  Windows:      powershell -c \"irm bun.sh/install.ps1 | iex\"\n  macOS/Linux:  curl -fsSL https://bun.sh/install | bash"}' ;;
+    *)   printf '%s' '{"systemMessage":"[DevLog] Bun is not installed — DevLog needs Bun to run. Install it, then open a NEW terminal window and start a new session:\n  Windows:      powershell -c \"irm bun.sh/install.ps1 | iex\"\n  macOS/Linux:  curl -fsSL https://bun.sh/install | bash"}' ;;
   esac
   exit 0
 fi
