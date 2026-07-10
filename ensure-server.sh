@@ -35,6 +35,7 @@ PORT="${DEVLOG_PORT:-7777}"
 # propagation on the Windows runner we could never prove either way.
 QUERY=""
 BUN_HOME="${DEVLOG_BUN_HOME:-$HOME}"
+ORIG_ARGS="$*"
 while [ $# -gt 0 ]; do
   case "$1" in
     --plugin) QUERY="?plugin=1" ;;
@@ -42,6 +43,15 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+# DEVLOG_DEBUG=1 diagnostics ride stderr — discarded by Claude Code on exit 0,
+# read by tests and CI logs (soft-fail.ts convention: observe, never alter
+# behavior). stdout stays reserved for the hook contract. Added after three
+# CI-red rounds of DEDUCING why the Bun fallback resolves wrong on the Windows
+# runner; this prints the computed reality so the log names the culprit.
+dbg() { if [ "$DEVLOG_DEBUG" = "1" ]; then printf '[ensure-server dbg] %s\n' "$*" >&2; fi; }
+dbg "argv=[$ORIG_ARGS]"
+dbg "BUN_HOME=$BUN_HOME"
 
 # Drain the hook event payload from stdin exactly once, up front. Every exit
 # path below must leave stdin consumed and reply on stdout — never on stderr.
@@ -71,6 +81,9 @@ fi
 # tests can point it at an empty dir: on the Windows CI runner the real
 # ~/.bun/bin from setup-bun made the "no bun" scenario silently find bun.
 [ -d "$BUN_HOME/.bun/bin" ] && PATH="$PATH:$BUN_HOME/.bun/bin"
+dbg "fallback_dir_exists=$([ -d "$BUN_HOME/.bun/bin" ] && echo yes || echo no)"
+dbg "PATH=$PATH"
+dbg "bun=$(command -v bun 2>/dev/null || echo '(not found)')"
 
 # First-run dependency check: DevLog's server + hooks run on Bun. When it isn't
 # on PATH the server can never start and every DevLog hook no-ops. The hint MUST

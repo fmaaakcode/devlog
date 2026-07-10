@@ -89,9 +89,13 @@ describe.skipIf(!BASH)("ensure-server.sh stdout contract", () => {
   test("Bun missing → systemMessage JSON on stdout, exit 0 (English default)", async () => {
     const { code, out, err } = await runScript({
       args: ["--bun-home", msysPath(bareHome)],
-      env: { PATH: NO_BUN_PATH, DEVLOG_LANG: "en", DEVLOG_PORT: "17915" },
+      env: { PATH: NO_BUN_PATH, DEVLOG_LANG: "en", DEVLOG_PORT: "17915", DEVLOG_DEBUG: "1" },
     });
     expect(code).toBe(0);
+    // Read the script's own testimony BEFORE asserting behavior: three CI-red
+    // rounds went to deducing these two values — now a failure log prints them.
+    expect(err).toContain(`BUN_HOME=${msysPath(bareHome)}`);
+    expect(err).toContain("bun=(not found)");
     const parsed = JSON.parse(out.trim());
     expect(parsed.systemMessage).toContain("Bun is not installed");
     expect(parsed.systemMessage).toContain("bun.sh/install");
@@ -102,11 +106,13 @@ describe.skipIf(!BASH)("ensure-server.sh stdout contract", () => {
   });
 
   test("Bun missing under DEVLOG_LANG=ar → Arabic systemMessage", async () => {
-    const { code, out } = await runScript({
+    const { code, out, err } = await runScript({
       args: ["--bun-home", msysPath(bareHome)],
-      env: { PATH: NO_BUN_PATH, DEVLOG_LANG: "ar", DEVLOG_PORT: "17915" },
+      env: { PATH: NO_BUN_PATH, DEVLOG_LANG: "ar", DEVLOG_PORT: "17915", DEVLOG_DEBUG: "1" },
     });
     expect(code).toBe(0);
+    expect(err).toContain(`BUN_HOME=${msysPath(bareHome)}`);
+    expect(err).toContain("bun=(not found)");
     const parsed = JSON.parse(out.trim());
     expect(parsed.systemMessage).toContain("Bun غير مثبّت");
     expect(parsed.systemMessage).toContain("نافذة طرفية جديدة");
@@ -127,11 +133,16 @@ describe.skipIf(!BASH)("ensure-server.sh stdout contract", () => {
       mkdirSync(binDir, { recursive: true });
       writeFileSync(join(binDir, "bun"), `#!/bin/sh\n: > "${msysPath(marker)}"\nexit 0\n`);
       chmodSync(join(binDir, "bun"), 0o755);
-      const { code, out } = await runScript({
+      const { code, out, err } = await runScript({
         args: ["--bun-home", msysPath(home)],
-        env: { PATH: NO_BUN_PATH, DEVLOG_PORT: "17914", DEVLOG_LANG: "en" },
+        env: { PATH: NO_BUN_PATH, DEVLOG_PORT: "17914", DEVLOG_LANG: "en", DEVLOG_DEBUG: "1" },
       });
       expect(code).toBe(0);
+      // Testimony first: the fallback resolved to OUR temp root and the bun it
+      // found lives inside it — not a real install elsewhere on the machine.
+      expect(err).toContain(`BUN_HOME=${msysPath(home)}`);
+      expect(err).toContain("fallback_dir_exists=yes");
+      expect(err).toContain(`bun=${msysPath(join(binDir, "bun"))}`);
       // No install hint — and the dead test port means no inject response either.
       expect(out).not.toContain("systemMessage");
       // The fingerprint: our shim actually executed (spawn path went through it).
