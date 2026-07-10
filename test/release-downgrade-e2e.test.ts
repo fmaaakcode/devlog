@@ -4,6 +4,7 @@
 // dir + a registered project so the release path runs end to end.
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { asJson } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -39,7 +40,7 @@ async function register(cwd: string): Promise<void> {
   await fetch(`${BASE}/api/inject?cwd=${encodeURIComponent(cwd)}&session_id=dg-e2e&type=SessionStart`, { signal: AbortSignal.timeout(4000) });
 }
 async function releaseTags(project: string): Promise<string[]> {
-  const d: any = await (await fetch(`${BASE}/api/data`)).json();
+  const d: any = await asJson(await fetch(`${BASE}/api/data`));
   return d.tags.filter((t: any) => t.project === project && t.tag === "release").map((t: any) => t.content);
 }
 

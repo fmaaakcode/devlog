@@ -1,7 +1,8 @@
 import { test, expect, describe } from "bun:test";
 import { runProjectAudit, formatAuditReport, type AuditResult } from "../src/vuln-audit";
+import type { PkgVuln } from "../src/osv";
 
-const mkVuln = (over: Partial<any> = {}) => ({
+const mkVuln = (over: Partial<PkgVuln> = {}): PkgVuln => ({
   ok: true, vulns: 1, status: "update", icon: "warning", message: "", severity: "high",
   topVuln: null, fixVersion: "", detailsUrl: "", advisories: [], ...over,
 });

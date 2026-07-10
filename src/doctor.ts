@@ -251,6 +251,34 @@ async function diagnose(projectPath: string): Promise<DoctorReport> {
     });
   }
 
+  // ─── Check 8: duplicate item numbers (#N collisions) ───────────
+  // Closure matches by number alone, so two items sharing a #N get closed by
+  // ONE -(done)/-(bug fix). Duplicates appear when nextItemNum falls behind
+  // the high-water mark (a projects.json restore from .bak, or the pre-fix
+  // rescan that dropped the counter). assignNum now self-heals, but damage
+  // already written needs a detector — nothing else surfaces it.
+  const numCounts = new Map<number, number>();
+  for (const t of tags) {
+    if (typeof t.num !== "number") continue;
+    numCounts.set(t.num, (numCounts.get(t.num) ?? 0) + 1);
+  }
+  for (const p of plans) {
+    for (const s of (p.steps || [])) {
+      if (typeof s.num !== "number") continue;
+      numCounts.set(s.num, (numCounts.get(s.num) ?? 0) + 1);
+    }
+  }
+  const dupNums = [...numCounts].filter(([, c]) => c > 1).map(([n]) => n).sort((a, b) => a - b);
+  if (dupNums.length) {
+    findings.push({
+      severity: "high",
+      code: "DUPLICATE_ITEM_NUMS",
+      title: `${dupNums.length} رقم عنصر مكرّر — الإغلاق بـ#N يصيب العنصر الخطأ`,
+      detail: "عدّاد nextItemNum تخلّف عن أعلى رقم مستخدم (استرجاع backup أو rescan قديم). أعد ترقيم المكرّرات المفتوحة يدويًا.",
+      items: dupNums.slice(0, 20).map(n => `#${n}`),
+    });
+  }
+
   return { project: projectKey, path: absPath, findings, stats };
 }
 

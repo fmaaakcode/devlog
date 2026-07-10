@@ -3,6 +3,7 @@ import { join, extname, relative } from "node:path";
 import { extractSymbols, type Symbol as CodeSymbol } from "./symbols";
 import { normalizeSlashes } from "./path-utils";
 import { CONTENT_PATTERNS } from "./analyze-patterns";
+import { softFail } from "./soft-fail";
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "__pycache__", "target", "vendor", ".venv", "venv", "cache", "tmp", "temp", ".cache", ".tmp", "release", "debug", ".devlog", ".claude", "backup", "old", "doc", "docs", "documentation", "examples", "example", "samples", "fixtures", "test", "tests", "__tests__", "external", "third_party", "thirdparty", "3rdparty", "deps", "lib"]);
 const SOURCE_EXT = new Set(["ts", "tsx", "js", "jsx", "py", "rs", "go", "java", "kt", "cs", "cpp", "c", "cc", "cxx", "h", "hpp", "hxx", "rb", "php", "swift", "dart", "vue", "svelte", "css", "html", "htm", "cu", "cuh"]);
@@ -90,7 +91,7 @@ async function collectSourceFiles(dir: string, base: string, depth = 0): Promise
         if (SOURCE_EXT.has(ext)) files.push(full);
       }
     }
-  } catch { /* unreadable directory → return what we collected so far */ }
+  } catch (e) { softFail(`analyze.collectSourceFiles(${dir})`, e); } // unreadable dir → return what we collected
   return files;
 }
 
@@ -745,8 +746,7 @@ export async function analyzeProject(projectPath: string): Promise<ProjectAnalys
       }
     } catch (e) {
       // Best-effort: a binary/locked/unreadable file must not abort the whole
-      // scan — but stay diagnosable so a silently-missing file is explainable
-      // (R4 devops F4).
+      // scan — but stay diagnosable (R4 devops F4).
       console.warn(`[analyze] skip unreadable ${rel}: ${(e as Error).message}`);
     }
   }

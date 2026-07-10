@@ -234,7 +234,7 @@ describe("syncPlanSteps — native plans (no checkbox file I/O)", () => {
   test("two phase tokens → an ambiguous-phase rejection, no step touched", async () => {
     const data = mkData({ projects: { [PROJ]: project() }, plans: [plan([step("a", { phase: "P1" })], native)] });
     await syncPlanSteps("done", "P1 and P2 both", data, PROJ);
-    expect(data.rejections.at(-1)?.reason).toBe("ambiguous-phase");
+    expect(data.rejections?.at(-1)?.reason).toBe("ambiguous-phase");
     expect(data.plans[0].steps[0].completed).toBe(false);
   });
   test("no project path → no-op", async () => {
@@ -252,7 +252,7 @@ describe("handleDocTag + applyRelease (temp project dir)", () => {
   test("handleDocTag rejects when cwd doesn't match the registered path", async () => {
     const data = mkData({ projects: { [PROJ]: project("/registered/path") } });
     await handleDocTag({ tag: "doc:report" }, "# title\n\nbody", data, PROJ, "/some/other/cwd");
-    expect(data.rejections.at(-1)?.reason).toBe("cwd-mismatch");
+    expect(data.rejections?.at(-1)?.reason).toBe("cwd-mismatch");
   });
 
   test("handleDocTag writes a doc:plan and registers its steps", async () => {

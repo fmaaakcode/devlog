@@ -65,6 +65,16 @@ describe("rescanPreserve", () => {
     expect(data.projects.x.vulnScanDate).toBe("2026-04-26T12:00:00Z");
   });
 
+  test("preserves nextItemNum + disconnectedSince (round-8: rescan dropped the #N counter)", async () => {
+    const data = makeData("x", {
+      description: "", blueprint: [], language: "TypeScript",
+      nextItemNum: 42, disconnectedSince: "2026-07-01T00:00:00Z",
+    });
+    await rescanPreserve(data, "x", TMP);
+    expect(data.projects.x.nextItemNum).toBe(42);
+    expect(data.projects.x.disconnectedSince).toBe("2026-07-01T00:00:00Z");
+  });
+
   test("absent about field stays absent (no false-empty assignment)", async () => {
     const data = makeData("x", {
       description: "", blueprint: [],

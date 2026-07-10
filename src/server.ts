@@ -735,8 +735,11 @@ function watchProject(name: string, projectPath: string) {
       try { w.close(); } catch { /* watcher already dead/closing — nothing to release */ }
     });
     projectWatchers.set(projectPath, w);
-  } catch {
-    // Watch can fail on missing paths or permission issues — ignore.
+  } catch (e) {
+    // Watch can fail on missing paths or permission issues — the project just
+    // loses live manifest watching, but that death should be visible in debug
+    // mode instead of the watcher silently never existing.
+    softFail(`watchProject(${projectPath})`, e);
   }
 }
 

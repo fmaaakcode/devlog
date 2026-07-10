@@ -4,6 +4,7 @@
 // server, covering shapes + the confirm/guard paths.
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
+import { asJson } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,13 +52,13 @@ describe("routes-misc (extracted group) still mounts + behaves", () => {
   test("GET /api/config → 200 feature flags", async () => {
     const r = await fetch(`${BASE}/api/config`);
     expect(r.status).toBe(200);
-    expect((await r.json()).vulnEnabled).toBe(true);
+    expect((await asJson(r)).vulnEnabled).toBe(true);
   });
 
   test("GET /api/updates → 200 with pluginMode", async () => {
     const r = await fetch(`${BASE}/api/updates`);
     expect(r.status).toBe(200);
-    expect(typeof (await r.json()).pluginMode).toBe("boolean");
+    expect(typeof (await asJson(r)).pluginMode).toBe("boolean");
   });
 
   test("DELETE /api/event/:id → 404 for unknown id", async () => {
@@ -78,7 +79,7 @@ describe("routes-misc (extracted group) still mounts + behaves", () => {
   test("POST /api/export-all → 200 exported list", async () => {
     const r = await fetch(`${BASE}/api/export-all`, { method: "POST", headers: JSON_HEADERS });
     expect(r.status).toBe(200);
-    expect(Array.isArray((await r.json()).exported)).toBe(true);
+    expect(Array.isArray((await asJson(r)).exported)).toBe(true);
   });
 
   test("guard still wraps the group: non-JSON POST /api/updates → 415", async () => {

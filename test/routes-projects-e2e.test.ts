@@ -7,6 +7,7 @@
 // is redirected to a temp dir so the memory-migration step can't touch real config.
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
+import { asJson } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -102,7 +103,7 @@ describe("routes-projects — real rename exercises the injected watcher deps", 
     expect(inj.status).toBe(200);
 
     // It should now exist under the folder-name key.
-    const data = await (await fetch(`${BASE}/api/data`)).json();
+    const data = await asJson(await fetch(`${BASE}/api/data`));
     expect(data.projects.proj_old).toBeTruthy();
 
     // Rename it → folder moves on disk (release → renameWithRetry → refresh deps).
@@ -110,13 +111,13 @@ describe("routes-projects — real rename exercises the injected watcher deps", 
       method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ newName: "proj_new" }),
     });
     expect(r.status).toBe(200);
-    const body = await r.json();
+    const body = await asJson(r);
     expect(body.ok).toBe(true);
     expect(body.movedFolder).toBe(true);
     expect(existsSync(join(workspace, "proj_new"))).toBe(true);   // renamed on disk
     expect(existsSync(oldFolder)).toBe(false);                     // old gone
 
-    const after = await (await fetch(`${BASE}/api/data`)).json();
+    const after = await asJson(await fetch(`${BASE}/api/data`));
     expect(after.projects.proj_new).toBeTruthy();
     expect(after.projects.proj_old).toBeFalsy();
   });

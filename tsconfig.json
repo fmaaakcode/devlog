@@ -13,5 +13,5 @@
     "skipLibCheck": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src/**/*", "parse-tags.ts"]
+  "include": ["src/**/*", "test/**/*", "parse-tags.ts"]
 }

@@ -99,6 +99,46 @@ describe("parseTags — terminator must be known tag", () => {
   });
 });
 
+describe("parseTags — content comes from the ORIGINAL message (round-8 F1/F2/F3)", () => {
+  test("inline code spans survive in tag content", () => {
+    const out = parseTags("-(bug found) `assignNum` يفقد `nextItemNum` بعد rescan");
+    expect(out).toEqual([{ tag: "bug found", breaking: false, content: "`assignNum` يفقد `nextItemNum` بعد rescan" }]);
+  });
+
+  test("content starting with an inline code span keeps its opening identifier", () => {
+    const out = parseTags("-(note) `saveData` ليست ذرّية");
+    expect(out[0].content).toBe("`saveData` ليست ذرّية");
+  });
+
+  test("bold-leading content is not dropped", () => {
+    const out = parseTags("-(feature) **تسجيل الدخول** عبر Google");
+    expect(out).toEqual([{ tag: "feature", breaking: false, content: "**تسجيل الدخول** عبر Google" }]);
+  });
+
+  test("list-bullet residue (* item) is still rejected", () => {
+    expect(parseTags("-(plan) * عنصر قائمة")).toEqual([]);
+  });
+
+  test("doc body is not truncated by a tag-looking line inside a fence", () => {
+    const out = parseTags("-(doc:report) تقرير\n## مقدمة\n```\n-(todo) مثال\n```\n## خاتمة");
+    expect(out.length).toBe(1);
+    expect(out[0].content).toContain("-(todo) مثال");
+    expect(out[0].content).toContain("## خاتمة");
+  });
+
+  test("a doc:* tag mentioned inside a fence is NOT captured as a phantom doc", () => {
+    const out = parseTags("شرح:\n```markdown\n-(doc:report) اسم\n# عنوان\n```\nانتهى.");
+    expect(out).toEqual([]);
+  });
+
+  test("a trailing fenced block after a non-doc tag is illustration, not content", () => {
+    // The old code dropped it by accident (strip left spaces that trim ate);
+    // now it is dropped on purpose — this test pins that contract.
+    const out = parseTags("-(built) دالة جديدة\n```ts\nconst x = 1;\n```");
+    expect(out[0].content).toBe("دالة جديدة");
+  });
+});
+
 describe("parseTags — security:* and doc:* alternatives", () => {
   test("security:dep and security:own captured separately from security", () => {
     const msg = "-(security:dep) lodash CVE-XXX\n-(security:own) XSS in render\n-(security) generic";

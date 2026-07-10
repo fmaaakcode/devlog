@@ -6,6 +6,7 @@
 // slip is visible (something diagnoseClosureMismatch can't flag).
 
 import { describe, test, expect, beforeEach, afterEach, beforeAll } from "bun:test";
+import { asJson } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -54,7 +55,7 @@ async function register(cwd: string): Promise<void> {
 }
 
 async function numFor(project: string, content: string): Promise<number> {
-  const data: any = await (await fetch(`${BASE}/api/data`)).json();
+  const data: any = await asJson(await fetch(`${BASE}/api/data`));
   const t = data.tags.find((x: any) => x.project === project && x.content === content && typeof x.num === "number");
   if (!t) throw new Error(`no numbered tag "${content}" under ${project}`);
   return t.num;

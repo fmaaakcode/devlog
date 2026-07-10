@@ -5,6 +5,7 @@
 // injected isRealCwd guard and a hook→/api/data round-trip.
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
+import { asJson } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -55,7 +56,7 @@ describe("routes-events (extracted group) still mounts + behaves", () => {
       body: JSON.stringify({ cwd: "$NOT_A_REAL_DIR", hook_event_name: "PostToolUse", tool_name: "Edit" }),
     });
     expect(r.status).toBe(200);
-    expect((await r.json()).skipped).toBe("cwd-invalid");
+    expect((await asJson(r)).skipped).toBe("cwd-invalid");
   });
 
   test("POST /api/hook (empty cwd) records an event → visible in /api/changes", async () => {
@@ -64,8 +65,8 @@ describe("routes-events (extracted group) still mounts + behaves", () => {
       body: JSON.stringify({ cwd: "", hook_event_name: "PostToolUse", tool_name: "Edit", file_path: "/x/y.ts", new_string: "a\nb" }),
     });
     expect(r.status).toBe(200);
-    expect((await r.json()).ok).toBe(true);
-    const data = await (await fetch(`${BASE}/api/data`)).json();
+    expect((await asJson(r)).ok).toBe(true);
+    const data = await asJson(await fetch(`${BASE}/api/data`));
     expect(data.events.length).toBeGreaterThanOrEqual(1);   // the injected pushEvent dep stored it
   });
 
@@ -79,7 +80,7 @@ describe("routes-events (extracted group) still mounts + behaves", () => {
       method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ cwd: "", session_id: "no-such-session" }),
     });
     expect(r.status).toBe(200);
-    expect((await r.json()).empty).toBe(true);
+    expect((await asJson(r)).empty).toBe(true);
   });
 
   test("guard still wraps the group: non-JSON POST /api/hook → 415", async () => {

@@ -5,7 +5,7 @@
 // project + all). All shared imports, so makeMiscRoutes() takes no injected
 // server state. Spread into server.ts's routeDefs.
 
-import { loadData, saveData, withData, cleanupMissingProjects, DATA_DIR, PORT, PLUGIN_MODE, DEFAULT_INJECTION_CONFIG } from "./data";
+import { loadData, withData, cleanupMissingProjects, DATA_DIR, PORT, PLUGIN_MODE, DEFAULT_INJECTION_CONFIG } from "./data";
 import { broadcast } from "./broadcast";
 import { appendAudit } from "./audit";
 import { exportStatusMd } from "./export";
@@ -78,10 +78,16 @@ export function makeMiscRoutes(): Record<string, unknown> {
           return Response.json({ error: "Add X-Confirm: yes header" }, { status: 400 });
         }
         await appendAudit("data.clear", req);
-        await saveData({
-          projects: {}, events: [], tags: [], plans: [], worklog: [],
-          injections: [], injectionConfig: { ...DEFAULT_INJECTION_CONFIG }, projectInjectionConfigs: {},
-          descendants: [],
+        // Mutate the shared object under the withData lock — a direct
+        // saveData() here raced any in-flight handler holding the lock, which
+        // then resumed and wrote its stale snapshot BACK over the wipe (the
+        // client had already seen ok:true).
+        await withData(async (data) => {
+          data.projects = {}; data.events = []; data.tags = []; data.plans = [];
+          data.worklog = []; data.injections = []; data.descendants = [];
+          data.projectInjectionConfigs = {};
+          data.injectionConfig = { ...DEFAULT_INJECTION_CONFIG };
+          data.rejections = []; data.migrations = {};
         });
         return Response.json({ ok: true });
       },

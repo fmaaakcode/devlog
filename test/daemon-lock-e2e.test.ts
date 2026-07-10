@@ -6,7 +6,7 @@
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import type { Subprocess } from "bun";
-import { startServer, waitForServer } from "./_helpers";
+import { asJson, startServer, waitForServer } from "./_helpers";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,7 +42,7 @@ describe("data-dir single-writer lock (#435)", () => {
   test("the running daemon holds the lock and answers /api/daemon-id", async () => {
     const lock = JSON.parse(readFileSync(join(dataDir, "daemon.lock"), "utf8"));
     expect(lock.port).toBe(PORT_A);
-    const id = await (await fetch(`${BASE_A}/api/daemon-id`)).json();
+    const id = await asJson(await fetch(`${BASE_A}/api/daemon-id`));
     expect(id.pid).toBe(lock.pid);
   });
 

@@ -7,7 +7,7 @@
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import type { Subprocess } from "bun";
-import { startServer, waitForServer } from "./_helpers";
+import { asJson, startServer, waitForServer } from "./_helpers";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -80,7 +80,7 @@ describe("projects-summary carries the counter (e2e)", () => {
   });
 
   test("summary exposes the total and the per-project count", async () => {
-    const sum = await (await fetch(`${BASE}/api/projects-summary`)).json();
+    const sum = await asJson(await fetch(`${BASE}/api/projects-summary`));
     expect(sum.untagged).toBe(1);
     const real = sum.projects.find((p: { name: string }) => p.name === "real");
     expect(real.untagged).toBe(1);

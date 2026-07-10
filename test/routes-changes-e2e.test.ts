@@ -5,6 +5,7 @@
 // the extracted group still mounts and behaves identically (shape + error paths).
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
+import { asJson } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,7 +52,7 @@ describe("routes-changes (extracted group) still mounts + behaves", () => {
   test("GET /api/changes → 200 with items + count", async () => {
     const r = await fetch(`${BASE}/api/changes?n=5`);
     expect(r.status).toBe(200);
-    const body = await r.json();
+    const body = await asJson(r);
     expect(Array.isArray(body.items)).toBe(true);
     expect(typeof body.count).toBe("number");
   });
@@ -59,7 +60,7 @@ describe("routes-changes (extracted group) still mounts + behaves", () => {
   test("GET /api/changes/last → 200", async () => {
     const r = await fetch(`${BASE}/api/changes/last`);
     expect(r.status).toBe(200);
-    expect(Array.isArray((await r.json()).items)).toBe(true);
+    expect(Array.isArray((await asJson(r)).items)).toBe(true);
   });
 
   test("GET /api/changes/by-id/:id → 404 for an unknown event", async () => {
@@ -75,6 +76,6 @@ describe("routes-changes (extracted group) still mounts + behaves", () => {
   test("GET /api/changes/session?session_id=x → 200 (empty for a fresh server)", async () => {
     const r = await fetch(`${BASE}/api/changes/session?session_id=nope`);
     expect(r.status).toBe(200);
-    expect((await r.json()).count).toBe(0);
+    expect((await asJson(r)).count).toBe(0);
   });
 });

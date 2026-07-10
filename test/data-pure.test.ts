@@ -22,7 +22,7 @@ function tag(t: string, content: string, extra: Partial<TagEntry> = {}): TagEntr
 function baseData(tags: TagEntry[], plans: PlanEntry[] = [], prof = profile()): DevLogData {
   return {
     projects: { [PROJ]: prof }, events: [], tags, plans, worklog: [], injections: [],
-    injectionConfig: { sessionStart: true, userPromptSubmit: true, preToolUseRead: false, claudeMd: false, contextMd: false },
+    injectionConfig: { sessionStart: true, userPromptSubmit: true, preToolUseRead: false, outdatedLibs: true, describeNudge: true, upcomingItems: true, claudeMd: false, contextMd: false },
     projectInjectionConfigs: {}, descendants: [], migrations: {},
   };
 }
@@ -46,9 +46,27 @@ describe("assignNum", () => {
     expect(assignNum(data, PROJ)).toBe(7);
     expect(data.projects[PROJ].nextItemNum).toBe(8);
   });
-  test("honors a pre-set nextItemNum without rescanning", () => {
+  test("honors a pre-set nextItemNum that is AHEAD of the high-water mark", () => {
+    // Ahead happens after deleting the highest-numbered tag: the counter must
+    // win so the freed number is never reused.
+    const data = baseData([tag("todo", "a", { num: 99 })], [], profile({ nextItemNum: 150 }));
+    expect(assignNum(data, PROJ)).toBe(150);
+  });
+  test("reconciles a BEHIND nextItemNum instead of handing out a duplicate #N", () => {
+    // Behind happens when projects.json is restored from a .bak while
+    // tags.json kept the higher numbers (round-8 devops F1). The old code
+    // returned 10 here — a number #99 already carried would have collided.
     const data = baseData([tag("todo", "a", { num: 99 })], [], profile({ nextItemNum: 10 }));
-    expect(assignNum(data, PROJ)).toBe(10);
+    expect(assignNum(data, PROJ)).toBe(100);
+    expect(data.projects[PROJ].nextItemNum).toBe(101);
+  });
+  test("reconciles against plan-step numbers too", () => {
+    const plan: PlanEntry = {
+      id: "p1", project: PROJ, title: "t", timestamp: "2026-06-01T00:00:00Z",
+      steps: [{ text: "s", num: 40 }],
+    } as PlanEntry;
+    const data = baseData([], [plan], profile({ nextItemNum: 5 }));
+    expect(assignNum(data, PROJ)).toBe(41);
   });
   test("returns 1 for an unknown project", () => {
     expect(assignNum(baseData([]), "no-such-project")).toBe(1);

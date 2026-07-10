@@ -6,7 +6,7 @@
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import type { Subprocess } from "bun";
-import { startServer, waitForServer } from "./_helpers";
+import { asJson, startServer, waitForServer } from "./_helpers";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -79,7 +79,7 @@ describe("stack freshness (mtime + explicit regenerate)", () => {
   test("GET /api/stack/:project exposes the file's mtime", async () => {
     const r = await fetch(`${BASE}/api/stack/real`);
     expect(r.status).toBe(200);
-    const body = await r.json();
+    const body = await asJson(r);
     expect(body.content).toBe(STACK_MARKER);
     expect(typeof body.mtime).toBe("number");
     expect(body.mtime).toBeGreaterThan(0);
@@ -88,10 +88,10 @@ describe("stack freshness (mtime + explicit regenerate)", () => {
   test("POST /api/stack/:project/regenerate overwrites the seeded file", async () => {
     const r = await fetch(`${BASE}/api/stack/real/regenerate`, { method: "POST" });
     expect(r.status).toBe(200);
-    const body = await r.json();
+    const body = await asJson(r);
     expect(body.ok).toBe(true);
     expect(typeof body.mtime).toBe("number");
-    const after = await (await fetch(`${BASE}/api/stack/real`)).json();
+    const after = await asJson(await fetch(`${BASE}/api/stack/real`));
     expect(after.content).not.toBe(STACK_MARKER);
     expect(after.content).toContain("real");
   });
@@ -104,7 +104,7 @@ describe("stack freshness (mtime + explicit regenerate)", () => {
   test("POST regenerate survives a sparse profile (no files/name)", async () => {
     const r = await fetch(`${BASE}/api/stack/bare/regenerate`, { method: "POST" });
     expect(r.status).toBe(200);
-    expect((await r.json()).ok).toBe(true);
+    expect((await asJson(r)).ok).toBe(true);
   });
 });
 
@@ -112,7 +112,7 @@ describe("GET /api/tags/:project (lightweight per-project read)", () => {
   test("returns only that project's tags, newest first", async () => {
     const r = await fetch(`${BASE}/api/tags/real`);
     expect(r.status).toBe(200);
-    const { tags } = await r.json();
+    const { tags } = await asJson(r);
     expect(tags.length).toBe(2);
     expect(tags.every((t: { project: string }) => t.project === "real")).toBe(true);
     expect(tags[0].tag).toBe("built");
@@ -120,12 +120,12 @@ describe("GET /api/tags/:project (lightweight per-project read)", () => {
   });
 
   test("respects ?limit=", async () => {
-    const { tags } = await (await fetch(`${BASE}/api/tags/real?limit=1`)).json();
+    const { tags } = await asJson(await fetch(`${BASE}/api/tags/real?limit=1`));
     expect(tags.length).toBe(1);
   });
 
   test("unknown project → empty list, not an error", async () => {
-    const { tags } = await (await fetch(`${BASE}/api/tags/__none__`)).json();
+    const { tags } = await asJson(await fetch(`${BASE}/api/tags/__none__`));
     expect(tags).toEqual([]);
   });
 });
@@ -134,7 +134,7 @@ describe("GET /api/projects-summary sidebar fields (#373)", () => {
   test("carries lastActivity (from tags) and vulnClass per project", async () => {
     const r = await fetch(`${BASE}/api/projects-summary`);
     expect(r.status).toBe(200);
-    const { projects } = await r.json();
+    const { projects } = await asJson(r);
     const real = projects.find((p: { name: string }) => p.name === "real");
     expect(real).toBeDefined();
     expect(typeof real.lastActivity).toBe("number");
@@ -150,10 +150,10 @@ describe("POST /api/cleanup-tombstones (opt-in sweep)", () => {
       method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ days: 30 }),
     });
     expect(r.status).toBe(200);
-    const body = await r.json();
+    const body = await asJson(r);
     expect(body.removed).toEqual(["ghost"]);
 
-    const data = await (await fetch(`${BASE}/api/data`)).json();
+    const data = await asJson(await fetch(`${BASE}/api/data`));
     expect(data.projects.ghost).toBeUndefined();
     expect(data.projects.recent).toBeDefined();
     expect(data.projects.real).toBeDefined();
@@ -163,15 +163,15 @@ describe("POST /api/cleanup-tombstones (opt-in sweep)", () => {
 
   test("second sweep is a no-op", async () => {
     const r = await fetch(`${BASE}/api/cleanup-tombstones`, { method: "POST", headers: JSON_HEADERS, body: "{}" });
-    expect((await r.json()).removed).toEqual([]);
+    expect((await asJson(r)).removed).toEqual([]);
   });
 });
 
 describe("orphan names report + explicit purge (#375)", () => {
   test("summary counts orphans; /api/orphan-projects lists them with counts", async () => {
-    const sum = await (await fetch(`${BASE}/api/projects-summary`)).json();
+    const sum = await asJson(await fetch(`${BASE}/api/projects-summary`));
     expect(sum.orphans).toBeGreaterThanOrEqual(2);   // phantom (tags) + wraith (worklog only)
-    const { orphans } = await (await fetch(`${BASE}/api/orphan-projects`)).json();
+    const { orphans } = await asJson(await fetch(`${BASE}/api/orphan-projects`));
     const ph = orphans.find((o: { name: string }) => o.name === "phantom");
     expect(ph).toBeDefined();
     expect(ph.tags).toBe(2);
@@ -180,7 +180,7 @@ describe("orphan names report + explicit purge (#375)", () => {
   });
 
   test("a worklog-only name is reported as an orphan and purged", async () => {
-    const { orphans } = await (await fetch(`${BASE}/api/orphan-projects`)).json();
+    const { orphans } = await asJson(await fetch(`${BASE}/api/orphan-projects`));
     const wr = orphans.find((o: { name: string }) => o.name === "wraith");
     expect(wr).toBeDefined();
     expect(wr.worklog).toBe(1);
@@ -190,10 +190,10 @@ describe("orphan names report + explicit purge (#375)", () => {
       method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ names: ["wraith"] }),
     });
     expect(r.status).toBe(200);
-    const body = await r.json();
+    const body = await asJson(r);
     expect(body.removed).toEqual(["wraith"]);
     expect(body.removedEntries).toBe(1);
-    const after = await (await fetch(`${BASE}/api/orphan-projects`)).json();
+    const after = await asJson(await fetch(`${BASE}/api/orphan-projects`));
     expect(after.orphans.some((o: { name: string }) => o.name === "wraith")).toBe(false);
   });
 
@@ -202,12 +202,12 @@ describe("orphan names report + explicit purge (#375)", () => {
       method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ names: ["phantom", "real"] }),
     });
     expect(r.status).toBe(200);
-    const body = await r.json();
+    const body = await asJson(r);
     expect(body.removed).toEqual(["phantom"]);
     expect(body.skipped).toEqual(["real"]);
     expect(body.removedEntries).toBe(2);
 
-    const data = await (await fetch(`${BASE}/api/data`)).json();
+    const data = await asJson(await fetch(`${BASE}/api/data`));
     expect(data.tags.some((t: { project: string }) => t.project === "phantom")).toBe(false);
     expect(data.tags.some((t: { project: string }) => t.project === "real")).toBe(true);
   });
@@ -224,7 +224,7 @@ describe("cleanup-tombstones days clamping [1, 3650]", () => {
     const r = await fetch(`${BASE}/api/cleanup-tombstones`, {
       method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ days: 1e12 }),
     });
-    const body = await r.json();
+    const body = await asJson(r);
     expect(body.days).toBe(3650);
     expect(body.removed).toEqual([]);
   });
@@ -233,7 +233,7 @@ describe("cleanup-tombstones days clamping [1, 3650]", () => {
     const r = await fetch(`${BASE}/api/cleanup-tombstones`, {
       method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ days: 0.25 }),
     });
-    const body = await r.json();
+    const body = await asJson(r);
     expect(body.days).toBe(1);
     expect(body.removed).toEqual(["recent"]);
   });

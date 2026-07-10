@@ -278,16 +278,20 @@
         // Track previous content hash per card — only flash on actual change.
         // `flash:false` is for USER-driven re-renders (tab switches): the same
         // card changing under the user's own click must not glow like a live
-        // data update.
+        // data update. Returns true when the DOM was actually rewritten, so
+        // callers that bind listeners into the fresh HTML know whether to
+        // rebind (renderChangesCard) — a skipped write keeps the old nodes
+        // and their listeners intact.
         const cardHashes = {};
         export function updateCard(id, html, flash = true) {
             const el = document.getElementById(id);
-            if (!el) return;
+            if (!el) return false;
             const prev = cardHashes[id];
             cardHashes[id] = html;
-            if (prev === html) return; // no change — skip
+            if (prev === html) return false; // no change — skip
             el.innerHTML = html;
             if (flash && prev !== undefined) flashCard(id); // don't flash on first render
+            return true;
         }
 
         // Shared tags-card builder — ONE definition for both the full render and

@@ -1,6 +1,6 @@
 /**
  * Auto-bump manifest version when `-(release) vX.Y.Z — ...` arrives.
- * Supported: package.json (JSON), Cargo.toml (TOML).
+ * Supported: package.json (JSON), Cargo.toml (TOML), .claude-plugin/plugin.json.
  * Conservative regex replace — preserves formatting, comments, ordering.
  * Returns the list of files actually updated.
  */

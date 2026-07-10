@@ -7,6 +7,7 @@
 //   - matching   cwd  → written under the registered path
 
 import { test, expect, describe, beforeAll, beforeEach, afterEach } from "bun:test";
+import { asJson } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -118,7 +119,7 @@ describe("regression — audit 2026-05-09 #1: doc:* must reject mismatched cwd",
     expect(existsSync(join(fakeCwd, ".devlog", "docs", "pwned.md"))).toBe(false);
 
     // And the rejection should be recorded in data.rejections.
-    const data: any = await (await fetch(`${BASE}/api/data`)).json();
+    const data: any = await asJson(await fetch(`${BASE}/api/data`));
     const rej = (data.rejections || []).find((r: any) => r.reason === "cwd-mismatch");
     expect(rej).toBeDefined();
   });

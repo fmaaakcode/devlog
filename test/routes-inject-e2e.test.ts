@@ -5,6 +5,7 @@
 // round-trip — to verify the deps wiring and handlers behave identically.
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
+import { asJson } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -57,13 +58,13 @@ describe("routes-inject (extracted group) still mounts + behaves", () => {
   test("GET /api/inject/preview for an unregistered project → not enabled", async () => {
     const r = await fetch(`${BASE}/api/inject/preview?cwd=/nope/nowhere&project=__none__`);
     expect(r.status).toBe(200);
-    expect((await r.json()).enabled).toBe(false);
+    expect((await asJson(r)).enabled).toBe(false);
   });
 
   test("GET /api/injections → 200 with items + total", async () => {
     const r = await fetch(`${BASE}/api/injections`);
     expect(r.status).toBe(200);
-    const body = await r.json();
+    const body = await asJson(r);
     expect(Array.isArray(body.items)).toBe(true);
     expect(typeof body.total).toBe("number");
   });
@@ -73,11 +74,11 @@ describe("routes-inject (extracted group) still mounts + behaves", () => {
       method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ config: { sessionStart: false } }),
     });
     expect(post.status).toBe(200);
-    expect((await post.json()).ok).toBe(true);
+    expect((await asJson(post)).ok).toBe(true);
 
     const get = await fetch(`${BASE}/api/injection/config`);
     expect(get.status).toBe(200);
-    expect((await get.json()).global.sessionStart).toBe(false);   // the write stuck
+    expect((await asJson(get)).global.sessionStart).toBe(false);   // the write stuck
   });
 
   test("DELETE /api/injection/:id → 404 for an unknown entry", async () => {

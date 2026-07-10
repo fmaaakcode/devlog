@@ -6,6 +6,7 @@
 // 500-entry fail-closed cap, and that the guard still wraps the group.
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
+import { asJson } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -57,14 +58,14 @@ describe("routes-tags — siblings + guards", () => {
     });
     expect(post.status).toBe(200);
 
-    const data = await (await fetch(`${BASE}/api/data`)).json();
+    const data = await asJson(await fetch(`${BASE}/api/data`));
     const noteTag = data.tags.find((t: { tag: string; content: string }) => t.content === "a note for deletion");
     expect(noteTag).toBeTruthy();
 
     const del = await fetch(`${BASE}/api/tag/${noteTag.id}`, { method: "DELETE", headers: JSON_HEADERS });
     expect(del.status).toBe(200);
 
-    const after = await (await fetch(`${BASE}/api/data`)).json();
+    const after = await asJson(await fetch(`${BASE}/api/data`));
     expect(after.tags.some((t: { id: string }) => t.id === noteTag.id)).toBe(false);
   });
 
@@ -78,7 +79,7 @@ describe("routes-tags — siblings + guards", () => {
       method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ cwd: "", count: 3 }),
     });
     expect(r.status).toBe(200);
-    expect(typeof (await r.json()).tagged).toBe("number");
+    expect(typeof (await asJson(r)).tagged).toBe("number");
   });
 
   test("POST /api/tags with >500 entries → 413 (fail-closed cap)", async () => {

@@ -68,7 +68,7 @@ describe("findOrphanClosures", () => {
 
 describe("cleanupOrphanClosures — idempotent migration", () => {
   function data(tags: TagEntry[]): DevLogData {
-    return { tags, plans: [], migrations: {} } as DevLogData;
+    return { tags, plans: [], migrations: {} } as unknown as DevLogData;
   }
 
   test("removes orphans, keeps everything else, and is idempotent", () => {
@@ -82,7 +82,7 @@ describe("cleanupOrphanClosures — idempotent migration", () => {
     const removed = cleanupOrphanClosures(d);
     expect(removed).toBe(2);
     expect(d.tags.map(t => t.content).sort()).toEqual(["#5", "#999", "real"].sort());
-    expect(d.migrations.cleanup_orphan_closures_v1).toBe(true);
+    expect(d.migrations?.cleanup_orphan_closures_v1).toBe(true);
 
     // Second run is a no-op (flag already set).
     expect(cleanupOrphanClosures(d)).toBe(0);

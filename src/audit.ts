@@ -1,5 +1,6 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { DATA_DIR } from "./data";
+import { softFail } from "./soft-fail";
 
 // Append-only forensic log for destructive operations (clear / delete / kill /
 // stop). The request guard() is the only layer in front of these; if it is ever
@@ -28,7 +29,11 @@ export async function appendAudit(
     };
     await mkdir(DATA_DIR, { recursive: true });
     await appendFile(AUDIT_FILE, `${JSON.stringify(entry)}\n`, "utf-8");
-  } catch {
-    // swallow — never let an audit write break the request it describes
+  } catch (e) {
+    // Never let an audit write break the request it describes — but a failing
+    // forensic log must stay observable: this is the only trail for
+    // destructive ops, so a blind swallow here means losing evidence with
+    // zero signal even in debug mode.
+    softFail(`audit.appendAudit(${op})`, e);
   }
 }

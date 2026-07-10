@@ -7,7 +7,7 @@
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import type { Subprocess } from "bun";
-import { startServer, waitForServer } from "./_helpers";
+import { asJson, startServer, waitForServer } from "./_helpers";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,12 +54,12 @@ afterAll(async () => {
 
 describe("POST /api/server/restart (self-restart hand-over)", () => {
   test("old process exits, replacement owns the port with a newer boot", async () => {
-    const bootBefore = (await (await fetch(`${BASE}/api/boot`)).json()).boot;
+    const bootBefore = (await asJson(await fetch(`${BASE}/api/boot`))).boot;
     expect(typeof bootBefore).toBe("number");
 
     const r = await fetch(`${BASE}/api/server/restart`, { method: "POST" });
     expect(r.status).toBe(200);
-    expect((await r.json()).restarting).toBe(true);
+    expect((await asJson(r)).restarting).toBe(true);
 
     // The original subprocess must actually exit…
     await Promise.race([server.exited, Bun.sleep(8000)]);
@@ -67,7 +67,7 @@ describe("POST /api/server/restart (self-restart hand-over)", () => {
 
     // …and the replacement must come up on the same port with a newer boot.
     await waitFor(pingOk, 15000, "replacement server");
-    const bootAfter = (await (await fetch(`${BASE}/api/boot`)).json()).boot;
+    const bootAfter = (await asJson(await fetch(`${BASE}/api/boot`))).boot;
     expect(bootAfter).toBeGreaterThan(bootBefore);
   }, 30000);
 });

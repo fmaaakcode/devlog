@@ -5,6 +5,7 @@
 // error/guard paths).
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
+import { asJson } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -58,7 +59,7 @@ describe("routes-stack (extracted group) still mounts + behaves", () => {
   test("GET /api/stack/:project/layout → 200 { positions: null } for unknown project", async () => {
     const r = await fetch(`${BASE}/api/stack/__none__/layout`);
     expect(r.status).toBe(200);
-    expect((await r.json()).positions).toBeNull();
+    expect((await asJson(r)).positions).toBeNull();
   });
 
   test("POST /api/stack/:project/layout → 404 for an unknown project", async () => {
@@ -71,7 +72,7 @@ describe("routes-stack (extracted group) still mounts + behaves", () => {
   test("GET /api/tree/:project → 200 { tree: [] } for unknown project", async () => {
     const r = await fetch(`${BASE}/api/tree/__none__`);
     expect(r.status).toBe(200);
-    expect((await r.json()).tree).toEqual([]);
+    expect((await asJson(r)).tree).toEqual([]);
   });
 
   test("guard still wraps the group: non-JSON POST → 415", async () => {

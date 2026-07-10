@@ -3,14 +3,14 @@
     "SessionStart": [
       {
         "hooks": [
-          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/ensure-server.sh\" | curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/inject?plugin=1\" -H \"Content-Type: application/json\" --data-binary @-", "timeout": 20 }
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/ensure-server.sh\" --plugin", "timeout": 20 }
         ]
       }
     ],
     "UserPromptSubmit": [
       {
         "hooks": [
-          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/ensure-server.sh\" | curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/inject?plugin=1\" -H \"Content-Type: application/json\" --data-binary @-", "timeout": 20 }
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/ensure-server.sh\" --plugin", "timeout": 20 }
         ]
       }
     ],

@@ -8,7 +8,7 @@ import type { Subprocess } from "bun";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startServer, waitForServer } from "./_helpers";
+import { asJson, startServer, waitForServer } from "./_helpers";
 
 const PORT = 17801;   // unique to this file
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -60,7 +60,7 @@ describe("GET /api/project-view/:name (lazy dashboard source)", () => {
   test("returns the full profile + only that project's slices", async () => {
     const r = await fetch(`${BASE}/api/project-view/alpha`);
     expect(r.status).toBe(200);
-    const v = await r.json();
+    const v = await asJson(r);
     expect(v.project).toBe("alpha");
     // Full profile, not the summary shape — the header renders libraries/files from it.
     expect(v.profile.description).toBe("alpha desc");
@@ -73,7 +73,7 @@ describe("GET /api/project-view/:name (lazy dashboard source)", () => {
   });
 
   test("a project with plans gets them; payload excludes other projects entirely", async () => {
-    const v = await (await fetch(`${BASE}/api/project-view/beta`)).json();
+    const v = await asJson(await fetch(`${BASE}/api/project-view/beta`));
     expect(v.plans.map((p: { id: string }) => p.id)).toEqual(["p1"]);
     const raw = JSON.stringify(v);
     expect(raw).not.toContain("alpha");
@@ -88,7 +88,7 @@ describe("GET /api/project-view/:name (lazy dashboard source)", () => {
   // but security/bug rows survive the window (the security card enumerates
   // them from the tag rows) and totals ride along for the "show more" button.
   test("?limit windows the feed, keeps old security/bug rows, reports totals", async () => {
-    const v = await (await fetch(`${BASE}/api/project-view/gamma?limit=5`)).json();
+    const v = await asJson(await fetch(`${BASE}/api/project-view/gamma?limit=5`));
     expect(v.tagsTotal).toBe(22);
     expect(v.eventsTotal).toBe(8);
     // Last 5 of the feed + the 2 always-kept rows, original order preserved.
@@ -98,7 +98,7 @@ describe("GET /api/project-view/:name (lazy dashboard source)", () => {
 
   test("no limit (and limit=0) return the full history unchanged", async () => {
     for (const qs of ["", "?limit=0"]) {
-      const v = await (await fetch(`${BASE}/api/project-view/gamma${qs}`)).json();
+      const v = await asJson(await fetch(`${BASE}/api/project-view/gamma${qs}`));
       expect(v.tags.length).toBe(22);
       expect(v.events.length).toBe(8);
       expect(v.tagsTotal).toBe(22);
@@ -106,7 +106,7 @@ describe("GET /api/project-view/:name (lazy dashboard source)", () => {
   });
 
   test("limit larger than the history is a no-op window", async () => {
-    const v = await (await fetch(`${BASE}/api/project-view/gamma?limit=500`)).json();
+    const v = await asJson(await fetch(`${BASE}/api/project-view/gamma?limit=500`));
     expect(v.tags.length).toBe(22);
     expect(v.events.length).toBe(8);
   });

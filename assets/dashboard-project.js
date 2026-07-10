@@ -29,13 +29,24 @@
             </div>`;
         }
 
+        // Hash guard (round-8 UI): renderSidebar runs on EVERY WS pulse and
+        // background sidebar refresh; rewriting identical innerHTML still tears
+        // the project cards down — killing :hover mid-interaction and resetting
+        // the list scroll. Write only when the markup actually changed.
+        const sidebarHashes = {};
+        function setListHtml(el, key, html) {
+            if (sidebarHashes[key] === html) return;
+            sidebarHashes[key] = html;
+            el.innerHTML = html;
+        }
+
         export function renderSidebar() {
             const elActive = document.getElementById("projectListActive");
             const elOther = document.getElementById("projectListOther");
             const names = Object.keys(data.projects);
             if (names.length === 0) {
-                elActive.innerHTML = '<div class="sidebar-empty">لا توجد مشاريع بعد<br>ابدأ العمل في أي مشروع وسيظهر هنا تلقائياً</div>';
-                elOther.innerHTML = '';
+                setListHtml(elActive, "active", '<div class="sidebar-empty">لا توجد مشاريع بعد<br>ابدأ العمل في أي مشروع وسيظهر هنا تلقائياً</div>');
+                setListHtml(elOther, "other", '');
                 // #401: the orphan/tombstone sweep must still render with an EMPTY
                 // registry — that corrupted-registry case (names in the stores but no
                 // project entries) is exactly what it was built for. Running it here
@@ -64,8 +75,8 @@
                 </div>${items}`;
             };
 
-            elActive.innerHTML = renderCard("نشطة (آخر 7 أيام)", active, "لا توجد مشاريع نشطة");
-            elOther.innerHTML = renderCard("باقي المشاريع", other, "لا يوجد");
+            setListHtml(elActive, "active", renderCard("نشطة (آخر 7 أيام)", active, "لا توجد مشاريع نشطة"));
+            setListHtml(elOther, "other", renderCard("باقي المشاريع", other, "لا يوجد"));
             renderMaintRow();
         }
 

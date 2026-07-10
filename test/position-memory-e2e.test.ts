@@ -7,7 +7,7 @@ import { mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
-import { startServer, waitForServer } from "./_helpers";
+import { asJson, startServer, waitForServer } from "./_helpers";
 
 const PORT = 7841;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -41,7 +41,7 @@ afterAll(() => { proc?.kill(); });
 
 describe("position memory e2e", () => {
   it("stamps the captured tag with the session's touched files", async () => {
-    const j = await (await fetch(`${BASE}/api/tags/posmem-proj`)).json();
+    const j = await asJson(await fetch(`${BASE}/api/tags/posmem-proj`));
     const built = (j.tags || []).find((t: { tag: string; files?: string[] }) => t.tag === "built");
     expect(built).toBeTruthy();
     expect((built.files || []).some((f: string) => f.endsWith("src/core.ts"))).toBe(true);
@@ -49,35 +49,35 @@ describe("position memory e2e", () => {
 
   it("injects the file story on the first PreToolUse Read, then goes quiet for the session", async () => {
     const filePath = join(cwd, "src", "core.ts");
-    const first = await (await post("/api/inject", {
+    const first = await asJson(await post("/api/inject", {
       hook_event_name: "PreToolUse", tool_name: "Read", cwd, session_id: "s2",
       tool_input: { file_path: filePath },
-    })).json();
+    }));
     const ctx = first.hookSpecificOutput?.additionalContext || "";
     expect(ctx).toContain("📍");
     expect(ctx).toContain("src/core.ts");
     expect(ctx).toContain("position memory core wired");
 
-    const second = await (await post("/api/inject", {
+    const second = await asJson(await post("/api/inject", {
       hook_event_name: "PreToolUse", tool_name: "Read", cwd, session_id: "s2",
       tool_input: { file_path: filePath },
-    })).json();
+    }));
     expect(second.hookSpecificOutput?.additionalContext || "").toBe("");
   });
 
   it("stays silent for a file with no story and records no PreToolUse junk event", async () => {
-    const res = await (await post("/api/inject", {
+    const res = await asJson(await post("/api/inject", {
       hook_event_name: "PreToolUse", tool_name: "Read", cwd, session_id: "s2",
       tool_input: { file_path: join(cwd, "src", "unknown.ts") },
-    })).json();
+    }));
     expect(res.hookSpecificOutput?.additionalContext || "").toBe("");
 
-    const changes = await (await fetch(`${BASE}/api/changes?project=posmem-proj&n=50`)).json();
+    const changes = await asJson(await fetch(`${BASE}/api/changes?project=posmem-proj&n=50`));
     for (const it of changes.items || []) expect(it.event).not.toBe("PreToolUse");
   });
 
   it("serves the timeline over /api/file-story", async () => {
-    const j = await (await fetch(`${BASE}/api/file-story?project=posmem-proj&path=src/core.ts&deep=1`)).json();
+    const j = await asJson(await fetch(`${BASE}/api/file-story?project=posmem-proj&path=src/core.ts&deep=1`));
     expect(j.tags.length).toBe(1);
     expect(j.tags[0].content).toContain("position memory core wired");
     expect(j.events.length).toBe(1);

@@ -28,7 +28,7 @@ function tag(t: string, content: string, project = PROJ): TagEntry {
 function data(tags: TagEntry[], path = TMP, key = PROJ): DevLogData {
   return {
     projects: { [key]: { ...profile(path), name: key } }, events: [], tags, plans: [], worklog: [], injections: [],
-    injectionConfig: { sessionStart: true, userPromptSubmit: true, preToolUseRead: false, claudeMd: false, contextMd: false },
+    injectionConfig: { sessionStart: true, userPromptSubmit: true, preToolUseRead: false, outdatedLibs: true, describeNudge: true, upcomingItems: true, claudeMd: false, contextMd: false },
     projectInjectionConfigs: {}, descendants: [], migrations: {},
   };
 }
@@ -123,7 +123,7 @@ describe("F1 — rebuildChangelog (GC) collapses duplicates", () => {
     const d = data([tag("built", "a\nb")]);
 
     expect(await rebuildChangelogsMigration(d)).toBe(1);
-    expect(d.migrations.changelog_rebuild_v1).toBe(true);
+    expect(d.migrations?.changelog_rebuild_v1).toBe(true);
     expect(await rebuildChangelogsMigration(d)).toBe(0); // flag set → no-op
   });
 });

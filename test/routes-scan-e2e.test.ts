@@ -5,6 +5,7 @@
 // wired — to verify the extracted routes still mount + behave.
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
+import { asJson } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -57,7 +58,7 @@ describe("routes-scan (extracted group) still mounts + behaves", () => {
   test("POST /api/check-stale/:project → 200 (injected checkAndRescanIfStale dep fires)", async () => {
     const r = await fetch(`${BASE}/api/check-stale/__none__`, { method: "POST", headers: JSON_HEADERS });
     expect(r.status).toBe(200);
-    expect((await r.json()).ok).toBe(true);
+    expect((await asJson(r)).ok).toBe(true);
   });
 
   test("POST /api/scan/:project → 404 for an unknown project", async () => {

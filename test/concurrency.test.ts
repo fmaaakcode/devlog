@@ -14,6 +14,7 @@
 // un-serialized write path.
 
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
+import { asJson } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -108,7 +109,7 @@ describe("concurrency — hook + inject through withData lose no writes", () => 
 
     // Every one of the 2N requests must have appended its event — none lost to
     // an un-serialized save, and the data file must still parse.
-    const data = await fetch(`${BASE}/api/data`).then(r => r.json());
+    const data = await fetch(`${BASE}/api/data`).then(r => asJson(r));
     const name = basename(projectDir);
     const events: Array<{ project: string }> = data.events || [];
     const mine = events.filter(e => e.project === name);

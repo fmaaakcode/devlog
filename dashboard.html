@@ -15,11 +15,11 @@
         <div class="live-banner" id="liveBanner" style="opacity:0"></div>
         <div class="topbar-right">
             <div class="top-actions">
-                <button class="rescan-btn" data-action="rescan-project">إعادة مسح</button>
-                <button class="vuln-btn" data-action="vuln-scan">فحص أمني</button>
-                <button class="inj-btn" data-action="open-injection-panel">الحقن</button>
-                <button class="inj-btn" data-action="open-standards-panel">المعايير</button>
-                <button class="kill-srv-btn" data-action="kill-server" title="إيقاف السيرفر (يعود تلقائياً مع bun --watch)">إيقاف السيرفر</button>
+                <button type="button" class="rescan-btn" data-action="rescan-project">إعادة مسح</button>
+                <button type="button" class="vuln-btn" data-action="vuln-scan">فحص أمني</button>
+                <button type="button" class="inj-btn" data-action="open-injection-panel">الحقن</button>
+                <button type="button" class="inj-btn" data-action="open-standards-panel">المعايير</button>
+                <button type="button" class="kill-srv-btn" data-action="kill-server" title="إيقاف السيرفر (يعود تلقائياً مع bun --watch)">إيقاف السيرفر</button>
             </div>
             <span id="updates-badge" style="display:none;font-size:0.7em;padding:3px 10px;border-radius:5px;background:#1a2a0d;color:#9bd45f;border:1px solid #2a4a15;cursor:pointer;font-weight:600" data-action="open-updates-popup" title="تحديثات الأدوات متاحة"></span>
             <div class="topbar-logo">DevLog</div>
@@ -68,7 +68,7 @@
         <div class="inj-modal" data-action="noop">
             <div class="inj-header">
                 <span class="inj-title">الحقن — <span id="injProjectName"></span></span>
-                <button class="inj-close" data-action="close-injection-panel">&times;</button>
+                <button type="button" class="inj-close" data-action="close-injection-panel">&times;</button>
             </div>
             <div class="inj-body" id="injBody"></div>
         </div>
@@ -78,7 +78,7 @@
         <div class="inj-modal" data-action="noop">
             <div class="inj-header">
                 <span class="inj-title">المعايير — <span id="stdProjectName"></span></span>
-                <button class="inj-close" data-action="close-standards-panel">&times;</button>
+                <button type="button" class="inj-close" data-action="close-standards-panel">&times;</button>
             </div>
             <div class="inj-body" id="stdBody"></div>
         </div>

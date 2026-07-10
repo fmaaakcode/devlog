@@ -17,7 +17,7 @@ import type { Subprocess } from "bun";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startServer, waitForServer, runHook as runHookRaw } from "./_helpers";
+import { asJson, startServer, waitForServer, runHook as runHookRaw } from "./_helpers";
 
 const TEST_PORT = 17823;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
@@ -37,7 +37,7 @@ async function post(cwd: string, sid: string, entries: unknown[]): Promise<any> 
   return r.json();
 }
 async function numFor(project: string, content: string): Promise<number> {
-  const data: any = await (await fetch(`${BASE}/api/data`)).json();
+  const data: any = await asJson(await fetch(`${BASE}/api/data`));
   const t = data.tags.find((x: any) => x.project === project && x.content === content && typeof x.num === "number");
   if (!t) throw new Error(`no numbered tag "${content}"`);
   return t.num;

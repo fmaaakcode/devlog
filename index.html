@@ -11,7 +11,7 @@
        language (Arabic → landing.html, everything else → English default).
        No-JS visitors get a meta-refresh to English + explicit links below. -->
   <script>
-    (function () {
+    (() => {
       var lang = (navigator.language || navigator.userLanguage || "en").toLowerCase();
       var target = lang.indexOf("ar") === 0 ? "./landing.html" : "./landing-en.html";
       location.replace(target);

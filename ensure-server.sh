@@ -1,18 +1,20 @@
 #!/bin/bash
-# DevLog SessionStart pre-hook — guarantees the server is up before the
-# inject hook fires, so users don't lose tags from sessions started while
-# the server is down. Idempotent: a single curl probe + conditional spawn.
+# DevLog SessionStart/UserPromptSubmit hook — guarantees the server is up, then
+# POSTs the hook event to /api/inject itself and relays the response on stdout.
 #
-# PIPELINE CONTRACT (bug #310): this script is the LEFT side of a single hook
-# command `ensure-server.sh | curl .../api/inject --data-binary @-`. It first
-# probes/spawns the server (blocking until it binds), THEN re-emits the event
-# payload on stdout via the final `cat`, which the pipe carries to curl. That
-# ordering is the whole fix — same-group hooks run in PARALLEL, so the old
-# two-hook form let the inject curl race ahead of server startup.
-#   ⚠ DO NOT REMOVE the trailing `cat`: it is not vestigial forwarding — it is
-#     the pipe's payload source. Without it, curl reads empty stdin and the
-#     inject POSTs an empty body (silent broken injection).
-# Errors are swallowed so a hook crash never blocks the session from starting.
+# SINGLE-COMMAND CONTRACT (supersedes the #310 pipeline): this script used to be
+# the left side of `ensure-server.sh | curl .../api/inject --data-binary @-`,
+# which reserved stdout for the pipe and pushed user-facing diagnostics to
+# stderr — and Claude Code DISCARDS stderr from a hook that exits 0, so a
+# machine without Bun failed in total silence (field-tested on a raw Windows 10
+# box: two full sessions, not one visible character). The curl now lives INSIDE
+# the script: stdout is free to carry either the inject response (normal path)
+# or a {"systemMessage": ...} JSON that Claude Code actually shows to the user
+# (Bun-missing path). Exit is always 0 so a hook failure never blocks the
+# session from starting.
+#
+#   ensure-server.sh            → manual installs (settings.json)
+#   ensure-server.sh --plugin   → bundled hooks.json (inject carries ?plugin=1)
 
 set +e
 
@@ -24,30 +26,41 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 # DEVLOG_PORT, see "dead", and spawn a duplicate server on 7777 every session.
 PORT="${DEVLOG_PORT:-7777}"
 
+# ?plugin=1 marks a plugin-delivered session for /api/inject (compact primer);
+# manual settings.json installs call the script with no argument.
+QUERY=""
+[ "$1" = "--plugin" ] && QUERY="?plugin=1"
+
+# Drain the hook event payload from stdin exactly once, up front. Every exit
+# path below must leave stdin consumed and reply on stdout — never on stderr.
+PAYLOAD="$(cat)"
+
+# Forward the event to the server and relay the response to stdout. For
+# SessionStart/UserPromptSubmit, stdout on exit 0 is context Claude can see,
+# and valid JSON is parsed for control fields (systemMessage & friends).
+inject() {
+  printf '%s' "$PAYLOAD" | curl -s -X POST "http://127.0.0.1:$PORT/api/inject$QUERY" -H "Content-Type: application/json" --data-binary @-
+}
+
 # Off switch: set DEVLOG_AUTOSTART_OFF=1 in your environment to skip the
 # auto-spawn (e.g. when you want to run the server manually under a debugger,
 # or when working offline without DevLog).
 if [ "$DEVLOG_AUTOSTART_OFF" = "1" ]; then
-  cat
+  inject
   exit 0
 fi
 
 # First-run dependency check: DevLog's server + hooks run on Bun. When it isn't
-# on PATH the server can never start and every DevLog hook silently no-ops, with
-# no hint why. Tell the user how to install it (once per session is fine), keep
-# the SessionStart chain intact (cat), and exit 0 so the session still starts.
+# on PATH the server can never start and every DevLog hook no-ops. The hint MUST
+# ride stdout as systemMessage JSON — stderr from an exit-0 hook is discarded by
+# Claude Code, which is exactly how this failure used to be invisible. Exit 0
+# keeps the session starting normally; install commands are language-neutral,
+# prose follows DEVLOG_LANG (parity with the server's i18n).
 if ! command -v bun >/dev/null 2>&1; then
-  {
-    # English by default for a global audience; Arabic under DEVLOG_LANG=ar
-    # (parity with the server's i18n). Install commands are language-neutral.
-    case "$DEVLOG_LANG" in
-      ar*) echo "[DevLog] Bun غير مثبّت — DevLog يحتاج Bun ليعمل. ثبّته ثم افتح جلسة جديدة:" ;;
-      *)   echo "[DevLog] Bun is not installed — DevLog needs Bun to run. Install it, then open a new session:" ;;
-    esac
-    echo "  Windows:      powershell -c \"irm bun.sh/install.ps1 | iex\""
-    echo "  macOS/Linux:  curl -fsSL https://bun.sh/install | bash"
-  } >&2
-  cat
+  case "$DEVLOG_LANG" in
+    ar*) printf '%s' '{"systemMessage":"[DevLog] Bun غير مثبّت — DevLog يحتاج Bun ليعمل. ثبّته ثم افتح جلسة جديدة:\n  Windows:      powershell -c \"irm bun.sh/install.ps1 | iex\"\n  macOS/Linux:  curl -fsSL https://bun.sh/install | bash"}' ;;
+    *)   printf '%s' '{"systemMessage":"[DevLog] Bun is not installed — DevLog needs Bun to run. Install it, then open a new session:\n  Windows:      powershell -c \"irm bun.sh/install.ps1 | iex\"\n  macOS/Linux:  curl -fsSL https://bun.sh/install | bash"}' ;;
+  esac
   exit 0
 fi
 
@@ -74,8 +87,8 @@ if ! curl -s -m 1 "http://127.0.0.1:$PORT/api/ping" >/dev/null 2>&1; then
     nohup bun src/server.ts >>".devlog/server.log" 2>&1 &
     disown 2>/dev/null || true
   )
-  # Wait up to ~3s for the server to bind. The inject hook that follows
-  # has its own 10s timeout so a short stall here is fine.
+  # Wait up to ~3s for the server to bind. The inject POST at the end tolerates
+  # a short stall (the hook's own timeout is the ceiling).
   for _ in 1 2 3 4 5 6; do
     sleep 0.5
     curl -s -m 1 "http://127.0.0.1:$PORT/api/ping" >/dev/null 2>&1 && break
@@ -88,8 +101,9 @@ fi
 # pass against a freshly-spawned copy while the real daemon still serves old
 # code. The daemon compares mtimes itself (portable fs.stat) and returns
 # `"stale":true` from /api/boot; we just relay a WARNING — never auto-kill (a
-# wrong process could be hit). Silent against a server predating /api/boot (the
-# field is absent → no match) or when nothing on disk is newer.
+# wrong process could be hit). NOTE: stderr from an exit-0 hook is discarded,
+# so this only reaches debug logs today; folding it into the /api/inject
+# response server-side (which CAN carry systemMessage) is a deferred item.
 if curl -s -m 1 "http://127.0.0.1:$PORT/api/boot" 2>/dev/null | grep -q '"stale":true'; then
   {
     echo "[DevLog] ⚠ the running server is OLDER than the code on disk (loaded at boot; no --watch),"
@@ -99,8 +113,7 @@ if curl -s -m 1 "http://127.0.0.1:$PORT/api/boot" 2>/dev/null | grep -q '"stale"
   } >&2
 fi
 
-# Emit the event payload downstream: the pipe carries this to the inject curl's
-# stdin (`--data-binary @-`). This is the payload source for the POST body, not
-# optional forwarding — see the PIPELINE CONTRACT note at the top. Keep it last.
-cat
+# Forward the event and relay the server's response — this stdout is the hook's
+# entire visible output, so it must stay last and unpolluted.
+inject
 exit 0

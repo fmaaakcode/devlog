@@ -29,7 +29,7 @@ function baseData(): DevLogData {
     worklog: [{ id: "w1", project: "old" } as any],
     injections: [{ id: "i1", project: "old" } as any],
     descendants: [{ pid: 1, project: "old" } as any],
-    injectionConfig: { sessionStart: true, userPromptSubmit: true, preToolUseRead: false, claudeMd: false, contextMd: false },
+    injectionConfig: { sessionStart: true, userPromptSubmit: true, preToolUseRead: false, outdatedLibs: true, describeNudge: true, upcomingItems: true, claudeMd: false, contextMd: false },
     projectInjectionConfigs: { old: { sessionStart: false } },
     migrations: {},
     rejections: [{ id: "r1", project: "old", reason: "x", detail: "", timestamp: "2026-06-01T00:00:00Z" }],
@@ -120,7 +120,7 @@ describe("rewriteDescendantPaths", () => {
     for (const [name, path] of Object.entries(paths)) projects[name] = profile(name, path);
     return {
       projects, events: [], tags: [], plans: [], worklog: [], injections: [],
-      injectionConfig: { sessionStart: true, userPromptSubmit: true, preToolUseRead: false, claudeMd: false, contextMd: false },
+      injectionConfig: { sessionStart: true, userPromptSubmit: true, preToolUseRead: false, outdatedLibs: true, describeNudge: true, upcomingItems: true, claudeMd: false, contextMd: false },
       projectInjectionConfigs: {}, descendants: [], migrations: {},
     };
   }

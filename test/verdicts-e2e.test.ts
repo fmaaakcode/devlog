@@ -8,7 +8,7 @@
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import type { Subprocess } from "bun";
-import { startServer, waitForServer } from "./_helpers";
+import { asJson, startServer, waitForServer } from "./_helpers";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -68,7 +68,7 @@ afterAll(async () => {
 
 describe("GET /api/verdicts/:project — per-item server judgments", () => {
   test("todo states: open / done-by-text / done-by-#N / dropped", async () => {
-    const { todos } = await (await fetch(`${BASE}/api/verdicts/verd`)).json();
+    const { todos } = await asJson(await fetch(`${BASE}/api/verdicts/verd`));
     const byNum = new Map(todos.map((t: { num: number }) => [t.num, t]));
     expect((byNum.get(1) as { state: string }).state).toBe("open");
     expect((byNum.get(2) as { state: string }).state).toBe("done");
@@ -77,14 +77,14 @@ describe("GET /api/verdicts/:project — per-item server judgments", () => {
   });
 
   test("a trailing #N in closure prose does NOT close that item (the drift the client mirror had)", async () => {
-    const { todos } = await (await fetch(`${BASE}/api/verdicts/verd`)).json();
+    const { todos } = await asJson(await fetch(`${BASE}/api/verdicts/verd`));
     const byNum = new Map(todos.map((t: { num: number }) => [t.num, t]));
     expect((byNum.get(5) as { state: string }).state).toBe("done");
     expect((byNum.get(6) as { state: string }).state).toBe("open");
   });
 
   test("bug and security verdicts honor #N fixes", async () => {
-    const { bugs, security } = await (await fetch(`${BASE}/api/verdicts/verd`)).json();
+    const { bugs, security } = await asJson(await fetch(`${BASE}/api/verdicts/verd`));
     expect(bugs.find((b: { num: number }) => b.num === 7).open).toBe(true);
     expect(bugs.find((b: { num: number }) => b.num === 8).open).toBe(false);
     expect(security.find((s: { num: number }) => s.num === 9).open).toBe(true);
@@ -93,8 +93,8 @@ describe("GET /api/verdicts/:project — per-item server judgments", () => {
   });
 
   test("parity with /api/open-items — same resolvers, identical open sets", async () => {
-    const v = await (await fetch(`${BASE}/api/verdicts/verd`)).json();
-    const oi = await (await fetch(`${BASE}/api/open-items?cwd=${encodeURIComponent(projDir)}`)).json();
+    const v = await asJson(await fetch(`${BASE}/api/verdicts/verd`));
+    const oi = await asJson(await fetch(`${BASE}/api/open-items?cwd=${encodeURIComponent(projDir)}`));
     expect(oi.project).toBe("verd");
     const openFromVerdicts = new Set([
       ...v.todos.filter((t: { state: string }) => t.state === "open").map((t: { num: number }) => t.num),
@@ -106,7 +106,7 @@ describe("GET /api/verdicts/:project — per-item server judgments", () => {
   });
 
   test("unknown project → empty verdicts, not an error", async () => {
-    const v = await (await fetch(`${BASE}/api/verdicts/__none__`)).json();
+    const v = await asJson(await fetch(`${BASE}/api/verdicts/__none__`));
     expect(v.todos).toEqual([]);
     expect(v.bugs).toEqual([]);
     expect(v.security).toEqual([]);

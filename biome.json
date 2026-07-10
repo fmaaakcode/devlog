@@ -1,5 +1,17 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.4.15/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.5.3/schema.json",
+  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+  "files": {
+    "includes": [
+      "**",
+      "!audits",
+      "!coverage",
+      "!docs",
+      "!fable",
+      "!old",
+      "!bun.lock"
+    ]
+  },
   "linter": {
     "enabled": true,
     "rules": {
@@ -31,6 +43,15 @@
         "rules": {
           "style": { "noDescendingSpecificity": "off" },
           "complexity": { "noImportantStyles": "off" }
+        }
+      }
+    },
+    {
+      "includes": ["**/*.html"],
+      "linter": {
+        "rules": {
+          "style": { "noDescendingSpecificity": "off" },
+          "a11y": { "noSvgWithoutTitle": "off" }
         }
       }
     },

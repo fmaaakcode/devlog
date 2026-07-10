@@ -35,7 +35,11 @@ export const SINGLE_LINE_TAGS = new Set([
 ]);
 
 const FAKE_VERSION = /^v\d+(\.\d+)+\s*$/i;
-const SUSPICIOUS_START = /^[|*`>]/;
+// Markdown residue the body regex can swallow: table rows (|), blockquotes (>),
+// list bullets (`* item` — but NOT `**bold**`, which is legitimate content).
+// No backtick here: content is sliced from the original message, so a leading
+// inline-code span is real content, not strip residue.
+const SUSPICIOUS_START = /^(?:\||>|\*(?!\*))/;
 
 // Vanilla regex escaper. Avoids depending on the Stage-3 `RegExp.escape`, which
 // isn't part of the JS standard yet — if a Bun release changed or dropped it,
@@ -57,46 +61,59 @@ export function parseTags(msg: string): ParsedTag[] {
   const escaped = ALLOWED_TAGS.map(escapeRegex);
   const tagAlt = `(?:${escaped.join("|")})`;
   // Notes on the regex shape:
-  // - `[ \t]*` (not `\s*`) before the body capture so we don't eat the
-  //   newline that the terminator lookahead needs.
   // - `[\s\S]*?` (zero-or-more, lazy) so an empty body is valid and gets
   //   filtered out by the empty-content rule below — without this, an
   //   empty `-(built)` followed by another tag would fuse the two.
+  // - The body capture starts right after `)` (no `[ \t]*` separator outside
+  //   it): with the separator outside the group, a stripped inline-code span
+  //   at the start of the content turned into spaces that the separator
+  //   swallowed, silently dropping the opening identifier.
+  // - Flag `d` gives m.indices so the content span can be projected onto the
+  //   ORIGINAL message (see below).
   const pattern = new RegExp(
-    `(?:^|\\n)[ \\t]*-\\s*\\((${tagAlt})(!)?\\)[ \\t]*([\\s\\S]*?)(?=\\n[ \\t]*-\\s*\\(${tagAlt}!?\\)|$)`,
-    "g"
+    `(?:^|\\n)[ \\t]*-\\s*\\((${tagAlt})(!)?\\)([\\s\\S]*?)(?=\\n[ \\t]*-\\s*\\(${tagAlt}!?\\)|$)`,
+    "gd"
   );
 
-  // doc:* bodies legitimately contain ``` and `…`; strip code only for
-  // the non-doc match pass.
+  // Code stripping exists so documentation that MENTIONS `-(tag)` isn't
+  // captured. It is a detection aid only: the replacement preserves length
+  // (`" ".repeat`), so every offset in `stripped` maps 1:1 onto `msg` — we
+  // match against `stripped` but slice the content from `msg`, keeping
+  // inline code inside tag content intact (288 tags were destroyed by
+  // extracting from the stripped text).
   const stripped = msg
     .replace(/```[\s\S]*?```/g, m => " ".repeat(m.length))
     .replace(/`[^`\n]*`/g, m => " ".repeat(m.length));
 
-  // Collect matches with source offset, sort to preserve authoring order
-  // (Bug QA #3). Previously doc:* tags floated above non-doc.
-  const collected: Array<{ idx: number; m: RegExpMatchArray }> = [];
-  for (const m of msg.matchAll(pattern)) {
-    if (m[1].startsWith("doc:")) collected.push({ idx: m.index ?? 0, m });
-  }
+  const out: ParsedTag[] = [];
+  // Single pass over `stripped` for doc and non-doc alike: a tag inside a
+  // fence is invisible both as a tag AND as a terminator of a previous tag's
+  // body (the old doc pass ran on `msg`, so a `-(todo)` example inside a
+  // fenced block truncated the doc body — or got captured as a phantom doc).
+  // Matches arrive in source order, so authoring order (Bug QA #3) is free.
   for (const m of stripped.matchAll(pattern)) {
-    if (!m[1].startsWith("doc:")) collected.push({ idx: m.index ?? 0, m });
-  }
-  collected.sort((a, b) => a.idx - b.idx);
-  const raw: ParsedTag[] = collected.map(({ m }) => {
-    let content = m[3].trim();
+    const span = (m as RegExpMatchArray & { indices?: Array<[number, number] | undefined> }).indices?.[3];
+    if (!span) continue;
+    const tag = m[1];
+
+    // Slice from the ORIGINAL message so inline code survives. For non-doc
+    // tags a trailing fenced block is illustration, not content — drop it
+    // (the old code got this right by accident: stripping left spaces that
+    // trim() ate). doc:* bodies are markdown by design and keep their fences.
+    let content = msg.slice(span[0], span[1]);
+    if (!tag.startsWith("doc:")) content = content.replace(/```[\s\S]*?```/g, "");
+    content = content.trim();
     // Stable identity for single-line tags: everything past the first line is
     // turn-echo, not content (see SINGLE_LINE_TAGS). Matches what ingest-side
     // enforcement would drop anyway, so no stored semantics change.
-    if (SINGLE_LINE_TAGS.has(m[1])) content = content.split(/\r?\n/)[0].trim();
-    return { tag: m[1], breaking: !!m[2], content };
-  });
+    if (SINGLE_LINE_TAGS.has(tag)) content = content.split(/\r?\n/)[0].trim();
+    if (!content) continue;
 
-  return raw.filter(({ tag, content }) => {
-    if (!content) return false;
-    if (tag.startsWith("doc:")) return true;
-    if (SUSPICIOUS_START.test(content)) return false;
-    if (tag === "built" && FAKE_VERSION.test(content)) return false;
-    return true;
-  });
+    if (!tag.startsWith("doc:")) {
+      if (SUSPICIOUS_START.test(content)) continue;
+      if (tag === "built" && FAKE_VERSION.test(content)) continue;
+    }
+    out.push({ tag, breaking: !!m[2], content });
+  }
+  return out;
 }

@@ -3,6 +3,7 @@
 // the group through the real subprocess server (shapes + validation paths).
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
+import { asJson } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -52,8 +53,8 @@ describe("routes-workspace (extracted group) still mounts + behaves", () => {
       method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ cwd: "", text: "did a thing" }),
     });
     expect(r.status).toBe(200);
-    expect((await r.json()).ok).toBe(true);
-    const data = await (await fetch(`${BASE}/api/data`)).json();
+    expect((await asJson(r)).ok).toBe(true);
+    const data = await asJson(await fetch(`${BASE}/api/data`));
     expect(data.worklog.some((w: { text: string }) => w.text === "did a thing")).toBe(true);
   });
 

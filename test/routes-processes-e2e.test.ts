@@ -6,6 +6,7 @@
 // group still mounts and behaves identically (guard + handler + JSON shape).
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
+import { asJson } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -53,13 +54,13 @@ describe("routes-processes (extracted group) still mounts + behaves", () => {
   test("GET /api/sessions → 200 with an items array", async () => {
     const r = await fetch(`${BASE}/api/sessions`);
     expect(r.status).toBe(200);
-    expect(Array.isArray((await r.json()).items)).toBe(true);
+    expect(Array.isArray((await asJson(r)).items)).toBe(true);
   });
 
   test("GET /api/processes → 200 with items/orphans/active", async () => {
     const r = await fetch(`${BASE}/api/processes`);
     expect(r.status).toBe(200);
-    const body = await r.json();
+    const body = await asJson(r);
     expect(Array.isArray(body.items)).toBe(true);
     expect(typeof body.orphans).toBe("number");
     expect(typeof body.active).toBe("number");
@@ -68,7 +69,7 @@ describe("routes-processes (extracted group) still mounts + behaves", () => {
   test("POST /api/processes/refresh → 200 with a numeric count", async () => {
     const r = await fetch(`${BASE}/api/processes/refresh`, { method: "POST", headers: JSON_HEADERS });
     expect(r.status).toBe(200);
-    const body = await r.json();
+    const body = await asJson(r);
     expect(body.ok).toBe(true);
     expect(typeof body.count).toBe("number");
   });
@@ -76,7 +77,7 @@ describe("routes-processes (extracted group) still mounts + behaves", () => {
   test("POST /api/kill-pid/:pid rejects an untracked PID with 403", async () => {
     const r = await fetch(`${BASE}/api/kill-pid/99999999`, { method: "POST", headers: JSON_HEADERS });
     expect(r.status).toBe(403);
-    expect((await r.json()).error).toContain("not tracked");
+    expect((await asJson(r)).error).toContain("not tracked");
   });
 
   test("POST /api/kill-pid/0 → 400 invalid PID (never reaches the kill path)", async () => {

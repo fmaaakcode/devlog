@@ -21,6 +21,7 @@
 //     port via that env var — no need to own 7777 or stop the local server.
 
 import { test, expect, describe, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
+import { asJson } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -155,7 +156,7 @@ describe("regression — Bug #2: 60-char dedup must not eat different tags", () 
       });
       expect(res.ok).toBe(true);
 
-      const data: any = await (await fetch(`${BASE}/api/data`)).json();
+      const data: any = await asJson(await fetch(`${BASE}/api/data`));
       const builtTags = data.tags.filter(
         (t: any) => t.project === "sdet-test-project" && t.tag === "built",
       );
@@ -184,7 +185,7 @@ describe("regression — Bug #2: 60-char dedup must not eat different tags", () 
         }),
       });
 
-      const data: any = await (await fetch(`${BASE}/api/data`)).json();
+      const data: any = await asJson(await fetch(`${BASE}/api/data`));
       const builtTags = data.tags.filter(
         (t: any) => t.project === "sdet-test-project-exact" && t.tag === "built",
       );
@@ -266,7 +267,7 @@ describe("regression — Bug #4: -(undo) #N must remove plan steps too", () => {
       });
 
       // 2. Read back the data and grab the num assigned to "step alpha".
-      const before: any = await (await fetch(`${BASE}/api/data`)).json();
+      const before: any = await asJson(await fetch(`${BASE}/api/data`));
       const projectName = projectDir.split(/[\\/]/).filter(Boolean).pop();
       const plan = before.plans.find((p: any) => p.project === projectName);
       expect(plan).toBeDefined();
@@ -286,7 +287,7 @@ describe("regression — Bug #4: -(undo) #N must remove plan steps too", () => {
       });
 
       // 4. The step must be gone.
-      const after: any = await (await fetch(`${BASE}/api/data`)).json();
+      const after: any = await asJson(await fetch(`${BASE}/api/data`));
       const planAfter = after.plans.find((p: any) => p.project === projectName);
       const stepTexts = (planAfter?.steps || []).map((s: any) => s.text);
       expect(stepTexts).not.toContain("step alpha");
@@ -311,7 +312,7 @@ describe("regression — Bug #4: -(undo) #N must remove plan steps too", () => {
       });
       expect(todoRes.ok).toBe(true);
 
-      const before: any = await (await fetch(`${BASE}/api/data`)).json();
+      const before: any = await asJson(await fetch(`${BASE}/api/data`));
       const projectName = projectDir.split(/[\\/]/).filter(Boolean).pop();
       const todo = before.tags.find(
         (t: any) => t.project === projectName && t.tag === "todo",
@@ -328,7 +329,7 @@ describe("regression — Bug #4: -(undo) #N must remove plan steps too", () => {
         }),
       });
 
-      const after: any = await (await fetch(`${BASE}/api/data`)).json();
+      const after: any = await asJson(await fetch(`${BASE}/api/data`));
       const stillThere = after.tags.find(
         (t: any) => t.project === projectName && t.num === todo.num,
       );
@@ -531,7 +532,7 @@ describe("regression — Bug R2-1: -(done) #N must close native plan steps", () 
       });
 
       // 2. Grab the num assigned to "native step one".
-      const before: any = await (await fetch(`${BASE}/api/data`)).json();
+      const before: any = await asJson(await fetch(`${BASE}/api/data`));
       const projectName = projectDir.split(/[\\/]/).filter(Boolean).pop();
       const plan = before.plans.find((p: any) => p.project === projectName);
       const stepOne = plan?.steps.find((s: any) => s.text === "native step one");
@@ -576,7 +577,7 @@ describe("regression — Bug R2-1: -(done) #N must close native plan steps", () 
         }),
       });
 
-      const before: any = await (await fetch(`${BASE}/api/data`)).json();
+      const before: any = await asJson(await fetch(`${BASE}/api/data`));
       const projectName = projectDir.split(/[\\/]/).filter(Boolean).pop();
       const plan = before.plans.find((p: any) => p.project === projectName);
       const stepOne = plan?.steps.find((s: any) => s.text === "doc step one");

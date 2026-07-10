@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import { mkdir, rename } from "node:fs/promises";
+import { existsSync, readdirSync } from "node:fs";
+import { mkdir, open, rename } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { DevLogData, InjectionConfig, PlanStep, ProjectProfile, TagEntry } from "./types";
@@ -95,7 +95,15 @@ async function readJsonOr<T>(path: string, fallback: T): Promise<T> {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const dest = `${path}.corrupt-${stamp}`;
     try { await rename(path, dest); } catch { /* rename failed → leave it; next save overwrites */ }
-    console.error(`[store] ${path} is corrupt (${(e as Error)?.message}) — quarantined to ${dest}; continuing with an empty store. Restore from the newest .bak if needed.`);
+    // Name the actual newest .bak instead of promising one exists — meta.json
+    // had no backups at all while this line told the user to restore from one.
+    let bakHint = "none — this store has no .bak backups";
+    try {
+      const base = path.split(/[\\/]/).pop()?.replace(/\.json$/, "") ?? "";
+      const baks = readdirSync(dirname(path)).filter(f => f.startsWith(`${base}.`) && f.endsWith(".bak")).sort();
+      if (baks.length) bakHint = baks[baks.length - 1];
+    } catch { /* unreadable dir — keep the "none" hint */ }
+    console.error(`[store] ${path} is corrupt (${(e as Error)?.message}) — quarantined to ${dest}; continuing with an empty store. Newest backup: ${bakHint}.`);
     return fallback;
   }
 }
@@ -166,9 +174,19 @@ async function migrateToSplit(data: DevLogData) {
 
 // Write to a sibling .tmp file then atomically rename over the target.
 // Crash mid-write leaves an orphan .tmp; the canonical file stays intact.
+// fsync before the rename: without it the content can sit in the page cache
+// while the rename's metadata hits the journal first — a power cut then leaves
+// a truncated/empty canonical file. ~1-5ms per store write; the lastWritten
+// hash-skip keeps the hook path well under 10ms.
 async function atomicWrite(path: string, body: string): Promise<void> {
   const tmp = `${path}.tmp.${process.pid}.${Date.now()}`;
-  await Bun.write(tmp, body);
+  const fh = await open(tmp, "w");
+  try {
+    await fh.writeFile(body);
+    await fh.sync();
+  } finally {
+    await fh.close();
+  }
   await rename(tmp, path);
 }
 
@@ -744,20 +762,26 @@ export function backfillNums(data: DevLogData): boolean {
 export function assignNum(data: DevLogData, project: string): number {
   const profile = data.projects[project];
   if (!profile) return 1;
-  let next = profile.nextItemNum ?? 0;
-  if (!next) {
-    let max = 0;
-    for (const t of data.tags) {
-      if (t.project === project && typeof t.num === "number" && t.num > max) max = t.num;
-    }
-    for (const p of data.plans) {
-      if (p.project !== project) continue;
-      for (const s of p.steps) {
-        if (typeof s.num === "number" && s.num > max) max = s.num;
-      }
-    }
-    next = max + 1;
+
+  // The persisted counter is untrustworthy on its own: applyPreservedScan used
+  // to drop it, and restoring projects.json from a .bak rewinds it while
+  // tags.json keeps the higher numbers — the counter and the numbered items
+  // live in two files with no consistency boundary. Always take the max of the
+  // persisted counter and the live high-water mark, so a behind counter can
+  // never hand out a number an open item already carries (closure matches by
+  // number alone — one -(done) #N would silently close both).
+  let max = 0;
+  for (const t of data.tags) {
+    if (t.project === project && typeof t.num === "number" && t.num > max) max = t.num;
   }
+  for (const p of data.plans) {
+    if (p.project !== project) continue;
+    for (const s of p.steps) {
+      if (typeof s.num === "number" && s.num > max) max = s.num;
+    }
+  }
+
+  const next = Math.max(profile.nextItemNum ?? 0, max + 1);
   profile.nextItemNum = next + 1;
   return next;
 }

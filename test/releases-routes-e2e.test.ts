@@ -12,7 +12,7 @@ import type { Subprocess } from "bun";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { startServer, waitForServer } from "./_helpers";
+import { asJson, startServer, waitForServer } from "./_helpers";
 
 const TEST_PORT = 17879;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
@@ -109,7 +109,7 @@ describe("/releases routes (E2E)", () => {
   test("preview.json exposes the same intent + blockers machine-readably", async () => {
     const r = await fetch(`${BASE}/releases/${encodeURIComponent(project)}/preview.json`);
     expect(r.status).toBe(200);
-    const body = await r.json();
+    const body = await asJson(r);
     expect(body.preview).toBe(true);
     expect(body.intent).toMatchObject({ version: "1.3.0", from: "1.2.3", bump: "minor", auto: true });
     expect(body.blockers).toHaveLength(1);

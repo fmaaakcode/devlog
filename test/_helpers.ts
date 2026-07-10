@@ -12,6 +12,15 @@ import { join } from "node:path";
 /** Repo root — cmd cwd for the spawned server + hook. */
 export const PROJECT_ROOT = join(import.meta.dir, "..");
 
+/** Typed view of a JSON response body. `Response.json()` returns `unknown`
+ *  under the current TS lib, which made every e2e assertion a type error once
+ *  test/ entered typecheck (#503). Default keeps assertions terse — property
+ *  access stays legal — while callers that want a real shape pass one:
+ *  `await asJson<DevLogData>(r)`. */
+export async function asJson<T = Record<string, any>>(r: Response): Promise<T> {
+  return await r.json() as T;
+}
+
 /** Boot the real server on `port`, isolated to `dataDir`. Version check is off so
  *  a test boot never hits the network. */
 export function startServer(dataDir: string, port: number): Subprocess {

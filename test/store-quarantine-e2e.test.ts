@@ -8,7 +8,7 @@
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import type { Subprocess } from "bun";
-import { startServer, waitForServer } from "./_helpers";
+import { asJson, startServer, waitForServer } from "./_helpers";
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,7 +37,7 @@ afterAll(async () => {
 
 describe("corrupt store quarantine (#432)", () => {
   test("server boots; the intact stores survive, the corrupt one starts empty", async () => {
-    const data = await (await fetch(`${BASE}/api/data`)).json();
+    const data = await asJson(await fetch(`${BASE}/api/data`));
     expect(data.projects.p).toBeDefined();   // projects.json parsed fine
     expect(data.tags).toEqual([]);           // corrupt tags fell back to empty
   });

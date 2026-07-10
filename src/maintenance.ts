@@ -91,12 +91,15 @@ export async function cleanupOldBackups(dataDir: string, maxAgeDays = 30): Promi
  * Daily safety copy of the irreplaceable stores. projects.json (the registry —
  * the 2026-07-04 clobber incident proved recovery needs a disk crawl) plus
  * tags.json and plans.json: they ARE the devlog history, reconstructible from
- * nowhere (#432). events.json is deliberately excluded — high-churn and already
- * retention-pruned, so a daily copy would be large and mostly stale. One dated
- * copy per file per day, `.bak` suffix so the existing cleanupOldBackups 30-day
- * pruning applies. Returns the store names copied. Best-effort — never throws.
+ * nowhere (#432). meta.json too: migration flags, worklog, rejections, and the
+ * per-project injection/standards configs — losing it silently re-enables
+ * standards enforcement on every project that opted out. events.json is the
+ * ONLY deliberate exclusion — high-churn and already retention-pruned, so a
+ * daily copy would be large and mostly stale. One dated copy per file per day,
+ * `.bak` suffix so the existing cleanupOldBackups 30-day pruning applies.
+ * Returns the store names copied. Best-effort — never throws.
  */
-const BACKED_UP_STORES = ["projects", "tags", "plans"] as const;
+const BACKED_UP_STORES = ["projects", "tags", "plans", "meta"] as const;
 export async function backupStores(dataDir: string): Promise<string[]> {
   const stamp = new Date().toISOString().slice(0, 10);
   const written: string[] = [];

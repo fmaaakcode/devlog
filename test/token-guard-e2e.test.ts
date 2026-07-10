@@ -4,6 +4,7 @@
 // without the token, 200 with it). Proves the feature is opt-in + enforced.
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
+import { asJson } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -39,7 +40,7 @@ describe("token OFF by default (opt-in) — destructive routes behave as before"
   afterAll(async () => { try { s.kill(); } catch { /* dead */ } await Promise.race([s.exited, Bun.sleep(2000)]); rmSync(dir, { recursive: true, force: true }); });
 
   test("/api/token reports required:false", async () => {
-    expect((await (await fetch(`${BASE}/api/token`)).json()).required).toBe(false);
+    expect((await asJson(await fetch(`${BASE}/api/token`))).required).toBe(false);
   });
   test("/api/kill-pid works without a token (403 = untracked, not 401)", async () => {
     const r = await fetch(`${BASE}/api/kill-pid/99999999`, { method: "POST", headers: JSON_HEADERS });
@@ -54,7 +55,7 @@ describe("token ON (DEVLOG_REQUIRE_TOKEN=1) — destructive routes are gated", (
   afterAll(async () => { try { s.kill(); } catch { /* dead */ } await Promise.race([s.exited, Bun.sleep(2000)]); rmSync(dir, { recursive: true, force: true }); });
 
   test("/api/token reports required:true and returns a token", async () => {
-    const body = await (await fetch(`${BASE}/api/token`)).json();
+    const body = await asJson(await fetch(`${BASE}/api/token`));
     expect(body.required).toBe(true);
     expect(typeof body.token).toBe("string");
     expect(body.token.length).toBeGreaterThan(0);
@@ -66,7 +67,7 @@ describe("token ON (DEVLOG_REQUIRE_TOKEN=1) — destructive routes are gated", (
   });
 
   test("a destructive route WITH the token passes the gate (403 untracked, not 401)", async () => {
-    const token = (await (await fetch(`${BASE}/api/token`)).json()).token as string;
+    const token = (await asJson(await fetch(`${BASE}/api/token`))).token as string;
     const r = await fetch(`${BASE}/api/kill-pid/99999999`, {
       method: "POST", headers: { ...JSON_HEADERS, "X-DevLog-Token": token },
     });
@@ -84,7 +85,7 @@ describe("token ON (DEVLOG_REQUIRE_TOKEN=1) — destructive routes are gated", (
   test("DELETE /api/project/:name without the token → 401, with it → passes the gate", async () => {
     const r = await fetch(`${BASE}/api/project/__none__`, { method: "DELETE" });
     expect(r.status).toBe(401);
-    const token = (await (await fetch(`${BASE}/api/token`)).json()).token as string;
+    const token = (await asJson(await fetch(`${BASE}/api/token`))).token as string;
     const r2 = await fetch(`${BASE}/api/project/__none__`, {
       method: "DELETE", headers: { "X-DevLog-Token": token },
     });
@@ -112,7 +113,7 @@ describe("token ON (DEVLOG_REQUIRE_TOKEN=1) — destructive routes are gated", (
   test("DELETE /api/tag/:id without the token → 401, with it → passes the gate", async () => {
     const r = await fetch(`${BASE}/api/tag/__none__`, { method: "DELETE" });
     expect(r.status).toBe(401);
-    const token = (await (await fetch(`${BASE}/api/token`)).json()).token as string;
+    const token = (await asJson(await fetch(`${BASE}/api/token`))).token as string;
     const r2 = await fetch(`${BASE}/api/tag/__none__`, { method: "DELETE", headers: { "X-DevLog-Token": token } });
     expect(r2.status).toBe(404);   // token accepted → reached the handler
   });
@@ -120,7 +121,7 @@ describe("token ON (DEVLOG_REQUIRE_TOKEN=1) — destructive routes are gated", (
   test("DELETE /api/plan/:id without the token → 401, with it → passes the gate", async () => {
     const r = await fetch(`${BASE}/api/plan/__none__`, { method: "DELETE" });
     expect(r.status).toBe(401);
-    const token = (await (await fetch(`${BASE}/api/token`)).json()).token as string;
+    const token = (await asJson(await fetch(`${BASE}/api/token`))).token as string;
     const r2 = await fetch(`${BASE}/api/plan/__none__`, { method: "DELETE", headers: { "X-DevLog-Token": token } });
     expect(r2.status).toBe(404);   // token accepted → reached the handler
   });

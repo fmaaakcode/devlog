@@ -47,7 +47,7 @@ const tags: TagEntry[] = [
 function data(): DevLogData {
   return {
     projects: { [PROJ]: profile() }, events: [], tags, plans: [plan], worklog: [], injections: [],
-    injectionConfig: { sessionStart: true, userPromptSubmit: true, preToolUseRead: false, claudeMd: false, contextMd: false },
+    injectionConfig: { sessionStart: true, userPromptSubmit: true, preToolUseRead: false, outdatedLibs: true, describeNudge: true, upcomingItems: true, claudeMd: false, contextMd: false },
     projectInjectionConfigs: {}, descendants: [], migrations: {},
   };
 }

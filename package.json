@@ -1,6 +1,6 @@
 {
   "name": "devlog",
-  "version": "3.6.0",
+  "version": "3.7.1",
   "description": "Automatic dev tracking for Claude Code via hooks and tags",
   "type": "module",
   "private": true,
@@ -12,15 +12,15 @@
     "test:watch": "bun test --watch",
     "test:coverage": "bun test --coverage",
     "doctor": "bun src/doctor.ts",
-    "lint": "biome lint src test",
+    "lint": "biome lint .",
     "typecheck": "tsc --noEmit"
   },
   "engines": {
     "bun": ">=1.3.14"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.0",
+    "@biomejs/biome": "^2.5.3",
     "bun-types": "^1.3.14",
-    "typescript": "^6.0.3"
+    "typescript": "7.0.2"
   }
 }

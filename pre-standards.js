@@ -80,13 +80,13 @@ try {
     latestVersion: (lang) => latestToolchain(lang).then(t => t.version),
   });
   if (outcome) {
-    process.stderr.write([
+    process.stderr.write(`${[
       "════════ DevLog Standards Gate ════════",
       outcome.title,
       ...outcome.lines,
       "(تعطيل لمرة واحدة: DEVLOG_STANDARDS_CHECK=0)",
       "═══════════════════════════════════════",
-    ].join("\n") + "\n");
+    ].join("\n")}\n`);
     process.exit(2);
   }
 
@@ -105,7 +105,7 @@ try {
   const safeSid = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
   const stateFile = join(RULES_STATE_DIR, `${safeSid}.json`);
   let served = [];
-  try { served = JSON.parse(await readFile(stateFile, "utf-8")); } catch {}
+  try { served = JSON.parse(await readFile(stateFile, "utf-8")); } catch { /* first write of this session — no state yet */ }
   const covered = coveredCategories(served);
 
   const decision = gateWriteDecision({ isCode: isCodeWrite(filePath), needed, covered });
@@ -133,7 +133,7 @@ try {
     "(تعطيل لمرة واحدة: DEVLOG_STANDARDS_CHECK=0)",
     "═══════════════════════════════════════",
   ].join("\n");
-  process.stderr.write(out + "\n");
+  process.stderr.write(`${out}\n`);
   process.exit(2); // block this write; the next one is informed + allowed
 } catch {
   process.exit(0); // never wedge edits on internal error

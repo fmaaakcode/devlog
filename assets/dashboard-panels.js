@@ -205,6 +205,7 @@
             }
         }
 
+        const statsHashes = {};
         export function updateSidebarStats() {
             const el = document.getElementById('centerStats');
             if (!activeProject) { el.style.display = 'none'; return; }
@@ -239,16 +240,22 @@
             }
             totalSteps += liveTodos.length; doneSteps += (liveTodos.length - openTodos);
 
-            // New separate card: 5 stat numbers
+            // New separate card: 5 stat numbers. Guarded like the cards
+            // (round-8 UI): this runs on every surgical pulse, and rewriting
+            // identical markup is pure DOM churn.
             const numbersEl = document.getElementById('statsNumbers');
             if (numbersEl) {
-                numbersEl.innerHTML = `
+                const numbersHtml = `
                     <div><div class="ss-val" style="color:var(--emerald)">${builts}</div><div class="ss-label">بناء</div></div>
                     <div><div class="ss-val" style="color:var(--gold)">${openTodos}</div><div class="ss-label">مهام</div></div>
                     <div><div class="ss-val" style="color:${openBugs > 0 ? 'var(--pink)' : 'var(--emerald)'}">${openBugs}</div><div class="ss-label">خلل</div></div>
                     <div><div class="ss-val" style="color:${openSec > 0 ? 'var(--pink)' : 'var(--emerald)'}">${openSec}</div><div class="ss-label">أمني</div></div>
                     <div><div class="ss-val" style="color:${outdatedCount > 0 ? 'var(--gold)' : 'var(--emerald)'}">${outdatedCount}</div><div class="ss-label">قديمة</div></div>
                 `;
+                if (statsHashes.numbers !== numbersHtml) {
+                    statsHashes.numbers = numbersHtml;
+                    numbersEl.innerHTML = numbersHtml;
+                }
                 numbersEl.style.display = 'flex';
                 // Staleness indicator: dim + tooltip whenever /api/verdicts failed and
                 // these numbers aren't live — either the last good snapshot or the
@@ -273,13 +280,12 @@
                 const tip = `إصلاح الأخطاء المكتشفة: ${fixedCount}/${bugsAll.length} (${pct}%)`;
                 bars.push(`<div class="progress-track" title="${tip}"><div class="progress-fill" style="width:${pct}%;background:var(--pink)"></div></div>`);
             }
-            if (bars.length > 0) {
-                el.innerHTML = `<div class="center-stats-bars">${bars.join('')}</div>`;
-                el.style.display = 'flex';
-            } else {
-                el.innerHTML = '';
-                el.style.display = 'none';
+            const barsHtml = bars.length > 0 ? `<div class="center-stats-bars">${bars.join('')}</div>` : '';
+            if (statsHashes.bars !== barsHtml) {
+                statsHashes.bars = barsHtml;
+                el.innerHTML = barsHtml;
             }
+            el.style.display = bars.length > 0 ? 'flex' : 'none';
         }
 
         // Per-plan expanded state (planId → bool). Most-recent plan defaults
@@ -435,21 +441,32 @@
             }
         }
 
+        const CHANGES_HEADER = `<div style="font-size:0.6em;color:var(--text2);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">التغييرات في الكود</div>`;
+        const CHANGES_LIST_STYLE = `overflow-y:auto;flex:1;min-height:0;direction:ltr;font-size:0.72em`;
+
         export async function renderChangesCard(project) {
             const el = document.getElementById('cardChanges');
             if (!el) return;
-            el.innerHTML = `<div style="font-size:0.6em;color:var(--text2);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">التغييرات في الكود</div><div id="changesList" style="overflow-y:auto;flex:1;min-height:0;direction:ltr;font-size:0.72em">جاري التحميل…</div>`;
+            // Loading placeholder ONLY on a first paint (fresh card after a full
+            // render / project switch). The surgical WS path used to wipe the
+            // card to "جاري التحميل…" on EVERY pulse and rebuild it after the
+            // fetch — a visible blink + scroll reset whenever any OTHER card's
+            // data changed (round-8 UI finding; pinned by ui-smoke scenario E).
+            if (!el.querySelector('#changesList')) {
+                updateCard('cardChanges', `${CHANGES_HEADER}<div id="changesList" style="${CHANGES_LIST_STYLE}">جاري التحميل…</div>`, false);
+            }
             try {
                 const r = await fetch(`${API}/api/changes?project=${encodeURIComponent(project)}&n=30`);
                 const j = await r.json();
+                // Stale guard: a slow response landing after a project switch
+                // must not paint the previous project's changes into this card.
+                if (activeProject !== project) return;
                 const items = j.items || [];
-                const list = document.getElementById('changesList');
-                if (!list) return;
+                let listHtml;
                 if (!items.length) {
-                    list.innerHTML = `<div style="color:var(--text2);font-size:0.95em;text-align:center;padding-top:12px">لا توجد تعديلات بعد</div>`;
-                    return;
-                }
-                list.innerHTML = items.map(it => {
+                    listHtml = `<div style="color:var(--text2);font-size:0.95em;text-align:center;padding-top:12px">لا توجد تعديلات بعد</div>`;
+                } else {
+                    listHtml = items.map(it => {
                     const fname = (it.file_path || '').replace(/\\/g, '/').split('/').pop() || '?';
                     const dir = (it.file_path || '').replace(/\\/g, '/').split('/').slice(-3, -1).join('/');
                     const time = timeStr(it.timestamp);
@@ -472,7 +489,15 @@
                             <button class="ch-story" data-file="${esc(it.file_path || '')}" title="قصة الملف" style="background:transparent;border:1px solid var(--border);color:var(--text2);border-radius:6px;padding:1px 6px;cursor:pointer;font-family:inherit">📍</button>
                         </div>
                     </div>`;
-                }).join('');
+                    }).join('');
+                }
+                // Hash-guarded like every other card: identical content → no DOM
+                // write, old nodes + their listeners stay; changed → rewrite,
+                // flash, and rebind into the fresh nodes.
+                const wrote = updateCard('cardChanges', `${CHANGES_HEADER}<div id="changesList" style="${CHANGES_LIST_STYLE}">${listHtml}</div>`);
+                if (!wrote) return;
+                const list = document.getElementById('changesList');
+                if (!list) return;
                 list.querySelectorAll('.ch-row').forEach(row => {
                     row.addEventListener('click', () => openDiffModal(row.dataset.id));
                 });

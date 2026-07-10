@@ -5,6 +5,7 @@
 // mount + behave.
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
+import { asJson } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -55,9 +56,9 @@ describe("routes-plan (extracted group) still mounts + behaves", () => {
       body: JSON.stringify({ file_path: "/tmp/p.md", content: "# My Plan\n\n- [ ] step alpha\n- [ ] step beta\n", cwd: "" }),
     });
     expect(r.status).toBe(200);
-    expect((await r.json()).ok).toBe(true);
+    expect((await asJson(r)).ok).toBe(true);
 
-    const data = await (await fetch(`${BASE}/api/data`)).json();
+    const data = await asJson(await fetch(`${BASE}/api/data`));
     expect(data.plans.some((p: { file_path: string }) => p.file_path === "/tmp/p.md")).toBe(true);
   });
 
@@ -69,7 +70,7 @@ describe("routes-plan (extracted group) still mounts + behaves", () => {
   test("GET /api/changelog/since-last-release → 200 JSON shape", async () => {
     const r = await fetch(`${BASE}/api/changelog/since-last-release?cwd=/x`);
     expect(r.status).toBe(200);
-    const body = await r.json();
+    const body = await asJson(r);
     expect(typeof body.count).toBe("number");
     expect(typeof body.groups).toBe("object");
   });
@@ -89,13 +90,13 @@ describe("routes-plan (extracted group) still mounts + behaves", () => {
       method: "POST", headers: JSON_HEADERS,
       body: JSON.stringify({ file_path: "/tmp/incomplete.md", content: "# Incomplete\n\n### 1. open step\n### 2. done step ✅\n", cwd: "" }),
     });
-    const data = await (await fetch(`${BASE}/api/data`)).json();
+    const data = await asJson(await fetch(`${BASE}/api/data`));
     const plan = data.plans.find((p: { file_path: string }) => p.file_path === "/tmp/incomplete.md");
     const r = await fetch(`${BASE}/api/plan/${plan.id}/upcoming`, {
       method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ upcoming: true }),
     });
     expect(r.status).toBe(200);
-    expect((await r.json()).upcoming).toBe(true);
+    expect((await asJson(r)).upcoming).toBe(true);
   });
 
   test("POST /api/plan/:id/upcoming on a COMPLETE plan → 409, state untouched", async () => {
@@ -103,25 +104,25 @@ describe("routes-plan (extracted group) still mounts + behaves", () => {
       method: "POST", headers: JSON_HEADERS,
       body: JSON.stringify({ file_path: "/tmp/complete.md", content: "# Complete\n\n### 1. step one ✅\n### 2. step two ✅\n", cwd: "" }),
     });
-    let data = await (await fetch(`${BASE}/api/data`)).json();
+    let data = await asJson(await fetch(`${BASE}/api/data`));
     const plan = data.plans.find((p: { file_path: string }) => p.file_path === "/tmp/complete.md");
     const r = await fetch(`${BASE}/api/plan/${plan.id}/upcoming`, {
       method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ upcoming: true }),
     });
     expect(r.status).toBe(409);
-    expect(typeof (await r.json()).error).toBe("string");
-    data = await (await fetch(`${BASE}/api/data`)).json();
+    expect(typeof (await asJson(r)).error).toBe("string");
+    data = await asJson(await fetch(`${BASE}/api/data`));
     expect(data.plans.find((p: { id: string }) => p.id === plan.id).upcoming).toBeUndefined();
   });
 
   test("promotion (upcoming:false) is never blocked, even on a complete plan", async () => {
-    const data = await (await fetch(`${BASE}/api/data`)).json();
+    const data = await asJson(await fetch(`${BASE}/api/data`));
     const plan = data.plans.find((p: { file_path: string }) => p.file_path === "/tmp/complete.md");
     const r = await fetch(`${BASE}/api/plan/${plan.id}/upcoming`, {
       method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ upcoming: false }),
     });
     expect(r.status).toBe(200);
-    expect((await r.json()).upcoming).toBe(false);
+    expect((await asJson(r)).upcoming).toBe(false);
   });
 
   test("guard still wraps the group: non-JSON POST → 415", async () => {

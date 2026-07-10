@@ -4,6 +4,7 @@
 // env-gate flags locally). Drives the group through the real subprocess server.
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
+import { asJson } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -55,7 +56,7 @@ describe("routes-standards (extracted group) still mounts + behaves", () => {
   test("GET /api/projects-summary → 200 with a projects array + count (4.1)", async () => {
     const r = await fetch(`${BASE}/api/projects-summary`);
     expect(r.status).toBe(200);
-    const body = await r.json();
+    const body = await asJson(r);
     expect(Array.isArray(body.projects)).toBe(true);
     expect(typeof body.count).toBe("number");
   });
@@ -63,7 +64,7 @@ describe("routes-standards (extracted group) still mounts + behaves", () => {
   test("GET /api/open-items → 200 with project + items", async () => {
     const r = await fetch(`${BASE}/api/open-items?cwd=/x`);
     expect(r.status).toBe(200);
-    const body = await r.json();
+    const body = await asJson(r);
     expect("project" in body).toBe(true);
     expect(Array.isArray(body.items)).toBe(true);
   });
@@ -71,7 +72,7 @@ describe("routes-standards (extracted group) still mounts + behaves", () => {
   test("GET /api/standards → 200 with catalog + counts", async () => {
     const r = await fetch(`${BASE}/api/standards?cwd=/x`);
     expect(r.status).toBe(200);
-    const body = await r.json();
+    const body = await asJson(r);
     expect(Array.isArray(body.categories)).toBe(true);
     expect(typeof body.counts.rules).toBe("number");
   });
@@ -79,7 +80,7 @@ describe("routes-standards (extracted group) still mounts + behaves", () => {
   test("GET /api/dep-freshness → 200 { violations: [] } under REGISTRY_CHECK_DISABLED", async () => {
     const r = await fetch(`${BASE}/api/dep-freshness?cwd=/x`);
     expect(r.status).toBe(200);
-    expect((await r.json()).violations).toEqual([]);   // gated by the re-derived env flag
+    expect((await asJson(r)).violations).toEqual([]);   // gated by the re-derived env flag
   });
 
   test("GET /api/audit → 200 plain-text 'disabled' notice under VULN_CHECK_DISABLED", async () => {

@@ -753,6 +753,7 @@ export async function scanProject(cwd: string, nameFromPath: (p: string) => stri
  *   - about       (long markdown body from -(about) tag, up to 5000 chars)
  *   - blueprint   (architectural items from -(blueprint) tag)
  *   - vulnResults / vulnScanDate (security state — independent of file scan)
+ *   - nextItemNum / disconnectedSince (system state a scan cannot regenerate)
  */
 /**
  * Phase 1 of a preserving rescan: the expensive disk walk. Pure — touches no
@@ -764,9 +765,10 @@ export async function scanFreshProfile(path: string): Promise<ProjectProfile> {
 }
 
 /**
- * Phase 2: merge the user-authored fields preserved on the existing profile
- * (description / about / blueprint / vuln state) onto a freshly scanned profile
- * and store it. Cheap and synchronous — safe to call while holding the lock.
+ * Phase 2: merge the preserved fields from the existing profile (description /
+ * about / blueprint / vuln state / item counter / disconnection stamp) onto a
+ * freshly scanned profile and store it. Cheap and synchronous — safe to call
+ * while holding the lock.
  */
 export function applyPreservedScan(data: DevLogData, name: string, fresh: ProjectProfile): ProjectProfile {
   const old = data.projects[name];
@@ -777,6 +779,12 @@ export function applyPreservedScan(data: DevLogData, name: string, fresh: Projec
   merged.blueprint = old?.blueprint || [];
   if (old?.vulnResults) merged.vulnResults = old.vulnResults;
   if (old?.vulnScanDate) merged.vulnScanDate = old.vulnScanDate;
+  // System state a disk scan cannot regenerate: the monotonic item counter and
+  // the disconnection stamp. Dropping the counter forced assignNum back onto
+  // max+1 alone (and made a later .bak restore hand out duplicate #N numbers);
+  // dropping the stamp reset the missing-project age tracking on every rescan.
+  if (old?.nextItemNum !== undefined) merged.nextItemNum = old.nextItemNum;
+  if (old?.disconnectedSince !== undefined) merged.disconnectedSince = old.disconnectedSince;
   data.projects[name] = merged;
   return merged;
 }

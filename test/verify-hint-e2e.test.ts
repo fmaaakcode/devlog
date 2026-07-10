@@ -9,7 +9,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import type { Subprocess } from "bun";
-import { startServer, waitForServer, runHook as runHookRaw } from "./_helpers";
+import { asJson, startServer, waitForServer, runHook as runHookRaw } from "./_helpers";
 import { mkdtempSync, rmSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -34,7 +34,7 @@ async function openTodo(cwd: string, sid: string, content: string): Promise<numb
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ cwd, session_id: sid, entries: [{ tag: "todo", content }] }),
   });
-  const data: any = await (await fetch(`${BASE}/api/data`)).json();
+  const data: any = await asJson(await fetch(`${BASE}/api/data`));
   const t = data.tags.find((x: any) => x.content === content && typeof x.num === "number");
   if (!t) throw new Error(`no numbered todo "${content}"`);
   return t.num;

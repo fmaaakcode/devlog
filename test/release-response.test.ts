@@ -16,7 +16,7 @@ function profile(path: string): ProjectProfile {
 function data(path: string): DevLogData {
   return {
     projects: { [PROJ]: profile(path) }, events: [], tags: [], plans: [], worklog: [], injections: [],
-    injectionConfig: { sessionStart: true, userPromptSubmit: true, preToolUseRead: false, claudeMd: false, contextMd: false },
+    injectionConfig: { sessionStart: true, userPromptSubmit: true, preToolUseRead: false, outdatedLibs: true, describeNudge: true, upcomingItems: true, claudeMd: false, contextMd: false },
     projectInjectionConfigs: {}, descendants: [], migrations: {},
   };
 }
