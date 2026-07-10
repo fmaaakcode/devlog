@@ -36,6 +36,14 @@ const BASH = findBash();
 // setup-bun dir, never /usr/bin:/bin). msys maps /usr/bin for Git Bash.
 const NO_BUN_PATH = "/usr/bin:/bin";
 
+// msys auto-converts well-known vars like HOME to POSIX form, but NOT our
+// custom DEVLOG_BUN_HOME — a raw `C:\...` value would smuggle a colon into
+// PATH (its separator in bash) and break the fallback append. Convert here.
+function msysPath(p: string): string {
+  if (process.platform !== "win32") return p;
+  return p.replaceAll("\\", "/").replace(/^([A-Za-z]):/, (_, d: string) => `/${d.toLowerCase()}`);
+}
+
 async function runScript(opts: { env?: Record<string, string>; args?: string[]; payload?: string }) {
   const proc = spawn({
     cmd: [BASH as string, SCRIPT, ...(opts.args ?? [])],
@@ -54,15 +62,17 @@ async function runScript(opts: { env?: Record<string, string>; args?: string[]; 
 }
 
 describe.skipIf(!BASH)("ensure-server.sh stdout contract", () => {
-  // An empty HOME keeps the $HOME/.bun/bin fallback from finding a real bun
-  // on the dev machine — these tests simulate a machine with no bun anywhere.
+  // DEVLOG_BUN_HOME points the script's ~/.bun/bin fallback at an empty dir —
+  // these tests simulate a machine with no bun anywhere. Overriding HOME is NOT
+  // enough: it doesn't survive into Git Bash children on the Windows CI runner,
+  // where setup-bun's real ~/.bun/bin made this scenario silently find bun.
   let bareHome: string;
   beforeAll(() => { bareHome = mkdtempSync(join(tmpdir(), "ensure-hook-home-")); });
   afterAll(() => { rmSync(bareHome, { recursive: true, force: true }); });
 
   test("Bun missing → systemMessage JSON on stdout, exit 0 (English default)", async () => {
     const { code, out, err } = await runScript({
-      env: { PATH: NO_BUN_PATH, HOME: bareHome, DEVLOG_LANG: "en" },
+      env: { PATH: NO_BUN_PATH, DEVLOG_BUN_HOME: msysPath(bareHome), DEVLOG_LANG: "en" },
     });
     expect(code).toBe(0);
     const parsed = JSON.parse(out.trim());
@@ -76,7 +86,7 @@ describe.skipIf(!BASH)("ensure-server.sh stdout contract", () => {
 
   test("Bun missing under DEVLOG_LANG=ar → Arabic systemMessage", async () => {
     const { code, out } = await runScript({
-      env: { PATH: NO_BUN_PATH, HOME: bareHome, DEVLOG_LANG: "ar" },
+      env: { PATH: NO_BUN_PATH, DEVLOG_BUN_HOME: msysPath(bareHome), DEVLOG_LANG: "ar" },
     });
     expect(code).toBe(0);
     const parsed = JSON.parse(out.trim());
@@ -85,9 +95,12 @@ describe.skipIf(!BASH)("ensure-server.sh stdout contract", () => {
     expect(parsed.systemMessage).toContain("bun.sh/install");
   });
 
-  test("stale PATH but bun at $HOME/.bun/bin → fallback finds it, no message", async () => {
+  test("stale PATH but bun at <bun-home>/.bun/bin → fallback finds it, no message", async () => {
     // A shim standing in for the real binary at the default install location:
     // `command -v bun` must succeed via the fallback even though PATH is stale.
+    // Injected via DEVLOG_BUN_HOME so the assertion exercises OUR shim, not a
+    // real ~/.bun/bin that happens to exist on the machine (the CI-red trap:
+    // this test once passed on the Windows runner for the wrong reason).
     const home = mkdtempSync(join(tmpdir(), "ensure-hook-bunhome-"));
     try {
       const binDir = join(home, ".bun", "bin");
@@ -95,7 +108,7 @@ describe.skipIf(!BASH)("ensure-server.sh stdout contract", () => {
       writeFileSync(join(binDir, "bun"), "#!/bin/sh\nexit 0\n");
       chmodSync(join(binDir, "bun"), 0o755);
       const { code, out } = await runScript({
-        env: { PATH: NO_BUN_PATH, HOME: home, DEVLOG_PORT: "17914", DEVLOG_LANG: "en" },
+        env: { PATH: NO_BUN_PATH, DEVLOG_BUN_HOME: msysPath(home), DEVLOG_PORT: "17914", DEVLOG_LANG: "en" },
       });
       expect(code).toBe(0);
       // No install hint — and the dead test port means no inject response either.

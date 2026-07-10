@@ -55,7 +55,11 @@ fi
 # on disk — a real user hit exactly this minutes after following our own install
 # hint, and no amount of "close all windows" fixes it short of a reboot. Probe
 # the default install location as a fallback before giving up.
-[ -d "$HOME/.bun/bin" ] && PATH="$PATH:$HOME/.bun/bin"
+# DEVLOG_BUN_HOME overrides the probed root (default $HOME): tests point it at
+# an empty dir for deterministic isolation — HOME overrides don't survive into
+# Git Bash children on the Windows CI runner, where setup-bun's real install at
+# ~/.bun/bin made the "no bun" scenario silently find bun (CI-red on v3.8.0).
+[ -d "${DEVLOG_BUN_HOME:-$HOME}/.bun/bin" ] && PATH="$PATH:${DEVLOG_BUN_HOME:-$HOME}/.bun/bin"
 
 # First-run dependency check: DevLog's server + hooks run on Bun. When it isn't
 # on PATH the server can never start and every DevLog hook no-ops. The hint MUST
