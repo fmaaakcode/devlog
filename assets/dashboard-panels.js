@@ -22,6 +22,25 @@
         // Targeted refresh for the tasks card alone — the الحالية/القادمة tab
         // switch must not redraw the whole project (that re-fetched the changes
         // card and reset every card's scroll, reading as a full reload).
+        // «الأكثر كسرًا» (#557): أعلى الملفات تكرارًا في بلاغات bug/security —
+        // من حكم الخادم (verdicts.fragile) لا من مرآة عدّ في الواجهة، فلا انحراف
+        // عن سطر retro المشتق من نفس المجموعة. يسكن هنا لا في tree-ws لأن سقف
+        // ميزانية tree-ws مجمّد؛ بطاقة الأمان تستدعيه سطرًا واحدًا.
+        export function fragileFilesHtml() {
+            const { v } = currentVerdicts();
+            const list = v?.fragile || [];
+            if (!list.length) return '';
+            let h = '<div style="font-size:0.7em;color:var(--text2);margin:10px 0 4px">الأكثر كسرًا</div>';
+            for (const f of list) {
+                h += `<div style="display:flex;align-items:center;gap:6px;padding:2px 0;font-size:0.7em" title="ظهر في ${f.count} بلاغ خلل/أمان${f.open ? ` — منها ${f.open} ما زال مفتوحًا` : ''}">
+                    <span style="color:var(--gold);flex-shrink:0">&#9888;</span>
+                    <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:ltr;text-align:right;font-family:'Cascadia Code',Consolas,monospace">${esc(f.file)}</span>
+                    <span style="color:${f.open ? 'var(--pink)' : 'var(--text2)'};flex-shrink:0;font-family:'Cascadia Code',Consolas,monospace">×${f.count}</span>
+                </div>`;
+            }
+            return h;
+        }
+
         export function renderTodosCard(flash = true) {
             updateCard('cardTodos', buildTodosHtml(getProjectTags()), flash);
         }

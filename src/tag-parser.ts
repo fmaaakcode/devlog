@@ -117,3 +117,69 @@ export function parseTags(msg: string): ParsedTag[] {
   }
   return out;
 }
+
+// ── Near-miss detection (#555) ───────────────────────────────────────────────
+// The extraction regex is built from ALLOWED_TAGS only, so a typo'd head
+// (`-(bulit)`) matches nothing and the work record dies silently — the one
+// protocol failure with zero feedback (bad `#N` refs all have hints). Detect
+// heads CLOSE to a known one and let the Stop hook serve a correction.
+
+/** Heads the Stop hook serves without storing — legitimate, never near-misses. */
+export const COMMAND_HEADS = new Set([
+  "ask:open", "ask:closed", "ask:features", "ask:retro", "ask:backfill", "ask:rules",
+  "audit", "rule:add", "rule:new", "rules:list", "rule:rm",
+]);
+
+// Plain Levenshtein, early-exited via the cap — heads are ≤40 chars and the
+// vocabulary ~45 entries, so the quadratic cost is irrelevant.
+function editDistance(a: string, b: string, cap: number): number {
+  if (Math.abs(a.length - b.length) > cap) return cap + 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    let rowMin = i;
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (cur[j] < rowMin) rowMin = cur[j];
+    }
+    if (rowMin > cap) return cap + 1;
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+export interface NearMiss { head: string; suggestion: string }
+
+/**
+ * Lines that LOOK like a tag but match no known head, paired with the closest
+ * known head when it is close enough (edit distance ≤ 2) to be a typo. Fenced
+ * and inline code are stripped first, like the extractor — an example inside
+ * ``` ``` is not a near-miss. Prose that merely opens with `-(...)` and
+ * resembles nothing stays silent by design: better to miss a hint than nag.
+ */
+export function nearMissTags(msg: string): NearMiss[] {
+  if (!msg) return [];
+  const stripped = msg
+    .replace(/```[\s\S]*?```/g, m => " ".repeat(m.length))
+    .replace(/`[^`\n]*`/g, m => " ".repeat(m.length));
+  const known = [...ALLOWED_TAGS, ...COMMAND_HEADS];
+  const out: NearMiss[] = [];
+  const seen = new Set<string>();
+  for (const m of stripped.matchAll(/^[ \t]*-\s*\(([^)\n]{2,40})\)/gm)) {
+    const head = m[1].trim().replace(/!$/, "").toLowerCase();
+    if (!head || seen.has(head)) continue;
+    if ((ALLOWED_TAGS as readonly string[]).includes(head) || COMMAND_HEADS.has(head)) continue;
+    let best: string | null = null;
+    let bestD = 3;
+    for (const t of known) {
+      const d = editDistance(head, t, 2);
+      if (d < bestD) { bestD = d; best = t; }
+    }
+    // `bestD < head.length` keeps 2-char junk from "matching" everything.
+    if (best && bestD <= 2 && bestD < head.length) {
+      seen.add(head);
+      out.push({ head, suggestion: best });
+    }
+  }
+  return out;
+}

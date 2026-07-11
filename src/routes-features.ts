@@ -7,9 +7,9 @@
 import { loadData } from "./data";
 import { resolveProjectFor } from "./project-resolve";
 import { pathsEqual } from "./path-utils";
-import { featureList, featuresSinceLastRelease } from "./features";
+import { featureList, featuresSinceLastRelease, backfillCorpus } from "./features";
 import { collectClientReport, renderClientReportHtml, writeClientReport } from "./client-report";
-import { retroCorpus } from "./retro";
+import { retroCorpus, fragileFiles } from "./retro";
 
 type ApiReq = Bun.BunRequest;
 
@@ -47,6 +47,18 @@ export function makeFeatureRoutes(): Record<string, unknown> {
       },
     },
 
+    // The backfill corpus behind `-(ask:backfill)`: releases no capability is
+    // attributed to, each with its summary + built/update material — Claude
+    // derives proposed `-(feature) [vX.Y.Z] …` declarations from it in-context.
+    "/api/features-backfill": {
+      async GET(req: ApiReq) {
+        const project = await resolveParam(req);
+        if (!project) return Response.json({ project: null, totalReleases: 0, uncovered: [] });
+        const data = await loadData();
+        return Response.json({ project, ...backfillCorpus(data, project) });
+      },
+    },
+
     // The retrospective corpus behind `-(ask:retro)`: every problem report
     // (bug/security, open and closed) with dates, age and touched files —
     // compact enough to analyze in-context. The clustering itself is Claude's
@@ -56,7 +68,7 @@ export function makeFeatureRoutes(): Record<string, unknown> {
         const project = await resolveParam(req);
         if (!project) return Response.json({ project: null, items: [] });
         const data = await loadData();
-        return Response.json({ project, items: retroCorpus(data, project) });
+        return Response.json({ project, items: retroCorpus(data, project), fragile: fragileFiles(data, project) });
       },
     },
 

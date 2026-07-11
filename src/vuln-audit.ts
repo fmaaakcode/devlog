@@ -4,7 +4,7 @@
 // stores nothing — it just answers "what are the known vulns right now?" so Claude
 // can check before/after a dependency change in any language with one command.
 
-import { enumerateDepTree } from "./scanner";
+import { enumerateDepTree } from "./lockfile-tree";
 import { scanTree, osvEcosystem, severityRank, type PkgVuln } from "./osv";
 import { loadVulnIgnore } from "./vuln-ignore";
 
@@ -13,26 +13,45 @@ export interface AuditResult { ok: boolean; reason?: string; items: AuditItem[];
 
 export async function runProjectAudit(args: {
   dirPath: string;
-  ecosystem: string;
+  ecosystem: string; // fallback for libraries without a per-library eco stamp
   directNames: Set<string>;
-  directLibs: { name: string; version: string }[];
+  directLibs: { name: string; version: string; eco?: string }[];
   pkg?: string; // optional: restrict the audit to one package
 }): Promise<AuditResult> {
-  const osvEco = osvEcosystem(args.ecosystem);
-  if (!osvEco) return { ok: false, reason: "no-ecosystem", items: [], scanned: 0, ignored: 0 };
-
   const tree = await enumerateDepTree(args.dirPath);
   const source = tree.length ? tree : args.directLibs;     // no lockfile → direct list
   let treePackages = source.slice(0, 2000)
-    .map(p => ({ name: p.name, version: p.version.replace(/[\^~>=<\s]/g, "") || "latest" }));
+    .map(p => ({ name: p.name, version: p.version.replace(/[\^~>=<\s]/g, "") || "latest", eco: p.eco || args.ecosystem }));
   if (args.pkg) treePackages = treePackages.filter(p => p.name === args.pkg);
 
+  // Group by each package's own ecosystem (a merged Tauri tree carries npm AND
+  // crates.io nodes); a group with no OSV mapping (vcpkg/C-C++) is skipped.
+  const byEco = new Map<string, typeof treePackages>();
+  for (const p of treePackages) {
+    const arr = byEco.get(p.eco);
+    if (arr) arr.push(p); else byEco.set(p.eco, [p]);
+  }
+  const scannableGroups = Array.from(byEco.entries())
+    .map(([eco, group]) => ({ osvEco: osvEcosystem(eco), group }))
+    .filter((g): g is { osvEco: string; group: typeof treePackages } => g.osvEco != null);
+  if (scannableGroups.length === 0) return { ok: false, reason: "no-ecosystem", items: [], scanned: 0, ignored: 0 };
+
   const ignore = await loadVulnIgnore(args.dirPath);
-  const vulnByPkg = await scanTree(osvEco, treePackages, fetch, ignore);
+  const vulnByPkg = new Map<string, PkgVuln>();
+  for (const { osvEco, group } of scannableGroups) {
+    const res = await scanTree(osvEco, group.map(p => ({ name: p.name, version: p.version })), fetch, ignore);
+    for (const [n, pv] of res) {
+      const prev = vulnByPkg.get(n);
+      // Same name in two ecosystems: keep whichever is vulnerable.
+      if (!prev || (prev.vulns === 0 && pv.vulns > 0)) vulnByPkg.set(n, pv);
+    }
+  }
   const items: AuditItem[] = [];
   for (const [name, vuln] of vulnByPkg) {
     if (!(vuln.ok && vuln.vulns > 0)) continue;
-    const version = treePackages.find(t => t.name === name)?.version || "";
+    // vuln.version is the resolved version the advisories hit — with one name at
+    // two versions in the tree, `find` would report an arbitrary one.
+    const version = vuln.version || treePackages.find(t => t.name === name)?.version || "";
     items.push({ name, version, direct: args.directNames.has(name), vuln });
   }
   // Direct first, then severity desc, then name — most actionable at the top.
@@ -40,7 +59,9 @@ export async function runProjectAudit(args: {
     Number(b.direct) - Number(a.direct) ||
     severityRank(b.vuln.severity) - severityRank(a.vuln.severity) ||
     a.name.localeCompare(b.name));
-  return { ok: true, items, scanned: treePackages.length, ignored: ignore.ids.size + ignore.packages.size };
+  // Count only packages that actually went through OSV (unmappable groups don't).
+  const scanned = scannableGroups.reduce((n, g) => n + g.group.length, 0);
+  return { ok: true, items, scanned, ignored: ignore.ids.size + ignore.packages.size };
 }
 
 /** Plain-text report for the Stop hook (served to Claude via stderr). */

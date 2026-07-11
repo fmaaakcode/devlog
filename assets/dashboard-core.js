@@ -227,8 +227,8 @@
             let titleCount = '';
             let fixLine = '';
             let rows;
-            if (v && v.vulns > 0) {
-                titleCount = ` — ${v.vulns}`;
+            if (v && (v.vulns > 0 || v.notices > 0)) {
+                titleCount = v.vulns > 0 ? ` — ${v.vulns}` : '';
                 const list = Array.isArray(v.advisories) ? v.advisories : [];
                 fixLine = v.fixVersion
                     ? `<div class="vuln-fix">رقِّ لـ <b>${esc(v.fixVersion)}</b> ${list.some(a => !a.fix) ? '(يبقى بعضها بلا إصلاح)' : 'لإغلاقها كلها'}</div>`
@@ -242,9 +242,18 @@
                         const idHtml = href !== '#'
                             ? `<a href="${esc(href)}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none">${esc(a.id || 'advisory')} ↗</a>`
                             : esc(a.id || 'advisory');
-                        const fix = a.fix
-                            ? `<span class="vuln-row-fix">fix ${esc(a.fix)}</span>`
-                            : `<span class="vuln-row-nofix">لا إصلاح</span>`;
+                        // Informational RustSec notices (unmaintained/unsound) are
+                        // warnings, not CVEs — a gold label instead of the red
+                        // "لا إصلاح" chip that made archived crates read as danger.
+                        const kind = (a.kind && a.kind !== 'vuln') ? String(a.kind) : '';
+                        const kindLabel = kind === 'unmaintained' ? 'غير مُصان'
+                            : kind === 'unsound' ? 'غير سليم (unsound)'
+                            : kind ? 'إشعار' : '';
+                        const fix = kindLabel
+                            ? `<span class="vuln-row-fix" style="color:var(--gold)">${esc(kindLabel)}</span>`
+                            : (a.fix
+                                ? `<span class="vuln-row-fix">fix ${esc(a.fix)}</span>`
+                                : `<span class="vuln-row-nofix">لا إصلاح</span>`);
                         return `<div class="vuln-item"><span class="vuln-dot" style="background:${col}"></span><div class="vuln-item-main"><div class="vuln-item-top"><span class="vuln-sev" style="color:${col}">${esc(sev)}</span> ${idHtml}</div><div class="vuln-item-sum">${esc(a.summary || '')}</div></div>${fix}</div>`;
                     }).join("")
                     : `<div class="vuln-item"><div class="vuln-item-main">${esc(v.message || 'تفاصيل غير متوفّرة')}${safeHref(v.detailsUrl) !== '#' ? ` <a href="${esc(safeHref(v.detailsUrl))}" target="_blank" rel="noopener" style="color:var(--blue)">↗</a>` : ''}</div></div>`;

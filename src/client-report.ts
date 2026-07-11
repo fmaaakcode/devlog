@@ -40,6 +40,8 @@ export interface ClientReportFacts {
   releasesCount: number;
   /** Cumulative current capabilities (the feature inventory). */
   features: FeatureItem[];
+  /** Release date per version — the capability group headers render from it. */
+  releaseDates: Record<string, string>;
   /** What the LAST release brought: capability texts + technical-work counts. */
   latestNews: { features: string[]; built: number; fixes: number } | null;
   /** Committed open work — a count, never the items. */
@@ -97,6 +99,7 @@ export function collectClientReport(data: DevLogData, project: string): ClientRe
       : null,
     releasesCount: releases.length,
     features: featureList(data, project),
+    releaseDates: Object.fromEntries(releases.map(r => [parseVersion(r.content).version, r.timestamp])),
     latestNews,
     inProgress,
     stack: {
@@ -135,11 +138,21 @@ function reportCss(): string {
   ul.cr-list { margin:0; padding-inline-start:20px; }
   ul.cr-list li { margin-bottom:6px; }
   .cr-since { color:var(--ink2); font-size:0.78em; margin-inline-start:6px; }
+  .cr-group { margin:0 0 16px; }
+  .cr-gh { margin:0 0 6px; font-size:0.95em; font-weight:normal; display:flex; align-items:center; gap:10px; }
+  .cr-gdate { color:var(--ink2); font-size:0.78em; }
+  .cr-gnext { color:var(--accent); font-size:0.85em; }
   .cr-fact { background:var(--bg2); border:1px solid var(--border); border-radius:8px; padding:12px 16px; }
   .cr-chips { display:flex; gap:8px; flex-wrap:wrap; }
   .cr-chip { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:4px 10px; font-size:0.82em; }
   .cr-chip b { color:var(--accent); }
   footer.cr-foot { color:var(--ink2); font-size:0.75em; border-top:1px solid var(--border); padding-top:12px; margin-top:36px; }
+  /* Browsers skip background paint by default, so the dark screen theme would
+     print as near-white ink on white paper. Flip the variables to paper values;
+     the screen look (user directive 2026-07-08) is untouched. */
+  @media print {
+    :root { --bg:#ffffff; --bg2:#f4f4f4; --border:#c9c9c9; --ink:#111111; --ink2:#555555; --accent:#8a6d1a; }
+  }
   `.trim();
 }
 
@@ -159,18 +172,50 @@ export function renderClientReportHtml(f: ClientReportFacts): string {
     metaBits.push(`<span><b>${L("Releases to date", "إصدارات حتى الآن")}:</b> ${f.releasesCount}</span>`);
   }
 
-  const featureRows = f.features.map(ft => {
-    const since = ft.sinceVersion
-      ? `<span class="cr-since">${L(`since ${esc(ft.sinceVersion)}`, `منذ ${esc(ft.sinceVersion)}`)}</span>`
-      : `<span class="cr-since">${L("in preparation for the next release", "قيد التحضير للإصدار القادم")}</span>`;
-    return `      <li>${esc(ft.text)} ${since}</li>`;
+  // Capabilities grouped by shipping release, newest version first (user
+  // directive 2026-07-11) — a 30+ item flat list in declaration order read as a
+  // wall and buried backfilled history at the bottom. The unreleased group
+  // (upcoming work) leads, then versions descend: the page reads as the
+  // product's growth story.
+  const verKey = (v: string): number[] =>
+    v.replace(/^v/i, "").split(/[.\-+]/).map(s => Number.parseInt(s, 10) || 0);
+  const cmpVerDesc = (a: string, b: string): number => {
+    const ka = verKey(a), kb = verKey(b);
+    for (let i = 0; i < Math.max(ka.length, kb.length); i++) {
+      const d = (kb[i] ?? 0) - (ka[i] ?? 0);
+      if (d !== 0) return d;
+    }
+    return 0;
+  };
+  const byVersion = new Map<string, FeatureItem[]>();
+  for (const ft of f.features) {
+    const key = ft.sinceVersion ?? "";
+    const list = byVersion.get(key) ?? [];
+    list.push(ft);
+    byVersion.set(key, list);
+  }
+  const versionKeys = [...byVersion.keys()].sort((a, b) => {
+    if (!a) return -1;               // unreleased group leads
+    if (!b) return 1;
+    return cmpVerDesc(a, b);
+  });
+  const groupBlocks = versionKeys.map(v => {
+    const date = v && f.releaseDates[v] ? `<span class="cr-gdate">${esc(fmtDate(f.releaseDates[v]))}</span>` : "";
+    const head = v
+      ? `<span class="cr-ver">${esc(v)}</span> ${date}`
+      : `<span class="cr-gnext">${L("in preparation for the next release", "قيد التحضير للإصدار القادم")}</span>`;
+    const rows = (byVersion.get(v) ?? []).map(ft => `        <li>${esc(ft.text)}</li>`).join("\n");
+    return `    <div class="cr-group">
+      <h3 class="cr-gh">${head}</h3>
+      <ul class="cr-list">
+${rows}
+      </ul>
+    </div>`;
   }).join("\n");
   const featuresSection = f.features.length ? `
   <section>
-    <h2>${L("What the system does today", "ما يقدر عليه النظام اليوم")}</h2>
-    <ul class="cr-list">
-${featureRows}
-    </ul>
+    <h2>${L(`What the system does today (${f.features.length})`, `ما يقدر عليه النظام اليوم (${f.features.length})`)}</h2>
+${groupBlocks}
   </section>` : "";
 
   let newsSection = "";
@@ -238,8 +283,8 @@ ${reliabilityBits}
     ${f.description ? `<p class="cr-sub">${esc(f.description)}</p>` : ""}
     <div class="cr-meta">${metaBits.join("\n      ")}</div>
   </header>
-${featuresSection}
 ${newsSection}
+${featuresSection}
   <section>
     <h2>${L("In progress", "قيد العمل")}</h2>
     <p class="cr-fact">${progressLine}</p>

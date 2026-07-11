@@ -14,7 +14,7 @@
 
 import type { DevLogData } from "./types";
 import { leadingNums } from "./data";
-import { isRealVersion, parseVersion } from "./release-html";
+import { isRealVersion, parseVersion, parseVersionMarker, sameVersion } from "./release-html";
 
 /** Closer verbs that reference a feature by `#N`. */
 export const FEATURE_REF_TAGS = new Set(["feature update", "feature removed"]);
@@ -85,10 +85,16 @@ export function featureList(data: DevLogData, project: string): FeatureItem[] {
     if (t.tag !== "feature") continue;
     if (typeof t.num === "number" && removed.has(t.num)) continue;
     const upd = typeof t.num === "number" ? updates.get(t.num) : undefined;
-    const since = shippedIn(+new Date(t.timestamp));
+    // Explicit [vX.Y.Z] marker (the backfill path) overrides the timestamp
+    // attribution: the capability shipped in that PAST release. Resolved to the
+    // recorded release's spelling when one matches, kept as written otherwise.
+    const mk = parseVersionMarker(t.content);
+    const since = mk
+      ? (releases.find(r => sameVersion(r.version, mk.version))?.version ?? mk.version)
+      : shippedIn(+new Date(t.timestamp));
     out.push({
       ...(typeof t.num === "number" ? { num: t.num } : {}),
-      text: upd?.text ?? t.content,
+      text: upd?.text ?? (mk ? mk.text : t.content),
       addedAt: t.timestamp,
       ...(upd ? { updatedAt: upd.at } : {}),
       ...(since ? { sinceVersion: since } : {}),
@@ -117,9 +123,78 @@ export function featuresSinceLastRelease(data: DevLogData, project: string): { b
     if (t.project !== project) continue;
     if (lastReleaseMs && +new Date(t.timestamp) <= lastReleaseMs) continue;
     if (t.tag === "built" || t.tag === "update") built++;
-    else if (t.tag === "feature") features++;
+    // A [vX.Y.Z]-marked feature is a backfill of a PAST release — it says
+    // nothing about the upcoming one, so it must not satisfy the nudge.
+    else if (t.tag === "feature" && !parseVersionMarker(t.content)) features++;
   }
   return { built, features };
+}
+
+// ── Backfill corpus (`-(ask:backfill)`) ─────────────────────────────────────
+// The inventory only fills FORWARD (the release nudge asks for one capability
+// per release); projects with a pre-feature-era history never catch up. This
+// serves the raw material — every release no capability is attributed to, with
+// its summary and the built/update texts of its range — so Claude can PROPOSE
+// `-(feature) [vX.Y.Z] …` declarations for user approval. Deriving the client
+// language is Claude's work, never the server's (same split as retro).
+
+/** Material lines per release / max line length — corpus stays in-context small. */
+const MATERIAL_CAP = 6;
+const MATERIAL_LINE_CAP = 160;
+
+export interface BackfillRelease {
+  version: string;
+  date: string;
+  summary: string;
+  /** built/update texts of the release's range (capped, longest lines truncated). */
+  material: string[];
+  /** How many material lines were dropped by the cap. */
+  materialMore: number;
+}
+
+/**
+ * Releases not covered by any declared capability, oldest first. Coverage
+ * counts EVERY feature opener — later-removed ones included: a capability that
+ * shipped in a release and was retired later still covered it; proposing it
+ * again would resurrect a dead capability.
+ */
+export function backfillCorpus(data: DevLogData, project: string): {
+  totalReleases: number;
+  uncovered: BackfillRelease[];
+} {
+  const tags = data.tags.filter(t => t.project === project);
+  const releases = tags
+    .filter(t => t.tag === "release" && isRealVersion(t.content))
+    .map(t => ({ ms: +new Date(t.timestamp), ...parseVersion(t.content) }))
+    .sort((a, b) => a.ms - b.ms);
+
+  const covered = new Set<string>();
+  for (const t of tags) {
+    if (t.tag !== "feature") continue;
+    const mk = parseVersionMarker(t.content);
+    const v = mk?.version ?? releases.find(r => r.ms >= +new Date(t.timestamp))?.version;
+    if (v) covered.add(v.replace(/^v/i, ""));
+  }
+
+  const uncovered: BackfillRelease[] = [];
+  let prevMs = 0;
+  for (const r of releases) {
+    if (!covered.has(r.version.replace(/^v/i, ""))) {
+      const lines = tags
+        .filter(t => (t.tag === "built" || t.tag === "update") &&
+          +new Date(t.timestamp) > prevMs && +new Date(t.timestamp) <= r.ms)
+        .map(t => (t.content.length > MATERIAL_LINE_CAP ? `${t.content.slice(0, MATERIAL_LINE_CAP)}…` : t.content));
+      uncovered.push({
+        version: r.version,
+        date: new Date(r.ms).toISOString(),
+        summary: r.summary,
+        material: lines.slice(0, MATERIAL_CAP),
+        materialMore: Math.max(0, lines.length - MATERIAL_CAP),
+      });
+    }
+    prevMs = r.ms;
+  }
+  return { totalReleases: releases.length, uncovered };
 }
 
 export interface FeatureRefProblem {

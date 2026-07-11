@@ -89,6 +89,37 @@ describe("renderClientReportHtml", () => {
     expect(html).toContain("no open findings");
   });
 
+  test("capabilities group by release, newest first, unreleased leading; news precedes the list", () => {
+    const tags = [
+      t("feature", "old capability", { num: 10, ts: "2026-01-01T00:00:00.000Z" }),
+      t("release", "v1.0.0 — first", { ts: "2026-01-02T00:00:00.000Z" }),
+      t("feature", "newer capability A", { num: 11, ts: "2026-02-01T00:00:00.000Z" }),
+      t("feature", "newer capability B", { num: 12, ts: "2026-02-01T01:00:00.000Z" }),
+      t("release", "v2.0.0 — second", { ts: "2026-02-02T00:00:00.000Z" }),
+      t("feature", "unreleased capability", { num: 13, ts: "2026-03-01T00:00:00.000Z" }),
+    ];
+    const html = renderClientReportHtml(collectClientReport(makeData(tags), P));
+    // one group header per distinct version (+ the unreleased group)
+    expect((html.match(/class="cr-gh"/g) || []).length).toBe(3);
+    expect(html).toContain("What the system does today (4)");
+    // group order: unreleased → v2.0.0 → v1.0.0 (read via their items, inside
+    // the cumulative section — the news section above also carries v2 items)
+    const list = html.slice(html.indexOf("What the system does today"));
+    const iUnreleased = list.indexOf("unreleased capability");
+    const iNewer = list.indexOf("newer capability A");
+    const iOld = list.indexOf("old capability");
+    expect(iUnreleased).toBeLessThan(iNewer);
+    expect(iNewer).toBeLessThan(iOld);
+    // «what's new» leads the page, before the cumulative list
+    expect(html.indexOf("New in v2.0.0")).toBeLessThan(html.indexOf("What the system does today"));
+  });
+
+  test("carries a print stylesheet flipping the dark screen theme to paper values", () => {
+    const html = renderClientReportHtml(collectClientReport(makeData(baseTags()), P));
+    expect(html).toContain("@media print");
+    expect(html).toContain("--ink:#111111");
+  });
+
   test("open security renders as a count only — never the finding text", () => {
     const tags = [...baseTags(), t("security:dep", "CVE-2026-0001 in hono — RCE", { num: 5 })];
     const html = renderClientReportHtml(collectClientReport(makeData(tags), P));

@@ -1,6 +1,6 @@
         import { data, activeProject, setActiveProject, headerBuilt, setHeaderBuilt, setCachedTree, setFullRenderNeeded } from "./dashboard-state.js";
         import { API, esc, safeHref, langColors, destructiveHeaders, uiAlert, uiConfirm, uiPrompt, activeSessionsByProject } from "./dashboard-core.js";
-        import { summaryTagCounts, summaryVulnClass, summaryLastActivity, summaryOrphans, summaryTombstones, summaryUntagged, summaryUntaggedBy, ACTIVE_WINDOW_MS, fetchProjectView, refreshActiveView } from "./dashboard-data.js";
+        import { summaryTagCounts, summaryVulnClass, summaryLastActivity, summaryOrphans, summaryTombstones, summaryUntagged, summaryUntaggedBy, summaryPartial, summaryPartialBy, ACTIVE_WINDOW_MS, fetchProjectView, refreshActiveView } from "./dashboard-data.js";
         import { patchSessions } from "./dashboard-panels.js";
 
         function renderProjectItem(name) {
@@ -100,6 +100,15 @@
                     .map(([n, c]) => `${n}: ${c}`)
                     .join(' · ');
                 h += `<div title="${esc(perProject || 'جلسات هادئة عدّلت ملفات ولم تسجّل أي تاق')}" style="width:100%;text-align:right;border:1px dashed var(--border);border-radius:6px;color:var(--text2);font-size:0.7em;padding:5px 10px;margin-top:6px;opacity:0.8">👻 جلسات كتبت كودًا بلا تاقات (${summaryUntagged})</div>`;
+            }
+            // Granularity twin (#558) — sessions that DID tag but recorded no
+            // work tag despite writing 3+ files. Passive, like the ghost row.
+            if (summaryPartial > 0) {
+                const perProject = Object.entries(summaryPartialBy)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([n, c]) => `${n}: ${c}`)
+                    .join(' · ');
+                h += `<div title="${esc(perProject || 'جلسات وسمت ملاحظات فقط رغم تعديل 3+ ملفات')}" style="width:100%;text-align:right;border:1px dashed var(--border);border-radius:6px;color:var(--text2);font-size:0.7em;padding:5px 10px;margin-top:6px;opacity:0.8">🌗 جلسات موسومة جزئيًا — كتبت كودًا بلا تاق عمل (${summaryPartial})</div>`;
             }
             el.innerHTML = h;
             el.style.display = h ? '' : 'none';

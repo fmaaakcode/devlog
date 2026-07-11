@@ -11,7 +11,7 @@ import { asJson, startServer, waitForServer } from "./_helpers";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { untaggedSessionCounts } from "../src/maintenance";
+import { untaggedSessionCounts, partiallyTaggedCounts } from "../src/maintenance";
 import type { DevLogData } from "../src/types";
 
 const TEST_PORT = 17869;
@@ -52,6 +52,47 @@ describe("untaggedSessionCounts (unit)", () => {
       tags: [tag("real", "s1", ago(1 * HOURS))],
     } as unknown as DevLogData;
     expect(untaggedSessionCounts(data).size).toBe(0);
+  });
+});
+
+describe("partiallyTaggedCounts (#558, unit)", () => {
+  const writeN = (project: string, sid: string, when: string, n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: crypto.randomUUID(), project, event: "PostToolUse", type: "change",
+      session_id: sid, file_path: `D:/x/${sid}-${i}.ts`, timestamp: when,
+    }));
+  const record = (project: string, sid: string, when: string) => ({
+    id: crypto.randomUUID(), project, tag: "built", content: `عمل ${sid}`, session_id: sid, timestamp: when,
+  });
+
+  test("counts quiet note-only sessions with 3+ files; excludes recorded, small, untagged and fresh ones", () => {
+    const data = {
+      projects: {}, plans: [], worklog: [],
+      events: [
+        ...writeN("real", "p1", ago(2 * HOURS), 4),      // note-only → counts
+        ...writeN("real", "p2", ago(2 * HOURS), 4),      // has a built → excluded
+        ...writeN("real", "p3", ago(2 * HOURS), 2),      // below minFiles → excluded
+        ...writeN("real", "p4", ago(2 * HOURS), 4),      // zero tags → the ghost counter's case
+        ...writeN("real", "p5", ago(2 * 60 * 1000), 4),  // too fresh → excluded
+      ],
+      tags: [
+        tag("real", "p1", ago(2 * HOURS)),               // note only
+        record("real", "p2", ago(2 * HOURS)),
+        tag("real", "p5", ago(2 * 60 * 1000)),
+      ],
+    } as unknown as DevLogData;
+    const counts = partiallyTaggedCounts(data);
+    expect(counts.get("real")).toBe(1);
+    expect([...counts.values()].reduce((a, b) => a + b, 0)).toBe(1);
+  });
+
+  test("a done closure counts as a work record", () => {
+    const data = {
+      projects: {}, plans: [], worklog: [],
+      events: writeN("real", "p1", ago(2 * HOURS), 5),
+      tags: [{ id: "d1", project: "real", tag: "done", content: "#4 أُنجز", session_id: "p1", timestamp: ago(HOURS) }],
+    } as unknown as DevLogData;
+    expect(partiallyTaggedCounts(data).size).toBe(0);
   });
 });
 

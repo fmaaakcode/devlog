@@ -303,6 +303,25 @@ describe("collectRelease (the machine-readable facts)", () => {
     expect(byKey.built).toEqual([{ text: "the feature" }]);
     expect(byKey.fixes).toEqual([{ text: "the problem", cure: "the cure" }]);
   });
+
+  test("«قدرات جديدة» excludes features backfilled to ANOTHER release; a matching marker is stripped", () => {
+    const target = { tag: "release", project: "p", content: "v2.0.0 — second", timestamp: "2026-02-01T00:00:00Z" };
+    const data: any = {
+      projects: { p: baseProject },
+      tags: [
+        { tag: "release", project: "p", content: "v1.0.0 — first", timestamp: "2026-01-01T00:00:00Z" },
+        // all three land in the (v1.0.0, v2.0.0] range
+        { tag: "feature", project: "p", content: "[v1.0.0] backfilled old capability", timestamp: "2026-01-15T00:00:00Z" },
+        { tag: "feature", project: "p", content: "[v2.0.0] same-version capability", timestamp: "2026-01-16T00:00:00Z" },
+        { tag: "feature", project: "p", content: "plain capability", timestamp: "2026-01-17T00:00:00Z" },
+        target,
+      ],
+      events: [],
+    };
+    const facts = collectRelease(data, "p", target as any);
+    const texts = facts.sections.find(s => s.key === "features")?.items.map(i => i.text);
+    expect(texts).toEqual(["same-version capability", "plain capability"]);
+  });
 });
 
 // The regeneration guard — regen must NEVER erase a baked diff the capped

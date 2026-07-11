@@ -35,11 +35,19 @@ const realFetch = globalThis.fetch;
 // ── fake network config (reset per test) ──────────────────────────────────────
 type Advisory = Record<string, unknown>;
 type CFG = {
-  registry: Record<string, { latest: string; date?: string }>; // pkg name → latest version
-  osvVulns: Record<string, Advisory[]>;                          // pkg name → advisories
+  registry: Record<string, { latest: string; date?: string }>; // pkg name → latest version (npm)
+  crates?: Record<string, { latest: string; date?: string }>;  // pkg name → latest version (crates.io)
+  osvVulns: Record<string, Advisory[]>;                          // pkg name → advisories (any ecosystem)
+  osvByEco?: Record<string, Advisory[]>;                         // "<eco>:<name>" → advisories, wins over osvVulns
   osvThrows?: boolean;                                           // simulate an OSV outage
 };
 let cfg: CFG = { registry: {}, osvVulns: {} };
+
+// Advisories for one OSV query, honoring the ecosystem the scanner SENT — the
+// mixed-ecosystem suite plants a trap under npm:<name> that a correctly-routed
+// crates.io query must never see.
+const vulnsFor = (eco: string | undefined, name: string): Advisory[] =>
+  cfg.osvByEco?.[`${eco}:${name}`] ?? cfg.osvVulns[name] ?? [];
 
 // A minimal, fixable OSV advisory (one SEMVER range with a `fixed` event).
 const advisory = (name: string, fixed = "9.9.9", over: Partial<Advisory> = {}): Advisory => ({
@@ -59,12 +67,12 @@ function installFetch() {
       if (cfg.osvThrows) throw new Error("ENETDOWN: OSV unreachable");
       const body = init?.body ? JSON.parse(init.body) : {};
       if (url.includes("querybatch")) {
-        const results = (body.queries || []).map((q: { package: { name: string } }) =>
-          cfg.osvVulns[q.package.name]?.length ? { vulns: [{ id: "hit" }] } : {});
+        const results = (body.queries || []).map((q: { package: { name: string; ecosystem?: string } }) =>
+          vulnsFor(q.package.ecosystem, q.package.name).length ? { vulns: [{ id: "hit" }] } : {});
         return new Response(JSON.stringify({ results }), { status: 200 });
       }
       const name = body.package?.name;
-      return new Response(JSON.stringify({ vulns: cfg.osvVulns[name] || [] }), { status: 200 });
+      return new Response(JSON.stringify({ vulns: vulnsFor(body.package?.ecosystem, name) }), { status: 200 });
     }
     // ── registry freshness (npm shape covers our TypeScript fixtures) ──
     if (url.includes("registry.npmjs.org")) {
@@ -72,6 +80,16 @@ function installFetch() {
       if (!hit) return new Response("nf", { status: 404 });
       const [, { latest, date }] = hit;
       return new Response(JSON.stringify({ "dist-tags": { latest }, time: { [latest]: date || "2026-01-01T00:00:00Z" } }), { status: 200 });
+    }
+    // ── crates.io freshness (mixed-ecosystem fixtures) ──
+    if (url.includes("crates.io/api")) {
+      const hit = Object.entries(cfg.crates || {}).find(([name]) => url.includes(`/${name}`));
+      if (!hit) return new Response("nf", { status: 404 });
+      const [, { latest, date }] = hit;
+      return new Response(JSON.stringify({
+        crate: { max_stable_version: latest },
+        versions: [{ num: latest, created_at: date || "2026-01-01T00:00:00Z" }],
+      }), { status: 200 });
     }
     // ── vcpkg freshness (for the no-OSV-ecosystem case) ──
     if (url.includes("microsoft/vcpkg")) {
@@ -238,6 +256,161 @@ describe("runVulnScan — freshness axis (outdated / update tags)", () => {
     await runVulnScan("p-upd");
     expect(await tagsFor("p-upd", "outdated")).toHaveLength(0);   // stale tag removed
     expect(await tagsFor("p-upd", "update")).toHaveLength(1);     // proof-of-update recorded
+  });
+});
+
+describe("runVulnScan — mixed-ecosystem project (Tauri: npm + crates.io)", () => {
+  test("Rust crate in a TypeScript project is checked against crates.io, not the same-named npm package", async () => {
+    // The Grn Gsh bug: crate reqwest@0.13.1 used to be compared to npm's dead
+    // `reqwest` Ajax package (latest 2.0.5, 2015) → bogus outdated tag. The npm
+    // entry below is the trap; the crates.io entry is the truth.
+    cfg.registry = { fronty: { latest: "1.0.0" }, reqwest: { latest: "2.0.5", date: "2015-10-15T00:00:00Z" } };
+    cfg.crates = { reqwest: { latest: "0.13.1" } };
+    await seed(makeProject({
+      name: "p-mixed-fresh",
+      libraries: [
+        { name: "fronty", version: "1.0.0", eco: "npm" },
+        { name: "reqwest", version: "0.13.1", eco: "crates.io" },
+      ],
+    }));
+
+    await runVulnScan("p-mixed-fresh");
+    expect(await tagsFor("p-mixed-fresh", "outdated")).toHaveLength(0); // 0.13.1 IS the crates.io latest
+    const stored = (await loadData()).projects["p-mixed-fresh"].vulnResults?.reqwest;
+    expect(stored?.latestVersion).toBe("0.13.1");
+    expect(stored?.isLatest).toBe(true);
+  });
+
+  test("same crate at two lockfile versions: the tag blames the INFECTED version, not the direct one", async () => {
+    // The reqwest situation found live in Grn Gsh: the project depends on 0.13.x
+    // while a transitive dep pins 0.12.x in the same Cargo.lock. If only the old
+    // version is hit, the security tag must name IT — blaming the clean direct
+    // version sends the developer chasing the wrong upgrade.
+    const treeDir = mkdtempSync(join(tmpdir(), "devlog-vs-dualver-"));
+    mkdirSync(join(treeDir, "src-tauri"), { recursive: true });
+    writeFileSync(join(treeDir, "src-tauri", "Cargo.lock"), `[[package]]
+name = "dualia"
+version = "0.12.28"
+
+[[package]]
+name = "dualia"
+version = "0.13.4"
+`);
+    cfg.crates = { dualia: { latest: "0.13.4" } };
+    // The shared fake router keys advisories by name only, so wrap it: only the
+    // 0.12.28 query returns the advisory (fixed in 0.13.0 → 0.13.4 is clean).
+    const dualAdvisory = advisory("dualia", "0.13.0");
+    const prevFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: unknown, init?: { body?: string }) => {
+      const url = String(input);
+      if (url.includes("api.osv.dev")) {
+        const body = init?.body ? JSON.parse(init.body) : {};
+        if (url.includes("querybatch")) {
+          const results = (body.queries || []).map((q: { package: { name: string }; version?: string }) =>
+            q.package.name === "dualia" && q.version === "0.12.28" ? { vulns: [{ id: "hit" }] } : {});
+          return new Response(JSON.stringify({ results }), { status: 200 });
+        }
+        const hit = body.package?.name === "dualia" && body.version === "0.12.28";
+        return new Response(JSON.stringify({ vulns: hit ? [dualAdvisory] : [] }), { status: 200 });
+      }
+      return prevFetch(input as string, init as RequestInit);
+    }) as unknown as typeof fetch;
+
+    await seed(makeProject({
+      name: "p-dualver", path: treeDir,
+      libraries: [{ name: "dualia", version: "0.13.4", eco: "crates.io" }],
+    }));
+    await runVulnScan("p-dualver");
+
+    const sec = await tagsFor("p-dualver", "security");
+    expect(sec).toHaveLength(1);
+    expect(sec[0].content.startsWith("dualia@0.12.28")).toBe(true); // the infected version named
+    rmSync(treeDir, { recursive: true, force: true });
+  });
+
+  test("OSV advisories are ecosystem-routed: npm trap ignored for a crate, RustSec hit still caught", async () => {
+    // Tauri tree: npm lockfile at root, Cargo.lock in src-tauri/. thiserror has a
+    // (malware) advisory ONLY under npm — the crate must come back clean. quinny
+    // has a RustSec advisory under crates.io — proof the Rust side now has real
+    // CVE coverage instead of zero.
+    const treeDir = mkdtempSync(join(tmpdir(), "devlog-vs-mixed-"));
+    writeFileSync(join(treeDir, "package-lock.json"), JSON.stringify({
+      packages: { "": { name: "root" }, "node_modules/fronty2": { version: "1.0.0" } },
+    }));
+    mkdirSync(join(treeDir, "src-tauri"), { recursive: true });
+    writeFileSync(join(treeDir, "src-tauri", "Cargo.lock"), `[[package]]
+name = "thiserror"
+version = "2.0.18"
+
+[[package]]
+name = "quinny"
+version = "0.11.14"
+`);
+    cfg.registry = { fronty2: { latest: "1.0.0" } };
+    cfg.osvByEco = {
+      "npm:thiserror": [advisory("thiserror", "9.9.9")],          // the trap
+      "crates.io:quinny": [advisory("quinny", "0.11.99")],        // the real one
+    };
+    await seed(makeProject({
+      name: "p-mixed-osv", path: treeDir,
+      libraries: [{ name: "fronty2", version: "1.0.0", eco: "npm" }],
+    }));
+
+    await runVulnScan("p-mixed-osv");
+    const sec = await tagsFor("p-mixed-osv", "security");
+    expect(sec.some(t => t.content.startsWith("thiserror@"))).toBe(false); // npm trap not crossed
+    expect(sec.some(t => t.content.startsWith("quinny@0.11.14"))).toBe(true); // RustSec coverage real
+    rmSync(treeDir, { recursive: true, force: true });
+  });
+});
+
+describe("runVulnScan — informational notices and superseded tags (open-vulns card accuracy)", () => {
+  test("unmaintained-only package: no security tag created, a stale one auto-closes", async () => {
+    // The gtk-family case: RustSec 'unmaintained' notices were counted as
+    // moderate CVEs and filled the open-vulns card. They must scan as safe.
+    cfg.registry = { gtky: { latest: "1.0.0" } };
+    cfg.osvVulns = { gtky: [advisory("gtky", "9.9.9", {
+      database_specific: {},
+      affected: [{ package: { name: "gtky", ecosystem: "npm" },
+        database_specific: { informational: "unmaintained" },
+        ranges: [{ type: "SEMVER", events: [{ introduced: "0" }] }] }],
+    })] };
+    const stale: TagEntry = {
+      id: "gtky-sec", project: "p-notice", tag: "security",
+      content: "gtky@1.0.0 — 1 ثغرة (moderate) — لا إصلاح كامل", timestamp: "2026-01-01T00:00:00Z", num: 7,
+    };
+    await seed(makeProject({ name: "p-notice", libraries: [{ name: "gtky", version: "1.0.0" }] }), [stale]);
+
+    await runVulnScan("p-notice");
+    const fixes = await tagsFor("p-notice", "security fix");
+    expect(fixes).toHaveLength(1);                                   // stale claim closed
+    expect((await tagsFor("p-notice", "security"))).toHaveLength(1); // only the original (now closed) tag
+    const stored = (await loadData()).projects["p-notice"].vulnResults?.gtky;
+    expect(stored?.vulns).toBe(0);
+    expect(stored?.notices).toBe(1);
+    expect(stored?.status).toBe("safe");
+  });
+
+  test("supersede: a stale open tag for the same package with different text closes when the fresh tag lands", async () => {
+    // The openssl/tar leftover: an old cross-ecosystem claim stayed open next to
+    // the corrected tag. One open claim per package.
+    cfg.registry = { supra: { latest: "1.0.0" } };
+    cfg.osvVulns = { supra: [advisory("supra", "1.0.1")] };
+    const staleClaim: TagEntry = {
+      id: "supra-old", project: "p-supersede", tag: "security",
+      content: "supra@1.0.0 — 12 ثغرة (high) — رقِّ لـ7.5.16", timestamp: "2026-01-01T00:00:00Z", num: 9,
+    };
+    await seed(makeProject({ name: "p-supersede", libraries: [{ name: "supra", version: "1.0.0" }] }), [staleClaim]);
+
+    await runVulnScan("p-supersede");
+    const sec = await tagsFor("p-supersede", "security");
+    const fixes = await tagsFor("p-supersede", "security fix");
+    expect(sec).toHaveLength(2);                                     // old + fresh
+    expect(fixes.map(f => f.content)).toContain(staleClaim.content); // old claim closed
+    const freshOpen = sec.filter(s => !fixes.some(f => f.content === s.content));
+    expect(freshOpen).toHaveLength(1);                               // exactly one open claim
+    expect(freshOpen[0].content.startsWith("supra@1.0.0")).toBe(true);
+    expect(freshOpen[0].content).toContain("1.0.1");                 // the current truth
   });
 });
 

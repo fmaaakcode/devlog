@@ -2,7 +2,7 @@
         import { API, esc, timeStr, openedTitle, SEC_OPEN_TAGS, TOOL_FG_COLORS, uiAlert } from "./dashboard-core.js";
         import { fetchSummary, refreshActiveView, currentVerdicts, buildTagsHtml } from "./dashboard-data.js";
         import { getProjectTags, projectFromHash, selectProject, registryUrl } from "./dashboard-project.js";
-        import { extIcons, renderActivePlanCard, renderChangesCard, buildTodosHtml } from "./dashboard-panels.js";
+        import { extIcons, renderActivePlanCard, renderChangesCard, buildTodosHtml, fragileFilesHtml } from "./dashboard-panels.js";
 
         function renderTreeNodes(nodes, basePath) {
             let html = '';
@@ -428,8 +428,7 @@
                 for (const x of v.security) openById.set(x.id, x.open);
                 for (const x of v.bugs) { openById.set(x.id, x.open); if (x.upcoming) upcomingIds.add(x.id); }
             }
-            const secClosed = s => openById.get(s.id) === false;
-            const bugClosed = b => openById.get(b.id) === false;
+            const secClosed = s => openById.get(s.id) === false, bugClosed = b => openById.get(b.id) === false;
             // Deferred («قادمة») bugs render in the tasks card's القادمة tab, not
             // here — an item the user parked must not read as pressing red debt.
             const isUpcoming = b => (v ? upcomingIds.has(b.id) : !!b.upcoming);
@@ -462,9 +461,9 @@
                 <span class="progress-pct">${pct}%</span>
             </div>`;
 
-            const numCode = (n) => typeof n === "number"
-                ? `<span style="font-size:0.85em;color:var(--text2);font-family:'Cascadia Code',Consolas,monospace;flex-shrink:0">#${n}</span>`
-                : '';
+            // ‏#N، مذيَّلة بشارة ⟲ عند إعادة فتح بلاغ مغلق (#556) — الإصلاح لم يصمد.
+            const numCode = (t) => (typeof t.num === "number" ? `<span style="font-size:0.85em;color:var(--text2);font-family:'Cascadia Code',Consolas,monospace;flex-shrink:0">#${t.num}</span>` : '')
+                + (typeof t.relatedTo === "number" ? `<span style="font-size:0.8em;color:var(--gold);flex-shrink:0;font-family:'Cascadia Code',Consolas,monospace" title="إعادة فتح محتملة للبلاغ المغلق #${t.relatedTo} — افحص انتكاس الإصلاح القديم">&#10560;#${t.relatedTo}</span>` : '');
             const delBtn = (id, kind) => `<button data-action="delete-tag" data-tag-id="${esc(id)}" data-tag-kind="${kind}" title="حذف نهائي (لـfalse positive أو إدخال خاطئ)" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:1em;padding:0 4px;flex-shrink:0;line-height:1">×</button>`;
             if (openSec.length > 0) {
                 h += '<div style="font-size:0.7em;color:var(--text2);margin:8px 0 4px">ثغرات مفتوحة</div>';
@@ -478,7 +477,7 @@
                     const stitle = [clickable ? `${s.content} — اضغط لتفاصيل الثغرات` : s.content, openedTitle(s.timestamp)].filter(Boolean).join('\n');
                     h += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:0.72em">
                         <span style="color:var(--pink)">!</span>
-                        ${numCode(s.num)}
+                        ${numCode(s)}
                         <span${sattr} title="${esc(stitle)}">${esc(s.content)}</span>
                         ${delBtn(s.id, 'security')}
                     </div>`;
@@ -489,7 +488,7 @@
                 for (const b of openBugs) {
                     h += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:0.72em">
                         <span style="color:var(--pink)">!</span>
-                        ${numCode(b.num)}
+                        ${numCode(b)}
                         <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--pink)" title="${esc([b.content, openedTitle(b.timestamp)].filter(Boolean).join('\n'))}">${esc(b.content)}</span>
                         ${delBtn(b.id, 'bug')}
                     </div>`;
@@ -509,6 +508,7 @@
                     h += libRow(o.content, 'latest', { accent: 'var(--gold)', icon: '&#8635;' });
                 }
             }
+            h += fragileFilesHtml();   // «الأكثر كسرًا» (#557) — قبل قوائم المُغلق التاريخية
             if (closedSec.length > 0) {
                 h += '<div style="font-size:0.7em;color:var(--text2);margin:8px 0 4px;border-top:1px solid var(--border);padding-top:8px">ثغرات مُصلحة</div>';
                 for (const s of closedSec) {

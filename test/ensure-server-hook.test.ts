@@ -45,10 +45,21 @@ function msysPath(p: string): string {
 }
 
 async function runScript(opts: { env?: Record<string, string>; args?: string[]; payload?: string }) {
+  // A PATH override rides ARGV (a bash -c wrapper), never the spawn env (#561):
+  // Bun.spawn on Windows merges the parent environment into the child, and the
+  // resulting PATH-vs-Path case collision is resolved by map layout — with the
+  // real process.env spread plus a few keys, the override silently LOSES and
+  // the script sees the machine's true PATH (real bun found → the "no bun"
+  // scenario collapses; Git's /usr/bin lost → coreutils vanish). Same lesson
+  // as --bun-home above: argv provably crosses everywhere, env doesn't.
+  const { PATH: pathOverride, ...restEnv } = opts.env ?? {};
+  const cmd = pathOverride !== undefined
+    ? [BASH as string, "-c", 'export PATH="$0"; exec bash "$1" "${@:2}"', pathOverride, SCRIPT, ...(opts.args ?? [])]
+    : [BASH as string, SCRIPT, ...(opts.args ?? [])];
   const proc = spawn({
-    cmd: [BASH as string, SCRIPT, ...(opts.args ?? [])],
+    cmd,
     cwd: PROJECT_ROOT,
-    env: { ...process.env, ...opts.env },
+    env: { ...process.env, ...restEnv },
     stdin: "pipe", stdout: "pipe", stderr: "pipe",
   });
   proc.stdin.write(opts.payload ?? "{}");

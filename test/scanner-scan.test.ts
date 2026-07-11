@@ -5,7 +5,7 @@
 
 import { test, expect, describe } from "bun:test";
 import { scanDirectory, detectLanguage, detectPackages, detectRuntime, scanFreshProfile } from "../src/scanner";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -70,6 +70,24 @@ describe("detectPackages (manifest → framework + libraries)", () => {
       const names = libraries.map(l => l.name);
       expect(names).toContain("serde");
       expect(names).toContain("tokio");
+    });
+  });
+
+  test("Tauri layout: merged npm + Cargo list keeps each library's own ecosystem", async () => {
+    await withTmp(async dir => {
+      // package.json at root, Cargo.toml in src-tauri/ — the merge that used to
+      // flatten everything into the project language's single ecosystem, so
+      // Rust crates (reqwest!) got checked against same-named npm packages.
+      await writeFile(join(dir, "package.json"), JSON.stringify({
+        name: "demo", dependencies: { vite: "^6.0.0" },
+      }));
+      await mkdir(join(dir, "src-tauri"));
+      await writeFile(join(dir, "src-tauri", "Cargo.toml"),
+        `[package]\nname = "demo"\nversion = "0.1.0"\n\n[dependencies]\nreqwest = "0.13"\n`);
+      const { libraries } = await detectPackages(dir);
+      const eco = new Map(libraries.map(l => [l.name, l.eco]));
+      expect(eco.get("vite")).toBe("npm");
+      expect(eco.get("reqwest")).toBe("crates.io");
     });
   });
 

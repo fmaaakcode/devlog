@@ -21,6 +21,7 @@ export interface RetroItem {
   closedAt?: string;     // absent = still open
   ageDays: number;       // opened → closed (or → now while open), whole days
   files?: string[];      // project-relative; the problem's footprint
+  reopenOf?: number;     // the closed report this one reopened (#556)
 }
 
 const DAY_MS = 86_400_000;
@@ -43,6 +44,7 @@ export function retroCorpus(data: DevLogData, project: string): RetroItem[] {
       kind: t.tag, text: t.content, openedAt: t.timestamp,
       ageDays: ageDays(t.timestamp),
       ...(files ? { files } : {}),
+      ...(typeof t.relatedTo === "number" ? { reopenOf: t.relatedTo } : {}),
     });
   }
 
@@ -55,9 +57,39 @@ export function retroCorpus(data: DevLogData, project: string): RetroItem[] {
       ...(c.closedAt ? { closedAt: c.closedAt } : {}),
       ageDays: ageDays(c.openedAt, c.closedAt),
       ...(files ? { files } : {}),
+      ...(typeof c.relatedTo === "number" ? { reopenOf: c.relatedTo } : {}),
     });
   }
 
   out.sort((a, b) => +new Date(a.openedAt) - +new Date(b.openedAt));
   return out;
+}
+
+export interface FragileFile {
+  file: string;   // project-relative
+  count: number;  // problem reports touching it (open + closed)
+  open: number;   // of those, still open
+}
+
+/**
+ * «الأكثر كسرًا» (#557): files recurring across problem reports (2+ hits),
+ * most-hit first. Derived from the same corpus retro serves, so the dashboard
+ * section and the retro header line can never disagree. One report = one hit
+ * per file, however many times the file was touched fixing it.
+ */
+export function fragileFiles(data: DevLogData, project: string, top = 5): FragileFile[] {
+  const byFile = new Map<string, { count: number; open: number }>();
+  for (const it of retroCorpus(data, project)) {
+    for (const f of it.files ?? []) {
+      const e = byFile.get(f) ?? { count: 0, open: 0 };
+      e.count++;
+      if (!it.closedAt) e.open++;
+      byFile.set(f, e);
+    }
+  }
+  return [...byFile.entries()]
+    .filter(([, e]) => e.count >= 2)
+    .sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))
+    .slice(0, top)
+    .map(([file, e]) => ({ file, count: e.count, open: e.open }));
 }

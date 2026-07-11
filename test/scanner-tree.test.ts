@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { enumerateDepTree } from "../src/scanner";
+import { enumerateDepTree } from "../src/lockfile-tree";
 import { mkdtemp, writeFile, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -86,10 +86,17 @@ version = "0.18.2"
 name = "tauri"
 version = "2.9.5"
 `);
-      const map = new Map((await enumerateDepTree(dir)).map(t => [t.name, t.version]));
+      const tree = await enumerateDepTree(dir);
+      const map = new Map(tree.map(t => [t.name, t.version]));
       expect(map.get("vite")).toBe("6.0.0");     // root lockfile still read
       expect(map.get("gtk")).toBe("0.18.2");     // nested lockfile now read too
       expect(map.get("tauri")).toBe("2.9.5");
+      // Each node must carry ITS lockfile's ecosystem — a single project-wide
+      // ecosystem cross-matched Rust crates against same-named npm packages.
+      const ecos = new Map(tree.map(t => [t.name, t.eco]));
+      expect(ecos.get("vite")).toBe("npm");
+      expect(ecos.get("gtk")).toBe("crates.io");
+      expect(ecos.get("tauri")).toBe("crates.io");
     });
   });
 

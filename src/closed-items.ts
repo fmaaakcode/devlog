@@ -26,6 +26,7 @@ export interface ClosedItem {
   closerText?: string;   // closer tag content
   planTitle?: string;    // plan-step items only
   files?: string[];      // opener ∪ closer session files (position memory #486); feeds ask:retro
+  relatedTo?: number;    // the closed report this one reopened (#556); feeds retro ⟲
 }
 
 // Openers and their closers partition into groups that share a closer-set
@@ -102,6 +103,7 @@ export function closedItems(data: DevLogData, project: string): ClosedItem[] {
       kind: t.tag, text: t.content, openedAt: t.timestamp,
       closedBy: closer?.tag, closedAt: closer?.timestamp, closerText: closer?.content,
       ...(files.length ? { files } : {}),
+      ...(typeof t.relatedTo === "number" ? { relatedTo: t.relatedTo } : {}),
     });
   }
 

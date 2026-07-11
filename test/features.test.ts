@@ -8,6 +8,7 @@ import type { DevLogData, ProjectProfile, TagEntry } from "../src/types";
 import { DEFAULT_INJECTION_CONFIG } from "../src/data";
 import {
   featureList, featuresSinceLastRelease, diagnoseFeatureRef, stripFeatureRef, featureRefNum,
+  backfillCorpus,
 } from "../src/features";
 
 beforeAll(() => { process.env.DEVLOG_LANG = "en"; });
@@ -91,6 +92,25 @@ describe("featureList", () => {
     ]);
     expect(featureList(data, P)[0].sinceVersion).toBeUndefined();
   });
+
+  test("an explicit [vX.Y.Z] marker pins the capability to that past release", () => {
+    const data = makeData([
+      t("release", "v1.0.0 — first", { ts: "2026-01-01T00:00:00.000Z" }),
+      t("release", "v2.0.0 — second", { ts: "2026-02-01T00:00:00.000Z" }),
+      // declared AFTER v2.0.0, marker written without the v prefix on purpose
+      t("feature", "[1.0.0] users can export data", { num: 10, ts: "2026-03-01T00:00:00.000Z" }),
+    ]);
+    const list = featureList(data, P);
+    expect(list[0].text).toBe("users can export data");
+    expect(list[0].sinceVersion).toBe("v1.0.0");   // resolved to the recorded spelling
+  });
+
+  test("a marker naming no recorded release is kept as written", () => {
+    const data = makeData([
+      t("feature", "[v9.9.9] imported from elsewhere", { num: 11 }),
+    ]);
+    expect(featureList(data, P)[0].sinceVersion).toBe("v9.9.9");
+  });
 });
 
 describe("featuresSinceLastRelease", () => {
@@ -111,6 +131,57 @@ describe("featuresSinceLastRelease", () => {
       t("feature", "declared capability", { num: 1 }),
     ]);
     expect(featuresSinceLastRelease(data, P)).toEqual({ built: 1, features: 1 });
+  });
+
+  test("a [vX.Y.Z] backfill declaration never satisfies the nudge", () => {
+    const data = makeData([
+      t("release", "v1.0.0 — r", { ts: "2026-01-02T00:00:00.000Z" }),
+      t("built", "new work", { ts: "2026-01-03T00:00:00.000Z" }),
+      t("feature", "[v1.0.0] old capability", { num: 2, ts: "2026-01-04T00:00:00.000Z" }),
+    ]);
+    expect(featuresSinceLastRelease(data, P)).toEqual({ built: 1, features: 0 });
+  });
+});
+
+describe("backfillCorpus", () => {
+  test("lists releases no capability is attributed to, with their material", () => {
+    const data = makeData([
+      t("built", "wired the export pipeline", { ts: "2026-01-01T00:00:00.000Z" }),
+      t("release", "v1.0.0 — export", { ts: "2026-01-02T00:00:00.000Z" }),
+      t("feature", "covered capability", { num: 1, ts: "2026-02-01T00:00:00.000Z" }),
+      t("release", "v2.0.0 — covered", { ts: "2026-02-02T00:00:00.000Z" }),
+    ]);
+    const c = backfillCorpus(data, P);
+    expect(c.totalReleases).toBe(2);
+    expect(c.uncovered).toHaveLength(1);
+    expect(c.uncovered[0]).toMatchObject({ version: "v1.0.0", summary: "export" });
+    expect(c.uncovered[0].material).toEqual(["wired the export pipeline"]);
+  });
+
+  test("a later-removed feature still covers its release", () => {
+    const data = makeData([
+      t("feature", "retired capability", { num: 2, ts: "2026-01-01T00:00:00.000Z" }),
+      t("release", "v1.0.0 — r", { ts: "2026-01-02T00:00:00.000Z" }),
+      t("feature removed", "#2", { ts: "2026-01-03T00:00:00.000Z" }),
+    ]);
+    expect(backfillCorpus(data, P).uncovered).toHaveLength(0);
+  });
+
+  test("a [vX.Y.Z] backfill declaration covers the named release", () => {
+    const data = makeData([
+      t("release", "v1.0.0 — r", { ts: "2026-01-02T00:00:00.000Z" }),
+      t("feature", "[v1.0.0] backfilled", { num: 3, ts: "2026-03-01T00:00:00.000Z" }),
+    ]);
+    expect(backfillCorpus(data, P).uncovered).toHaveLength(0);
+  });
+
+  test("material is capped with a remainder count", () => {
+    const tags = [...Array(8)].map((_, i) =>
+      t("built", `work ${i}`, { ts: `2026-01-01T0${i}:00:00.000Z` }));
+    tags.push(t("release", "v1.0.0 — big", { ts: "2026-01-02T00:00:00.000Z" }));
+    const c = backfillCorpus(makeData(tags), P);
+    expect(c.uncovered[0].material).toHaveLength(6);
+    expect(c.uncovered[0].materialMore).toBe(2);
   });
 });
 

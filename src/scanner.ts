@@ -1,6 +1,7 @@
 import { readdir, readFile, access } from "node:fs/promises";
 import { join, extname, } from "node:path";
 import { claudeConfigDir, claudeProjectSlug, normalizeSlashes } from "./path-utils";
+import { NESTED_MANIFEST_DIRS } from "./lockfile-tree";
 import { bunSpawnSync } from "./spawn";
 import type { ProjectProfile, MemoryFile, RuntimeInfo, DevLogData } from "./types";
 
@@ -128,110 +129,11 @@ export function detectLanguage(files: Record<string, number>): string {
   return sorted[0]?.[0] || "Unknown";
 }
 
-// Common subfolders that hold the real manifest when the root has none.
-// Tauri keeps Rust in `src-tauri/`; some apps split UI/server into `frontend/`+`backend/`.
-const NESTED_MANIFEST_DIRS = ["src-tauri", "backend", "server", "api", "frontend", "web", "client", "app"];
-
-// Tolerant JSON for bun.lock: it's strict JSON plus TRAILING COMMAS (no comments).
-// We only strip trailing commas — crucially NOT `//`, because base64 integrity
-// hashes ("sha512-…") routinely contain `/` and `//`, and a comment-stripper would
-// corrupt them and break the parse. Tries strict JSON first.
-// One node in an npm/bun lockfile dependency tree (loose — only the fields the
-// tree walker reads; nested arbitrarily deep).
-type LockNode = { version?: unknown; dependencies?: Record<string, LockNode> };
-
-function parseJsonc(text: string): unknown {
-  try { return JSON.parse(text); } catch { /* strict JSON failed → retry below with trailing commas stripped */ }
-  const stripped = text.replace(/,(\s*[}\]])/g, "$1");
-  try { return JSON.parse(stripped); } catch { return null; }
-}
-
-// Full RESOLVED dependency tree (direct + transitive) from a project's lockfile,
-// for vulnerability scanning. detectPackages() reads only DIRECT deps (the right
-// scope for the dashboard's library view + freshness), but most real vulns live in
-// transitive deps — a direct-only scan misses roughly half of them (verified vs
-// bun/cargo audit). Returns [] when no recognized lockfile, so the caller falls
-// back to the direct list. Deduped by name@version.
-export async function enumerateDepTree(dirPath: string): Promise<{ name: string; version: string }[]> {
-  if (!dirPath) return [];
-  const out: { name: string; version: string }[] = [];
-  const seen = new Set<string>();
-  const add = (name: string, version: string) => {
-    if (!name || !version) return;
-    const key = `${name}@${version}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push({ name, version });
-  };
-
-  // Root first, then the same conventional subfolders the library probe walks:
-  // Tauri keeps Cargo.lock in src-tauri/, so a root-only probe returned an EMPTY
-  // tree for the exact layout the vuln-ignore support was built around, and the
-  // OSV scan silently degraded to direct deps only (no transitive coverage, no
-  // auto-close of their security tags).
-  await collectLockfiles(dirPath, add);
-  for (const sub of NESTED_MANIFEST_DIRS) await collectLockfiles(join(dirPath, sub), add);
-  return out;
-}
-
-/** Parse every recognized lockfile directly inside `dirPath` into `add`. */
-async function collectLockfiles(dirPath: string, add: (name: string, version: string) => void): Promise<void> {
-  // npm: package-lock.json — v2/v3 keys paths under `packages`, v1 nests `dependencies`.
-  const pkgLock = Bun.file(join(dirPath, "package-lock.json"));
-  const hasNpmLock = await pkgLock.exists();
-  if (hasNpmLock) {
-    try {
-      const j = await pkgLock.json() as { packages?: Record<string, LockNode>; dependencies?: Record<string, LockNode> };
-      if (j.packages && typeof j.packages === "object") {
-        for (const [path, info] of Object.entries(j.packages)) {
-          if (!path) continue; // "" is the root project itself
-          const name = path.split("node_modules/").pop() || "";
-          if (name && info?.version) add(name, String(info.version));
-        }
-      } else if (j.dependencies && typeof j.dependencies === "object") {
-        const walk = (deps: Record<string, LockNode>) => {
-          for (const [name, info] of Object.entries(deps)) {
-            if (info?.version) add(name, String(info.version));
-            if (info?.dependencies) walk(info.dependencies);
-          }
-        };
-        walk(j.dependencies);
-      }
-    } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
-  }
-
-  // bun: bun.lock (JSONC). `packages` maps a key → [ "name@version", … ].
-  // Skipped when package-lock.json exists in the SAME dir (one walk per dir).
-  const bunLock = Bun.file(join(dirPath, "bun.lock"));
-  if (!hasNpmLock && await bunLock.exists()) {
-    try {
-      const j = parseJsonc(await bunLock.text()) as { packages?: unknown };
-      const pkgs = j?.packages;
-      if (pkgs && typeof pkgs === "object") {
-        for (const v of Object.values(pkgs)) {
-          const raw = Array.isArray(v) ? v[0] : v;
-          const spec = typeof raw === "string" ? raw : "";
-          const at = spec.lastIndexOf("@");
-          if (at > 0) add(spec.slice(0, at), spec.slice(at + 1));
-        }
-      }
-    } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
-  }
-
-  // Rust: Cargo.lock — every [[package]] is a node in the resolved graph.
-  const cargoLock = Bun.file(join(dirPath, "Cargo.lock"));
-  if (await cargoLock.exists()) {
-    try {
-      const text = await cargoLock.text();
-      for (const m of text.matchAll(/\[\[package\]\]\s*\nname\s*=\s*"([^"]+)"\s*\nversion\s*=\s*"([^"]+)"/g)) {
-        add(m[1], m[2]);
-      }
-    } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
-  }
-}
-
-export async function detectPackages(dirPath: string, _depth = 0): Promise<{ framework: string; libraries: { name: string; version: string; dev?: boolean }[] }> {
-  const result: { framework: string; libraries: { name: string; version: string; dev?: boolean }[] } = { framework: "", libraries: [] };
+// Every parser stamps its libraries with its manifest's ecosystem key (ecoMap
+// values), so a merged multi-manifest list (Tauri: package.json + src-tauri/
+// Cargo.toml) keeps each library routable to its OWN registry.
+export async function detectPackages(dirPath: string, _depth = 0): Promise<{ framework: string; libraries: { name: string; version: string; dev?: boolean; eco: string }[] }> {
+  const result: { framework: string; libraries: { name: string; version: string; dev?: boolean; eco: string }[] } = { framework: "", libraries: [] };
 
   // package.json
   const pkgFile = Bun.file(join(dirPath, "package.json"));
@@ -240,8 +142,8 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<{ fra
       const pkg = await pkgFile.json();
       const deps = pkg.dependencies || {};
       const devDeps = pkg.devDependencies || {};
-      for (const [name, ver] of Object.entries(deps)) result.libraries.push({ name, version: String(ver) });
-      for (const [name, ver] of Object.entries(devDeps)) result.libraries.push({ name, version: String(ver), dev: true });
+      for (const [name, ver] of Object.entries(deps)) result.libraries.push({ name, version: String(ver), eco: "npm" });
+      for (const [name, ver] of Object.entries(devDeps)) result.libraries.push({ name, version: String(ver), dev: true, eco: "npm" });
       const fwMap: [string, string][] = [["next","Next.js"],["nuxt","Nuxt"],["react","React"],["vue","Vue"],["svelte","Svelte"],["express","Express"],["hono","Hono"],["elysia","Elysia"]];
       for (const [pkg, name] of fwMap) {
         if (deps[pkg]) { result.framework = `${name} ${String(deps[pkg]).replace(/[\^~>=<\s]/g, "")}`; break; }
@@ -258,7 +160,7 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<{ fra
         const t = line.trim();
         if (!t || t.startsWith("#")) continue;
         const m = t.match(/^([a-zA-Z0-9_-]+)\s*([=<>!~]+\s*\S+)?/);
-        if (m) result.libraries.push({ name: m[1], version: m[2]?.replace(/[=<>!~\s]/g, "") || "*" });
+        if (m) result.libraries.push({ name: m[1], version: m[2]?.replace(/[=<>!~\s]/g, "") || "*", eco: "pypi" });
       }
       const pyFw: [string, string][] = [["django","Django"],["flask","Flask"],["fastapi","FastAPI"]];
       for (const [pkg, name] of pyFw) {
@@ -276,7 +178,7 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<{ fra
       const depMatch = text.match(/dependencies\s*=\s*\[([\s\S]*?)\]/);
       if (depMatch) {
         for (const m of depMatch[1].matchAll(/"([a-zA-Z0-9_-]+)([^"]*)?"/g)) {
-          result.libraries.push({ name: m[1], version: m[2]?.replace(/[>=<~!\s]/g, "") || "*" });
+          result.libraries.push({ name: m[1], version: m[2]?.replace(/[>=<~!\s]/g, "") || "*", eco: "pypi" });
         }
       }
     } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
@@ -296,7 +198,7 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<{ fra
       const pushDep = (name: string, version: string, dev: boolean) => {
         if (seen.has(name)) return;
         seen.add(name);
-        result.libraries.push({ name, version, ...(dev && { dev: true }) });
+        result.libraries.push({ name, version, ...(dev && { dev: true }), eco: "crates.io" });
       };
 
       const parseCargoSections = (text: string) => {
@@ -385,9 +287,9 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<{ fra
   if (await goModFile.exists()) {
     try {
       const text = await goModFile.text();
-      for (const m of text.matchAll(/require\s+(\S+)\s+v(\S+)/g)) result.libraries.push({ name: m[1], version: m[2] });
+      for (const m of text.matchAll(/require\s+(\S+)\s+v(\S+)/g)) result.libraries.push({ name: m[1], version: m[2], eco: "go" });
       const block = text.match(/require\s*\(([\s\S]*?)\)/);
-      if (block) for (const m of block[1].matchAll(/\s+(\S+)\s+v(\S+)/g)) result.libraries.push({ name: m[1], version: m[2] });
+      if (block) for (const m of block[1].matchAll(/\s+(\S+)\s+v(\S+)/g)) result.libraries.push({ name: m[1], version: m[2], eco: "go" });
       const goFw: [string, string][] = [["gin","Gin"],["fiber","Fiber"]];
       for (const [pkg, name] of goFw) {
         const lib = result.libraries.find(l => l.name.includes(pkg));
@@ -408,7 +310,7 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<{ fra
           result.libraries.push({
             name: String(dep.name),
             version: String(dep.version || "*"),
-            ...(dep.transitive ? { dev: true } : {}),
+            ...(dep.transitive ? { dev: true } : {}), eco: "vcpkg",
           });
         }
         // Pick GUI framework if present
@@ -426,7 +328,7 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<{ fra
       const deps = pkg.require || {};
       for (const [name, ver] of Object.entries(deps)) {
         if (name === "php") continue;
-        result.libraries.push({ name, version: String(ver) });
+        result.libraries.push({ name, version: String(ver), eco: "packagist" });
       }
       if (deps["laravel/framework"]) result.framework = `Laravel ${String(deps["laravel/framework"]).replace(/[\^~>=<\s]/g, "")}`;
       else if (deps["symfony/framework-bundle"]) result.framework = `Symfony ${String(deps["symfony/framework-bundle"]).replace(/[\^~>=<\s]/g, "")}`;

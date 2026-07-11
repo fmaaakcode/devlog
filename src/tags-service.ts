@@ -16,7 +16,7 @@ import {
   CLOSER_KINDS, OPENER_TO_CLOSER, NUMBERED_OPENABLE, singleHashNum, leadingNums, isStepClosed,
 } from "./data";
 import { appendDoc, writeDoc, applyTaskCompletion, applyTaskDrop, extractCheckboxes } from "./doc-store";
-import { writeReleaseHtml, parseVersion } from "./release-html";
+import { writeReleaseHtml, parseVersion, parseVersionMarker } from "./release-html";
 import { compareSemver, computeNextVersion, readManifestVersion, type VersionReject, type BumpType } from "./version-writer";
 import type { RollbackResult } from "./release-rollback";
 import { pathsEqual } from "./path-utils";
@@ -501,9 +501,12 @@ const BUMP_RANK: Record<BumpType, number> = { patch: 0, minor: 1, major: 2 };
 
 /**
  * Evidence-based suggested bump from the work tags accrued since the last
- * release: any breaking change (`-(built!)` etc.) → major; any feature
- * (`built` / `update`) → minor; otherwise patch. Advisory only — used to warn
- * when the declared bump is lower than the evidence, never to override it.
+ * release: any breaking change (`-(built!)` etc.) → major; any feature-level
+ * work (`built` / `update`, or a declared `-(feature)` capability) → minor;
+ * otherwise patch. Advisory only — used to warn when the declared bump is
+ * lower than the evidence, never to override it. Backfilled features
+ * (`[vX.Y.Z]` marker) are PAST releases' history, never bump evidence — the
+ * same exclusion the release nudge applies.
  */
 function suggestBumpSince(data: DevLogData, project: string, sinceMs: number): BumpType {
   let hasFeature = false;
@@ -513,6 +516,7 @@ function suggestBumpSince(data: DevLogData, project: string, sinceMs: number): B
     if (sinceMs && ts <= sinceMs) continue;
     if (t.breaking) return "major";
     if (t.tag === "built" || t.tag === "update") hasFeature = true;
+    else if (t.tag === "feature" && !parseVersionMarker(t.content)) hasFeature = true;
   }
   return hasFeature ? "minor" : "patch";
 }

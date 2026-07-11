@@ -28,7 +28,7 @@ Core tags:
 - \`-(security)\` / \`-(security:own)\` / \`-(security:dep)\` … / close with \`-(security fix) #N\`
 - \`-(todo)\` … / close with \`-(done) #N\` or cancel with \`-(dropped) #N\`
 - \`-(upcoming)\` deferred tier: create directly, or \`-(upcoming) #N\` to defer an open todo/bug (\`-(todo) #N\` promotes back). Never blocks a release; security is never deferrable.
-- \`-(feature)\` one client-language line per capability the client can see, declared when it lands (not per code step) · \`-(feature update) #N new text\` · \`-(feature removed) #N\` · pull the current inventory with \`-(ask:features)\`
+- \`-(feature)\` one client-language line per capability the client can see, declared when it lands (not per code step) · \`-(feature update) #N new text\` · \`-(feature removed) #N\` · pull the current inventory with \`-(ask:features)\` · backfill old releases: \`-(ask:backfill)\` lists the uncovered ones; after user approval declare each as \`-(feature) [vX.Y.Z] <line>\` to pin it to the past release that shipped it
 - \`-(note)\` observation · \`-(decision)\` architectural decision · \`-(insight)\` root cause
 - \`-(doc:report|analysis|plan|comparison|readme)\` name\\n<markdown>
 
@@ -51,7 +51,7 @@ DevLog مفعّل. في نهاية كل رد أصدر تاقات \`-(tag) conten
 - \`-(security)\` / \`-(security:own)\` / \`-(security:dep)\` … / أغلِقه بـ \`-(security fix) #N\`
 - \`-(todo)\` … / أغلِقه بـ \`-(done) #N\` أو ألغِه بـ \`-(dropped) #N\`
 - \`-(upcoming)\` طبقة المؤجَّل: أنشئ مباشرة، أو \`-(upcoming) #N\` لتأجيل todo/bug مفتوح (\`-(todo) #N\` يرقّيه). لا توقف الإصدار أبداً؛ الأمن لا يؤجَّل.
-- \`-(feature)\` سطر واحد بلغة العميل لكل قدرة يلمسها العميل، يُعلَن عند اكتمالها (لا لكل خطوة كود) · \`-(feature update) #N نص جديد\` · \`-(feature removed) #N\` · اسحب القائمة الحالية بـ\`-(ask:features)\`
+- \`-(feature)\` سطر واحد بلغة العميل لكل قدرة يلمسها العميل، يُعلَن عند اكتمالها (لا لكل خطوة كود) · \`-(feature update) #N نص جديد\` · \`-(feature removed) #N\` · اسحب القائمة الحالية بـ\`-(ask:features)\` · تعبئة الإصدارات القديمة: \`-(ask:backfill)\` يسرد غير المغطى منها؛ بعد موافقة المستخدم أعلن كل قدرة بـ\`-(feature) [vX.Y.Z] <سطر>\` لتُنسب للإصدار الماضي الذي شحنها
 - \`-(note)\` ملاحظة · \`-(decision)\` قرار معماري · \`-(insight)\` جذر مشكلة
 - \`-(doc:report|analysis|plan|comparison|readme)\` اسم\\n<ماركداون>
 

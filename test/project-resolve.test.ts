@@ -102,6 +102,70 @@ describe("Layer A short-circuits Layer B (container never calls git to fold)", (
   });
 });
 
+describe("convention layer — no-git folds for dot-dirs and conventional subfolders (#529)", () => {
+  test("the live incident, step 1: .devlog under a registered no-git parent folds — never minted", () => {
+    const p = projects({ "Grn Gsh": "D:\\Grn Gsh" });
+    expect(resolveProjectFor({ projects: p }, "D:\\Grn Gsh\\.devlog", noGit))
+      .toEqual({ name: "Grn Gsh", cwd: "D:\\Grn Gsh" });
+  });
+
+  test("a dot-dir anywhere below the parent folds too (.devlog/docs, .github/workflows)", () => {
+    const p = projects({ app: "D:\\app" });
+    expect(resolveProjectFor({ projects: p }, "D:\\app\\.devlog\\docs", noGit))
+      .toEqual({ name: "app", cwd: "D:\\app" });
+    expect(resolveProjectFor({ projects: p }, "D:\\app\\.github\\workflows", noGit))
+      .toEqual({ name: "app", cwd: "D:\\app" });
+  });
+
+  test(".devlog with NO enclosing project still refuses to mint itself — parent dir instead", () => {
+    expect(resolveProjectFor({ projects: {} }, "D:\\lonely\\.devlog", noGit))
+      .toEqual({ name: "lonely", cwd: "D:/lonely" });
+  });
+
+  test("a real dot-named repo opened directly (no encloser) still registers as itself", () => {
+    expect(resolveProjectFor({ projects: {} }, "D:\\.dotfiles", noGit))
+      .toEqual({ name: ".dotfiles", cwd: "D:\\.dotfiles" });
+  });
+
+  test("the live incident, step 2: src-tauri with no git anywhere folds into its direct parent", () => {
+    const p = projects({ "Grn Gsh": "D:\\Grn Gsh" });
+    expect(resolveProjectFor({ projects: p }, "D:\\Grn Gsh\\src-tauri", noGit))
+      .toEqual({ name: "Grn Gsh", cwd: "D:\\Grn Gsh" });
+  });
+
+  test("the cascade is broken: an existing phantom sibling no longer blocks the conventional fold", () => {
+    // Before the fix, the phantom `.devlog` project made Layer A read Grn Gsh as
+    // a container, so src-tauri was minted as a second phantom. Convention now
+    // outranks the container signal.
+    const p = projects({
+      "Grn Gsh": "D:\\Grn Gsh",
+      ".devlog": "D:\\Grn Gsh\\.devlog",   // leftover phantom
+    });
+    expect(resolveProjectFor({ projects: p }, "D:\\Grn Gsh\\src-tauri", noGit))
+      .toEqual({ name: "Grn Gsh", cwd: "D:\\Grn Gsh" });
+  });
+
+  test("an independent project that happens to use a conventional name keeps its own repo identity", () => {
+    const p = projects({ projectsDir: "D:\\projects" });
+    const ownRepo: GitRootFn = (d) => (/frontend/.test(d) ? "D:/projects/frontend" : null);
+    expect(resolveProjectFor({ projects: p }, "D:\\projects\\frontend", ownRepo))
+      .toEqual({ name: "frontend", cwd: "D:\\projects\\frontend" });
+  });
+
+  test("conventional name but NOT a direct child → convention layer stays out of it", () => {
+    const p = projects({ app: "D:\\app" });
+    // D:\app\packages\frontend: parent of cwd is packages, not the registered app.
+    expect(resolveProjectFor({ projects: p }, "D:\\app\\packages\\frontend", noGit))
+      .toEqual({ name: "frontend", cwd: "D:\\app\\packages\\frontend" });
+  });
+
+  test("container protection intact: non-conventional sibling under a container is untouched", () => {
+    const p = projects({ container: "D:\\container", "sib-a": "D:\\container\\sib-a" });
+    expect(resolveProjectFor({ projects: p }, "D:\\container\\sib-b", noGit))
+      .toEqual({ name: "sib-b", cwd: "D:\\container\\sib-b" });
+  });
+});
+
 describe("deepest enclosing parent is the fold candidate", () => {
   test("nested registered projects → resolve against the deepest", () => {
     const p = projects({

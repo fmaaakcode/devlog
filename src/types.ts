@@ -14,7 +14,11 @@ export interface ProjectProfile {
   blueprint: string[];
   language: string;
   framework: string;
-  libraries: { name: string; version: string; dev?: boolean }[];
+  // `eco` is the internal registry-ecosystem key (ecoMap values: "npm",
+  // "crates.io", "pypi", …) stamped by the manifest parser that found the
+  // library. Absent on profiles stored before the multi-ecosystem fix —
+  // consumers fall back to ecoMap[language] then.
+  libraries: { name: string; version: string; dev?: boolean; eco?: string }[];
   files: Record<string, number>;
   directories: string[];
   totalFiles: number;
@@ -45,6 +49,7 @@ export interface VulnResult {
   icon: string;       // "check" | "x" | "warning"
   message: string;
   vulns: number;
+  notices?: number;   // informational advisories (unmaintained/unsound) — warnings, not CVEs
   severity?: string;  // "none" | "low" | "moderate" | "high" | "critical"
   topVuln?: { id: string; score: number; severity: string } | null;
   fixVersion?: string;
@@ -55,7 +60,7 @@ export interface VulnResult {
   fixReleaseDate?: string;     // ISO publish date of fixVersion (external API)
   daysSinceLatest?: number | null;
   daysSinceFix?: number | null;
-  advisories?: Array<{ id: string; severity: string; summary: string; fix: string; url: string }>;
+  advisories?: Array<{ id: string; severity: string; summary: string; fix: string; url: string; kind?: string }>;
   transitive?: boolean;  // vuln came from an indirect (transitive) dependency, not a direct one
 }
 
@@ -114,6 +119,10 @@ export interface TagEntry {
    *  release bumped it. Lets a rollback restore the previous version even when
    *  no earlier release tag exists (QA #2). */
   prevVersion?: string;
+  /** Problem reports only (#556): the CLOSED report this one likely reopens —
+   *  a fix that didn't hold, detected at ingest (reopen.ts) and stored so
+   *  recurrence is queryable data (retro ⟲, dashboard badge). Advisory. */
+  relatedTo?: number;
   /** «قادمة» (upcoming): a deferred open item. Still numbered, still closable
    *  by `#N`, but excluded from the release guard, the built-without-closure
    *  warnings and the "Open now" counts — recorded ambition, not tracked debt.

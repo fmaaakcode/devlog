@@ -68,6 +68,7 @@
 
 ## Features / client report (`routes-features.ts`)
 - `/api/features` — the current capability inventory (feature tags resolved: updates applied, removed dropped, each attributed to its shipping release) + since-last-release counters for the release nudge (GET; `?project=` or `?cwd=`) — powers `-(ask:features)`
+- `/api/features-backfill` — releases not covered by any declared capability, each with its summary + built/update material lines (GET; `?project=` or `?cwd=`) — powers `-(ask:backfill)`
 - `/api/retro` — the full problem corpus: every bug/security report, open and closed, with open/close dates, age in days and project-relative touched files, oldest first (GET; `?project=` or `?cwd=`) — powers `-(ask:retro)`
 - `/api/client-report` — the client-facing status page as HTML (GET; `?save=1` also persists `<project>/.devlog/client-report.html` and returns the path as JSON)
 

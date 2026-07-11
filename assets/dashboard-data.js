@@ -19,12 +19,15 @@
         export let summaryTombstones = 0;        // projects gone from disk 30+ days (#380)
         export let summaryUntagged = 0;          // quiet sessions that wrote code but stored no tags (#434)
         export let summaryUntaggedBy = {};       // { project → its untagged-session count } — feeds the tooltip (#447)
+        export let summaryPartial = 0;           // sessions that tagged but recorded no work — granularity twin (#558)
+        export let summaryPartialBy = {};        // { project → its partially-tagged count } — feeds the tooltip
 
         function applySummary(j) {
             summaryLastActivity = {};
             summaryTagCounts = {};
             summaryVulnClass = {};
             summaryUntaggedBy = {};
+            summaryPartialBy = {};
             const projects = {};
             for (const p of (j.projects || [])) {
                 projects[p.name] = {
@@ -35,11 +38,13 @@
                 summaryTagCounts[p.name] = p.tags || 0;
                 summaryVulnClass[p.name] = p.vulnClass || '';
                 if (p.untagged > 0) summaryUntaggedBy[p.name] = p.untagged;
+                if (p.partial > 0) summaryPartialBy[p.name] = p.partial;
             }
             // Coerced: these land inside renderMaintRow's innerHTML.
             summaryOrphans = Number(j.orphans) || 0;
             summaryTombstones = Number(j.tombstones) || 0;
             summaryUntagged = Number(j.untagged) || 0;
+            summaryPartial = Number(j.partial) || 0;
             return projects;
         }
 

@@ -87,6 +87,23 @@ describe("dedupByAlias", () => {
     const b = { id: "GHSA-bbb", aliases: ["CVE-2"] };
     expect(dedupByAlias([a, b]).length).toBe(2);
   });
+
+  test("informational marker is group-level: a bare GHSA mirror can't relabel an unsound note as a CVE", () => {
+    // The live glib case: RUSTSEC-2024-0429 carries informational=unsound; its
+    // GHSA mirror arrives WITHOUT the marker but WITH severity moderate, wins
+    // the representative contest, and the group used to classify as a vuln.
+    const mirror = { id: "GHSA-wrw7", aliases: ["RUSTSEC-2024-0429"], database_specific: { severity: "MODERATE" },
+      affected: [{ package: { name: "glib", ecosystem: "crates.io" }, ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "0.20.0" }] }] }] };
+    const rustsec = { id: "RUSTSEC-2024-0429", aliases: ["GHSA-wrw7"],
+      affected: [{ package: { name: "glib", ecosystem: "crates.io" },
+        database_specific: { informational: "unsound" },
+        ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "0.20.0" }] }] }] };
+    const r = summarizeVulns([mirror, rustsec], "glib", "0.18.5");
+    expect(r.vulns).toBe(0);
+    expect(r.notices).toBe(1);
+    expect(r.status).toBe("safe");
+    expect(r.advisories[0].kind).toBe("unsound");
+  });
 });
 
 describe("nearestFix", () => {
@@ -144,6 +161,42 @@ describe("summarizeVulns", () => {
     const r = summarizeVulns([unfixed], "hono", "4.12.18");
     expect(r.status).toBe("danger");
     expect(r.icon).toBe("x");
+  });
+
+  test("RustSec 'unmaintained' notice is NOT a vulnerability: safe, counted in notices", () => {
+    // Shape verified live on RUSTSEC-2024-0415 (gtk): the marker sits in
+    // affected[].database_specific.informational, not at the advisory root.
+    const unmaintained = advisory({
+      id: "RUSTSEC-2024-0415",
+      database_specific: {},
+      affected: [{ package: { name: "gtk", ecosystem: "crates.io" },
+        database_specific: { informational: "unmaintained" },
+        ranges: [{ type: "SEMVER", events: [{ introduced: "0" }] }] }],
+    });
+    const r = summarizeVulns([unmaintained], "gtk", "0.18.2");
+    expect(r.status).toBe("safe");     // no tag, auto-closes any stale one
+    expect(r.vulns).toBe(0);
+    expect(r.notices).toBe(1);
+    expect(r.severity).toBe("none");   // the "moderate" fallback must not fire
+    expect(r.advisories[0].kind).toBe("unmaintained");
+  });
+
+  test("mixed real CVE + unmaintained notice: only the CVE drives status and count", () => {
+    const real = advisory({ id: "GHSA-real" });
+    const note = advisory({
+      id: "RUSTSEC-note",
+      database_specific: {},
+      affected: [{ package: { name: "hono", ecosystem: "npm" },
+        database_specific: { informational: "unsound" },
+        ranges: [{ type: "SEMVER", events: [{ introduced: "0" }] }] }],
+    });
+    const r = summarizeVulns([real, note], "hono", "4.12.18");
+    expect(r.vulns).toBe(1);
+    expect(r.notices).toBe(1);
+    expect(r.status).toBe("update");           // the unfixed NOTICE must not force danger
+    expect(r.severity).toBe("high");
+    expect(r.advisories.map(a => a.kind).sort()).toEqual(["unsound", "vuln"]);
+    expect(r.advisories[0].kind).toBe("vuln"); // real one leads, notice sinks to the bottom
   });
 
   test("malware id (MAL-) → danger even if a fix is listed", () => {

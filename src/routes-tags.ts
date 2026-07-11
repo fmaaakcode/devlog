@@ -25,6 +25,7 @@ import {
 import { applyUpcoming, applyTodoPromotion, type UpcomingChange } from "./upcoming";
 import { sessionTouchedFiles } from "./file-story";
 import { diagnoseFeatureRef, type FeatureRefProblem } from "./features";
+import { detectReopen, type ReopenHint } from "./reopen";
 import type { RollbackResult } from "./release-rollback";
 import type { TagEntry } from "./types";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -103,6 +104,7 @@ export function makeTagsRoutes(): Record<string, unknown> {
           const featureHints: FeatureRefProblem[] = [];
           const closed: ClosureConfirm[] = [];
           const upcomingChanges: UpcomingChange[] = [];
+          const reopenHints: ReopenHint[] = [];
           // Position memory (#486): files this session touched since its
           // previous batch — computed once, stamped on every tag stored below.
           const touchedFiles = sessionTouchedFiles(data, body.session_id, project);
@@ -300,6 +302,16 @@ export function makeTagsRoutes(): Record<string, unknown> {
             if (NUMBERED_TAGS.has(tag) && data.projects[project]) {
               tagEntry.num = assignNum(data, project);
             }
+            // «إعادة الفتح» (#556): a problem report matching a CLOSED one marks
+            // a fix that didn't hold — store the relation, echo it to the hook.
+            // Detected BEFORE the push so the new entry can't match itself.
+            if (typeof tagEntry.num === "number") {
+              const reopen = detectReopen(data, project, tag, content, tagEntry.files);
+              if (reopen) {
+                tagEntry.relatedTo = reopen.num;
+                reopenHints.push({ ...reopen, reportNum: tagEntry.num });
+              }
+            }
             data.tags.push(tagEntry);
             storedEntries.push({ tag, content: tagEntry.content });
 
@@ -318,7 +330,7 @@ export function makeTagsRoutes(): Record<string, unknown> {
           broadcast("tags", { project });
           // Optional verify nudge (#232): a closure with no test run this session.
           const verifyHint = verifyHintFor(storedEntries, data.events, body.session_id || "");
-          return Response.json({ ok: true, count: (body.entries || []).length, release: releaseResult, releaseIntent, releaseDowngrade, releaseBlocked, rollback, closureHints, closureTextWarnings, featureHints, closed, upcomingChanges, verifyHint });
+          return Response.json({ ok: true, count: (body.entries || []).length, release: releaseResult, releaseIntent, releaseDowngrade, releaseBlocked, rollback, closureHints, closureTextWarnings, featureHints, closed, upcomingChanges, reopenHints, verifyHint });
           });
         } catch (e) {
           const err = e as { message?: string; stack?: string };

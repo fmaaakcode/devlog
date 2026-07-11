@@ -22,6 +22,9 @@ Write the tag content in the user's language.
   lands (not per code step) · `-(feature update) #N new text` · `-(feature removed) #N` ·
   pull the current inventory with `-(ask:features)`. Not a work item — never blocks
   anything; a release with work tags but zero features gets a one-time soft reminder.
+  Backfill old history: `-(ask:backfill)` lists releases no capability covers; after
+  user approval declare each as `-(feature) [vX.Y.Z] <line>` — the marker pins the
+  capability to the past release that shipped it.
 - `-(note)` · `-(decision)` · `-(insight)`
 - `-(doc:report|analysis|plan|comparison|readme)` name\n<markdown>
 

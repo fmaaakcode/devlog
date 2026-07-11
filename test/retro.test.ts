@@ -4,7 +4,7 @@
 // open/closed split can never disagree with ask:open / ask:closed.
 
 import { describe, expect, test } from "bun:test";
-import { retroCorpus } from "../src/retro";
+import { retroCorpus, fragileFiles } from "../src/retro";
 import { closedItems } from "../src/closed-items";
 import { collectRelease, generateReleaseHtml } from "../src/release-html";
 import { projectRelativeFiles } from "../src/path-utils";
@@ -73,6 +73,40 @@ describe("retroCorpus", () => {
   test("closed-items exposes the merged files field retro reads", () => {
     const closed = closedItems(makeData(tags), "p").find(c => c.num === 1)!;
     expect(closed.files).toEqual(["D:/proj/src/a.ts", "D:/proj/src/b.ts"]);
+  });
+});
+
+describe("fragileFiles (#557)", () => {
+  const report = (num: number, files: string[], opts: { closed?: boolean; ts?: string } = {}) => [
+    { tag: "bug found", project: "p", num, content: `bug ${num}`, files,
+      timestamp: opts.ts ?? `2026-0${num}-01T00:00:00Z` },
+    ...(opts.closed ? [{ tag: "bug fix", project: "p", content: `#${num} fixed`,
+      timestamp: opts.ts ?? `2026-0${num}-02T00:00:00Z` }] : []),
+  ];
+
+  test("counts reports per file (2+ only), most-hit first, with open share", () => {
+    const data = makeData([
+      ...report(1, ["D:/proj/src/a.ts"], { closed: true }),
+      ...report(2, ["D:/proj/src/a.ts", "D:/proj/src/b.ts"]),
+      ...report(3, ["D:/proj/src/a.ts"]),
+      ...report(4, ["D:/proj/src/b.ts"], { closed: true }),
+      ...report(5, ["D:/proj/src/once.ts"]),          // single hit → filtered
+    ]);
+    expect(fragileFiles(data, "p")).toEqual([
+      { file: "src/a.ts", count: 3, open: 2 },
+      { file: "src/b.ts", count: 2, open: 1 },
+    ]);
+  });
+
+  test("caps at top N", () => {
+    const tags = Array.from({ length: 8 }, (_, i) =>
+      report(i + 1, [`D:/proj/f${i}.ts`, `D:/proj/f${(i + 1) % 8}.ts`],
+        { ts: `2026-01-0${(i % 8) + 1}T00:00:00Z` })).flat();
+    expect(fragileFiles(makeData(tags), "p", 3)).toHaveLength(3);
+  });
+
+  test("empty when nothing recurs", () => {
+    expect(fragileFiles(makeData(report(1, ["D:/proj/src/a.ts"])), "p")).toEqual([]);
   });
 });
 

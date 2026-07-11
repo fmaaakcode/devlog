@@ -6,7 +6,8 @@
 // does) so makeStandardsRoutes() needs no injected state. Spread into routeDefs.
 
 import { loadData, openTodos, openBugs, openSecurity, openPlanSteps, closedNums, normalizeTagContent, SECURITY_OPEN_TAGS } from "./data";
-import { tsToMs, orphanCounts, isTombstone, untaggedSessionCounts } from "./maintenance";
+import { tsToMs, orphanCounts, isTombstone, untaggedSessionCounts, partiallyTaggedCounts } from "./maintenance";
+import { fragileFiles } from "./retro";
 import type { TagEntry } from "./types";
 import { closedItems } from "./closed-items";
 import { resolveProjectFor } from "./project-resolve";
@@ -14,7 +15,7 @@ import { pathsEqual } from "./path-utils";
 import { scanCatalog, parseRules, readAcks } from "./standards";
 import { ENFORCED_CATEGORIES } from "./write-checks";
 import { findDepVerdicts } from "./dep-check";
-import { versionHistories } from "./registry";
+import { versionHistories, type VersionEntry } from "./registry";
 import { runProjectAudit, formatAuditReport } from "./vuln-audit";
 import { ecoMap } from "./eco-map";
 import { currentLang } from "./i18n";
@@ -71,6 +72,8 @@ export function makeStandardsRoutes(): Record<string, unknown> {
         // Protocol-compliance observability (#434): sessions that wrote files but
         // stored no tags. Passive counter only — never a block (directive 2026-06-24).
         const untaggedBy = untaggedSessionCounts(data);
+        // Its granularity twin (#558): sessions that DID tag but recorded no work.
+        const partialBy = partiallyTaggedCounts(data);
         const projects = Object.entries(data.projects).map(([name, p]) => {
           const tags = tagsByProject.get(name) || [];
           const open = openTodos(tags).length + openBugs(tags).length
@@ -85,6 +88,7 @@ export function makeStandardsRoutes(): Record<string, unknown> {
             libraries: p.libraries?.length || 0, tags: tags.length, openItems: open,
             lastScan: p.lastScan, lastActivity, vulnClass: vulnClassFor(p),
             untagged: untaggedBy.get(name) || 0,
+            partial: partialBy.get(name) || 0,
           };
         });
         // Maintenance counters for the sidebar sweep buttons (#375/#380), from the
@@ -93,7 +97,9 @@ export function makeStandardsRoutes(): Record<string, unknown> {
         const tombstones = Object.values(data.projects).filter(p => isTombstone(p)).length;
         let untagged = 0;
         for (const n of untaggedBy.values()) untagged += n;
-        return Response.json({ projects, count: projects.length, orphans, tombstones, untagged });
+        let partial = 0;
+        for (const n of partialBy.values()) partial += n;
+        return Response.json({ projects, count: projects.length, orphans, tombstones, untagged, partial });
       },
     },
 
@@ -125,12 +131,16 @@ export function makeStandardsRoutes(): Record<string, unknown> {
         const bugs = tags.filter(t => t.tag === "bug found").map(t => ({
           id: t.id, num: t.num ?? null, content: t.content, timestamp: t.timestamp,
           open: openBugIds.has(t.id), upcoming: !!t.upcoming,
+          ...(typeof t.relatedTo === "number" ? { relatedTo: t.relatedTo } : {}),
         }));
         const security = tags.filter(t => SECURITY_OPEN_TAGS.has(t.tag)).map(t => ({
           id: t.id, num: t.num ?? null, content: t.content, timestamp: t.timestamp,
           tag: t.tag, open: openSecIds.has(t.id),
+          ...(typeof t.relatedTo === "number" ? { relatedTo: t.relatedTo } : {}),
         }));
-        return Response.json({ project: name, todos, bugs, security });
+        // «الأكثر كسرًا» (#557) rides the same judgment payload: the security
+        // card renders it next to the reports it is derived from.
+        return Response.json({ project: name, todos, bugs, security, fragile: fragileFiles(data, name) });
       },
     },
 
@@ -241,13 +251,28 @@ export function makeStandardsRoutes(): Record<string, unknown> {
         const { name, cwd: effectiveCwd } = resolveProjectFor(data, cwd);
         const proj = data.projects[name];
         if (!proj || !pathsEqual(proj.path, effectiveCwd)) return Response.json({ violations: [] });
-        const eco = ecoMap[proj.language];
-        if (!eco) return Response.json({ violations: [] });
-        const libs = (proj.libraries || []).filter(l => !l.dev && l.name && l.version);
+        // Ecosystem is per library (scanner stamp), falling back to the project
+        // language for profiles stored before the multi-ecosystem fix — a Tauri
+        // project's Rust crates must be checked against crates.io, not npm.
+        const defaultEco = ecoMap[proj.language] || "";
+        const libs = (proj.libraries || [])
+          .filter(l => !l.dev && l.name && l.version)
+          .map(l => ({ ...l, eco: l.eco || defaultEco }))
+          .filter(l => l.eco);
         if (!libs.length) return Response.json({ violations: [] });
         // Full version history → the matured target ("newest >7 days") so the
         // verdict can SUGGEST an exact version, both for too-fresh and behind.
-        const histories = await versionHistories(eco, libs.map(l => l.name));
+        // One history batch per ecosystem group, merged by name.
+        const histories = new Map<string, VersionEntry[]>();
+        const byEco = new Map<string, typeof libs>();
+        for (const l of libs) {
+          const arr = byEco.get(l.eco);
+          if (arr) arr.push(l); else byEco.set(l.eco, [l]);
+        }
+        for (const [eco, group] of byEco) {
+          const m = await versionHistories(eco, group.map(l => l.name));
+          for (const [n, h] of m) if (!histories.has(n)) histories.set(n, h);
+        }
         return Response.json({ violations: findDepVerdicts(libs, histories, new Date()) });
       },
     },
@@ -268,7 +293,7 @@ export function makeStandardsRoutes(): Record<string, unknown> {
         if (!proj || !pathsEqual(proj.path, effectiveCwd)) return plain(L("No DevLog project registered for this path.", "لا مشروع DevLog مسجّل لهذا المسار."));
         const ecosystem = ecoMap[proj.language] || "";
         const directNames = new Set((proj.libraries || []).map(l => l.name));
-        const directLibs = (proj.libraries || []).map(l => ({ name: l.name, version: l.version }));
+        const directLibs = (proj.libraries || []).map(l => ({ name: l.name, version: l.version, eco: l.eco }));
         const result = await runProjectAudit({ dirPath: proj.path, ecosystem, directNames, directLibs, pkg: pkg || undefined });
         return plain(formatAuditReport(name, result));
       },

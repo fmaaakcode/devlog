@@ -79,8 +79,8 @@ describe("resolveReleaseIntent — computes version from intent", () => {
 
 describe("resolveReleaseIntent — advisory cross-check", () => {
   // data with accrued work tags since last release (no release tags → since=0)
-  const dataWork = (workTags: Array<{ tag: string; breaking?: boolean }>): any => ({
-    tags: workTags.map((t, i) => ({ id: `w${i}`, project: "p", tag: t.tag, content: `w${i}`, breaking: t.breaking, timestamp: "2026-06-01T00:00:00Z" })),
+  const dataWork = (workTags: Array<{ tag: string; breaking?: boolean; content?: string }>): any => ({
+    tags: workTags.map((t, i) => ({ id: `w${i}`, project: "p", tag: t.tag, content: t.content ?? `w${i}`, breaking: t.breaking, timestamp: "2026-06-01T00:00:00Z" })),
     projects: { p: { path: "" } },
   });
 
@@ -101,6 +101,17 @@ describe("resolveReleaseIntent — advisory cross-check", () => {
 
     const majorIntent = await resolveReleaseIntent({ tag: "release", content: "x" }, dataWork([{ tag: "built", breaking: true }]), "p", mkProj("2.0.0"));
     expect(majorIntent).toMatchObject({ version: "3.0.0", bump: "major", auto: true });
+  });
+
+  test("a declared -(feature) capability is minor evidence; a backfilled [vX.Y.Z] one is not", async () => {
+    // The v3.9.1 slip: 4 features shipped with zero built tags read as patch.
+    const feat = await resolveReleaseIntent({ tag: "release", content: "x" },
+      dataWork([{ tag: "feature" }, { tag: "bug fix" }]), "p", mkProj("2.0.0"));
+    expect(feat).toMatchObject({ version: "2.1.0", bump: "minor", auto: true });
+
+    const backfill = await resolveReleaseIntent({ tag: "release", content: "x" },
+      dataWork([{ tag: "feature", content: "[v1.0.0] old capability" }, { tag: "bug fix" }]), "p", mkProj("2.0.0"));
+    expect(backfill).toMatchObject({ version: "2.0.1", bump: "patch", auto: true });
   });
 
   test("no warning when declared meets or exceeds the evidence", async () => {

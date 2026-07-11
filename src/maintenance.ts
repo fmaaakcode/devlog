@@ -43,6 +43,43 @@ export function orphanCounts(data: DevLogData): Map<string, { tags: number; even
  *  this feeds a sidebar counter, never a block. Sessions quieter than `quietMs`
  *  only, so a session still mid-work isn't flagged before its Stop hook had a
  *  chance to store tags. Event retention (~30d) bounds the window naturally. */
+/** Tags that RECORD work — the evidence a session described what it wrote. */
+const RECORD_TAGS = new Set(["built", "refactor", "update", "bug fix", "security fix", "feature", "done"]);
+
+/** «موسومة جزئيًا» (#558): sessions that wrote SUBSTANTIAL code (minFiles+
+ *  distinct files) and did emit tags — so the ghost counter never sees them —
+ *  yet recorded ZERO work tags (notes/desc only): the granularity blind spot.
+ *  Deliberately conservative (records === 0, not "few"): one -(built) covering
+ *  ten files is a legitimate cohesive feature, not under-tagging. Same contract
+ *  as untaggedSessionCounts: passive sidebar counter only, quiet sessions only,
+ *  window bounded by event retention. */
+export function partiallyTaggedCounts(data: DevLogData, quietMs = 30 * 60 * 1000, minFiles = 3): Map<string, number> {
+  const tagged = new Set<string>();
+  const recorded = new Set<string>();
+  for (const t of data.tags) {
+    if (!t.session_id) continue;
+    tagged.add(t.session_id);
+    if (RECORD_TAGS.has(t.tag)) recorded.add(t.session_id);
+  }
+  const bySession = new Map<string, { project: string; files: Set<string>; lastMs: number }>();
+  for (const e of data.events) {
+    if (!e.session_id) continue;
+    let s = bySession.get(e.session_id);
+    if (!s) { s = { project: e.project, files: new Set(), lastMs: 0 }; bySession.set(e.session_id, s); }
+    const ms = tsToMs(e.timestamp);
+    if (ms > s.lastMs) { s.lastMs = ms; s.project = e.project; }
+    if ((e.type === "change" || e.type === "create") && e.file_path) s.files.add(e.file_path);
+  }
+  const cutoff = Date.now() - quietMs;
+  const counts = new Map<string, number>();
+  for (const [sid, s] of bySession) {
+    if (s.files.size < minFiles || s.lastMs > cutoff) continue;
+    if (!tagged.has(sid) || recorded.has(sid)) continue;   // untagged → the ghost counter's case
+    counts.set(s.project, (counts.get(s.project) || 0) + 1);
+  }
+  return counts;
+}
+
 export function untaggedSessionCounts(data: DevLogData, quietMs = 30 * 60 * 1000): Map<string, number> {
   const tagged = new Set<string>();
   for (const t of data.tags) if (t.session_id) tagged.add(t.session_id);

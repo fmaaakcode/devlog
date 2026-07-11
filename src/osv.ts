@@ -31,6 +31,9 @@ export interface OsvVuln {
   affected?: Array<{
     package?: { name?: string; ecosystem?: string };
     ranges?: Array<{ type?: string; events?: Array<{ introduced?: string; fixed?: string; last_affected?: string }> }>;
+    // RustSec's OSV export marks informational advisories here (verified live on
+    // RUSTSEC-2024-0415): "unmaintained" / "unsound" / "notice". Absent on real CVEs.
+    database_specific?: { informational?: string };
   }>;
   references?: Array<{ type?: string; url?: string }>;
 }
@@ -132,24 +135,53 @@ export function normalizeSeverity(vuln: OsvVuln): string {
   return "moderate";
 }
 
+// Advisory kind: a RustSec "unmaintained"/"unsound" notice is NOT a
+// vulnerability — cargo audit lists them as warnings, not vulns. Counting them
+// as CVEs inflated a Tauri project's open-vulns card with 13 "moderate — no
+// complete fix" entries that were really just gtk3-rs being archived.
+export function advisoryKind(vuln: OsvVuln): "vuln" | "unmaintained" | "unsound" | "notice" {
+  const affected = Array.isArray(vuln?.affected) ? vuln.affected : [];
+  for (const a of affected) {
+    const info = a?.database_specific?.informational;
+    if (typeof info === "string" && info) {
+      return info === "unmaintained" || info === "unsound" ? info : "notice";
+    }
+  }
+  return "vuln";
+}
+
 // OSV returns RustSec advisories AND their GHSA/CVE mirrors as SEPARATE objects for
 // crates.io, linked via `aliases`. Collapse each alias-group to one representative
 // (highest severity) so one issue isn't counted several times — rustls-webpki: 6
 // OSV entries → 3 real advisories, matching cargo audit.
 export function dedupByAlias(vulns: OsvVuln[]): OsvVuln[] {
   const groups: OsvVuln[] = [];
+  const groupInfo: (string | null)[] = [];  // informational marker seen anywhere in the group
   const idToGroup = new Map<string, number>();
   for (const v of vulns) {
     const ids = [v.id, ...(Array.isArray(v.aliases) ? v.aliases : [])].filter((x): x is string => !!x);
     let gi = -1;
     for (const id of ids) { const g = idToGroup.get(id); if (g !== undefined) { gi = g; break; } }
-    if (gi === -1) { gi = groups.length; groups.push(v); }
+    if (gi === -1) { gi = groups.length; groups.push(v); groupInfo.push(null); }
     else if (severityRank(normalizeSeverity(v)) > severityRank(normalizeSeverity(groups[gi]))) {
       groups[gi] = v; // prefer the higher-severity representative
     }
+    // The informational marker is GROUP-level truth: RustSec stamps it on ITS
+    // object only, and the GHSA mirror of the same issue arrives without it
+    // (verified live: glib RUSTSEC-2024-0429 'unsound' + bare GHSA-wrw7-89jp-8q8g).
+    // If the bare mirror wins the severity contest, the group must still
+    // classify as informational — otherwise an unsound note tags as a CVE.
+    const kind = advisoryKind(v);
+    if (kind !== "vuln") groupInfo[gi] = groupInfo[gi] ?? (kind === "notice" ? "notice" : kind);
     for (const id of ids) if (!idToGroup.has(id)) idToGroup.set(id, gi);
   }
-  return groups;
+  return groups.map((rep, gi) => {
+    const info = groupInfo[gi];
+    if (!info || advisoryKind(rep) !== "vuln") return rep;
+    // Graft the marker onto the representative via a synthetic affected entry
+    // (no package name → nearestFix ignores it) so advisoryKind sees the group truth.
+    return { ...rep, affected: [...(Array.isArray(rep.affected) ? rep.affected : []), { database_specific: { informational: info } }] };
+  });
 }
 
 // Lowest "fixed" version at or above the installed one, across all ranges that
@@ -197,11 +229,17 @@ export interface AdvisoryRef {
   summary: string;   // one-line description
   fix: string;       // nearest fix for THIS advisory ("" = unfixed)
   url: string;       // advisory page
+  kind: string;      // "vuln" | "unmaintained" | "unsound" | "notice"
 }
 
 export interface PkgVuln {
   ok: boolean;      // OSV query succeeded — false means "couldn't tell" (network/unknown version)
-  vulns: number;
+  version: string;  // the INSTALLED version this verdict describes — a lockfile can
+                    // resolve one name at several versions (reqwest 0.12 + 0.13 in
+                    // one Cargo.lock), and blaming the wrong one sends the user
+                    // chasing a clean version. "" only in the const fallbacks.
+  vulns: number;    // REAL vulnerabilities only — informational notices live in `notices`
+  notices: number;  // unmaintained/unsound/notice advisories (warnings, never tags)
   status: "danger" | "update" | "safe" | "indeterminate";
   icon: string;     // "x" (danger) | "warning" (update) | "check" (safe)
   message: string;
@@ -212,8 +250,8 @@ export interface PkgVuln {
   advisories: AdvisoryRef[]; // full list, severity-desc; empty when safe/unknown
 }
 
-const SAFE: PkgVuln = { ok: true, vulns: 0, status: "safe", icon: "check", message: "", severity: "none", topVuln: null, fixVersion: "", detailsUrl: "", advisories: [] };
-const UNKNOWN: PkgVuln = { ok: false, vulns: 0, status: "indeterminate", icon: "", message: "", severity: "none", topVuln: null, fixVersion: "", detailsUrl: "", advisories: [] };
+const SAFE: PkgVuln = { ok: true, version: "", vulns: 0, notices: 0, status: "safe", icon: "check", message: "", severity: "none", topVuln: null, fixVersion: "", detailsUrl: "", advisories: [] };
+const UNKNOWN: PkgVuln = { ok: false, version: "", vulns: 0, notices: 0, status: "indeterminate", icon: "", message: "", severity: "none", topVuln: null, fixVersion: "", detailsUrl: "", advisories: [] };
 
 // One advisory's headline. OSV `summary` is the short title; absent on a few
 // entries, then "" (the modal still shows id + severity + link).
@@ -228,7 +266,7 @@ function advisorySummary(vuln: OsvVuln): string {
 //            nearest-fix that clears them all.
 //   safe   — no advisories.
 export function summarizeVulns(rawVulns: OsvVuln[], name: string, installed: string, ignoreIds?: Set<string>): PkgVuln {
-  if (!Array.isArray(rawVulns) || rawVulns.length === 0) return SAFE;
+  if (!Array.isArray(rawVulns) || rawVulns.length === 0) return { ...SAFE, version: installed };
   // Collapse RustSec/GHSA mirrors of the same issue before counting (P2).
   let vulns = dedupByAlias(rawVulns);
   // Drop advisories the project explicitly ignores (audit.toml / .devlog/vuln-ignore),
@@ -239,39 +277,67 @@ export function summarizeVulns(rawVulns: OsvVuln[], name: string, installed: str
       return !ids.some(id => ignoreIds.has(id));
     });
   }
-  if (vulns.length === 0) return SAFE;
+  if (vulns.length === 0) return { ...SAFE, version: installed };
 
-  let topRank = -1;
-  let top: OsvVuln | null = null;
-  let topSev = "low";
-  let anyUnfixed = false;
-  let bestFix = "";
+  // Split REAL vulnerabilities from informational RustSec notices (unmaintained/
+  // unsound). Only the real ones drive status/severity/fix/tag-creation; notices
+  // ride along in `advisories` (labeled) + the `notices` count, so the dashboard
+  // can show "unmaintained" without inflating the open-vulns card.
+  const real: OsvVuln[] = [];
+  const informational: OsvVuln[] = [];
+  for (const v of vulns) (advisoryKind(v) === "vuln" ? real : informational).push(v);
+
   const advisories: AdvisoryRef[] = [];
-  for (const vln of vulns) {
-    const sev = normalizeSeverity(vln);
-    if (severityRank(sev) > topRank) { topRank = severityRank(sev); topSev = sev; top = vln; }
-    const isMalware = typeof vln?.id === "string" && vln.id.startsWith("MAL-");
-    const fix = nearestFix(installed, vln, name);
-    if (isMalware || !fix) anyUnfixed = true;
-    if (fix && (!bestFix || isVersionBehind(bestFix, fix))) bestFix = fix;
+  const pushAdvisory = (vln: OsvVuln, sev: string, fix: string | null) => {
     advisories.push({
       id: typeof vln?.id === "string" ? vln.id : "",
       severity: sev,
       summary: advisorySummary(vln),
       fix: fix || "",
       url: refUrl(vln),
+      kind: advisoryKind(vln),
     });
+  };
+  // Notices carry no meaningful CVSS — pin severity "none" so the fallback
+  // "moderate" can't paint an archived-crate note orange.
+  for (const vln of informational) pushAdvisory(vln, "none", nearestFix(installed, vln, name));
+
+  if (real.length === 0) {
+    return {
+      ok: true, version: installed, vulns: 0, notices: informational.length,
+      status: "safe", icon: "check",
+      message: L(`${informational.length} maintenance notice(s) — no known CVE`, `${informational.length} إشعار صيانة — لا ثغرات معروفة`),
+      severity: "none", topVuln: null, fixVersion: "",
+      detailsUrl: refUrl(informational[0]), advisories,
+    };
   }
-  // Highest severity first so the modal leads with what matters.
+
+  let topRank = -1;
+  let top: OsvVuln | null = null;
+  let topSev = "low";
+  let anyUnfixed = false;
+  let bestFix = "";
+  for (const vln of real) {
+    const sev = normalizeSeverity(vln);
+    if (severityRank(sev) > topRank) { topRank = severityRank(sev); topSev = sev; top = vln; }
+    const isMalware = typeof vln?.id === "string" && vln.id.startsWith("MAL-");
+    const fix = nearestFix(installed, vln, name);
+    if (isMalware || !fix) anyUnfixed = true;
+    if (fix && (!bestFix || isVersionBehind(bestFix, fix))) bestFix = fix;
+    pushAdvisory(vln, sev, fix);
+  }
+  // Highest severity first so the modal leads with what matters ("none" notices sink).
   advisories.sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
 
   const status: PkgVuln["status"] = anyUnfixed ? "danger" : "update";
   const message = status === "danger"
-    ? L(`${vulns.length} vuln(s) (${topSev}) — no complete fix`, `${vulns.length} ثغرة (${topSev}) — لا إصلاح كامل`)
-    : L(`${vulns.length} vuln(s) (${topSev}) — upgrade to ${bestFix}`, `${vulns.length} ثغرة (${topSev}) — رقِّ لـ${bestFix}`);
+    ? L(`${real.length} vuln(s) (${topSev}) — no complete fix`, `${real.length} ثغرة (${topSev}) — لا إصلاح كامل`)
+    : L(`${real.length} vuln(s) (${topSev}) — upgrade to ${bestFix}`, `${real.length} ثغرة (${topSev}) — رقِّ لـ${bestFix}`);
   return {
     ok: true,
-    vulns: vulns.length,
+    version: installed,
+    vulns: real.length,
+    notices: informational.length,
     status,
     icon: status === "danger" ? "x" : "warning",
     message,
@@ -332,11 +398,15 @@ export async function scanPackages(
   async function worker(): Promise<void> {
     while (next < packages.length) {
       const p = packages[next++];
-      if (!/^\d/.test(p.version)) { out.set(p.name, UNKNOWN); continue; }
+      if (!/^\d/.test(p.version)) { out.set(p.name, { ...UNKNOWN, version: p.version }); continue; }
       const j = await postJson<OsvQueryResponse>(OSV_QUERY_URL, { version: p.version, package: { name: p.name, ecosystem: osvEco } }, fetchImpl);
-      if (j === null) { out.set(p.name, UNKNOWN); continue; }
+      if (j === null) { out.set(p.name, { ...UNKNOWN, version: p.version }); continue; }
       const vulns = Array.isArray(j.vulns) ? j.vulns : [];
-      out.set(p.name, summarizeVulns(vulns, p.name, p.version, ignoreIds));
+      const verdict = summarizeVulns(vulns, p.name, p.version, ignoreIds);
+      // Same name queried at two versions: keep the vulnerable verdict (and ITS
+      // version) so the map never reports a name clean while one version is hit.
+      const prev = out.get(p.name);
+      if (!prev || (prev.vulns === 0 && verdict.vulns > 0)) out.set(p.name, verdict);
     }
   }
   await Promise.all(Array.from({ length: Math.min(concurrency, packages.length) }, worker));
@@ -391,9 +461,11 @@ export async function scanTree(
   const details = await scanPackages(osvEco, toDetail, fetchImpl, 4, ignore?.ids);
   for (const p of packages) {
     const detail = details.get(p.name);
-    const verdict = detail ?? (/^\d/.test(p.version) ? SAFE : UNKNOWN);
+    const verdict = detail ?? (/^\d/.test(p.version) ? { ...SAFE, version: p.version } : { ...UNKNOWN, version: p.version });
     const prev = out.get(p.name);
-    // Same name at two versions: keep whichever is vulnerable.
+    // Same name at two versions: keep whichever is vulnerable. The verdict
+    // carries the version it was computed FOR, which may differ from p.version
+    // (the vulnerable resolved version wins over the clean one).
     if (!prev || (prev.vulns === 0 && verdict.vulns > 0)) out.set(p.name, verdict);
   }
   return out;

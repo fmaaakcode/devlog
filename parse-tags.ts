@@ -3,7 +3,7 @@
 import { readdir, readFile, appendFile, mkdir, rm, stat, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { parseTags } from "./src/tag-parser.ts";
+import { parseTags, nearMissTags } from "./src/tag-parser.ts";
 import { entryKey, loadLedger, saveLedger, sweepTurnState } from "./src/turn-ledger.ts";
 
 // Single source for the server base — follows DEVLOG_PORT like data.ts /
@@ -466,6 +466,22 @@ if (msg) {
             feedback.push(`\n[devlog closure]\n${lines.join("\n")}\n`);
             await log(`closure-confirm: ${resp.closed.map((c: any) => c.num).join(", ")}`);
           }
+          // Reopen linkage (#556): a stored problem report matched a CLOSED one
+          // — the fix didn't hold. Informational only, NO exit(2): the relation
+          // is already stored; Claude just learns the history exists.
+          if (Array.isArray(resp.reopenHints) && resp.reopenHints.length) {
+            const day = (s: string) => String(s).slice(0, 10);
+            const lines = resp.reopenHints.map((h: any) => {
+              const when = h.closedAt
+                ? L(` (closed ${day(h.closedAt)})`, ` (أُغلق ${day(h.closedAt)})`)
+                : "";
+              return L(
+                `⟲ #${h.reportNum} likely REOPENS #${h.num}${when} — ${String(h.text).slice(0, 80)}. Check whether the old fix regressed before treating it as new.`,
+                `⟲ ‏#${h.reportNum} يبدو إعادة فتح لـ#${h.num}${when} — ${String(h.text).slice(0, 80)}. افحص هل انتكس الإصلاح القديم قبل معالجته كجديد.`);
+            });
+            feedback.push(`\n[devlog reopen]\n${lines.join("\n")}\n`);
+            await log(`reopen: ${resp.reopenHints.map((h: any) => `#${h.reportNum}→#${h.num}`).join(", ")}`);
+          }
           // «قادمة» outcomes: echo what -(upcoming) / a `-(todo) #N` promotion
           // actually did. Successes are informational; a no-match or a refused
           // security deferral blocks once so Claude corrects the number instead
@@ -905,7 +921,8 @@ if (msg && cwd) {
       const r = await fetch(`${SERVER}/api/retro?cwd=${encodeURIComponent(cwd)}`, { signal: AbortSignal.timeout(10000) });
       if (r.ok) {
         await markAskServed("ask:retro");   // record only now the fetch succeeded (#398)
-        const { items = [] } = await r.json() as { items?: any[] };
+        const { items = [], fragile = [] } = await r.json() as
+          { items?: any[]; fragile?: Array<{ file: string; count: number; open: number }> };
         const day = (s: string) => String(s).slice(0, 10);
         const line = (it: any) => {
           const num = typeof it.num === "number" ? `#${it.num} ` : "";
@@ -916,10 +933,19 @@ if (msg && cwd) {
           const files = it.files?.length
             ? ` — ${it.files.slice(0, 4).join(" · ")}${it.files.length > 4 ? ` (+${it.files.length - 4})` : ""}`
             : "";
-          return `  ${num}[${kind}] ${span} ${it.text}${files}`;
+          // ⟲: this report reopened an earlier closed one (#556) — the strongest
+          // recurrence signal the corpus carries; cluster these first.
+          const reopen = typeof it.reopenOf === "number" ? ` ⟲#${it.reopenOf}` : "";
+          return `  ${num}[${kind}]${reopen} ${span} ${it.text}${files}`;
         };
+        // «الأكثر كسرًا» header (#557): the corpus pre-clustered by file, so the
+        // strongest recurrence signal leads instead of waiting to be derived.
+        const fragileLine = fragile.length
+          ? `${L("Most-broken files: ", "الأكثر كسرًا: ")}${fragile.map(f =>
+              `${f.file} ×${f.count}${f.open ? L(` (${f.open} open)`, ` (${f.open} مفتوح)`) : ""}`).join(" · ")}\n`
+          : "";
         const out = items.length
-          ? `${L(`Problem corpus (${items.length} reports, oldest first) — cluster the recurrences; codify a confirmed pattern with -(rule:add) or -(insight):`,
+          ? `${fragileLine}${L(`Problem corpus (${items.length} reports, oldest first) — cluster the recurrences; codify a confirmed pattern with -(rule:add) or -(insight):`,
               `سجل المشاكل (${items.length} بلاغًا، الأقدم أولًا) — اعنقد المتكرر؛ ثبّت النمط المؤكد بـ-(rule:add) أو -(insight):`)}\n${items.map(line).join("\n")}`
           : L("No problem reports recorded for this project yet.", "لا بلاغات مسجّلة لهذا المشروع بعد.");
         await log(`ask:retro: served ${items.length} item(s)`);
@@ -930,6 +956,86 @@ if (msg && cwd) {
     }
   } catch (e) {
     await log(`ask:retro error: ${(e as Error).message}`);
+  }
+}
+
+// === Part 1.5g: -(ask:backfill) — feature-inventory backfill corpus ===
+// The inventory only fills FORWARD (the release nudge asks for one capability
+// per release), so pre-feature-era releases never get covered and the client
+// report loses its backbone on older projects. This serves every release no
+// capability is attributed to — summary + built/update material — so Claude can
+// PROPOSE `-(feature) [vX.Y.Z] …` declarations for the user to approve; the
+// marker attributes the capability to the past release that shipped it instead
+// of the next one. Served like the other pull commands; never a logged tag.
+if (msg && cwd) {
+  try {
+    if (/^[ \t]*-\(ask:backfill\)[ \t]*$/m.test(strippedMsg) && await shouldServeAsk("ask:backfill")) {
+      const r = await fetch(`${SERVER}/api/features-backfill?cwd=${encodeURIComponent(cwd)}`, { signal: AbortSignal.timeout(10000) });
+      if (r.ok) {
+        await markAskServed("ask:backfill");   // record only now the fetch succeeded (#398)
+        const { totalReleases = 0, uncovered = [] } = await r.json() as
+          { totalReleases?: number; uncovered?: Array<{ version: string; date: string; summary: string; material: string[]; materialMore: number }> };
+        const block = (u: NonNullable<typeof uncovered>[number]) => {
+          const head = `  ${u.version} (${String(u.date).slice(0, 10)})${u.summary ? ` — ${u.summary}` : ""}`;
+          const lines = u.material.map(m => `    · ${m}`);
+          if (u.materialMore > 0) lines.push(`    ${L(`(+${u.materialMore} more)`, `(+${u.materialMore} أسطر أخرى)`)}`);
+          return [head, ...lines].join("\n");
+        };
+        const out = uncovered.length
+          ? [
+              L(`Releases with no declared capability (${uncovered.length} of ${totalReleases}), oldest first:`,
+                `إصدارات بلا قدرات معلنة (${uncovered.length} من ${totalReleases})، الأقدم أولًا:`),
+              ...uncovered.map(block),
+              "",
+              L("Draft one client-language capability line per release (skip purely technical ones) and show the list to the user for approval FIRST. Only after approval declare each as:",
+                "صِغ لكل إصدار سطر قدرة بلغة العميل (وتجاوز التقني الصِّرف) واعرض القائمة على المستخدم للموافقة أولًا. بعد الموافقة فقط أعلن كل واحدة بـ:"),
+              "-(feature) [vX.Y.Z] <line>",
+              L("The [vX.Y.Z] marker attributes the capability to the past release that shipped it — without it the feature is attributed to the NEXT release.",
+                "وسم [vX.Y.Z] ينسب القدرة للإصدار الماضي الذي شحنها — بدونه تُنسب للإصدار القادم."),
+            ].join("\n")
+          : L("Every release is already covered by a declared capability — nothing to backfill.",
+              "كل الإصدارات مغطاة بقدرات معلنة — لا شيء للتعبئة.");
+        await log(`ask:backfill: served ${uncovered.length}/${totalReleases} release(s)`);
+        blockContinue(`\n[devlog backfill]\n${out}\n`);
+      } else {
+        await log(`ask:backfill: server replied ${r.status}`);
+      }
+    }
+  } catch (e) {
+    await log(`ask:backfill error: ${(e as Error).message}`);
+  }
+}
+
+// === Part 1.5h: near-miss tag heads (#555) ===
+// A typo'd head (`-(bulit)`) matches nothing in the extractor and the work
+// record dies silently — the one protocol failure with zero feedback. Serve a
+// correction hint for heads within edit distance 2 of a known tag/command.
+// Deduped per turn PER HEAD via the turn ledger, so the malformed line still
+// present in the grown transcript can't re-block the continuation forever.
+if (msg) {
+  try {
+    const misses = nearMissTags(msg);
+    const fresh: typeof misses = [];
+    for (const nm of misses) if (await shouldServeAsk(`nearmiss:${nm.head}`)) fresh.push(nm);
+    if (fresh.length) {
+      for (const nm of fresh) await markAskServed(`nearmiss:${nm.head}`);
+      const lines = fresh.map(nm =>
+        `· -(${nm.head}) — ${L(`closest known tag: -(${nm.suggestion})`, `أقرب تاق معروف: -(${nm.suggestion})`)}`);
+      const out = [
+        "════════ DevLog Near-miss ════════",
+        L(`⚠ ${fresh.length} line(s) look like a tag but were NOT captured:`,
+          `⚠ ${fresh.length} سطر يشبه تاقًا ولم يُلتقط:`),
+        ...lines,
+        "",
+        L("Nothing was stored. Fix the head and re-emit the tag.",
+          "لم يُخزَّن شيء. صحّح الرأس وأعد إصدار التاق."),
+        "══════════════════════════════════",
+      ].join("\n");
+      await log(`near-miss: served ${fresh.length} head(s)`);
+      blockContinue(`\n${out}\n`);
+    }
+  } catch (e) {
+    await log(`near-miss error: ${(e as Error).message}`);
   }
 }
 

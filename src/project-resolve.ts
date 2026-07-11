@@ -27,6 +27,11 @@
 
 import { normalizePath, pathsEqual, isPathInside, normalizeSlashes } from "./path-utils";
 import { bunSpawnSync } from "./spawn";
+// The same conventional-subfolder list the scanner already folds manifests from
+// (src-tauri/, frontend/, …). lockfile-tree imports node:path only, so this keeps
+// the module dependency-light. If the SCANNER treats a subfolder as part of the
+// parent project, the RESOLVER folding its events there is the symmetric call.
+import { NESTED_MANIFEST_DIRS } from "./lockfile-tree";
 import type { ProjectProfile } from "./types";
 
 type ProjectsMap = Record<string, ProjectProfile>;
@@ -36,6 +41,13 @@ export type GitRootFn = (dir: string) => string | null;
 // dependency-light (path-utils + types only) and trivially unit-testable.
 function baseName(cwd: string): string {
   return normalizeSlashes(cwd).split("/").filter(Boolean).pop() || "unknown";
+}
+
+// Parent directory of cwd ("" at a root). Forward-slash normalized like baseName.
+function parentDir(cwd: string): string {
+  const segs = normalizeSlashes(cwd).split("/").filter(Boolean);
+  segs.pop();
+  return segs.join("/");
 }
 
 // Default git-root resolver: `git -C <dir> rev-parse --show-toplevel`. Returns
@@ -93,9 +105,32 @@ export function sharesGitRepo(
   return pathsEqual(childRoot, parentRoot);
 }
 
+// Convention layer — a positive fold signal that works WITHOUT git (bug #529:
+// a no-git Tauri project minted `src-tauri` — and `.devlog` before it — as
+// phantom projects, and the first phantom made Layer A read the parent as a
+// "container", blocking every later fold). True when cwd is a DIRECT child of
+// the registered parent, its name is one of the conventional build-subfolders
+// the scanner already merges manifests from, and cwd does not belong to a
+// DIFFERENT git repo than the parent (an independent project that happens to
+// use a conventional name keeps its own identity via its own repo).
+export function isConventionalSubfolder(
+  parentPath: string,
+  cwd: string,
+  gitRootOf: GitRootFn,
+): boolean {
+  if (!NESTED_MANIFEST_DIRS.includes(baseName(cwd))) return false;
+  if (!pathsEqual(parentDir(cwd), parentPath)) return false;   // direct child only
+  const childRoot = gitRootOf(cwd);
+  if (!childRoot) return true;                                  // no repo of its own → convention wins
+  const parentRoot = gitRootOf(parentPath);
+  return parentRoot != null && pathsEqual(childRoot, parentRoot);
+}
+
 // Combine the layers: fold cwd into the enclosing parent only with positive
-// evidence it's a real subfolder. Container (Layer A) short-circuits before any
-// git call.
+// evidence it's a real subfolder. The convention layer outranks Layer A on
+// purpose — one earlier phantom sibling (the #529 cascade) must not turn the
+// parent into a "container" and re-mint src-tauri forever. Otherwise container
+// (Layer A) short-circuits before any git call.
 export function shouldFoldIntoParent(
   projects: ProjectsMap,
   parentName: string,
@@ -103,6 +138,7 @@ export function shouldFoldIntoParent(
   cwd: string,
   gitRootOf: GitRootFn,
 ): boolean {
+  if (isConventionalSubfolder(parentPath, cwd, gitRootOf)) return true;
   if (parentHasSiblingProject(projects, parentName, parentPath, cwd)) return false;
   return sharesGitRepo(parentPath, cwd, gitRootOf);
 }
@@ -130,6 +166,26 @@ export function resolveProjectFor(
       const len = normalizePath(ppath).length;
       if (len > bestLen) { bestLen = len; candidate = { name: n, cwd: ppath }; }
     }
+  }
+
+  // A dot-folder anywhere below the encloser (.devlog, .github/workflows, …) is
+  // never a project of its own: with any enclosing registered project, fold
+  // unconditionally — no Layer A/B. `.devlog` in particular is DevLog's OWN
+  // metadata folder; minting it as a project is how the #529 cascade started,
+  // so even with NO enclosing project it resolves to its parent DIRECTORY
+  // rather than itself. Other dot-paths without an encloser keep the old
+  // fallback (a real repo like `.dotfiles` opened directly must still register
+  // as itself — the fold above only fires when someone registered an ancestor).
+  const base = baseName(cwd);
+  const hasDotSegment = normalizeSlashes(cwd).split("/")
+    .some(s => s.startsWith(".") && s !== "." && s !== "..");
+  if (hasDotSegment) {
+    if (candidate) return candidate;
+    if (base === ".devlog") {
+      const parent = parentDir(cwd);
+      if (parent) return { name: baseName(parent), cwd: parent };
+    }
+    return fallback;
   }
 
   if (candidate && shouldFoldIntoParent(data.projects, candidate.name, candidate.cwd, cwd, gitRootOf)) {

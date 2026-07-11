@@ -45,6 +45,19 @@ export function isRealVersion(content: string): boolean {
   return /^v?\d+(\.\d+)+/.test(v);
 }
 
+/** Loose version equality — `v1.2.0` and `1.2.0` name the same release. */
+export function sameVersion(a: string, b: string): boolean {
+  return a.replace(/^v/i, "") === b.replace(/^v/i, "");
+}
+
+// Explicit version marker on a feature tag's content: `[vX.Y.Z] text` attributes
+// the capability to the PAST release that shipped it (the -(ask:backfill) path)
+// instead of the first release cut after the tag lands.
+export function parseVersionMarker(content: string): { version: string; text: string } | null {
+  const m = (content || "").match(/^\[\s*(v?\d+(?:\.\d+)+[\w.\-+]*)\s*\]\s*/i);
+  return m ? { version: m[1], text: content.slice(m[0].length).trim() } : null;
+}
+
 export function safeVerSlug(v: string): string {
   return v.replace(/[^\w.\-+]/g, "_");
 }
@@ -441,6 +454,18 @@ export function collectRelease(data: DevLogData, projectName: string, target: Ta
       .map(pl => ({ text: `خطة: ${pl.title} (${pl.steps.filter(s => !isStepClosed(s)).length} خطوة)`, since: isoDay(pl.timestamp) })),
   ];
 
+  // «قدرات جديدة» must not list backfilled capabilities: a feature carrying an
+  // explicit [vX.Y.Z] marker belongs to that PAST release, not to the range it
+  // was declared in. A marker naming THIS page's version stays, marker stripped.
+  const featureItems = toItems(
+    inRange(["feature"]).flatMap(t => {
+      const mk = parseVersionMarker(t.content || "");
+      if (!mk) return [t];
+      return sameVersion(mk.version, version) ? [{ ...t, content: mk.text }] : [];
+    }),
+    p.path,
+  );
+
   return {
     specVersion: SPEC_VERSION,
     project: projectName,
@@ -455,7 +480,7 @@ export function collectRelease(data: DevLogData, projectName: string, target: Ta
       // «قدرات جديدة» leads: client-language capabilities (`-(feature)`) are
       // what a release reader scans for first; developer-granularity `built`
       // items follow.
-      { key: "features",    title: "قدرات جديدة",      kind: "feature",  items: items(["feature"]) },
+      { key: "features",    title: "قدرات جديدة",      kind: "feature",  items: featureItems },
       { key: "built",       title: "إضافات وميزات",    kind: "built",    items: items(["built"]) },
       { key: "fixes",       title: "إصلاحات",          kind: "fix",      items: pairFixes(inRange(["bug fix"]), projectTags, p.path) },
       { key: "securityOwn", title: "أمان (الكود)",     kind: "security", items: items(["security", "security fix", "security:own"]) },

@@ -147,6 +147,37 @@ describe("feature inventory + client report (E2E)", () => {
     expect(parsed.reason || "").toContain("Release v0.0.1 recorded");
   });
 
+  test("backfill: /api/features-backfill lists uncovered releases, -(ask:backfill) serves them, a [vX.Y.Z] declaration covers and pins", async () => {
+    // A purely-technical release (no built since) records without the nudge.
+    await post(projDir, sid, [{ tag: "release", content: "v0.1.0 — bootstrap" }]);
+    const name = projDir.replace(/\\/g, "/").split("/").filter(Boolean).pop() as string;
+
+    let r = await fetch(`${BASE}/api/features-backfill?project=${encodeURIComponent(name)}`);
+    let j = await r.json() as { totalReleases: number; uncovered: Array<{ version: string }> };
+    expect(j.totalReleases).toBe(1);
+    expect(j.uncovered.map(u => u.version)).toEqual(["v0.1.0"]);
+
+    // The ask serves the corpus in-turn with the declaration instructions.
+    const tx = writeTranscript(projDir, "B1", ["checking\n\n-(ask:backfill)"]);
+    const res = await runHook(TEST_PORT, { cwd: projDir, session_id: sid, transcript_path: tx, stop_hook_active: false });
+    const parsed = JSON.parse(res.out.trim());
+    expect(parsed.decision).toBe("block");
+    expect(parsed.reason).toContain("[devlog backfill]");
+    expect(parsed.reason).toContain("v0.1.0");
+    expect(parsed.reason).toContain("-(feature) [vX.Y.Z]");
+
+    // Declaring with the marker pins the attribution to the PAST release,
+    // stays out of the nudge counter, and covers the release.
+    await post(projDir, sid, [{ tag: "feature", content: "[v0.1.0] users get a working bootstrap" }]);
+    const feats = await getFeatures(projDir);
+    expect(feats.features[0]).toMatchObject({ text: "users get a working bootstrap", sinceVersion: "v0.1.0" });
+    expect(feats.sinceLastRelease.features).toBe(0);
+
+    r = await fetch(`${BASE}/api/features-backfill?project=${encodeURIComponent(name)}`);
+    j = await r.json() as typeof j;
+    expect(j.uncovered).toHaveLength(0);
+  });
+
   test("/api/client-report renders the page; ?save=1 persists the file", async () => {
     await post(projDir, sid, [{ tag: "feature", content: "clients get a monthly usage summary" }]);
     const name = projDir.replace(/\\/g, "/").split("/").filter(Boolean).pop() as string;

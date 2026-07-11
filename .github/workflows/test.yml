@@ -31,6 +31,39 @@ jobs:
       - name: Run tests
         run: bun test
 
+  coverage:
+    # Coverage ratchet — one OS is enough (the gate is deterministic). Fails the
+    # build if src/ line coverage regresses overall or for a sensitive module
+    # (floors live in scripts/coverage-gate.ts). Separate from the cross-OS test
+    # job so it doesn't run the coverage pass three times.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - name: Install dev dependencies (bun-types)
+        run: bun install --frozen-lockfile
+      - name: Coverage gate
+        run: bun run coverage:gate
+
+  ui-smoke:
+    # The one BEHAVIORAL dashboard proof (#433): drives the real page in
+    # headless Chrome over raw CDP (zero deps) — happy render (live verdicts)
+    # plus the degraded dim when /api/verdicts is blocked at the network layer.
+    # Outside the cross-OS matrix so the browser dependency stays on the one
+    # runner that ships Chrome preinstalled.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - name: Install dev dependencies (bun-types)
+        run: bun install --frozen-lockfile
+      - name: UI smoke (headless Chrome over CDP)
+        run: bun run smoke:ui
+
   plugin-validate:
     # Validates the plugin + marketplace manifests and hooks/hooks.json against
     # the Claude Code schema, so a broken plugin.json can't ship. --strict treats
