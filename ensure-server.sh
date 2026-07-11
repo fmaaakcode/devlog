@@ -133,23 +133,12 @@ if ! curl -s -m 1 "http://127.0.0.1:$PORT/api/ping" >/dev/null 2>&1; then
   done
 fi
 
-# Staleness warning (#326): the daemon loads code once at boot and — in
-# production mode (no --watch) — serves that code until restarted. Editing the
-# source on disk has no effect on the running process, so a "live" check can
-# pass against a freshly-spawned copy while the real daemon still serves old
-# code. The daemon compares mtimes itself (portable fs.stat) and returns
-# `"stale":true` from /api/boot; we just relay a WARNING — never auto-kill (a
-# wrong process could be hit). NOTE: stderr from an exit-0 hook is discarded,
-# so this only reaches debug logs today; folding it into the /api/inject
-# response server-side (which CAN carry systemMessage) is a deferred item.
-if curl -s -m 1 "http://127.0.0.1:$PORT/api/boot" 2>/dev/null | grep -q '"stale":true'; then
-  {
-    echo "[DevLog] ⚠ the running server is OLDER than the code on disk (loaded at boot; no --watch),"
-    echo "         so your latest changes are NOT live yet. The daemon self-restarts within ~1 min"
-    echo "         once idle (watchdog; DEVLOG_AUTO_RESTART=0 disables) — or restart it yourself:"
-    echo "         stop the DevLog server process on port $PORT — it respawns on the next session."
-  } >&2
-fi
+# Staleness warning (#326): now carried INSIDE the /api/inject response as a
+# `systemMessage` (freshness.ts staleInjectWarning, SessionStart only) — the
+# server compares mtimes itself and the message rides the one channel Claude
+# Code shows. The old shell-side /api/boot check here relayed the warning on
+# stderr, which is DISCARDED for an exit-0 hook: an invisible warning plus one
+# wasted curl per hook run.
 
 # Forward the event and relay the server's response — this stdout is the hook's
 # entire visible output, so it must stay last and unpolluted.

@@ -6,6 +6,7 @@
 import { readdir, stat } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { spawn } from "./spawn";
+import { currentLang } from "./i18n";
 
 /**
  * Pure verdict: is a process booted at `bootMs` running older code than what's
@@ -49,6 +50,21 @@ export async function newestSourceMtime(root: string): Promise<number> {
     try { return (await stat(p)).mtimeMs; } catch { return 0; }  // missing/unreadable → ignore
   }));
   return mtimes.reduce((newest, m) => (m > newest ? m : newest), 0);
+}
+
+/**
+ * The stale-daemon warning carried on the /api/inject response as
+ * `systemMessage` — the one hook-output channel Claude Code actually shows the
+ * user. Server-side on purpose: the old ensure-server.sh relay printed this on
+ * stderr, which Claude Code DISCARDS for an exit-0 hook, so the warning built
+ * for exactly this failure was invisible whenever it fired. Null when fresh
+ * (or compiled — no sources on disk), so callers attach nothing.
+ */
+export async function staleInjectWarning(root: string, bootMs: number): Promise<string | null> {
+  if (!isStale(bootMs, await newestSourceMtime(root))) return null;
+  return currentLang() === "ar"
+    ? "[DevLog] ⚠ الخادم الجاري أقدم من الكود على القرص — آخر تعديلاتك ليست حيّة بعد. يعيد تشغيل نفسه خلال ~دقيقة عند الخمول، أو أعد تشغيله الآن من الداشبورد."
+    : "[DevLog] ⚠ the running server is older than the code on disk — your latest changes are not live yet. It self-restarts within ~1 min once idle, or restart it now from the dashboard.";
 }
 
 /**

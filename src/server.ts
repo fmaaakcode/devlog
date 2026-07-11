@@ -39,7 +39,7 @@ import { makeFeatureRoutes } from "./routes-features";
 import { makeMiscRoutes } from "./routes-misc";
 import { makeEventRoutes } from "./routes-events";
 import { makeWorkspaceRoutes } from "./routes-workspace";
-import { noteMutation, startAutoRestart } from "./freshness";
+import { noteMutation, startAutoRestart, staleInjectWarning } from "./freshness";
 import { makeLifecycleRoutes } from "./routes-lifecycle";
 
 // Wall-clock boot time (evaluated once at module load = server start). Exposed on
@@ -300,8 +300,18 @@ async function doInject(body: Record<string, unknown>) {
     if (cwd && type !== "PreToolUse") await exportStatusMd(cwd, data, name);
   });
 
+  // Stale-daemon warning (#326 closure): rides the inject response as
+  // `systemMessage`, because the shell-side stderr relay it replaces is
+  // discarded by Claude Code on exit 0 — an invisible warning. SessionStart
+  // only: once per session, never a per-prompt nag while the watchdog settles.
+  let staleWarn: string | null = null;
+  if (type === "SessionStart") {
+    try { staleWarn = await staleInjectWarning(ASSET_ROOT, BOOT_MS); }
+    catch (e) { softFail("doInject.staleInjectWarning", e); }
+  }
   return Response.json({
     hookSpecificOutput: { hookEventName: type, additionalContext },
+    ...(staleWarn ? { systemMessage: staleWarn } : {}),
   });
 }
 

@@ -394,6 +394,13 @@
             flex: 1 1 50%;       /* bottom card — older */
             opacity: 0.85;
         }
+        /* Maintenance rows (sweep buttons + the passive session counters) sit
+           BELOW the project cards and must share their horizontal inset — the
+           unstyled full-width container read as misaligned against the cards'
+           16px right margin. Bottom 16px keeps the sidebar's edge rhythm. */
+        #maintRow {
+            margin: 0 16px 16px 0;
+        }
         .project-list-title {
             display: flex; align-items: center; gap: 6px;
             font-size:0.7em; color: var(--text2);

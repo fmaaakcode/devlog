@@ -78,7 +78,7 @@
 - `/api/scan/:project` — full manual rescan (POST)
 
 ## Injection (`routes-inject.ts`)
-- `/api/inject` — run context injection (GET/POST). Types: SessionStart (primer + project profile), UserPromptSubmit (conditional open-items reminder), PreToolUse (position memory #486: compact file story on the session's first Read of a file with tag history; gated by `preToolUseRead`, no event recorded, no status.md export)
+- `/api/inject` — run context injection (GET/POST). Types: SessionStart (primer + project profile), UserPromptSubmit (conditional open-items reminder), PreToolUse (position memory #486: compact file story on the session's first Read of a file with tag history; gated by `preToolUseRead`, no event recorded, no status.md export). On a stale daemon (code on disk newer than boot) the SessionStart response also carries a top-level `systemMessage` warning — the visible channel; hook stderr is discarded on exit 0
 - `/api/inject/preview` — preview injection without logging (GET)
 - `/api/injections` — injection history (GET)
 - `/api/injection/:id` — delete one history entry (DELETE)

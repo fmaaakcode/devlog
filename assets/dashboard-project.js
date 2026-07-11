@@ -293,7 +293,7 @@
             document.getElementById("topbarLeft").innerHTML = `
                 <span class="brand-name" id="hdr-name">${esc(p.name)}</span>
                 <span class="brand-version" id="hdr-version" data-release-pop="1" data-action="open-releases" style="cursor:pointer;${versionStr ? '' : 'display:none'}" title="">${esc(versionStr)}</span>
-                <span class="brand-version" id="hdr-next-release" data-action="open-release-preview" style="cursor:pointer;border-style:dashed;opacity:0.75" title="معاينة الإصدار القادم قبل إصداره — تُولَّد حيًّا ولا تكتب شيئًا">القادم ⏳</span>
+                <span class="brand-version" id="hdr-next-release" data-action="open-release-preview" style="cursor:pointer;opacity:0.75" title="معاينة الإصدار القادم قبل إصداره — تُولَّد حيًّا ولا تكتب شيئًا">القادم ⏳</span>
                 <span class="brand-version" id="hdr-client-report" data-action="open-client-report" style="cursor:pointer;opacity:0.85" title="تقرير حالة موجّه للعميل: قدرات النظام وآخر إصدار والاعتمادية — أعداد فقط بلا تفاصيل داخلية أو أمنية">تقرير العميل 🧾</span>
                 <span class="deps-btn unknown" id="hdr-deps">
                     <span class="deps-dot"></span>

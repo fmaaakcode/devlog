@@ -4,7 +4,7 @@
 // macOS.
 
 import { test, expect, describe, afterEach } from "bun:test";
-import { isStale, newestSourceMtime, shouldAutoRestart } from "../src/freshness";
+import { isStale, newestSourceMtime, shouldAutoRestart, staleInjectWarning } from "../src/freshness";
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -127,5 +127,45 @@ describe("newestSourceMtime (portable mtime gather)", () => {
     writeFileSync(join(root, "assets", "photo.jpeg"), "binary");
     utimesSync(join(root, "assets", "photo.jpeg"), 9_000_000, 9_000_000);
     expect(await newestSourceMtime(root)).toBe(0);
+  });
+});
+
+// The systemMessage variant of the verdict: the ensure-server.sh stderr relay
+// was discarded by Claude Code on exit 0, so the warning must ride the inject
+// response instead (server.ts doInject, SessionStart only).
+describe("staleInjectWarning (systemMessage on the inject response)", () => {
+  let dirs: string[] = [];
+  const savedLang = process.env.DEVLOG_LANG;
+  afterEach(() => {
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+    dirs = [];
+    if (savedLang === undefined) delete process.env.DEVLOG_LANG;
+    else process.env.DEVLOG_LANG = savedLang;
+  });
+  const mkSrc = () => {
+    const d = mkdtempSync(join(tmpdir(), "fresh-warn-"));
+    dirs.push(d);
+    mkdirSync(join(d, "src"), { recursive: true });
+    writeFileSync(join(d, "src", "a.ts"), "x");   // mtime = now
+    return d;
+  };
+
+  test("boot older than the sources → warning; fresh boot → null", async () => {
+    process.env.DEVLOG_LANG = "en";
+    const root = mkSrc();
+    const warn = await staleInjectWarning(root, 1); // booted at epoch+1ms → stale
+    expect(warn).toContain("older than the code on disk");
+    expect(await staleInjectWarning(root, Date.now() + 60_000)).toBeNull();
+  });
+
+  test("DEVLOG_LANG=ar → the Arabic wording", async () => {
+    process.env.DEVLOG_LANG = "ar";
+    expect(await staleInjectWarning(mkSrc(), 1)).toContain("أقدم من الكود");
+  });
+
+  test("no sources on disk (compiled binary) → never warns", async () => {
+    const d = mkdtempSync(join(tmpdir(), "fresh-warn-empty-"));
+    dirs.push(d);
+    expect(await staleInjectWarning(d, 1)).toBeNull();
   });
 });
