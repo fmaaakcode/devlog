@@ -398,13 +398,20 @@ export async function scanPackages(
   async function worker(): Promise<void> {
     while (next < packages.length) {
       const p = packages[next++];
-      if (!/^\d/.test(p.version)) { out.set(p.name, { ...UNKNOWN, version: p.version }); continue; }
-      const j = await postJson<OsvQueryResponse>(OSV_QUERY_URL, { version: p.version, package: { name: p.name, ecosystem: osvEco } }, fetchImpl);
-      if (j === null) { out.set(p.name, { ...UNKNOWN, version: p.version }); continue; }
-      const vulns = Array.isArray(j.vulns) ? j.vulns : [];
-      const verdict = summarizeVulns(vulns, p.name, p.version, ignoreIds);
+      let verdict: PkgVuln;
+      if (!/^\d/.test(p.version)) {
+        verdict = { ...UNKNOWN, version: p.version };
+      } else {
+        const j = await postJson<OsvQueryResponse>(OSV_QUERY_URL, { version: p.version, package: { name: p.name, ecosystem: osvEco } }, fetchImpl);
+        verdict = j === null
+          ? { ...UNKNOWN, version: p.version }
+          : summarizeVulns(Array.isArray(j.vulns) ? j.vulns : [], p.name, p.version, ignoreIds);
+      }
       // Same name queried at two versions: keep the vulnerable verdict (and ITS
       // version) so the map never reports a name clean while one version is hit.
+      // ONE guarded write for all three outcomes — the UNKNOWN paths used to set
+      // unconditionally, letting a failed query on the second version clobber
+      // the first version's hit for the whole scan cycle (#570).
       const prev = out.get(p.name);
       if (!prev || (prev.vulns === 0 && verdict.vulns > 0)) out.set(p.name, verdict);
     }

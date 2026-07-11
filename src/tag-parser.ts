@@ -127,7 +127,7 @@ export function parseTags(msg: string): ParsedTag[] {
 /** Heads the Stop hook serves without storing — legitimate, never near-misses. */
 export const COMMAND_HEADS = new Set([
   "ask:open", "ask:closed", "ask:features", "ask:retro", "ask:backfill", "ask:rules",
-  "audit", "rule:add", "rule:new", "rules:list", "rule:rm",
+  "ask:study", "audit", "rule:add", "rule:new", "rules:list", "rule:rm",
 ]);
 
 // Plain Levenshtein, early-exited via the cap — heads are ≤40 chars and the

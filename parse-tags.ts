@@ -391,15 +391,17 @@ if (msg) {
         // tag — a re-emit dedups to null, so this exit(2) fires once (no loop).
         try {
           const resp = JSON.parse(respBody);
-          // Release downgrade rejected wholesale: the release was OLDER than the
-          // latest one, so the server stored nothing (no tag/HTML/index/bump).
-          // Tell Claude with exit(2) so it re-issues a correct version.
+          // Release downgrade rejected wholesale: the release was NOT NEWER than
+          // the latest one (older = typo, equal = duplicate tag that splits the
+          // range material, #567), so the server stored nothing (no
+          // tag/HTML/index/bump). Tell Claude with exit(2) so it re-issues a
+          // correct version.
           if (resp.releaseDowngrade) {
             const dg = resp.releaseDowngrade;
             const out = [
               "════════ DevLog Release Rejected ════════",
-              L(`🛑 Version ${dg.version} is older than the latest release (${dg.latest}) — rejected entirely.`,
-                `🛑 الإصدار ${dg.version} أقدم من آخر إصدار (${dg.latest}) — رُفض بالكامل.`),
+              L(`🛑 Version ${dg.version} is not newer than the latest release (${dg.latest}) — rejected entirely.`,
+                `🛑 الإصدار ${dg.version} ليس أحدث من آخر إصدار (${dg.latest}) — رُفض بالكامل.`),
               L("Nothing was recorded: no tag, no HTML, no index, no version bump.",
                 "لم يُسجَّل أي شيء: لا وسم، لا HTML، لا index، ولا رفع نسخة."),
               "",
@@ -407,7 +409,7 @@ if (msg) {
                 `أصدر نسخة أحدث من ${dg.latest}، أو تأكّد من الرقم.`),
               "═════════════════════════════════════════",
             ].join("\n");
-            await log(`release-downgrade rejected: ${dg.version} < ${dg.latest}`);
+            await log(`release-downgrade rejected: ${dg.version} <= ${dg.latest}`);
             blockContinue(`\n${out}\n`);
           }
           // Open-items guard fired on the SERVER (defense in depth). Reached when
@@ -1003,6 +1005,89 @@ if (msg && cwd) {
     }
   } catch (e) {
     await log(`ask:backfill error: ${(e as Error).message}`);
+  }
+}
+
+// === Part 1.5g2: -(ask:study) — the deep-study corpus ===
+// Whole-history aggregates + narrative delta since the previous stored study +
+// that study's conclusions digest (study.ts). Claude interprets the material
+// in-context and stores the result back as `-(doc:report) study-YYYY-MM-DD …`
+// — which then becomes the next study's watermark. Served like the other pull
+// commands; never a logged tag.
+if (msg && cwd) {
+  try {
+    if (/^[ \t]*-\(ask:study\)[ \t]*$/m.test(strippedMsg) && await shouldServeAsk("ask:study")) {
+      const r = await fetch(`${SERVER}/api/study?cwd=${encodeURIComponent(cwd)}`, { signal: AbortSignal.timeout(15000) });
+      if (r.ok) {
+        await markAskServed("ask:study");   // record only now the fetch succeeded (#398)
+        const { window: w = {} as any, aggregates: a = {} as any, delta: d = {} as any } = await r.json() as any;
+        const day = (s?: string) => String(s || "").slice(0, 10);
+        const out: string[] = [];
+
+        out.push(w.foundational
+          ? L(`FOUNDATIONAL study — window: entire history (${day(a.firstTagAt)} → ${day(w.to)}).`,
+              `دراسة تأسيسية — النطاق: كامل التاريخ (${day(a.firstTagAt)} → ${day(w.to)}).`)
+          : L(`INCREMENTAL study — window: ${day(w.from)} → ${day(w.to)} (since «${w.prevStudy?.name}»).`,
+              `دراسة تراكمية — النطاق: ${day(w.from)} → ${day(w.to)} (منذ «${w.prevStudy?.name}»).`));
+        if (w.prevStudy?.digest) {
+          out.push(L("Previous study's conclusions (build ON these — confirm each pattern held or declare it broken):",
+                     "خلاصة الدراسة السابقة (ابنِ فوقها — أكّد استمرار كل نمط أو أعلن انكساره):"));
+          out.push(String(w.prevStudy.digest).split("\n").map((l: string) => `  ${l}`).join("\n"));
+        }
+
+        out.push(L("— Whole-history aggregates —", "— مجاميع كامل التاريخ —"));
+        out.push(`  ${L("tags", "التاقات")}: ${a.totalTags} · ${L("sessions", "الجلسات")}: ${a.taggedSessions} · ${L("types", "الأنواع")}: ${Object.entries(a.byType || {}).map(([k, v]) => `${k}=${v}`).join(" ")}`);
+        if (a.monthly?.length)
+          out.push(`  ${L("monthly opened/closed/released", "شهريًا فُتح/أُغلق/أُصدر")}: ${a.monthly.map((m: any) => `${m.month} ${m.opened}/${m.closed}/${m.released}`).join(" · ")}`);
+        if (a.closure?.length)
+          out.push(`  ${L("time-to-close", "زمن الإغلاق")}: ${a.closure.map((c: any) => `${c.kind} ×${c.closed} ${L("median", "وسيط")} ${c.medianDays}${L("d", "ي")} ${L("max", "أقصى")} ${c.maxDays}${L("d", "ي")}`).join(" | ")}`);
+        out.push(`  ${L("open now", "المفتوح الآن")}: todo=${a.openNow?.todos} bug=${a.openNow?.bugs} sec=${a.openNow?.security} ${L("steps", "خطوات")}=${a.openNow?.planSteps} (${L("deferred", "مؤجل")}=${a.openNow?.deferred}${typeof a.openNow?.oldestOpenDays === "number" ? ` · ${L("oldest", "الأقدم")} ${a.openNow.oldestOpenDays}${L("d", "ي")}` : ""})`);
+        if (a.behavior) {
+          const b = a.behavior;
+          const topHours = (b.hourHistogram || []).map((n: number, h: number) => ({ n, h }))
+            .filter((x: any) => x.n > 0).sort((x: any, y: any) => y.n - x.n).slice(0, 3)
+            .map((x: any) => `${String(x.h).padStart(2, "0")}:00×${x.n}`).join(" ");
+          const wd = LANG === "ar"
+            ? ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"]
+            : ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+          const weekdays = (b.weekdayHistogram || []).map((n: number, i: number) => `${wd[i]}=${n}`).join(" ");
+          out.push(`  ${L("work rhythm (local time)", "إيقاع العمل (توقيت محلي)")}: ${L("peak hours", "ذروة الساعات")} ${topHours} · ${L("active days", "أيام نشطة")} ${b.activeDays}/${b.spanDays} (${L("longest streak", "أطول تواصل")} ${b.longestStreakDays}${L("d", "ي")}، ${L("longest gap", "أطول انقطاع")} ${b.longestGapDays}${L("d", "ي")}) · ${L("sessions", "الجلسات")}: ${b.sessions?.count} (${L("median", "وسيط")} ${b.sessions?.medianTags} ${L("tags", "تاق")} / ${b.sessions?.medianSpanMinutes} ${L("min", "دقيقة")}، ${L("max", "الأقصى")} ${b.sessions?.maxTags} ${L("tags", "تاق")})`);
+          out.push(`  ${L("weekday spread", "توزيع الأسبوع")}: ${weekdays}`);
+        }
+        out.push(`  ${L("releases", "الإصدارات")}: ${a.releases?.total}${a.releases?.latest ? ` (${L("latest", "الأحدث")} ${a.releases.latest.version})` : ""} · ${L("cut with open items", "خرجت وعناصر مفتوحة")}: ${a.releases?.dirty}${a.releases?.securityDirty ? L(` (${a.releases.securityDirty} with open SECURITY)`, ` (منها ${a.releases.securityDirty} بأمني مفتوح)`) : ""}`);
+        out.push(`  ${L("plans", "الخطط")}: ${a.plans?.total} (${a.plans?.closedSteps}/${a.plans?.steps} ${L("steps closed", "خطوة مغلقة")}) · ${L("problem reports", "البلاغات")}: ${a.problems?.reports} (${L("reopens", "إعادات فتح")} ⟲${a.problems?.reopens})`);
+        if (a.problems?.fragile?.length)
+          out.push(`  ${L("most-broken files", "الأكثر كسرًا")}: ${a.problems.fragile.map((f: any) => `${f.file} ×${f.count}`).join(" · ")}`);
+        out.push(`  ${L("capabilities", "القدرات")}: ${a.features?.declared} (${L("backfilled", "معبأة رجعيًا")} ${a.features?.backfilled}) · ${L("uncovered releases", "إصدارات غير مغطاة")}: ${a.features?.uncoveredReleases}`);
+
+        out.push(L("— Window delta —", "— دلتا النطاق —"));
+        out.push(`  ${L("work", "العمل")}: built=${d.work?.built} refactor=${d.work?.refactor} update=${d.work?.update}`);
+        if (d.releases?.items?.length)
+          out.push(`  ${L("releases", "إصدارات")} (${d.releases.items.length}${d.releases.more ? `+${d.releases.more}` : ""}):\n${d.releases.items.map((r: any) => `    ${r.version} (${day(r.at)}) — ${r.summary}`).join("\n")}`);
+        if (d.problems?.items?.length)
+          out.push(`  ${L("problem reports touched", "بلاغات النطاق")} (${d.problems.items.length}${d.problems.more ? `+${d.problems.more}` : ""}):\n${d.problems.items.map((it: any) => {
+            const num = typeof it.num === "number" ? `#${it.num} ` : "";
+            const kind = String(it.kind || "").startsWith("security") ? L("sec", "أمان") : L("bug", "خلل");
+            const span = it.closedAt ? `${day(it.openedAt)}→${day(it.closedAt)} (${it.ageDays}${L("d", "ي")})` : `${day(it.openedAt)} ${L("OPEN", "مفتوح")}`;
+            const reopen = typeof it.reopenOf === "number" ? ` ⟲#${it.reopenOf}` : "";
+            return `    ${num}[${kind}]${reopen} ${span} ${it.text}`;
+          }).join("\n")}`);
+        if (d.knowledge?.items?.length)
+          out.push(`  ${L("decisions/insights", "قرارات/رؤى")} (${d.knowledge.items.length}${d.knowledge.more ? `+${d.knowledge.more}` : ""}):\n${d.knowledge.items.map((k: any) => `    [${k.kind}] ${day(k.at)} ${k.text}`).join("\n")}`);
+        if (d.longestClosed?.length)
+          out.push(`  ${L("longest-lived items closed in window", "أطول العناصر عمرًا أُغلقت في النطاق")}:\n${d.longestClosed.map((c: any) => `    ${typeof c.num === "number" ? `#${c.num} ` : ""}[${c.kind}] ${c.ageDays}${L("d", "ي")} — ${c.text}`).join("\n")}`);
+
+        out.push(L(`Write the study now as a stored report: -(doc:report) study-YYYY-MM-DD <title>\\n<markdown>. Analyze discipline, recurring problems, project trajectory and user workflow from the material above — the aggregates are whole-history, the narrative is this window only. End the report with a «الخلاصة» section: it becomes the digest the NEXT study builds on. The study- name prefix is what makes this report the next watermark.`,
+                   `اكتب الدراسة الآن كتقرير مخزن: -(doc:report) study-YYYY-MM-DD <عنوان>\\n<markdown>. حلّل الانضباط والمشاكل المتكررة ومسار المشروع وأسلوب العمل من المادة أعلاه — المجاميع على كامل التاريخ والسرد على هذا النطاق فقط. اختم التقرير بقسم «الخلاصة»: هو الموجز الذي تبني عليه الدراسة التالية. بادئة study- في الاسم هي ما يجعل هذا التقرير علامة المياه القادمة.`));
+
+        await log(`ask:study: served ${w.foundational ? "foundational" : "incremental"} corpus`);
+        blockContinue(`\n[devlog study]\n${out.join("\n")}\n`);
+      } else {
+        await log(`ask:study: server replied ${r.status}`);
+      }
+    }
+  } catch (e) {
+    await log(`ask:study error: ${(e as Error).message}`);
   }
 }
 

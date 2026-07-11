@@ -311,6 +311,11 @@
                     <span class="stats-count" id="hdr-feats-count">0</span>
                     <div class="stats-popup" id="hdr-feats-popup" style="min-width:300px;max-width:420px;text-align:right"></div>
                 </span>
+                <span class="stats-btn" id="hdr-docs">
+                    <span>دراسات</span>
+                    <span class="stats-count" id="hdr-docs-count">0</span>
+                    <div class="stats-popup" id="hdr-docs-popup" style="min-width:300px;max-width:420px;text-align:right"></div>
+                </span>
                 <span class="lang-badge" id="hdr-lang" style="background:${color}18; color:${color}">${esc(p.language)}</span>
                 <span class="framework-badge" id="hdr-framework" style="background:#04201a;color:var(--emerald);${p.framework ? '' : 'display:none'}">${esc(p.framework || '')}</span>
                 <span id="hdr-runtime" style="font-size:0.7em;padding:2px 8px;border-radius:4px;background:#1a1a2e;color:#7c8cf5;font-weight:600;${p.runtime ? '' : 'display:none'}">${p.runtime ? `${esc(p.runtime.name || '')}${p.runtime.version ? ` ${esc(p.runtime.version)}` : ''}${p.runtime.edition ? ` · ${esc(p.runtime.edition)}` : ''}` : ''}</span>
@@ -336,6 +341,7 @@
             patchSessions(p.name);
             patchStatsButton(p, tags);
             patchFeaturesButton(p);
+            patchDocsButton(p);
         }
 
         // «قدرات» header chip — the client-language capability inventory
@@ -365,6 +371,50 @@
                 btn.onclick = (e) => {
                     if (e.target.closest('.stats-popup')) return;
                     window.open(`${API}/api/client-report?project=${encodeURIComponent(p.name)}`, '_blank', 'noopener');
+                };
+            } catch { /* keep the last rendered popup on a transient fetch failure */ }
+        }
+
+        // «دراسات» header chip — the stored documents of the project
+        // (doc:report / doc:analysis / …, rendered .md+.html under
+        // .devlog/docs/). Before this chip they were reachable only by knowing
+        // the folder path; plans stay out (the plans panel tracks them).
+        // Hover lists them newest-first; clicking a row opens the rendered page.
+        const DOC_TYPE_AR = { report: 'تقرير', analysis: 'تحليل', comparison: 'مقارنة', readme: 'readme' };
+        async function patchDocsButton(p) {
+            const btn = document.getElementById('hdr-docs');
+            const popup = document.getElementById('hdr-docs-popup');
+            const countEl = document.getElementById('hdr-docs-count');
+            if (!btn || !popup || !countEl) return;
+            try {
+                const r = await fetch(`${API}/api/docs?project=${encodeURIComponent(p.name)}`);
+                const { docs = [] } = await r.json();
+                if (countEl.textContent !== String(docs.length)) countEl.textContent = docs.length;
+                if (!docs.length) {
+                    popup.innerHTML = '<div class="stats-section-title">دراسات وتقارير</div><div style="font-size:0.75em;color:var(--text2);padding:4px 0">لا وثائق مخزنة بعد — تُكتَب بوسم <code style="color:var(--gold)">-(doc:report) اسم</code>، والدراسات العميقة بأمر <code style="color:var(--gold)">-(ask:study)</code></div>';
+                } else {
+                    const rows = [...docs]
+                        .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
+                        .map(d => {
+                            const isStudy = /^\s*(study|دراسة)([\s\-_:.]|$)/i.test(d.name || '');
+                            // Own-property lookup only: a hand-edited index.json with
+                            // type "constructor" must fall through to esc(), not the
+                            // Object prototype.
+                            const typeLabel = isStudy ? 'دراسة'
+                                : Object.hasOwn(DOC_TYPE_AR, d.type) ? DOC_TYPE_AR[d.type] : esc(d.type || '');
+                            return `
+                        <div class="stats-row" data-doc-slug="${esc(d.slug)}" style="gap:10px;cursor:pointer" title="${esc(`آخر تحديث: ${String(d.updatedAt || '').slice(0, 16).replace('T', ' ')} — اضغط للفتح`)}">
+                            <span class="stats-key" style="flex:1;white-space:normal;line-height:1.5">${esc(d.name)}</span>
+                            <span class="stats-value" style="flex-shrink:0;color:${isStudy ? 'var(--gold)' : 'var(--emerald)'}">${typeLabel}</span>
+                        </div>`;
+                        }).join('');
+                    popup.innerHTML = `<div class="stats-section-title">دراسات وتقارير</div><div class="stats-grid">${rows}</div>`;
+                }
+                btn.title = 'الوثائق المخزنة للمشروع — مرر للقائمة واضغط وثيقة لفتحها';
+                popup.onclick = (e) => {
+                    const row = e.target.closest('[data-doc-slug]');
+                    if (!row) return;
+                    window.open(`${API}/api/doc-page?project=${encodeURIComponent(p.name)}&slug=${encodeURIComponent(row.dataset.docSlug)}`, '_blank', 'noopener');
                 };
             } catch { /* keep the last rendered popup on a transient fetch failure */ }
         }

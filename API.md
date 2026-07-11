@@ -70,6 +70,9 @@
 - `/api/features` — the current capability inventory (feature tags resolved: updates applied, removed dropped, each attributed to its shipping release) + since-last-release counters for the release nudge (GET; `?project=` or `?cwd=`) — powers `-(ask:features)`
 - `/api/features-backfill` — releases not covered by any declared capability, each with its summary + built/update material lines (GET; `?project=` or `?cwd=`) — powers `-(ask:backfill)`
 - `/api/retro` — the full problem corpus: every bug/security report, open and closed, with open/close dates, age in days and project-relative touched files, oldest first (GET; `?project=` or `?cwd=`) — powers `-(ask:retro)`
+- `/api/study` — the deep-study corpus: whole-history aggregates (monthly trend, time-to-close medians, release hygiene, fragile files, capability coverage, work-rhythm behavior profile from tag timestamps) + narrative delta since the previous stored study + that study's conclusions digest (GET; `?project=` or `?cwd=`) — powers `-(ask:study)`
+- `/api/docs` — the project's stored-docs index (doc:report/analysis/…; plans excluded) from `.devlog/docs/index.json` (GET; `?project=` or `?cwd=`) — powers the dashboard's «دراسات» chip
+- `/api/doc-page` — one rendered doc page as HTML from `<project>/.devlog/docs/<slug>.html`; slug validated and path-checked against the docs dir (GET; `?project=`/`?cwd=` + `&slug=`)
 - `/api/client-report` — the client-facing status page as HTML (GET; `?save=1` also persists `<project>/.devlog/client-report.html` and returns the path as JSON)
 
 ## Scan / vuln (`routes-scan.ts`)

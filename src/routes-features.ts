@@ -1,15 +1,20 @@
-// Feature-inventory + client-report + retro routes. Read-only reporting group:
-// `/api/features` powers the `-(ask:features)` pull, the release nudge and the
-// dashboard capabilities view; `/api/client-report` renders (and optionally
-// persists) the client-facing status page; `/api/retro` serves the full problem
-// corpus behind `-(ask:retro)`. Spread into server.ts's routeDefs.
+// Feature-inventory + client-report + retro + study + docs routes. Read-only
+// reporting group: `/api/features` powers the `-(ask:features)` pull, the
+// release nudge and the dashboard capabilities view; `/api/client-report`
+// renders (and optionally persists) the client-facing status page; `/api/retro`
+// serves the full problem corpus behind `-(ask:retro)`; `/api/study` serves the
+// deep-study corpus behind `-(ask:study)`; `/api/docs` + `/api/doc-page` list
+// and serve the rendered `.devlog/docs/` documents for the dashboard's studies
+// section. Spread into server.ts's routeDefs.
 
+import { join, resolve, sep } from "node:path";
 import { loadData } from "./data";
 import { resolveProjectFor } from "./project-resolve";
 import { pathsEqual } from "./path-utils";
 import { featureList, featuresSinceLastRelease, backfillCorpus } from "./features";
 import { collectClientReport, renderClientReportHtml, writeClientReport } from "./client-report";
 import { retroCorpus, fragileFiles } from "./retro";
+import { studyCorpus } from "./study";
 
 type ApiReq = Bun.BunRequest;
 
@@ -69,6 +74,63 @@ export function makeFeatureRoutes(): Record<string, unknown> {
         if (!project) return Response.json({ project: null, items: [] });
         const data = await loadData();
         return Response.json({ project, items: retroCorpus(data, project), fragile: fragileFiles(data, project) });
+      },
+    },
+
+    // The deep-study corpus behind `-(ask:study)`: whole-history aggregates
+    // (compact regardless of project age) + narrative delta since the previous
+    // stored study + that study's conclusions digest. The report itself is
+    // Claude's language work, stored back as `-(doc:report) study-…`.
+    "/api/study": {
+      async GET(req: ApiReq) {
+        const project = await resolveParam(req);
+        if (!project) return Response.json({ project: null }, { status: 404 });
+        const data = await loadData();
+        return Response.json({ project, ...studyCorpus(data, project) });
+      },
+    },
+
+    // The rendered-docs index for the dashboard's «دراسات وتقارير» section —
+    // every doc the project stored via -(doc:*), read from the same
+    // .devlog/docs/index.json doc-store maintains. Plans are excluded: the
+    // plans panel already tracks them step-by-step.
+    "/api/docs": {
+      async GET(req: ApiReq) {
+        const project = await resolveParam(req);
+        if (!project) return Response.json({ project: null, docs: [] });
+        const data = await loadData();
+        const root = data.projects[project]?.path;
+        if (!root) return Response.json({ project, docs: [] });
+        try {
+          const parsed = await Bun.file(join(root, ".devlog", "docs", "index.json")).json();
+          const docs = (Array.isArray(parsed) ? parsed : [])
+            .filter(d => d && typeof d.slug === "string" && d.type !== "plan")
+            .map(d => ({ slug: d.slug, name: d.name, type: d.type, createdAt: d.createdAt, updatedAt: d.updatedAt }));
+          return Response.json({ project, docs });
+        } catch { return Response.json({ project, docs: [] }); }
+      },
+    },
+
+    // Serve one rendered doc page (.html) from the project's .devlog/docs/.
+    // The slug is validated AND the resolved path is re-checked against the
+    // docs dir — never serve outside it (same never-trust-the-client stance as
+    // handleDocTag's cwd guard).
+    "/api/doc-page": {
+      async GET(req: ApiReq) {
+        const project = await resolveParam(req);
+        if (!project) return Response.json({ error: "unknown project" }, { status: 404 });
+        const url = new URL(req.url);
+        const slug = url.searchParams.get("slug") || "";
+        if (!/^[\p{L}\p{N}._-]+$/u.test(slug)) return Response.json({ error: "bad slug" }, { status: 400 });
+        const data = await loadData();
+        const root = data.projects[project]?.path;
+        if (!root) return Response.json({ error: "unknown project" }, { status: 404 });
+        const docsDir = resolve(join(root, ".devlog", "docs"));
+        const target = resolve(join(docsDir, `${slug}.html`));
+        if (!target.startsWith(docsDir + sep)) return Response.json({ error: "bad slug" }, { status: 400 });
+        const f = Bun.file(target);
+        if (!(await f.exists())) return Response.json({ error: "not found" }, { status: 404 });
+        return new Response(await f.text(), { headers: { "Content-Type": "text/html; charset=utf-8" } });
       },
     },
 

@@ -271,6 +271,24 @@ describe("scanPackages (injected fetch — offline)", () => {
     const out = await scanPackages("npm", [{ name: "hono", version: "4.12.18" }], fetchImpl);
     expect(out.get("hono")).toMatchObject({ ok: false, status: "indeterminate" });
   });
+
+  test("same name at two versions: a failed query on one never clobbers the other's hit (#570)", async () => {
+    // v4.12.18 answers with a real advisory; v5.0.0's query dies on the network.
+    const fetchImpl = (async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      if (body.version === "5.0.0") throw new Error("ECONNRESET");
+      return { ok: true, status: 200, json: async () => ({ vulns: [advisory()] }) } as Response;
+    }) as unknown as typeof fetch;
+    // concurrency 1 → deterministic order; the hit must survive both arrivals.
+    for (const pkgs of [
+      [{ name: "hono", version: "4.12.18" }, { name: "hono", version: "5.0.0" }],
+      [{ name: "hono", version: "5.0.0" }, { name: "hono", version: "4.12.18" }],
+    ]) {
+      const out = await scanPackages("npm", pkgs, fetchImpl, 1);
+      expect(out.get("hono")?.vulns).toBeGreaterThan(0);
+      expect(out.get("hono")?.version).toBe("4.12.18");
+    }
+  });
 });
 
 describe("scanTree (batch-filter then detail — full-tree coverage)", () => {

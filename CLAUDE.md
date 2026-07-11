@@ -36,7 +36,10 @@ close a stale or wrong number. To check whether an item is *already* closed (and
 when/how), emit `-(ask:closed) #N` instead of re-investigating finished work. For a
 retrospective — every bug/security report ever, open and closed, with ages and files
 ("what keeps breaking?") — emit `-(ask:retro)` and codify recurring patterns with
-`-(rule:add)` or `-(insight)`.
+`-(rule:add)` or `-(insight)`. For a full deep study (whole-history discipline
+aggregates + narrative delta since the last study) emit `-(ask:study)` and store the
+result as `-(doc:report) study-YYYY-MM-DD <title>` — the `study-` prefix makes it the
+next study's watermark.
 
 **Atomic** — one concept per tag; no questions or planning prose inside a tag.
 

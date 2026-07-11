@@ -27,9 +27,14 @@ describe("detectReleaseDowngrade", () => {
     expect(detectReleaseDowngrade("v2.9.0 — next", d, PROJ)).toBeNull();
   });
 
-  test("same version → allowed (not a downgrade)", () => {
+  test("same version → rejected (duplicate release tag splits the range, #567)", () => {
     const d = data([rel("v2.8.0 — current")]);
-    expect(detectReleaseDowngrade("v2.8.0 — re-release", d, PROJ)).toBeNull();
+    expect(detectReleaseDowngrade("v2.8.0 — re-release", d, PROJ)).toEqual({ version: "v2.8.0", latest: "v2.8.0" });
+  });
+
+  test("same version spelled without the v prefix → still rejected", () => {
+    const d = data([rel("v2.8.0 — current")]);
+    expect(detectReleaseDowngrade("2.8.0 — re-release", d, PROJ)).toEqual({ version: "2.8.0", latest: "v2.8.0" });
   });
 
   test("compares against the HIGHEST released, not the most recent timestamp", () => {

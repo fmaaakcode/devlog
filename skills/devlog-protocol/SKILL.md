@@ -125,6 +125,32 @@ Its purpose is analysis, not bookkeeping: cluster the recurrences yourself
 pattern with `-(rule:add)` (make it enforceable) or `-(insight)` (record the
 root cause). DevLog serves the data; the clustering is your language work.
 
+## Deep study — the project report (`ask:study`)
+
+`-(ask:study)` pulls the deep-study corpus of the project: **whole-history
+aggregates** (tag/session counts, the monthly opened/closed/released trend,
+time-to-close medians, open-now state, release hygiene, plan discipline,
+most-broken files, capability coverage, and a work-rhythm behavior profile —
+peak hours, weekday spread, streaks/gaps and session shapes, derived from tag
+timestamps which reach the first day uncapped) plus a **narrative delta** (releases,
+problem reports touched, decisions/insights, longest-lived items closed, work
+counts) and, when a previous study exists, its **conclusions digest**. Served
+in-turn like the other pull commands; never a logged tag.
+
+Studies are RANGES like releases: the corpus window covers everything since the
+previous stored study (the watermark); the first study of a project is
+FOUNDATIONAL and covers its entire history. Aggregates are always recomputed
+over the full history — they stay compact — so every report keeps a
+first-day-to-today spine while the narrative never re-serves a studied period.
+
+Your work after the pull: analyze discipline, recurring problems, project
+trajectory and user workflow, then store the report as
+`-(doc:report) study-YYYY-MM-DD <title>` — the `study-` (or `دراسة-`) name
+prefix is what makes the report the NEXT study's watermark. End it with a
+«الخلاصة» section: that section is the digest the next study builds on
+(confirm each earlier pattern held, or declare it broken — never re-derive a
+studied year). Stored studies appear in the dashboard's «دراسات» header chip.
+
 ## Doc tags
 
 Write only markdown; the server wraps it in a template and saves `.md` + `.html` under `<project>/.devlog/docs/`. Types: `doc:report`, `doc:analysis`, `doc:plan`, `doc:comparison`, `doc:readme`, `doc:update` (appends to an existing doc by name). First line after the tag = document name (becomes the file slug).

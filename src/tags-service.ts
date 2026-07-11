@@ -476,10 +476,14 @@ export interface ReleaseDowngrade { version: string; latest: string; }
 
 /**
  * A release whose version is LOWER than the highest already-released version is
- * almost always a typo. Detected BEFORE the tag is stored so the caller can
- * reject it wholesale — no tag, no vX.Y.Z.html, no index entry, no manifest bump
- * — keeping release history monotonic (the dashboard/index are built from these
- * tags). Returns null for the first release or a forward/equal bump. Pure.
+ * almost always a typo — and an EQUAL one is a duplicate: a second release tag
+ * for the same number splits that release's range material between two tags
+ * (field evidence #567: a doubled v2.8.3 made backfillCorpus list the release
+ * twice with its built/update lines shorn between them). Detected BEFORE the
+ * tag is stored so the caller can reject it wholesale — no tag, no vX.Y.Z.html,
+ * no index entry, no manifest bump — keeping release history strictly
+ * ascending (the dashboard/index are built from these tags). Returns null for
+ * the first release or a forward bump. Pure.
  */
 export function detectReleaseDowngrade(content: string, data: DevLogData, project: string): ReleaseDowngrade | null {
   const version = parseVersion(content).version;
@@ -492,7 +496,7 @@ export function detectReleaseDowngrade(content: string, data: DevLogData, projec
     if (latest === null || compareSemver(v, latest) > 0) latest = v;
   }
   if (latest === null) return null;
-  return compareSemver(version, latest) < 0 ? { version, latest } : null;
+  return compareSemver(version, latest) <= 0 ? { version, latest } : null;
 }
 
 export interface ReleaseIntent { version: string; from: string; bump: BumpType; auto?: boolean; warning?: { suggested: BumpType }; }
