@@ -88,16 +88,35 @@ export function makeTagsRoutes(): Record<string, unknown> {
           // "verify what you closed" would contradict the closure-mismatch hint
           // in the same response (QA #1).
           const storedEntries: { tag: string; content: string }[] = [];
-          // A batch carrying BOTH a release and feature tags (the feature-nudge
-          // continuation appends `-(feature)` AFTER the already-written release
-          // line, so the parser orders it after) must store the features FIRST:
-          // a feature stamped later than its release would be attributed to the
-          // NEXT release by every range-based reader (release page, inventory).
-          // Stable partition — batches without that combination are untouched.
+          // A batch carrying a release stores the release LAST: continuations
+          // append tags AFTER the already-written release line (the feature-
+          // nudge `-(feature)`, a bug found + its textual fix), so the parser
+          // orders them after it — stored that way, anything stamped later
+          // than its release is attributed to the NEXT release by every
+          // range-based reader (release page, inventory, changelog), and an
+          // opener whose closer trails the release would block it server-side.
+          // Stable partition — batches without a release are untouched.
+          const isRelease = (e: { tag?: string }) =>
+            e.tag === "release" || (typeof e.tag === "string" && e.tag.startsWith("release:"));
           let batch = body.entries || [];
-          if (batch.some(e => e.tag === "release" || (typeof e.tag === "string" && e.tag.startsWith("release:")))
-              && batch.some(e => e.tag === "feature")) {
-            batch = [...batch.filter(e => e.tag === "feature"), ...batch.filter(e => e.tag !== "feature")];
+          // In-batch echo collapse: the Stop hook re-reads the WHOLE turn, and
+          // the guard/nudge protocol explicitly asks for the same line to be
+          // re-emitted after a block — so one turn legitimately yields the same
+          // entry several times. Identical (tag, normalized content) duplicates
+          // are echoes of one line, never two intents; keep the first. It must
+          // happen HERE, on raw incoming content: a bare -(release) gets its
+          // computed version prepended at store time, so the whole-history
+          // dedup can never see the echoes as equal — each one minted a fresh
+          // version (v3.13.0→v3.13.3 landed in one batch).
+          const seenInBatch = new Set<string>();
+          batch = batch.filter(e => {
+            const k = JSON.stringify([e.tag, normalizeTagContent(e.content || "")]);
+            if (seenInBatch.has(k)) return false;
+            seenInBatch.add(k);
+            return true;
+          });
+          if (batch.some(isRelease)) {
+            batch = [...batch.filter(e => !isRelease(e)), ...batch.filter(isRelease)];
           }
           const closureHints: ClosureMismatch[] = [];
           const closureTextWarnings: ClosureTextDivergence[] = [];

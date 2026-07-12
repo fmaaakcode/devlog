@@ -11,7 +11,11 @@ Write the tag content in the user's language.
 
 ## Minimum tag vocabulary
 
-- `-(desc)` one-line description · `-(about)` long description
+- `-(desc)` the project's STABLE one-line identity — never a session summary (it feeds
+  the dashboard header and the client report's subtitle; re-emit only when the project
+  itself changes) · `-(about)` plain-language "what it is" + the concrete stack
+  (language, runtime, frameworks, key libraries, integrations) — a technical ID card,
+  not marketing prose
 - `-(built)` new code not mapping to a plan step · `-(refactor)` restructure, no behavior change · `-(update)` dependency bump
 - `-(bug found)` … / close with `-(bug fix) #N`
 - `-(security[:own|:dep])` … / close with `-(security fix) #N`

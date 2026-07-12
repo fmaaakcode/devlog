@@ -120,12 +120,19 @@ try {
 // timestamp). The turnId lets the pull-command dedup tell "same turn, already
 // served" (a hook-driven continuation keeps the same boundary) from "new user
 // turn" (boundary changes → re-serve allowed).
-async function readTurnFromTranscript(transcriptPath: string): Promise<{ text: string; turnId: string }> {
-  if (!transcriptPath) return { text: "", turnId: "" };
+// It also returns the turn as `segments` — one string per assistant transcript
+// entry — because a tag's body must NEVER span two assistant messages: parsing
+// the joined text let the LAST body tag of a take swallow the next
+// continuation's prose (a new dedup identity on every re-read → a grown twin
+// stored as a second tag; same #486/#487 class the single-line cut fixed for
+// headline tags). Callers parse tags per segment and join only for line-anchored
+// command scans (ask:*/audit), which a segment boundary can't split.
+async function readTurnFromTranscript(transcriptPath: string): Promise<{ text: string; turnId: string; segments: string[] }> {
+  if (!transcriptPath) return { text: "", turnId: "", segments: [] };
   try {
     const content = await readFile(transcriptPath, "utf-8");
     const lines = content.split("\n").filter(Boolean);
-    let buf = "";
+    let segments: string[] = [];
     let turnId = "";
     for (const line of lines) {
       let obj: any;
@@ -136,10 +143,16 @@ async function readTurnFromTranscript(transcriptPath: string): Promise<{ text: s
         // tool_result blocks ride on role="user" but are NOT a real turn
         // boundary — they're the model's tool output during the same turn.
         // Only reset on a genuine user message (string content or text blocks).
+        // Harness-injected user entries (isMeta: true) are not boundaries
+        // either: our own Stop-hook feedback lands in the transcript as
+        // role="user" STRING content with isMeta, so counting it reset the
+        // turnId on every continuation and wiped the per-turn ledger — the
+        // "fires once" feature nudge then re-blocked each re-emitted
+        // -(release), a loop only a -(feature) tag could break.
         const isToolResultOnly = Array.isArray(c) && c.length > 0
           && c.every(b => b?.type === "tool_result");
-        if (!isToolResultOnly) {
-          buf = "";
+        if (!isToolResultOnly && obj.isMeta !== true) {
+          segments = [];
           // Boundary of a new user turn — remember its id as the turn key.
           // Fallback ladder (design §4): uuid → timestamp → content hash of the
           // user text (format-independent, survives a transcript-schema change
@@ -157,25 +170,29 @@ async function readTurnFromTranscript(transcriptPath: string): Promise<{ text: s
         continue;
       }
       if (role !== "assistant") continue;
+      let seg = "";
       if (typeof c === "string") {
-        buf += `\n${c}`;
+        seg = c;
       } else if (Array.isArray(c)) {
-        for (const block of c) {
-          if (block?.type === "text" && typeof block.text === "string") {
-            buf += `\n${block.text}`;
-          }
-        }
+        seg = c
+          .filter((b): b is { type: string; text: string } => b?.type === "text" && typeof b.text === "string")
+          .map(b => b.text).join("\n");
       }
+      if (seg.trim()) segments.push(seg.trim());
     }
-    return { text: buf.trim(), turnId };
+    return { text: segments.join("\n").trim(), turnId, segments };
   } catch (e) {
     await log(`transcript read error: ${(e as Error).message}`);
-    return { text: "", turnId: "" };
+    return { text: "", turnId: "", segments: [] };
   }
 }
 
-const { text: transcriptMsg, turnId } = await readTurnFromTranscript(data.transcript_path);
+const { text: transcriptMsg, turnId, segments } = await readTurnFromTranscript(data.transcript_path);
 const msg = transcriptMsg || data.last_assistant_message || "";
+// Tag extraction runs per assistant message (fallback: the whole msg when the
+// transcript wasn't readable) — see readTurnFromTranscript on why a tag body
+// must not cross a message boundary.
+const tagSegments = transcriptMsg && segments.length ? segments : [msg];
 const cwd = data.cwd || "";
 const sessionId = data.session_id || "";
 // True when this Stop was itself triggered by a previous hook exit(2)
@@ -216,8 +233,8 @@ if (msg) {
   // server and the test suite via src/tag-parser.ts — single source of truth.
   // It used to be duplicated here byte-for-byte (org-audit R2 #1), so the
   // tested copy and the production copy could silently diverge.
-  const entries = parseTags(msg);
-  await log(`matches=${JSON.stringify(entries.map(e => [e.tag, e.breaking, e.content]))} (count ${entries.length})`);
+  const entries = tagSegments.flatMap(s => parseTags(s));
+  await log(`matches=${JSON.stringify(entries.map(e => [e.tag, e.breaking, e.content]))} (count ${entries.length}, segments ${tagSegments.length})`);
 
   if (entries.length) {
 

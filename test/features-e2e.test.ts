@@ -49,6 +49,20 @@ function writeTranscript(dir: string, userUuid: string, assistantTexts: string[]
   writeFileSync(p, lines.map(l => JSON.stringify(l)).join("\n"));
   return p;
 }
+// The REAL continuation shape: Claude Code writes the Stop hook's block reason
+// back into the transcript as a role="user" entry with STRING content and
+// isMeta: true between the two assistant takes (verified against a live
+// session transcript). Turns alternate assistant text / isMeta feedback.
+function writeTranscriptWithMetaFeedback(dir: string, userUuid: string, takes: Array<{ assistant: string; feedback?: string }>): string {
+  const lines: unknown[] = [{ type: "user", uuid: userUuid, message: { role: "user", content: "go" } }];
+  takes.forEach((t, i) => {
+    lines.push({ type: "assistant", uuid: `a-${userUuid}-${i}`, message: { role: "assistant", content: [{ type: "text", text: t.assistant }] } });
+    if (t.feedback) lines.push({ type: "user", uuid: `meta-${userUuid}-${i}`, isMeta: true, message: { role: "user", content: `Stop hook feedback:\n\n${t.feedback}` } });
+  });
+  const p = join(dir, `transcript-${userUuid}.jsonl`);
+  writeFileSync(p, lines.map(l => JSON.stringify(l)).join("\n"));
+  return p;
+}
 
 describe("feature inventory + client report (E2E)", () => {
   let dataDir: string, projDir: string, sid: string, server: Subprocess;
@@ -136,6 +150,68 @@ describe("feature inventory + client report (E2E)", () => {
     // declared in the continuation ships in THIS release, not the next one.
     expect(state.features[0].sinceVersion).toBe("v0.1.0");
     expect(state.sinceLastRelease).toEqual({ built: 0, features: 0 });
+  });
+
+  test("release nudge: an isMeta hook-feedback user entry does NOT reset the turn — the re-emitted release posts instead of re-nudging", async () => {
+    await post(projDir, sid, [{ tag: "built", content: "wired the order-tracking pipeline" }]);
+
+    // Take 1: release, no feature → the nudge blocks once (as designed).
+    const take1 = writeTranscriptWithMetaFeedback(projDir, "R1M", [
+      { assistant: "shipping\n\n-(release) v0.1.0 — first" },
+    ]);
+    const first = await runHook(TEST_PORT, { cwd: projDir, session_id: sid, transcript_path: take1, stop_hook_active: false });
+    const p1 = JSON.parse(first.out.trim());
+    expect(p1.reason).toContain("Feature Nudge");
+
+    // Take 2, the REAL shape: the nudge text rides back as an isMeta user
+    // entry, then Claude re-emits the release as instructed. Before the fix
+    // the isMeta entry opened a "new turn" (fresh ledger) and the once-only
+    // nudge blocked again — an escape-proof loop for a purely-technical
+    // release. It must post the release now.
+    const take2 = writeTranscriptWithMetaFeedback(projDir, "R1M", [
+      { assistant: "shipping\n\n-(release) v0.1.0 — first", feedback: "════════ DevLog Feature Nudge ════════\n⚠ 1 work tag(s)…" },
+      { assistant: "technical release\n\n-(release) v0.1.0 — first" },
+    ]);
+    const second = await runHook(TEST_PORT, { cwd: projDir, session_id: sid, transcript_path: take2, stop_hook_active: true });
+    const p2 = JSON.parse(second.out.trim());
+    expect(p2.reason || "").not.toContain("Feature Nudge");
+    expect(p2.reason || "").toContain("Release v0.1.0 recorded");
+  });
+
+  test("a batch ordered [release, opener, textual closer] stores the release last: nothing blocks and the pair rides THIS release", async () => {
+    // Parse order puts the release FIRST when a continuation appends the bug
+    // pair after an already-written release line. Stored in that order the
+    // release either shipped without the pair in its range, or — with the
+    // server-side open-items guard — got blocked by its own trailing opener.
+    const bug = "hook feedback resets the turn ledger";
+    const resp = await post(projDir, sid, [
+      { tag: "release", content: "v0.1.0 — first" },
+      { tag: "bug found", content: bug },
+      { tag: "bug fix", content: bug },
+    ]);
+    expect(resp.releaseBlocked).toBeNull();
+    expect((resp.release as { version?: string } | null)?.version).toBe("v0.1.0");
+    const r = await fetch(`${BASE}/api/open-items?cwd=${encodeURIComponent(projDir)}`);
+    const { items = [] } = await r.json() as { items?: unknown[] };
+    expect(items).toHaveLength(0);
+  });
+
+  test("duplicate bare -(release) echoes in one batch collapse to a single release and a single version bump", async () => {
+    // A guard/nudge continuation re-emits the release line verbatim, and the
+    // hook re-reads the whole turn — so the posted batch carries the SAME bare
+    // release entry several times. Each echo used to mint its own computed
+    // version (v3.13.0→v3.13.3 in one real batch).
+    const reason = "sidebar cleanup pending a better design";
+    const resp = await post(projDir, sid, [
+      { tag: "release", content: reason },
+      { tag: "release", content: reason },
+      { tag: "release", content: reason },
+    ]);
+    expect(resp.releaseBlocked).toBeNull();
+    const r = await fetch(`${BASE}/api/data`);
+    const { tags = [] } = await r.json() as { tags?: Array<{ tag: string; content: string }> };
+    const releases = tags.filter(t => t.tag === "release" && t.content.includes(reason));
+    expect(releases).toHaveLength(1);
   });
 
   test("a purely-technical release passes with no nudge when nothing was built", async () => {

@@ -66,6 +66,12 @@ export async function rollbackRelease(releaseTag: TagEntry, data: DevLogData, pr
       await unlink(join(releasesDirFor(projectPath), `${safeVerSlug(version)}.html`));
       htmlDeleted = true;
     } catch { /* page may not exist (e.g. html write had failed) */ }
+    // The machine-readable twin must go with the page: writeReleaseHtml adopts
+    // a same-slug json's baked diff/upcoming on regeneration, so a leftover
+    // twin would contaminate a FUTURE release that reuses this version number.
+    try {
+      await unlink(join(releasesDirFor(projectPath), `${safeVerSlug(version)}.json`));
+    } catch { /* twin may not exist */ }
     try {
       await writeReleaseIndex(data, project);
       indexRebuilt = true;

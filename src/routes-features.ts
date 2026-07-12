@@ -90,10 +90,11 @@ export function makeFeatureRoutes(): Record<string, unknown> {
       },
     },
 
-    // The rendered-docs index for the dashboard's «دراسات وتقارير» section —
-    // every doc the project stored via -(doc:*), read from the same
-    // .devlog/docs/index.json doc-store maintains. Plans are excluded: the
-    // plans panel already tracks them step-by-step.
+    // The rendered-docs index for the dashboard's docs section (the memory &
+    // docs card) — every doc the project stored via -(doc:*), read from the
+    // same .devlog/docs/index.json doc-store maintains. Plans are excluded:
+    // the plans panel already tracks them step-by-step. Each doc carries a
+    // capped raw-markdown `preview` for the card's hover popover.
     "/api/docs": {
       async GET(req: ApiReq) {
         const project = await resolveParam(req);
@@ -102,10 +103,21 @@ export function makeFeatureRoutes(): Record<string, unknown> {
         const root = data.projects[project]?.path;
         if (!root) return Response.json({ project, docs: [] });
         try {
-          const parsed = await Bun.file(join(root, ".devlog", "docs", "index.json")).json();
-          const docs = (Array.isArray(parsed) ? parsed : [])
-            .filter(d => d && typeof d.slug === "string" && d.type !== "plan")
-            .map(d => ({ slug: d.slug, name: d.name, type: d.type, createdAt: d.createdAt, updatedAt: d.updatedAt }));
+          const docsDir = resolve(join(root, ".devlog", "docs"));
+          const parsed = await Bun.file(join(docsDir, "index.json")).json();
+          const entries = (Array.isArray(parsed) ? parsed : [])
+            .filter(d => d && typeof d.slug === "string" && d.type !== "plan");
+          const docs = [];
+          for (const d of entries) {
+            // index.json is developer-writable — guard the slug the same way
+            // /api/doc-page does before touching disk with it.
+            let preview = "";
+            const target = resolve(join(docsDir, `${d.slug}.md`));
+            if (/^[\p{L}\p{N}._-]+$/u.test(d.slug) && target.startsWith(docsDir + sep)) {
+              try { preview = (await Bun.file(target).text()).trim().slice(0, 3000); } catch { /* md missing → no preview */ }
+            }
+            docs.push({ slug: d.slug, name: d.name, type: d.type, createdAt: d.createdAt, updatedAt: d.updatedAt, preview });
+          }
           return Response.json({ project, docs });
         } catch { return Response.json({ project, docs: [] }); }
       },

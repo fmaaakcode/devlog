@@ -99,6 +99,19 @@ describe("parseTags — terminator must be known tag", () => {
   });
 });
 
+describe("parseTags — command markers terminate a body without being captured", () => {
+  test("a body tag followed by -(ask:features) does not swallow the command line", () => {
+    // Live artifact: a `built` was stored with a trailing "\n\n-(ask:features)"
+    // because command markers were absent from the terminator lookahead.
+    const out = parseTags("-(built) wired the pipeline\n\n-(ask:features)");
+    expect(out).toEqual([{ tag: "built", breaking: false, content: "wired the pipeline" }]);
+  });
+  test("a command with arguments also terminates (and is not captured)", () => {
+    const out = parseTags("-(decision) keep the daemon single-port\n-(ask:closed) #12");
+    expect(out).toEqual([{ tag: "decision", breaking: false, content: "keep the daemon single-port" }]);
+  });
+});
+
 describe("parseTags — content comes from the ORIGINAL message (round-8 F1/F2/F3)", () => {
   test("inline code spans survive in tag content", () => {
     const out = parseTags("-(bug found) `assignNum` يفقد `nextItemNum` بعد rescan");

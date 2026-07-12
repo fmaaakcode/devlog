@@ -1,6 +1,6 @@
         import { data, activeProject, setActiveProject, headerBuilt, setHeaderBuilt, setCachedTree, setFullRenderNeeded } from "./dashboard-state.js";
         import { API, esc, safeHref, langColors, destructiveHeaders, uiAlert, uiConfirm, uiPrompt, activeSessionsByProject } from "./dashboard-core.js";
-        import { summaryTagCounts, summaryVulnClass, summaryLastActivity, summaryOrphans, summaryTombstones, summaryUntagged, summaryUntaggedBy, summaryPartial, summaryPartialBy, ACTIVE_WINDOW_MS, fetchProjectView, refreshActiveView } from "./dashboard-data.js";
+        import { summaryTagCounts, summaryVulnClass, summaryLastActivity, summaryTombstones, ACTIVE_WINDOW_MS, fetchProjectView, refreshActiveView } from "./dashboard-data.js";
         import { patchSessions } from "./dashboard-panels.js";
 
         function renderProjectItem(name) {
@@ -82,6 +82,9 @@
 
         // Sweep buttons (#375/#380) — visible only when there's something to
         // clean; counts arrive with the summary in both modes.
+        // The orphan-names sweep and the untagged/partially-tagged session
+        // counters (#434/#558) were pulled from this row pending a redesign of
+        // that surface; their server APIs and summary fields are intact.
         function renderMaintRow() {
             const el = document.getElementById('maintRow');
             if (!el) return;
@@ -89,27 +92,6 @@
                 `<button data-action="${action}" style="width:100%;text-align:right;background:none;border:1px dashed var(--border);border-radius:6px;color:var(--text2);font-size:0.7em;padding:5px 10px;cursor:pointer;margin-top:6px">${label}</button>`;
             let h = '';
             if (summaryTombstones > 0) h += btn('cleanup-tombstones', `🪦 مشاريع مفقودة من القرص 30+ يومًا (${summaryTombstones})`);
-            if (summaryOrphans > 0) h += btn('cleanup-orphans', `🧹 أسماء يتيمة في السجلات (${summaryOrphans})`);
-            // Passive compliance counter (#434) — informational only, no action:
-            // sessions that wrote code but stored no tags (server-computed, ~30d
-            // window). #447: the tooltip names WHICH projects and how many each,
-            // instead of a generic explanation.
-            if (summaryUntagged > 0) {
-                const perProject = Object.entries(summaryUntaggedBy)
-                    .sort((a, b) => b[1] - a[1])
-                    .map(([n, c]) => `${n}: ${c}`)
-                    .join(' · ');
-                h += `<div title="${esc(perProject || 'جلسات هادئة عدّلت ملفات ولم تسجّل أي تاق')}" style="width:100%;text-align:right;border:1px dashed var(--border);border-radius:6px;color:var(--text2);font-size:0.7em;padding:5px 10px;margin-top:6px;opacity:0.8">👻 جلسات كتبت كودًا بلا تاقات (${summaryUntagged})</div>`;
-            }
-            // Granularity twin (#558) — sessions that DID tag but recorded no
-            // work tag despite writing 3+ files. Passive, like the ghost row.
-            if (summaryPartial > 0) {
-                const perProject = Object.entries(summaryPartialBy)
-                    .sort((a, b) => b[1] - a[1])
-                    .map(([n, c]) => `${n}: ${c}`)
-                    .join(' · ');
-                h += `<div title="${esc(perProject || 'جلسات وسمت ملاحظات فقط رغم تعديل 3+ ملفات')}" style="width:100%;text-align:right;border:1px dashed var(--border);border-radius:6px;color:var(--text2);font-size:0.7em;padding:5px 10px;margin-top:6px;opacity:0.8">🌗 جلسات موسومة جزئيًا — كتبت كودًا بلا تاق عمل (${summaryPartial})</div>`;
-            }
             el.innerHTML = h;
             el.style.display = h ? '' : 'none';
         }
@@ -125,26 +107,6 @@
                 const j = await r.json().catch(() => ({}));
                 if (!r.ok) { uiAlert(j.error || 'فشل الكنس'); return; }
                 uiAlert(j.removed?.length ? `حُذفت: ${j.removed.join('، ')}` : 'لا شيء مؤهلًا للحذف (المجلدات عادت أو العلامات حديثة)');
-            } catch { uiAlert('تعذّر الاتصال بالخادم'); }
-            refreshActiveView(true);
-        }
-
-        export async function cleanupOrphans() {
-            try {
-                const r = await fetch(`${API}/api/orphan-projects`);
-                const { orphans } = await r.json();
-                if (!orphans?.length) { uiAlert('لا أسماء يتيمة'); refreshActiveView(true); return; }
-                const names = orphans.map(o => o.name);
-                const sample = names.slice(0, 12).join('، ') + (names.length > 12 ? ` … و${names.length - 12} أخرى` : '');
-                if (!(await uiConfirm(`حذف بيانات ${names.length} اسمًا يتيمًا (تاقات/أحداث/خطط لأسماء غير مسجّلة كمشاريع)؟\n\n${sample}\n\nلا يمسّ أي مشروع مسجّل.`, { okText: 'طهّر اليتائم' }))) return;
-                const res = await fetch(`${API}/api/cleanup-orphans`, {
-                    method: 'POST',
-                    headers: await destructiveHeaders({ 'Content-Type': 'application/json' }),
-                    body: JSON.stringify({ names }),
-                });
-                const j = await res.json().catch(() => ({}));
-                if (!res.ok) { uiAlert(j.error || 'فشل التطهير'); return; }
-                uiAlert(`نُظّف ${j.removed?.length ?? 0} اسمًا (${j.removedEntries ?? 0} سجلًّا حُذف)`);
             } catch { uiAlert('تعذّر الاتصال بالخادم'); }
             refreshActiveView(true);
         }
@@ -306,16 +268,6 @@
                     <span class="stats-count" id="hdr-stats-count">0</span>
                     <div class="stats-popup" id="hdr-stats-popup"></div>
                 </span>
-                <span class="stats-btn" id="hdr-feats">
-                    <span>قدرات</span>
-                    <span class="stats-count" id="hdr-feats-count">0</span>
-                    <div class="stats-popup" id="hdr-feats-popup" style="min-width:300px;max-width:420px;text-align:right"></div>
-                </span>
-                <span class="stats-btn" id="hdr-docs">
-                    <span>دراسات</span>
-                    <span class="stats-count" id="hdr-docs-count">0</span>
-                    <div class="stats-popup" id="hdr-docs-popup" style="min-width:300px;max-width:420px;text-align:right"></div>
-                </span>
                 <span class="lang-badge" id="hdr-lang" style="background:${color}18; color:${color}">${esc(p.language)}</span>
                 <span class="framework-badge" id="hdr-framework" style="background:#04201a;color:var(--emerald);${p.framework ? '' : 'display:none'}">${esc(p.framework || '')}</span>
                 <span id="hdr-runtime" style="font-size:0.7em;padding:2px 8px;border-radius:4px;background:#1a1a2e;color:#7c8cf5;font-weight:600;${p.runtime ? '' : 'display:none'}">${p.runtime ? `${esc(p.runtime.name || '')}${p.runtime.version ? ` ${esc(p.runtime.version)}` : ''}${p.runtime.edition ? ` · ${esc(p.runtime.edition)}` : ''}` : ''}</span>
@@ -340,83 +292,6 @@
             patchFileExts(p);
             patchSessions(p.name);
             patchStatsButton(p, tags);
-            patchFeaturesButton(p);
-            patchDocsButton(p);
-        }
-
-        // «قدرات» header chip — the client-language capability inventory
-        // (feature tags, resolved server-side: updates applied, removed
-        // dropped, each attributed to the release that shipped it). Hover
-        // lists them; click opens the full client report.
-        async function patchFeaturesButton(p) {
-            const btn = document.getElementById('hdr-feats');
-            const popup = document.getElementById('hdr-feats-popup');
-            const countEl = document.getElementById('hdr-feats-count');
-            if (!btn || !popup || !countEl) return;
-            try {
-                const r = await fetch(`${API}/api/features?project=${encodeURIComponent(p.name)}`);
-                const { features = [] } = await r.json();
-                if (countEl.textContent !== String(features.length)) countEl.textContent = features.length;
-                if (!features.length) {
-                    popup.innerHTML = '<div class="stats-section-title">قدرات المشروع</div><div style="font-size:0.75em;color:var(--text2);padding:4px 0">لا قدرات مسجّلة بعد — تُعلَن بوسم <code style="color:var(--gold)">-(feature)</code> عند اكتمال قدرة يلمسها العميل</div>';
-                } else {
-                    const rows = [...features].reverse().map(f => `
-                        <div class="stats-row" style="gap:10px" title="${esc(f.addedAt ? `أُضيفت: ${String(f.addedAt).slice(0, 16).replace('T', ' ')}` : '')}">
-                            <span class="stats-key" style="flex:1;white-space:normal;line-height:1.5">${esc(f.text)}</span>
-                            <span class="stats-value" style="flex-shrink:0;color:${f.sinceVersion ? 'var(--emerald)' : 'var(--gold)'}" title="${f.sinceVersion ? 'الإصدار الذي شحن هذه القدرة' : 'لم تُشحَن في إصدار بعد'}">${f.sinceVersion ? esc(f.sinceVersion) : 'قادمة'}</span>
-                        </div>`).join('');
-                    popup.innerHTML = `<div class="stats-section-title">قدرات المشروع</div><div class="stats-grid">${rows}</div>`;
-                }
-                btn.title = 'ما يقدر عليه النظام اليوم — اضغط لفتح تقرير العميل';
-                btn.onclick = (e) => {
-                    if (e.target.closest('.stats-popup')) return;
-                    window.open(`${API}/api/client-report?project=${encodeURIComponent(p.name)}`, '_blank', 'noopener');
-                };
-            } catch { /* keep the last rendered popup on a transient fetch failure */ }
-        }
-
-        // «دراسات» header chip — the stored documents of the project
-        // (doc:report / doc:analysis / …, rendered .md+.html under
-        // .devlog/docs/). Before this chip they were reachable only by knowing
-        // the folder path; plans stay out (the plans panel tracks them).
-        // Hover lists them newest-first; clicking a row opens the rendered page.
-        const DOC_TYPE_AR = { report: 'تقرير', analysis: 'تحليل', comparison: 'مقارنة', readme: 'readme' };
-        async function patchDocsButton(p) {
-            const btn = document.getElementById('hdr-docs');
-            const popup = document.getElementById('hdr-docs-popup');
-            const countEl = document.getElementById('hdr-docs-count');
-            if (!btn || !popup || !countEl) return;
-            try {
-                const r = await fetch(`${API}/api/docs?project=${encodeURIComponent(p.name)}`);
-                const { docs = [] } = await r.json();
-                if (countEl.textContent !== String(docs.length)) countEl.textContent = docs.length;
-                if (!docs.length) {
-                    popup.innerHTML = '<div class="stats-section-title">دراسات وتقارير</div><div style="font-size:0.75em;color:var(--text2);padding:4px 0">لا وثائق مخزنة بعد — تُكتَب بوسم <code style="color:var(--gold)">-(doc:report) اسم</code>، والدراسات العميقة بأمر <code style="color:var(--gold)">-(ask:study)</code></div>';
-                } else {
-                    const rows = [...docs]
-                        .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
-                        .map(d => {
-                            const isStudy = /^\s*(study|دراسة)([\s\-_:.]|$)/i.test(d.name || '');
-                            // Own-property lookup only: a hand-edited index.json with
-                            // type "constructor" must fall through to esc(), not the
-                            // Object prototype.
-                            const typeLabel = isStudy ? 'دراسة'
-                                : Object.hasOwn(DOC_TYPE_AR, d.type) ? DOC_TYPE_AR[d.type] : esc(d.type || '');
-                            return `
-                        <div class="stats-row" data-doc-slug="${esc(d.slug)}" style="gap:10px;cursor:pointer" title="${esc(`آخر تحديث: ${String(d.updatedAt || '').slice(0, 16).replace('T', ' ')} — اضغط للفتح`)}">
-                            <span class="stats-key" style="flex:1;white-space:normal;line-height:1.5">${esc(d.name)}</span>
-                            <span class="stats-value" style="flex-shrink:0;color:${isStudy ? 'var(--gold)' : 'var(--emerald)'}">${typeLabel}</span>
-                        </div>`;
-                        }).join('');
-                    popup.innerHTML = `<div class="stats-section-title">دراسات وتقارير</div><div class="stats-grid">${rows}</div>`;
-                }
-                btn.title = 'الوثائق المخزنة للمشروع — مرر للقائمة واضغط وثيقة لفتحها';
-                popup.onclick = (e) => {
-                    const row = e.target.closest('[data-doc-slug]');
-                    if (!row) return;
-                    window.open(`${API}/api/doc-page?project=${encodeURIComponent(p.name)}&slug=${encodeURIComponent(row.dataset.docSlug)}`, '_blank', 'noopener');
-                };
-            } catch { /* keep the last rendered popup on a transient fetch failure */ }
         }
 
         function patchStatsButton(p, tags) {
@@ -732,8 +607,5 @@
 
             // Stats popup (files, libs, dirs, tags, exts)
             patchStatsButton(p, tags);
-
-            // Capability inventory chip (server-resolved feature list)
-            patchFeaturesButton(p);
         }
 

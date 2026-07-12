@@ -2,7 +2,8 @@
         import { API, esc, timeStr, tagClass, tagLabels, tagSummary, filterGroups, filterLabels, resolveTagDisplay, refreshActiveSessions } from "./dashboard-core.js";
         import { renderSidebar, getProjectTags, patchHeader, patchLibraries, vulnCache } from "./dashboard-project.js";
         import { renderChangesCard, renderActivePlanCard, updateSidebarStats, renderProject, buildTodosHtml } from "./dashboard-panels.js";
-        import { buildEventsHtml, buildDocsHtml, buildSecurityHtml } from "./dashboard-tree-ws.js";
+        import { buildEventsHtml, buildSecurityHtml } from "./dashboard-tree-ws.js";
+        import { buildDocsHtml, refreshDocsCard } from "./dashboard-docs-card.js";
 
         // Landing mode (#373): until a project is opened, the dashboard lives
         // off /api/projects-summary (a few KB); opening one fetches only that
@@ -352,8 +353,10 @@
             // Update tags card — shared builder, identical to the full render.
             updateCard('cardTags', buildTagsHtml(tags));
 
-            // Update docs/memory
-            if (p) updateCard('cardDocs', buildDocsHtml(p));
+            // Update docs/memory — instant re-render from the mirrored list,
+            // then an async live refetch (a doc:* tag in this very update may
+            // have just written a new document).
+            if (p) { updateCard('cardDocs', buildDocsHtml(p)); refreshDocsCard(activeProject); }
 
             // Update security
             updateCard('cardSecurity', `<div style="overflow-y:auto;flex:1;min-height:0">${buildSecurityHtml(tags, p)}</div>`);

@@ -147,7 +147,6 @@ async function main(): Promise<void> {
     { id: crypto.randomUUID(), project: "real", tag: "built", content: "بناء أول", timestamp: now, files: [smokeFile] },
     { id: crypto.randomUUID(), project: "real", tag: "todo", content: "مهمة مفتوحة", num: 1, timestamp: now },
     { id: crypto.randomUUID(), project: "real", tag: "bug found", content: "خلل مفتوح", num: 2, timestamp: now },
-    { id: crypto.randomUUID(), project: "real", tag: "feature", content: "قدرة تجريبية للعميل", num: 3, timestamp: now },
   ]));
   writeFileSync(join(dataDir, "events.json"), JSON.stringify([
     { id: crypto.randomUUID(), project: "real", event: "PostToolUse", tool: "Edit", type: "change",
@@ -187,16 +186,6 @@ async function main(): Promise<void> {
   const a = await pollPage<Stats>(cdp, happy, STATS_EXPR,
     v => v.vals === 5 && v.opacity === "1", "scenario A (live verdicts)");
   console.log(`✓ A: five stat numbers live [${a.text}], opacity=${a.opacity}`);
-
-  // 3A2. Features chip: the «قدرات» header chip renders the server-resolved
-  //      capability inventory (count + popup text) on the same happy session.
-  const FEATS_EXPR = `({
-    count: document.getElementById('hdr-feats-count')?.textContent ?? '',
-    popup: document.getElementById('hdr-feats-popup')?.textContent ?? '',
-  })`;
-  const a2 = await pollPage<{ count: string; popup: string }>(cdp, happy, FEATS_EXPR,
-    v => v.count === "1" && v.popup.includes("قدرة تجريبية للعميل"), "scenario A2 (features chip)");
-  console.log(`✓ A2: features chip live [count=${a2.count}]`);
 
   // 3A3. Live git-badge swap (#492): the badge starts as «📁 local» (seeded
   //      project has no remote). Mutate the shared state module in-page, call

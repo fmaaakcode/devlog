@@ -4,7 +4,7 @@
         // TypeError at click time.
         import { data, activeProject, showCompletedPlans, setShowCompletedPlans, setTodosTab, setPlansTab } from "./dashboard-state.js";
         import { rescanProject, vulnScan, expandHistory, refreshActiveView } from "./dashboard-data.js";
-        import { selectProject, deleteProject, renameProject, cleanupTombstones, cleanupOrphans, vulnCache } from "./dashboard-project.js";
+        import { selectProject, deleteProject, renameProject, cleanupTombstones, vulnCache } from "./dashboard-project.js";
         import { openSessionsPanel, killPid, killServer, refreshProcesses, renderActivePlanCard, renderTodosCard, hidePlan, togglePlanUpcoming, renderProject, planExpanded } from "./dashboard-panels.js";
         import { setLogFilter, clearInjectionOverride, toggleInjection, showInjectionContent, switchInjScope, openInjectionPanel, openStandardsPanel, closeInjectionPanel, closeStandardsPanel, openUpdatesPopup, openTargetFile, ignoreTarget } from "./dashboard-tree-ws.js";
 
@@ -119,7 +119,6 @@
             else if (action === "rename-project") { e.stopPropagation(); renameProject(project); }
             else if (action === "open-sessions") openSessionsPanel(project);
             else if (action === "cleanup-tombstones") cleanupTombstones();
-            else if (action === "cleanup-orphans") cleanupOrphans();
             else if (action === "kill-pid") killPid(parseInt(el.dataset.pid, 10), project);
             else if (action === "refresh-processes") refreshProcesses(project);
             else if (action === "toggle-plan") {

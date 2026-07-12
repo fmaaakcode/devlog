@@ -20,6 +20,7 @@ import dashboardDataJs from "../assets/dashboard-data.js" with { type: "text" };
 import dashboardProjectJs from "../assets/dashboard-project.js" with { type: "text" };
 import dashboardPanelsJs from "../assets/dashboard-panels.js" with { type: "text" };
 import dashboardTreeWsJs from "../assets/dashboard-tree-ws.js" with { type: "text" };
+import dashboardDocsCardJs from "../assets/dashboard-docs-card.js" with { type: "text" };
 import stackMapJs from "../assets/stack-map.js" with { type: "text" };
 // Binary asset: the "file" loader yields a path (real on disk in dev, virtual
 // in the compiled fs) that Bun.file() can stream either way.
@@ -42,6 +43,7 @@ export const STATIC_ASSETS: Record<string, Asset> = {
   "dashboard-project.js": { text: dashboardProjectJs, mime: "application/javascript; charset=utf-8" },
   "dashboard-panels.js": { text: dashboardPanelsJs, mime: "application/javascript; charset=utf-8" },
   "dashboard-tree-ws.js": { text: dashboardTreeWsJs, mime: "application/javascript; charset=utf-8" },
+  "dashboard-docs-card.js": { text: dashboardDocsCardJs, mime: "application/javascript; charset=utf-8" },
   "stack-map.js": { text: stackMapJs, mime: "application/javascript; charset=utf-8" },
   "dashboard.jpeg": { file: dashboardJpeg, mime: "image/jpeg" },
 };

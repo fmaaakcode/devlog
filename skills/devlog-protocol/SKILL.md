@@ -23,8 +23,8 @@ Three hooks enforce these rules mechanically — you don't need to remember, the
 
 | Tag | Use |
 |---|---|
-| `-(desc)` | One-line project description (first time only) |
-| `-(about)` | Long multi-line project description. Replaces previous. |
+| `-(desc)` | The project's STABLE one-line identity ("what is this project?") — never a session summary. Shows under the project name and as the client report's subtitle; re-emit only when the project itself changes. |
+| `-(about)` | Long description, replaces previous: plain-language "what it is / how it works" + the concrete stack (language, runtime, frameworks, key libraries, integrations). A technical ID card, not marketing prose. |
 | `-(built)` | New code that does **not** map to a plan step |
 | `-(refactor)` | Restructure without behavior change |
 | `-(update)` | Dependency/library bump |

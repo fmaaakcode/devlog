@@ -31,16 +31,18 @@ export function applyUpcoming(content: string, data: DevLogData, project: string
   if (!nums.length) {
     // Creation path: a brand-new deferred todo. Stored as a `todo` tag with the
     // upcoming flag so every existing #N/closure/dedup path applies untouched.
+    // Same exact-content dedup rule as the normal store path — checked BEFORE
+    // assignNum, which mutates the project's number counter: a rejected echo
+    // used to burn a #N and leave a gap in the sequence.
+    const norm = normalizeTagContent(content);
+    if (data.tags.some(t => t.project === project && t.tag === "todo" && normalizeTagContent(t.content) === norm)) {
+      return [];
+    }
     const entry: TagEntry = {
       id: crypto.randomUUID(), project, tag: "todo", content,
       upcoming: true, timestamp: new Date().toISOString(),
     };
     if (data.projects[project]) entry.num = assignNum(data, project);
-    // Same exact-content dedup rule as the normal store path.
-    const norm = normalizeTagContent(content);
-    if (data.tags.some(t => t.project === project && t.tag === "todo" && normalizeTagContent(t.content) === norm)) {
-      return [];
-    }
     data.tags.push(entry);
     return [{ kind: "created", num: entry.num, text: content }];
   }

@@ -22,7 +22,7 @@ const PRIMER_EN = `<devlog-protocol>
 DevLog is active. At the end of every response, emit \`-(tag) content\` markers (one tag per line) for the Stop hook to capture — don't hand-write tracking files. Write the content in the user's language.
 
 Core tags:
-- \`-(desc)\` one-line description · \`-(about)\` long multi-line description
+- \`-(desc)\` the project's STABLE one-line identity ("what is this project?") — never a session summary; it shows under the project name and as the client report's subtitle, so re-emit only when the project itself changes · \`-(about)\` the long description: plain-language "what it is / how it works" + the concrete stack (language, runtime, frameworks, key libraries, integration points) — a compact technical ID card, not marketing prose
 - \`-(built)\` new code not mapping to a plan step · \`-(refactor)\` restructure without behavior change · \`-(update)\` dependency bump
 - \`-(bug found)\` … / close with \`-(bug fix) #N\`
 - \`-(security)\` / \`-(security:own)\` / \`-(security:dep)\` … / close with \`-(security fix) #N\`
@@ -45,7 +45,7 @@ const PRIMER_AR = `<devlog-protocol>
 DevLog مفعّل. في نهاية كل رد أصدر تاقات \`-(tag) content\` (كل تاق سطر مستقل) ليلتقطها الـStop hook — لا تكتب ملفات تتبّع يدوياً. اكتب المحتوى بلغة المستخدم.
 
 التاقات الأساسية:
-- \`-(desc)\` وصف سطر واحد · \`-(about)\` وصف مطوّل متعدّد الأسطر
+- \`-(desc)\` هوية المشروع الثابتة بسطر واحد («ما هذا المشروع؟») — ليس ملخص جلسة أبداً؛ يظهر تحت اسم المشروع وكعنوان فرعي في تقرير العميل، فلا تعِد إصداره إلا إذا تغيّر المشروع نفسه · \`-(about)\` الوصف المطوّل: «ما هو وكيف يعمل» بلغة بسيطة + الستاك الفعلي (اللغة، الـruntime، الأطر، المكتبات المهمة، نقاط التكامل) — بطاقة تعريف تقنية مضغوطة لا نصاً تسويقياً
 - \`-(built)\` كود جديد لا يخص خطوة خطة · \`-(refactor)\` إعادة هيكلة بلا تغيير سلوك · \`-(update)\` رفع تبعية
 - \`-(bug found)\` … / أغلِقه بـ \`-(bug fix) #N\`
 - \`-(security)\` / \`-(security:own)\` / \`-(security:dep)\` … / أغلِقه بـ \`-(security fix) #N\`

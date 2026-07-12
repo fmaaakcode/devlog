@@ -151,4 +151,28 @@ describe("continuation trap E2E (linked P1/P2 fix)", () => {
     const second = await runHook(projDir, sid, txB, false);
     expect(JSON.parse(second.out.trim()).reason).toContain("[devlog open]");
   });
+
+  test("a body tag ending a take does NOT swallow the next take's prose — no grown twin is stored", async () => {
+    // Take 1 ends with a body tag (built keeps its body until the next tag
+    // line or end-of-text). On the continuation re-read the joined turn text
+    // used to extend that body with take 2's prose → a different dedup
+    // identity → the hook re-posted it and the server stored a grown twin.
+    // Per-message parsing pins each tag to the message that carried it.
+    const tx1 = writeTranscript(projDir, "U6", ["did the work\n\n-(built) wired the order pipeline"]);
+    const first = await runHook(projDir, sid, tx1, false);
+    expect(first.code).toBe(0);
+
+    const tx2 = writeTranscript(projDir, "U6", [
+      "did the work\n\n-(built) wired the order pipeline",
+      "acknowledging the feedback with plain prose, no tags here",
+    ]);
+    const second = await runHook(projDir, sid, tx2, true);
+    expect(second.code).toBe(0);
+
+    const data: any = await asJson(await fetch(`${BASE}/api/data`));
+    const project = projDir.replace(/\\/g, "/").split("/").filter(Boolean).pop() as string;
+    const builts = data.tags.filter((t: any) => t.project === project && t.tag === "built");
+    expect(builts).toHaveLength(1);
+    expect(builts[0].content).toBe("wired the order pipeline");
+  });
 });

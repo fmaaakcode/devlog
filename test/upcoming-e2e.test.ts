@@ -98,6 +98,16 @@ describe("upcoming tier (E2E)", () => {
     expect(blocked.releaseBlocked.openItems[0].content).toContain("committed work");
   });
 
+  test("a duplicate -(upcoming) echo does not burn a #N — the sequence stays contiguous", async () => {
+    const first = await post(projDir, [{ tag: "upcoming", content: "same deferred idea" }]);
+    const n1 = first.upcomingChanges[0].num;
+    // Echo of the same content → rejected by dedup, and the counter must NOT move.
+    const echo = await post(projDir, [{ tag: "upcoming", content: "same deferred idea" }]);
+    expect(echo.upcomingChanges).toHaveLength(0);
+    const next = await post(projDir, [{ tag: "upcoming", content: "a different idea" }]);
+    expect(next.upcomingChanges[0].num).toBe(n1 + 1);
+  });
+
   test("security items are refused deferral (blocking hook feedback)", async () => {
     await post(projDir, [{ tag: "security:own", content: "token comparison is not constant-time" }]);
     const num = (await openItems(projDir)).items.find((it: any) => it.tag === "security:own").num;

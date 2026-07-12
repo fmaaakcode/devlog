@@ -32,7 +32,23 @@ export const SINGLE_LINE_TAGS = new Set([
   "security", "security:own", "security:dep", "security fix",
   "note", "outdated", "update",
   "feature", "feature update", "feature removed",
+  // The release reason is one line by protocol. Left out of this set, a
+  // release that ends a take swallowed the next continuation's prose on the
+  // turn re-read — a new dedup identity, so the re-emitted release POSTed as
+  // a SECOND entry and bounced off the not-newer guard.
+  "release", "release:major", "release:minor", "release:patch",
 ]);
+
+// Pull/command markers are never STORED tags (parse-tags.ts serves them from
+// its own line-anchored scans) but they must still TERMINATE a preceding tag's
+// body: they were absent from the terminator lookahead, so a body tag followed
+// by a command line swallowed it into its content (live artifact: a `built`
+// stored with a trailing "\n\n-(ask:features)").
+export const COMMAND_TAGS = [
+  "ask:open", "ask:closed", "ask:features", "ask:retro", "ask:backfill",
+  "ask:study", "ask:rules", "rules:list", "rule:add", "rule:new", "rule:rm",
+  "audit",
+] as const;
 
 const FAKE_VERSION = /^v\d+(\.\d+)+\s*$/i;
 // Markdown residue the body regex can swallow: table rows (|), blockquotes (>),
@@ -60,6 +76,9 @@ export function parseTags(msg: string): ParsedTag[] {
   if (!msg) return [];
   const escaped = ALLOWED_TAGS.map(escapeRegex);
   const tagAlt = `(?:${escaped.join("|")})`;
+  // Terminators = storable tags + command markers: either kind of line ends
+  // the previous body; only storable tags are captured.
+  const termAlt = `(?:${[...escaped, ...COMMAND_TAGS.map(escapeRegex)].join("|")})`;
   // Notes on the regex shape:
   // - `[\s\S]*?` (zero-or-more, lazy) so an empty body is valid and gets
   //   filtered out by the empty-content rule below — without this, an
@@ -71,7 +90,7 @@ export function parseTags(msg: string): ParsedTag[] {
   // - Flag `d` gives m.indices so the content span can be projected onto the
   //   ORIGINAL message (see below).
   const pattern = new RegExp(
-    `(?:^|\\n)[ \\t]*-\\s*\\((${tagAlt})(!)?\\)([\\s\\S]*?)(?=\\n[ \\t]*-\\s*\\(${tagAlt}!?\\)|$)`,
+    `(?:^|\\n)[ \\t]*-\\s*\\((${tagAlt})(!)?\\)([\\s\\S]*?)(?=\\n[ \\t]*-\\s*\\(${termAlt}!?\\)|$)`,
     "gd"
   );
 

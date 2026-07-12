@@ -34,6 +34,7 @@ async function seedReleaseArtifacts(version: string) {
   const relDir = join(TMP, ".devlog", "releases");
   await mkdir(relDir, { recursive: true });
   await writeFile(join(relDir, `${version}.html`), `<html>${version}</html>`, "utf-8");
+  await writeFile(join(relDir, `${version}.json`), JSON.stringify({ version }), "utf-8");
   await writeFile(join(relDir, "index.html"), "<html>old index</html>", "utf-8");
   await writeFile(join(TMP, ".devlog", "DEVLOG_CHANGELOG.md"), "# Changelog\n\n## 2026-01-01\n", "utf-8");
 }
@@ -76,6 +77,9 @@ describe("rollbackRelease — reverses all effects", () => {
     // The release page is gone; index.html still present (rebuilt).
     const relDir = join(TMP, ".devlog", "releases");
     expect(existsSync(join(relDir, "v2.0.0.html"))).toBe(false);
+    // The machine-readable twin goes too — a leftover json would feed its baked
+    // diff into a future release that reuses the number.
+    expect(existsSync(join(relDir, "v2.0.0.json"))).toBe(false);
     expect(existsSync(join(relDir, "index.html"))).toBe(true);
     // Changelog gained a rollback line.
     const changelog = await readFile(join(TMP, ".devlog", "DEVLOG_CHANGELOG.md"), "utf-8");

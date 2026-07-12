@@ -3,6 +3,7 @@
         import { fetchSummary, refreshActiveView, currentVerdicts, buildTagsHtml } from "./dashboard-data.js";
         import { getProjectTags, projectFromHash, selectProject, registryUrl } from "./dashboard-project.js";
         import { extIcons, renderActivePlanCard, renderChangesCard, buildTodosHtml, fragileFilesHtml } from "./dashboard-panels.js";
+        import { buildDocsHtml, refreshDocsCard } from "./dashboard-docs-card.js";
 
         function renderTreeNodes(nodes, basePath) {
             let html = '';
@@ -259,6 +260,7 @@
             // and vanished on project switch. Use activeProject (the name string).
             document.getElementById('eventsCard').innerHTML = buildEventsHtml(data.events, activeProject);
             document.getElementById('cardDocs').innerHTML = buildDocsHtml(project);
+            refreshDocsCard(activeProject); // async: live /api/docs list lands when it arrives
 
             // Fetch + render the file tree on its own. A tree error now only
             // touches the tree card — the rest of the project view stays put.
@@ -287,47 +289,6 @@
                 const treeCard = document.getElementById('cardTree');
                 if (treeCard) treeCard.innerHTML = `<div style="font-size:0.6em;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">الملفات</div><div style="color:var(--text2);font-size:0.75em">تعذّر تحميل شجرة الملفات</div>`;
             }
-        }
-
-        const typeLabels = { user: 'مستخدم', feedback: 'ملاحظة', project: 'مشروع', reference: 'مرجع' };
-        const typeColors = { user: 'var(--blue)', feedback: 'var(--gold)', project: 'var(--emerald)', reference: '#bb86fc' };
-
-        export function buildDocsHtml(project) {
-            const mem = project.memoryFiles || [];
-            const docs = project.docFiles || [];
-            const total = mem.length + docs.length;
-
-            let h = `<div style="font-size:0.6em;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">الذاكرة والتوثيق <span style="opacity:0.6">${total}</span></div>`;
-            h += '<div style="overflow-y:auto;flex:1;min-height:0">';
-
-            if (mem.length > 0) {
-                h += `<div style="font-size:0.7em;color:var(--text2);margin-bottom:4px">ذاكرة</div>`;
-                mem.forEach((m, i) => {
-                    const color = typeColors[m.type] || 'var(--text2)';
-                    h += `<div class="mem-row" data-mem-kind="mem" data-mem-idx="${i}" style="display:flex;align-items:center;gap:6px;padding:3px 4px;font-size:0.7em">
-                        <span style="width:6px;height:6px;border-radius:50%;background:${color};flex-shrink:0"></span>
-                        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(m.name)}</span>
-                        <span style="font-size:0.8em;color:${color};flex-shrink:0">${esc(typeLabels[m.type] || m.type)}</span>
-                    </div>`;
-                });
-            }
-
-            if (docs.length > 0) {
-                h += `<div style="font-size:0.7em;color:var(--text2);margin:${mem.length ? '8px' : '0'} 0 4px">توثيق</div>`;
-                docs.forEach((d, i) => {
-                    h += `<div class="mem-row" data-mem-kind="docs" data-mem-idx="${i}" style="display:flex;align-items:center;gap:6px;padding:3px 4px;font-size:0.7em">
-                        <span style="width:6px;height:6px;border-radius:50%;background:var(--gold);flex-shrink:0"></span>
-                        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(d.name || d.file)}</span>
-                    </div>`;
-                });
-            }
-
-            if (total === 0) {
-                h += '<div style="color:var(--text2);font-size:0.7em">لا توجد ملفات</div>';
-            }
-
-            h += '</div>';
-            return h;
         }
 
         // Single source for the المهام card so the full render and the surgical
