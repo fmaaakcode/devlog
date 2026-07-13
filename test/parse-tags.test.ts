@@ -110,6 +110,10 @@ describe("parseTags — command markers terminate a body without being captured"
     const out = parseTags("-(decision) keep the daemon single-port\n-(ask:closed) #12");
     expect(out).toEqual([{ tag: "decision", breaking: false, content: "keep the daemon single-port" }]);
   });
+  test("rule:ack and ask:lib terminate a body too (#605 — they were missing)", () => {
+    const out = parseTags("-(decision) pin astro to 5 per user order\n\n-(rule:ack) dep:astro — deliberate\n-(ask:lib) astro");
+    expect(out).toEqual([{ tag: "decision", breaking: false, content: "pin astro to 5 per user order" }]);
+  });
 });
 
 describe("parseTags — content comes from the ORIGINAL message (round-8 F1/F2/F3)", () => {

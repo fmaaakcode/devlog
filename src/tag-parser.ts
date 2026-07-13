@@ -46,8 +46,8 @@ export const SINGLE_LINE_TAGS = new Set([
 // stored with a trailing "\n\n-(ask:features)").
 export const COMMAND_TAGS = [
   "ask:open", "ask:closed", "ask:features", "ask:retro", "ask:backfill",
-  "ask:study", "ask:rules", "rules:list", "rule:add", "rule:new", "rule:rm",
-  "audit",
+  "ask:study", "ask:rules", "ask:lib", "rules:list", "rule:add", "rule:new", "rule:rm",
+  "rule:ack", "rule:acks", "audit",
 ] as const;
 
 const FAKE_VERSION = /^v\d+(\.\d+)+\s*$/i;
@@ -143,11 +143,14 @@ export function parseTags(msg: string): ParsedTag[] {
 // protocol failure with zero feedback (bad `#N` refs all have hints). Detect
 // heads CLOSE to a known one and let the Stop hook serve a correction.
 
-/** Heads the Stop hook serves without storing — legitimate, never near-misses. */
-export const COMMAND_HEADS = new Set([
-  "ask:open", "ask:closed", "ask:features", "ask:retro", "ask:backfill", "ask:rules",
-  "ask:study", "audit", "rule:add", "rule:new", "rules:list", "rule:rm",
-]);
+/**
+ * Heads the Stop hook serves without storing — legitimate, never near-misses.
+ * Derived from COMMAND_TAGS so the two lists cannot drift: they drifted once
+ * (#605) — rule:ack was handled by standards.ts but absent here, so a
+ * legitimate `-(rule:ack)` sat at edit distance 1 from rule:add and drew a
+ * "not captured" near-miss right after the standards handler had accepted it.
+ */
+export const COMMAND_HEADS = new Set<string>(COMMAND_TAGS);
 
 // Plain Levenshtein, early-exited via the cap — heads are ≤40 chars and the
 // vocabulary ~45 entries, so the quadratic cost is irrelevant.

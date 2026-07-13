@@ -22,6 +22,22 @@ describe("nearMissTags", () => {
     expect(nearMissTags("-(audit) deep")).toEqual([]);
   });
 
+  // #605: rule:ack sat at edit distance 1 from rule:add but was missing from
+  // COMMAND_HEADS, so a legitimate ack drew a "not captured" warning right
+  // after standards.ts had accepted it. Every head standards.ts / parse-tags
+  // actually serves must be exempt.
+  test("served command heads absent from the old list are exempt (#605)", () => {
+    expect(nearMissTags("-(rule:ack) dep:astro — user asked for v5")).toEqual([]);
+    expect(nearMissTags("-(rule:acks)")).toEqual([]);
+    expect(nearMissTags("-(ask:lib) astro")).toEqual([]);
+  });
+
+  test("a typo'd rule:ack still gets a hint", () => {
+    // rule:ac — distance 1 from rule:ack, 2 from rule:add, so the pick is unambiguous.
+    expect(nearMissTags("-(rule:ac) dep:astro"))
+      .toEqual([{ head: "rule:ac", suggestion: "rule:ack" }]);
+  });
+
   test("heads inside fenced or inline code are invisible", () => {
     expect(nearMissTags("example:\n```\n-(bulit) doc sample\n```")).toEqual([]);
     expect(nearMissTags("write `-(bulit)` to see the hint")).toEqual([]);

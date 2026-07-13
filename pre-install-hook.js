@@ -2,7 +2,10 @@
 /**
  * DevLog PreToolUse hook — the install gate: intercepts package-add commands
  * (`bun add` / `npm i` / `pnpm|yarn add` / `cargo add` / `pip|uv install`)
- * BEFORE they run and holds them to the `-(ask:lib)` advisor's standard.
+ * and npm-family scaffolds (`bun|npm|pnpm|yarn create` / `npm init` /
+ * `npx|bunx|dlx create-*` — they install a framework version without saying
+ * `add`, #606) BEFORE they run and holds them to the `-(ask:lib)` advisor's
+ * standard.
  *
  * Wired next to pre-release-hook under hooks.PreToolUse matcher="Bash|PowerShell".
  *
@@ -19,7 +22,7 @@
  *   - DEVLOG_INSTALL_GATE=0 disables the gate entirely.
  */
 import { readFile, mkdir, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { parseInstallCommands, decideGate } from "./src/install-gate.ts";
 
@@ -30,7 +33,14 @@ const LOG_DIR = join(import.meta.dir, ".devlog");
 const ACK_DIR = join(LOG_DIR, "install-ack");
 const ACK_TTL_MS = 10 * 60 * 1000;
 
-const log = (s) => Bun.write(join(LOG_DIR, "pre-install.debug.log"), `${new Date().toISOString()} ${s}\n`, { append: true }).catch(() => { /* logging is best-effort */ });
+// appendFileSync, not Bun.write: Bun.write has no append option and silently
+// truncated the log to its last line (#604).
+const log = (s) => {
+  try {
+    mkdirSync(LOG_DIR, { recursive: true });
+    appendFileSync(join(LOG_DIR, "pre-install.debug.log"), `${new Date().toISOString()} ${s}\n`);
+  } catch { /* logging is best-effort */ }
+};
 
 if (process.env.DEVLOG_INSTALL_GATE === "0") process.exit(0);
 

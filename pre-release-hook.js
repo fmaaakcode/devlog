@@ -22,7 +22,7 @@
  * passes through.
  */
 import { readFile, mkdir, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -33,7 +33,13 @@ const ACK_TTL_MS = 10 * 60 * 1000;
 await mkdir(LOG_DIR, { recursive: true });
 await mkdir(ACK_DIR, { recursive: true });
 
-const log = (s) => Bun.write(join(LOG_DIR, "pre-release.debug.log"), `${new Date().toISOString()} ${s}\n`, { append: true }).catch(() => { /* logging is best-effort */ });
+// appendFileSync, not Bun.write: Bun.write has no append option and silently
+// truncated the log to its last line (#604). LOG_DIR is mkdir'd above.
+const log = (s) => {
+  try {
+    appendFileSync(join(LOG_DIR, "pre-release.debug.log"), `${new Date().toISOString()} ${s}\n`);
+  } catch { /* logging is best-effort */ }
+};
 
 if (process.env.DEVLOG_RELEASE_GUARD === "0") process.exit(0);
 
