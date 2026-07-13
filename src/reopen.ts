@@ -8,7 +8,7 @@
 import type { DevLogData } from "./types";
 import { closedItems } from "./closed-items";
 
-const PROBLEM_TAGS = new Set(["bug found", "security", "security:own", "security:dep"]);
+export const PROBLEM_TAGS = new Set(["bug found", "security", "security:own", "security:dep"]);
 
 // Words of 3+ letters/digits (unicode — Arabic reports are the norm here),
 // keeping path-ish glue chars so `src/scanner.ts` survives as one token.

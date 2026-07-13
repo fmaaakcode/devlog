@@ -18,16 +18,25 @@
 // policy (heavy diffs age out; the event row itself still archives on cold
 // removal), and purgeProjectData does NOT archive — the user asked for that
 // project's data to be deleted, and archiving would defeat the purge.
+//
+// TWO STREAMS (#584). `events-*` holds rows evicted by retention. `undone-*`
+// holds tags (and plan steps) removed by `-(undo)`, which used to be spliced out
+// and gone forever — the one hard delete left in the codebase, sitting oddly next
+// to a module whose whole premise is that pruning archives. Same file format, same
+// write chain, same rollover; only the filename prefix differs.
 
 import { appendFile, mkdir, readdir, unlink } from "node:fs/promises";
 import { gzipSync, gunzipSync } from "node:zlib";
 import { DATA_DIR } from "./data";
-import type { EventEntry } from "./types";
+import type { EventEntry, UndoneRecord } from "./types";
 
 export const ARCHIVE_DIR = `${DATA_DIR}/archive`;
 
+/** The archive streams. The filename prefix IS the stream name. */
+export type ArchiveStream = "events" | "undone";
+
 const MONTH_RE = /^\d{4}-\d{2}$/;
-const FILE_RE = /^events-(\d{4}-\d{2})\.jsonl(\.gz)?$/;
+const FILE_RE = /^(events|undone)-(\d{4}-\d{2})\.jsonl(\.gz)?$/;
 
 /** Current wall-clock month (UTC) — names the file that receives appends. */
 export function currentArchiveMonth(now = new Date()): string {
@@ -47,17 +56,30 @@ let writeChain: Promise<unknown> = Promise.resolve();
  * could not be persisted, so callers holding the events can put them back.
  */
 export function archiveEvents(evicted: EventEntry[]): Promise<boolean> {
-  if (!evicted.length) return Promise.resolve(true);
-  const lines = `${evicted.map(e => JSON.stringify(e)).join("\n")}\n`;
+  return appendStream("events", evicted, `${evicted.length} evicted events`);
+}
+
+/**
+ * Append tags/plan-steps removed by `-(undo)` to the undone stream. Callers MUST
+ * treat `false` as "do not delete": the removal is only legal once the row is
+ * archived (the archive-before-delete contract retention already follows).
+ */
+export function archiveUndone(records: UndoneRecord[]): Promise<boolean> {
+  return appendStream("undone", records, `${records.length} undone tag(s)`);
+}
+
+function appendStream(stream: ArchiveStream, records: unknown[], label: string): Promise<boolean> {
+  if (!records.length) return Promise.resolve(true);
+  const lines = `${records.map(e => JSON.stringify(e)).join("\n")}\n`;
   const result = writeChain.then(async () => {
     try {
       await mkdir(ARCHIVE_DIR, { recursive: true });
       const month = currentArchiveMonth();
       await compressClosedMonths(month);
-      await appendWithRetry(`${ARCHIVE_DIR}/events-${month}.jsonl`, lines);
+      await appendWithRetry(`${ARCHIVE_DIR}/${stream}-${month}.jsonl`, lines);
       return true;
     } catch (e) {
-      console.error(`[event-archive] append failed — ${evicted.length} evicted events not archived:`, (e as Error)?.message);
+      console.error(`[event-archive] ${stream} append failed — ${label} not archived:`, (e as Error)?.message);
       return false;
     }
   });
@@ -90,7 +112,7 @@ async function compressClosedMonths(currentMonth: string): Promise<void> {
   try { entries = await readdir(ARCHIVE_DIR); } catch { return; }
   for (const f of entries) {
     const m = f.match(FILE_RE);
-    if (!m || m[2] || m[1] === currentMonth) continue;
+    if (!m || m[3] || m[2] === currentMonth) continue;   // m: [, stream, month, gz?]
     const plain = `${ARCHIVE_DIR}/${f}`;
     const bytes = await Bun.file(plain).bytes();
     await Bun.write(`${plain}.gz`, gzipSync(bytes));
@@ -98,42 +120,51 @@ async function compressClosedMonths(currentMonth: string): Promise<void> {
   }
 }
 
-/** Months with an archive file, oldest first. */
-export async function listArchiveMonths(): Promise<string[]> {
+/** Months with an archive file for `stream`, oldest first. */
+export async function listArchiveMonths(stream: ArchiveStream = "events"): Promise<string[]> {
   let entries: string[];
   try { entries = await readdir(ARCHIVE_DIR); } catch { return []; }
   const months = new Set<string>();
   for (const f of entries) {
     const m = f.match(FILE_RE);
-    if (m) months.add(m[1]);
+    if (m && m[1] === stream) months.add(m[2]);
   }
   return [...months].sort();
 }
 
 /**
- * Read one month's archived events, oldest first. Prefers the plain .jsonl
- * (always a superset of a crash-leftover .gz twin). Skips unparsable lines —
- * a crash mid-append can leave one truncated trailing line, and losing that
- * line must not block reading the rest of the month.
+ * Read one month of a stream, oldest first. Prefers the plain .jsonl (always a
+ * superset of a crash-leftover .gz twin). Skips unparsable lines — a crash
+ * mid-append can leave one truncated trailing line, and losing that line must not
+ * block reading the rest of the month.
  */
-export async function readArchiveMonth(month: string): Promise<EventEntry[]> {
+async function readStream<T>(stream: ArchiveStream, month: string, valid: (o: T) => boolean): Promise<T[]> {
   if (!MONTH_RE.test(month)) return []; // also guards the filename against traversal
-  const plain = Bun.file(`${ARCHIVE_DIR}/events-${month}.jsonl`);
+  const plain = Bun.file(`${ARCHIVE_DIR}/${stream}-${month}.jsonl`);
   let text: string;
   if (await plain.exists()) {
     text = await plain.text();
   } else {
-    const gz = Bun.file(`${ARCHIVE_DIR}/events-${month}.jsonl.gz`);
+    const gz = Bun.file(`${ARCHIVE_DIR}/${stream}-${month}.jsonl.gz`);
     if (!(await gz.exists())) return [];
     text = new TextDecoder().decode(gunzipSync(await gz.bytes()));
   }
-  const events: EventEntry[] = [];
+  const out: T[] = [];
   for (const line of text.split("\n")) {
     if (!line.trim()) continue;
     try {
-      const e = JSON.parse(line) as EventEntry;
-      if (e && typeof e === "object" && e.id) events.push(e);
+      const o = JSON.parse(line) as T;
+      if (o && typeof o === "object" && valid(o)) out.push(o);
     } catch { /* truncated/corrupt line — skip, keep the rest of the month */ }
   }
-  return events;
+  return out;
+}
+
+export function readArchiveMonth(month: string): Promise<EventEntry[]> {
+  return readStream<EventEntry>("events", month, e => !!e.id);
+}
+
+/** One month of tags removed by `-(undo)`, oldest first. */
+export function readUndoneMonth(month: string): Promise<UndoneRecord[]> {
+  return readStream<UndoneRecord>("undone", month, r => !!r.undoneAt && !!r.entry);
 }

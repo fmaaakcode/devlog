@@ -149,6 +149,23 @@ export interface PlanStep {
   dropped?: boolean;
 }
 
+/**
+ * A tag (or plan step) removed by `-(undo)`, as written to the `undone` archive
+ * stream (#584). `-(undo)` used to splice the row out and lose it forever — the
+ * last hard delete in a codebase whose retention explicitly archives instead. The
+ * row keeps its full original shape under `entry`, so restoring it is a re-POST,
+ * not a reconstruction.
+ */
+export interface UndoneRecord {
+  undoneAt: string;
+  project: string;
+  kind: "tag" | "plan-step";
+  /** plan-step only: which plan it was cut from, and the .md it round-trips to. */
+  planTitle?: string;
+  planFile?: string;
+  entry: TagEntry | PlanStep;
+}
+
 export interface PlanEntry {
   id: string;
   project: string;
@@ -241,4 +258,12 @@ export interface DevLogData {
   // one `-(done)`). Surfaced in next SessionStart and cleared after, so
   // Claude learns instead of repeating the pattern silently (P1.9).
   rejections?: Array<{ id: string; project: string; reason: string; detail: string; timestamp: string }>;
+  // Idempotency fingerprints of processed /api/tags batches (#591). The Stop
+  // hook computes each from the RAW entries BEFORE any release-version
+  // derivation, so a disk-queue replay of a batch the server already applied
+  // is recognized and dropped — the whole-history content dedup can't catch
+  // it, because a bare -(release) is stored WITH its computed version while
+  // the replay arrives without one, minting a fresh number each time. Capped
+  // (newest last).
+  processedBatches?: string[];
 }

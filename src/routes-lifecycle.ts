@@ -6,7 +6,7 @@
 // (2026-07-08 dual-listener incident).
 
 import { appendAudit } from "./audit";
-import { isStale, newestSourceMtime, scheduleRestart } from "./freshness";
+import { criticalEnv, isStale, newestSourceMtime, scheduleRestart } from "./freshness";
 
 type ApiReq = Bun.BunRequest;
 
@@ -23,10 +23,13 @@ export function makeLifecycleRoutes(deps: LifecycleDeps): Record<string, unknown
     // source file on disk is newer than boot (the daemon loads code once and, with
     // no --watch, serves it until restarted). The comparison runs here (portable
     // fs.stat) instead of `find -newermt` in the shell (GNU-only, dead on macOS).
+    // `env` (#595): the daemon's resolved critical environment (store dir, port,
+    // language) so a hook — always running with the session's FRESH env — can
+    // detect a daemon revived with a stale inherited one (envDrift in freshness).
     "/api/boot": {
       async GET() {
         const newest = await newestSourceMtime(deps.assetRoot);
-        return Response.json({ boot: deps.bootMs, stale: isStale(deps.bootMs, newest) });
+        return Response.json({ boot: deps.bootMs, stale: isStale(deps.bootMs, newest), env: criticalEnv() });
       },
     },
 

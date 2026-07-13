@@ -5,7 +5,7 @@
 // hard-coding regresses a test instead of shipping.
 
 import { test, expect, describe, afterEach } from "bun:test";
-import { applyUndo } from "../src/tags-service";
+import { applyUndo } from "../src/undo";
 import type { DevLogData, TagEntry } from "../src/types";
 
 const PROJ = "i18n-fixture";

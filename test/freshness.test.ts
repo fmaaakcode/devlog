@@ -4,7 +4,7 @@
 // macOS.
 
 import { test, expect, describe, afterEach } from "bun:test";
-import { isStale, newestSourceMtime, shouldAutoRestart, staleInjectWarning } from "../src/freshness";
+import { isStale, newestSourceMtime, shouldAutoRestart, staleInjectWarning, criticalEnv, envDrift } from "../src/freshness";
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +21,39 @@ describe("isStale (pure verdict)", () => {
   });
   test("no source found (0) is never stale — the compiled-binary case", () => {
     expect(isStale(Date.now(), 0)).toBe(false);
+  });
+});
+
+describe("critical-env fingerprint (#595)", () => {
+  test("criticalEnv resolves the three values that pick store/port/language", () => {
+    const e = criticalEnv();
+    expect(typeof e.dataDir).toBe("string");
+    expect(e.dataDir.length).toBeGreaterThan(0);
+    expect(Number.isInteger(e.port)).toBe(true);
+    expect(["en", "ar"]).toContain(e.lang);
+  });
+
+  test("aligned envs report no drift", () => {
+    const e = { dataDir: "D:/x/data", port: 7777, lang: "en" };
+    expect(envDrift(e, { ...e })).toEqual([]);
+  });
+
+  test("slash/case path noise is not drift (Windows)", () => {
+    expect(envDrift(
+      { dataDir: "D:\\Data\\DevLog\\", port: 7777, lang: "ar" },
+      { dataDir: "d:/data/devlog", port: 7777, lang: "ar" },
+    )).toEqual([]);
+  });
+
+  test("each drifted value is named — the 2026-07-08 stale-lang revival shape", () => {
+    expect(envDrift(
+      { dataDir: "D:/old-store", port: 7777, lang: "en" },
+      { dataDir: "D:/new-store", port: 8888, lang: "ar" },
+    )).toEqual(["DEVLOG_DATA_DIR", "DEVLOG_PORT", "DEVLOG_LANG"]);
+    expect(envDrift(
+      { dataDir: "D:/s", port: 7777, lang: "en" },
+      { dataDir: "D:/s", port: 7777, lang: "ar" },
+    )).toEqual(["DEVLOG_LANG"]);
   });
 });
 

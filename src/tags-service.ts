@@ -18,15 +18,11 @@ import {
 import { appendDoc, writeDoc, applyTaskCompletion, applyTaskDrop, extractCheckboxes } from "./doc-store";
 import { writeReleaseHtml, parseVersion, parseVersionMarker } from "./release-html";
 import { compareSemver, computeNextVersion, readManifestVersion, type VersionReject, type BumpType } from "./version-writer";
-import type { RollbackResult } from "./release-rollback";
 import { pathsEqual } from "./path-utils";
-import { currentLang } from "./i18n";
 
-// English-first localization (same per-module pattern as vuln-scan.ts / scanner.ts):
-// user-facing strings default to English for the global audience and switch to
-// Arabic only when DEVLOG_LANG=ar. Keeps a rejection message from reaching an
-// English user in Arabic.
-const L = <T>(en: T, ar: T): T => (currentLang() === "ar" ? ar : en);
+// Undo (the three `-(undo)` modes + the archive-before-delete contract) lives in
+// ./undo.ts — extracted for the file-size budget when #584 landed. It imports
+// pushRejection from here; the dependency runs one way only.
 
 // ── Rejections ──────────────────────────────────────────────────────────────
 // Surfaced back to Claude on the next SessionStart (P1.9). Capped at 20.
@@ -373,88 +369,6 @@ export function diagnoseClosureMismatch(
 
   // Nothing open OR closed matches this number → a phantom closure that closes nothing.
   return { kind: "no-match", num, usedCloser: tag };
-}
-
-// ── Undo (three modes) ──────────────────────────────────────────────────────
-/**
- *   1. `-(undo) #N`   → delete the tag (or plan-step) with that number.
- *   2. `-(undo) text` → delete the most recent tag whose normalized content
- *      matches; exact match wins, else a unique substring; ambiguous → reject.
- *   3. `-(undo)`      → delete the most recent tag in the project.
- */
-// Remove the tag at `idx`; if it's a release, also reverse its on-disk effects
-// (manifest version, vX.Y.Z.html, index, changelog) — #234. The splice happens
-// FIRST so rollbackRelease rebuilds the index from tags that already exclude it.
-async function removeTagAt(idx: number, data: DevLogData, project: string): Promise<RollbackResult | null> {
-  const [removed] = data.tags.splice(idx, 1);
-  if (removed && removed.tag === "release") {
-    try {
-      const { rollbackRelease } = await import("./release-rollback");
-      return await rollbackRelease(removed, data, project);
-    } catch (e) { console.error("[/api/tags undo release-rollback] error:", (e as Error)?.message); }
-  }
-  return null;
-}
-
-// Returns the RollbackResult when the undone tag was a release (so the caller
-// can surface the outcome — QA #2), else null.
-export async function applyUndo(content: string, data: DevLogData, project: string): Promise<RollbackResult | null> {
-  const num = singleHashNum(content);
-  if (num !== null) {
-    const idx = data.tags.findIndex(t => t.project === project && t.num === num);
-    if (idx >= 0) { return await removeTagAt(idx, data, project); }
-    // Fallback: #N may be a plan-step number, not a tag (tags + steps share
-    // assignNum). Drop the step and round-trip the doc:plan .md.
-    for (const plan of data.plans) {
-      if (plan.project !== project) continue;
-      const stepIdx = plan.steps.findIndex(s => s.num === num);
-      if (stepIdx < 0) continue;
-      const step = plan.steps[stepIdx];
-      plan.steps.splice(stepIdx, 1);
-      const projectPath = data.projects[project]?.path;
-      if (projectPath && plan.file_path) {
-        try { await applyTaskDrop(projectPath, project, plan.file_path, step.text); }
-        catch (e) { console.error("[/api/tags undo plan-step] error:", (e as Error)?.message); }
-      }
-      plan.updatedAt = new Date().toISOString();
-      return null;
-    }
-    console.log(`[/api/tags undo] no tag or plan-step found for #${num} in ${project}`);
-    return null;
-  }
-
-  const norm = (s: string) => s.toLowerCase().replace(/[—–-]+/g, "-").replace(/\s+/g, " ").trim();
-  const needle = content ? norm(content) : "";
-  if (!needle) {
-    const idx = data.tags.findLastIndex(t => t.project === project);
-    return idx >= 0 ? await removeTagAt(idx, data, project) : null;
-  }
-  const exactIdxs = data.tags
-    .map((t, i) => ({ t, i }))
-    .filter(({ t }) => t.project === project && norm(t.content) === needle)
-    .map(({ i }) => i);
-  if (exactIdxs.length > 0) {
-    return await removeTagAt(exactIdxs[exactIdxs.length - 1], data, project);
-  }
-  const substrIdxs = data.tags
-    .map((t, i) => ({ t, i }))
-    .filter(({ t }) => t.project === project && norm(t.content).includes(needle))
-    .map(({ i }) => i);
-  if (substrIdxs.length === 1) {
-    return await removeTagAt(substrIdxs[0], data, project);
-  } else if (substrIdxs.length > 1) {
-    const candidates = substrIdxs
-      .map(i => data.tags[i])
-      .map(t => `[${t?.tag}${t?.num ? ` #${t.num}` : ""}] ${(t?.content || "").slice(0, 80)}`)
-      .join(" | ");
-    pushRejection(data, project, "undo-ambiguous", L(
-      `\`-(undo) ${content.slice(0, 60)}\` matches ${substrIdxs.length} tags. Use \`-(undo) #N\` by number to avoid ambiguity. Candidates: ${candidates}`,
-      `\`-(undo) ${content.slice(0, 60)}\` يطابق ${substrIdxs.length} تاقات. استخدم \`-(undo) #N\` بالرقم لتجنب اللبس. المرشحون: ${candidates}`));
-    console.log(`[/api/tags undo] AMBIGUOUS: '${content.slice(0, 60)}' matches ${substrIdxs.length} tags in ${project}; skipping`);
-  } else {
-    console.log(`[/api/tags undo] no match for '${content.slice(0, 60)}' in ${project}`);
-  }
-  return null;
 }
 
 // ── Release: HTML + manifest version bump ─────────────────────────────────--

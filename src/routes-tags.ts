@@ -8,7 +8,7 @@
 // the request body is typed (compile-time casts — zero runtime change) so the
 // module carries no `any`. Spread into server.ts's routeDefs.
 
-import { loadData, withData, normalizeTagContent, assignNum } from "./data";
+import { loadData, withData, normalizeTagContent, assignNum, openBugs, openSecurity } from "./data";
 import { tsToMs } from "./maintenance";
 import { broadcast } from "./broadcast";
 import { resolveProjectFor } from "./project-resolve";
@@ -17,7 +17,7 @@ import { pathsEqual } from "./path-utils";
 import { verifyHintFor } from "./verify-hint";
 import {
   handleDocTag, enforceAtomicContent, resolveClosureNumber, diagnoseClosureMismatch,
-  diagnoseClosureTextDivergence, confirmClosure, applyUndo, applyRelease, resolveReleaseIntent,
+  diagnoseClosureTextDivergence, confirmClosure, applyRelease, resolveReleaseIntent,
   detectReleaseDowngrade, detectReleaseOpenItems, syncPlanSteps,
   type ClosureMismatch, type ClosureTextDivergence, type ClosureConfirm,
   type ReleaseDowngrade, type ReleaseBlocked, type ReleaseIntent,
@@ -25,7 +25,9 @@ import {
 import { applyUpcoming, applyTodoPromotion, type UpcomingChange } from "./upcoming";
 import { sessionTouchedFiles } from "./file-story";
 import { diagnoseFeatureRef, type FeatureRefProblem } from "./features";
-import { detectReopen, type ReopenHint } from "./reopen";
+import { detectReopen, PROBLEM_TAGS, type ReopenHint } from "./reopen";
+import { applyUndo } from "./undo";
+import { listArchiveMonths, readUndoneMonth } from "./event-archive";
 import type { RollbackResult } from "./release-rollback";
 import type { TagEntry } from "./types";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -37,7 +39,7 @@ type ApiReq = Bun.BunRequest;
 // payloads); the pipeline validates/normalizes each field. Typing them lets the
 // module stay `any`-free while the runtime logic is byte-identical to before.
 interface TagInput { tag?: string; content?: string; breaking?: boolean }
-interface TagsBody { entries?: TagInput[]; cwd?: string; session_id?: string }
+interface TagsBody { entries?: TagInput[]; cwd?: string; session_id?: string; batch_id?: string }
 interface ClassifyBody { cwd?: string; count?: number; type?: string; note?: string }
 // Entries handed to helpers that require concrete tag/content strings — the guard
 // preceding each call proves they're present, so this cast is a compile-time only.
@@ -65,6 +67,26 @@ export function makeTagsRoutes(): Record<string, unknown> {
       },
     },
 
+    // Read-path for tags removed by `-(undo)` (#584). The undo itself archives
+    // the row instead of destroying it, so this is where it comes back from:
+    // every record carries the original entry verbatim, making a restore a
+    // re-POST to /api/tags rather than a reconstruction from memory.
+    // No ?month → the months that hold undone rows; ?month=YYYY-MM → that month's,
+    // newest first, optionally narrowed by ?project. Same shape as
+    // /api/events/archive, which reads the sibling stream.
+    "/api/undone": {
+      async GET(req: ApiReq) {
+        const url = new URL(req.url);
+        const month = url.searchParams.get("month");
+        if (!month) return Response.json({ months: await listArchiveMonths("undone") });
+        if (!/^\d{4}-\d{2}$/.test(month)) return Response.json({ error: "month must be YYYY-MM" }, { status: 400 });
+        const project = url.searchParams.get("project");
+        let records = await readUndoneMonth(month);
+        if (project) records = records.filter(r => r.project === project);
+        return Response.json({ month, count: records.length, records: records.reverse() });
+      },
+    },
+
     "/api/tags": {
       async POST(req: ApiReq) {
         try {
@@ -77,6 +99,20 @@ export function makeTagsRoutes(): Record<string, unknown> {
 
           return await withData(async (data) => {
             const { name: project, cwd: effectiveCwd } = resolveProjectFor(data, body.cwd || "");
+            // Batch idempotency (#591): the Stop hook fingerprints every batch
+            // from its RAW entries — before any release-version derivation —
+            // and the disk queue replays the SAME body verbatim. A batch whose
+            // fingerprint was already processed (a timeout after a successful
+            // apply, an rm that failed after a drain) is dropped wholesale
+            // here: the content dedup below can't catch a replayed bare
+            // -(release), because the stored copy carries its computed version
+            // while the replay arrives without one — each pass minted a fresh,
+            // higher number (the v3.13.0→v3.13.3 twin class).
+            const batchId = typeof body.batch_id === "string" ? body.batch_id : "";
+            if (batchId && (data.processedBatches || []).includes(batchId)) {
+              console.log(`[/api/tags] batch replay dropped: ${batchId} (${(body.entries || []).length} entries)`);
+              return Response.json({ ok: true, count: 0, batchReplay: true, release: null, releaseIntent: null, releaseDowngrade: null, releaseBlocked: null, rollback: null, closureHints: [], closureTextWarnings: [], featureHints: [], closed: [], upcomingChanges: [], reopenHints: [], verifyHint: null });
+            }
           let releaseResult: Awaited<ReturnType<typeof applyRelease>> = null;
           let releaseIntent: ReleaseIntent | null = null;
           let releaseDowngrade: ReleaseDowngrade | null = null;
@@ -275,8 +311,26 @@ export function makeTagsRoutes(): Record<string, unknown> {
               t.project === project && t.tag === tag && normalizeTagContent(t.content) === normContent,
             );
             if (isDup) {
-              console.log(`[/api/tags] dedup drop: project=${project} tag=${tag} content="${content.slice(0, 80)}"`);
-              continue;
+              // Regression pass-through (#593): a problem report byte-identical
+              // to a CLOSED one is the strongest reopen evidence there is — the
+              // fix didn't hold, verbatim. Swallowing it here meant detectReopen
+              // (which runs only on entries that survive this gate) never saw
+              // exactly the shape it exists for. Store it as a reopen UNLESS an
+              // identical twin is still open — then it really is an echo.
+              let regressionReport = false;
+              if (PROBLEM_TAGS.has(tag)) {
+                const projTags = data.tags.filter(t => t.project === project);
+                const openNums = new Set([...openBugs(projTags), ...openSecurity(projTags)].map(t => t.num));
+                const openTwin = projTags.some(t =>
+                  t.tag === tag && typeof t.num === "number" && openNums.has(t.num)
+                  && normalizeTagContent(t.content) === normContent);
+                regressionReport = !openTwin && !!detectReopen(data, project, tag, content, touchedFiles);
+              }
+              if (!regressionReport) {
+                console.log(`[/api/tags] dedup drop: project=${project} tag=${tag} content="${content.slice(0, 80)}"`);
+                continue;
+              }
+              console.log(`[/api/tags] identical problem report to a CLOSED item — stored as reopen: "${content.slice(0, 80)}"`);
             }
 
             // Wholesale downgrade rejection: a release older than the highest
@@ -343,6 +397,15 @@ export function makeTagsRoutes(): Record<string, unknown> {
             if (tag === "done" || tag === "dropped") {
               await syncPlanSteps(tag, content, data, project);
             }
+          }
+
+          // Record the fingerprint only for batches that carried entries — an
+          // all-echo continuation posts an empty batch whose id is worthless.
+          // Recorded on the same withData save as the entries themselves, so a
+          // crash can't persist the fingerprint without its batch (writeAllSplit
+          // additionally orders rows before meta, #596).
+          if (batchId && (body.entries || []).length) {
+            data.processedBatches = [...(data.processedBatches || []), batchId].slice(-500);
           }
 
           if (effectiveCwd) await exportStatusMd(effectiveCwd, data, project);

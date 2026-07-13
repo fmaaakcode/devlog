@@ -55,7 +55,11 @@ export async function runHook(
   const proc = spawn({
     cmd: ["bun", "parse-tags.ts"],
     cwd: PROJECT_ROOT,
-    env: { ...process.env, DEVLOG_PORT: String(port), DEVLOG_LANG: "en", DEVLOG_DEBUG: "0", ...extraEnv },
+    // Env-drift check off by default (#595): this hook process legitimately
+    // runs with a different DEVLOG_DATA_DIR than the test server it targets,
+    // which is exactly the drift the check exists to flag. Tests OF the check
+    // re-enable it via extraEnv.
+    env: { ...process.env, DEVLOG_PORT: String(port), DEVLOG_LANG: "en", DEVLOG_DEBUG: "0", DEVLOG_ENV_DRIFT_CHECK: "0", ...extraEnv },
     stdin: "pipe", stdout: "pipe", stderr: "pipe",
   });
   proc.stdin.write(JSON.stringify(payload));

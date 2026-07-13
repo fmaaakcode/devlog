@@ -43,7 +43,7 @@ describe("loadLedger", () => {
 
     const { ledger: next } = await loadLedger(dir, "s1", "T2");
     expect(next.turn).toEqual({ turnId: "T2", postedKeys: [], servedCommands: [] });
-    expect(next.session).toEqual({ hintedVerify: true, servedSignatures: ["sig-1"] });
+    expect(next.session).toEqual({ hintedVerify: true, servedSignatures: ["sig-1"], envDriftChecked: false });
   });
 
   test("corrupt state file fails open to a fresh ledger", async () => {

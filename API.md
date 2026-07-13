@@ -29,6 +29,7 @@
 - `/api/tags` — the tag-processing pipeline (POST)
 - `/api/tags/:project` — one project's tags, newest-first, `?limit=` (GET)
 - `/api/tag/:id` — delete a tag (DELETE, token-gated when enabled)
+- `/api/undone` — tags/plan-steps removed by `-(undo)`, read on demand: no params → available months; `?month=YYYY-MM` → that month's undone rows newest-first, `?project=` filters. `-(undo)` archives the row to `archive/undone-YYYY-MM.jsonl` before removing it (and refuses to remove it if that write fails), so each record carries the original entry verbatim — restoring is a re-POST to `/api/tags` (GET)
 - `/api/classify` — classify recent change events (POST)
 
 ## Event / session capture (`routes-events.ts`)
@@ -69,8 +70,8 @@
 ## Features / client report (`routes-features.ts`)
 - `/api/features` — the current capability inventory (feature tags resolved: updates applied, removed dropped, each attributed to its shipping release) + since-last-release counters for the release nudge (GET; `?project=` or `?cwd=`) — powers `-(ask:features)`
 - `/api/features-backfill` — releases not covered by any declared capability, each with its summary + built/update material lines (GET; `?project=` or `?cwd=`) — powers `-(ask:backfill)`
-- `/api/retro` — the full problem corpus: every bug/security report, open and closed, with open/close dates, age in days and project-relative touched files, oldest first (GET; `?project=` or `?cwd=`) — powers `-(ask:retro)`
-- `/api/study` — the deep-study corpus: whole-history aggregates (monthly trend, time-to-close medians, release hygiene, fragile files, capability coverage, work-rhythm behavior profile from tag timestamps) + narrative delta since the previous stored study + that study's conclusions digest (GET; `?project=` or `?cwd=`) — powers `-(ask:study)`
+- `/api/retro` — the full problem corpus: every bug/security report, open and closed, with open/close dates, age in days and project-relative touched files, oldest first, plus `fragile` (files recurring across reports) and `testGap` (fixes closed without their session touching a test — #585) (GET; `?project=` or `?cwd=`) — powers `-(ask:retro)`
+- `/api/study` — the deep-study corpus: whole-history aggregates (monthly trend, time-to-close medians, release hygiene, fragile files, the regression-test gap, capability coverage, work-rhythm behavior profile from tag timestamps) + narrative delta since the previous stored study + that study's conclusions digest (GET; `?project=` or `?cwd=`) — powers `-(ask:study)`
 - `/api/docs` — the project's stored-docs index (doc:report/analysis/…; plans excluded) from `.devlog/docs/index.json` (GET; `?project=` or `?cwd=`) — powers the dashboard's «دراسات» chip
 - `/api/doc-page` — one rendered doc page as HTML from `<project>/.devlog/docs/<slug>.html`; slug validated and path-checked against the docs dir (GET; `?project=`/`?cwd=` + `&slug=`)
 - `/api/client-report` — the client-facing status page as HTML (GET; `?save=1` also persists `<project>/.devlog/client-report.html` and returns the path as JSON)
@@ -81,7 +82,7 @@
 - `/api/scan/:project` — full manual rescan (POST)
 
 ## Injection (`routes-inject.ts`)
-- `/api/inject` — run context injection (GET/POST). Types: SessionStart (primer + project profile), UserPromptSubmit (conditional open-items reminder), PreToolUse (position memory #486: compact file story on the session's first Read of a file with tag history; gated by `preToolUseRead`, no event recorded, no status.md export). On a stale daemon (code on disk newer than boot) the SessionStart response also carries a top-level `systemMessage` warning — the visible channel; hook stderr is discarded on exit 0
+- `/api/inject` — run context injection (GET/POST). Types: SessionStart (primer + project profile), UserPromptSubmit (conditional open-items reminder), PreToolUse (position memory #486: compact file story on the session's first Read of a file with tag history; gated by `preToolUseRead`, no event recorded, no status.md export). The response may carry a top-level `systemMessage` — the ONE channel Claude Code shows the user for an exit-0 hook (stderr is discarded), so every "your tooling is broken" alert merges into it (`inject-warnings.ts`): a stale daemon (code on disk newer than boot, SessionStart), transcript-shape drift against parse-tags' assumptions (#582, SessionStart + UserPromptSubmit, once per session), and fresh log-integrity damage (#583, SessionStart, last 7 days, pointing at `doctor`)
 - `/api/inject/preview` — preview injection without logging (GET)
 - `/api/injections` — injection history (GET)
 - `/api/injection/:id` — delete one history entry (DELETE)

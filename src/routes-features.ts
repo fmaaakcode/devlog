@@ -13,7 +13,7 @@ import { resolveProjectFor } from "./project-resolve";
 import { pathsEqual } from "./path-utils";
 import { featureList, featuresSinceLastRelease, backfillCorpus } from "./features";
 import { collectClientReport, renderClientReportHtml, writeClientReport } from "./client-report";
-import { retroCorpus, fragileFiles } from "./retro";
+import { retroCorpus, fragileFiles, regressionGap } from "./retro";
 import { studyCorpus } from "./study";
 
 type ApiReq = Bun.BunRequest;
@@ -73,7 +73,15 @@ export function makeFeatureRoutes(): Record<string, unknown> {
         const project = await resolveParam(req);
         if (!project) return Response.json({ project: null, items: [] });
         const data = await loadData();
-        return Response.json({ project, items: retroCorpus(data, project), fragile: fragileFiles(data, project) });
+        return Response.json({
+          project,
+          items: retroCorpus(data, project),
+          fragile: fragileFiles(data, project),
+          // #585: fixes that closed without their session touching a test. One
+          // quiet ratio in the header — "what keeps breaking?" and "what did we
+          // fix without guarding?" are the same reflection.
+          testGap: regressionGap(data, project),
+        });
       },
     },
 

@@ -10,6 +10,7 @@ import { resolve, basename } from "node:path";
 import { normalizeSlashes } from "./path-utils";
 import { spawnSync } from "./spawn";
 import { openTodos, openBugs, openSecurity, isStepClosed } from "./data";
+import { checkInvariants, type Finding } from "./doctor-invariants";
 import type { DevLogData, TagEntry, PlanEntry } from "./types";
 
 // Read at call time (not module load) so the value honors a DEVLOG_PORT set
@@ -18,14 +19,6 @@ const devlogPort = () => parseInt(process.env.DEVLOG_PORT || "7777", 10);
 const STALE_OPEN_DAYS = 14;
 const STALE_PLAN_DAYS = 30;
 const THIN_RELEASE_MIN_CHARS = 60;
-
-interface Finding {
-  severity: "high" | "medium" | "low";
-  code: string;
-  title: string;
-  detail: string;
-  items?: string[];
-}
 
 interface DoctorReport {
   project: string;
@@ -278,6 +271,14 @@ async function diagnose(projectPath: string): Promise<DoctorReport> {
       items: dupNums.slice(0, 20).map(n => `#${n}`),
     });
   }
+
+  // ─── Checks 9-13: log-integrity invariants ─────────────────────
+  // "Is the LOG intact?" rather than "is the project healthy?" — duplicate
+  // releases, duplicate tags, bloated twins, multi-line headlines, number gaps.
+  // They live in doctor-invariants.ts because SessionStart runs the same set to
+  // AUTOMATE this (integrityWarning): a doctor nobody remembers to type is a
+  // doctor that never sees the patient.
+  findings.push(...checkInvariants(tags, plans));
 
   return { project: projectKey, path: absPath, findings, stats };
 }

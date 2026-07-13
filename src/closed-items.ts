@@ -26,6 +26,7 @@ export interface ClosedItem {
   closerText?: string;   // closer tag content
   planTitle?: string;    // plan-step items only
   files?: string[];      // opener ∪ closer session files (position memory #486); feeds ask:retro
+  closerFiles?: string[];// the FIX's own footprint — where it was fixed, not where it was found (#585)
   relatedTo?: number;    // the closed report this one reopened (#556); feeds retro ⟲
 }
 
@@ -98,11 +99,17 @@ export function closedItems(data: DevLogData, project: string): ClosedItem[] {
     const closer = findCloser(closerIdx, group, t);
     // The problem's footprint = where it was reported ∪ where it was fixed.
     const files = [...new Set([...(t.files || []), ...(closer?.files || [])])].slice(0, 8);
+    // The FIX's own footprint, kept separate from that union (#585): "did the fix
+    // touch a test?" is a question only the closer's files can answer — the opener's
+    // files are where the bug was FOUND, and folding them in would credit a fix with
+    // a test file that was merely open when the bug was reported.
+    const closerFiles = (closer?.files || []).slice(0, 8);
     out.push({
       num: typeof t.num === "number" ? t.num : undefined,
       kind: t.tag, text: t.content, openedAt: t.timestamp,
       closedBy: closer?.tag, closedAt: closer?.timestamp, closerText: closer?.content,
       ...(files.length ? { files } : {}),
+      ...(closerFiles.length ? { closerFiles } : {}),
       ...(typeof t.relatedTo === "number" ? { relatedTo: t.relatedTo } : {}),
     });
   }

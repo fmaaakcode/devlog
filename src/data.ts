@@ -128,6 +128,7 @@ async function readFromDisk(): Promise<DevLogData> {
       descendants: meta.descendants || [],
       rejections: meta.rejections || [],
       migrations: meta.migrations || {},
+      processedBatches: meta.processedBatches || [],
     };
   }
   // Legacy fallback + migration.
@@ -146,6 +147,7 @@ async function readFromDisk(): Promise<DevLogData> {
       descendants: raw.descendants || [],
       rejections: raw.rejections || [],
       migrations: raw.migrations || {},
+      processedBatches: raw.processedBatches || [],
     };
     await migrateToSplit(data);
     return data;
@@ -156,6 +158,7 @@ async function readFromDisk(): Promise<DevLogData> {
     descendants: [],
     rejections: [],
     migrations: {},
+    processedBatches: [],
   };
 }
 
@@ -195,16 +198,24 @@ async function atomicWrite(path: string, body: string): Promise<void> {
 // every time — write amplification was ~5MB per single-event hook (R4 devops F2).
 const lastWritten = new Map<string, string>();
 
+// #596: no transaction spans the five split stores, so ORDER is the consistency
+// bound — row streams (tags/events/plans) land before the files that count or
+// summarize them (projects' nextItemNum, meta's flags/batch fingerprints). A
+// mid-group death then only leaves counters BEHIND rows, the direction assignNum
+// and the idempotent migrations already self-heal; the reverse tear is not.
+export const WRITE_PHASES: ReadonlyArray<ReadonlyArray<keyof typeof F>> =
+  [["tags", "events", "plans"], ["projects", "meta"]];
+
 async function writeAllSplit(data: DevLogData) {
   await mkdir(DATA_DIR, { recursive: true });
   // Compact (no `null, 2`): these are machine-read data files, not human-edited;
   // pretty-printing inflated every write ~30-40% for no benefit (R4 devops F2).
-  const writes: Array<[string, string]> = [
-    [F.projects, JSON.stringify(data.projects)],
-    [F.tags,     JSON.stringify(data.tags)],
-    [F.events,   JSON.stringify(data.events)],
-    [F.plans,    JSON.stringify(data.plans)],
-    [F.meta,     JSON.stringify({
+  const bodies: Record<keyof typeof F, string> = {
+    projects: JSON.stringify(data.projects),
+    tags:     JSON.stringify(data.tags),
+    events:   JSON.stringify(data.events),
+    plans:    JSON.stringify(data.plans),
+    meta:     JSON.stringify({
       worklog: data.worklog,
       injections: data.injections,
       injectionConfig: data.injectionConfig,
@@ -212,17 +223,21 @@ async function writeAllSplit(data: DevLogData) {
       descendants: data.descendants,
       rejections: data.rejections || [], // was dropped on every write → lost on reload (#32)
       migrations: data.migrations || {},
-    })],
-  ];
-  await Promise.all(writes.map(async ([p, body]) => {
-    const h = String(Bun.hash(body));
-    // Skip the I/O only when this section is byte-identical to our last write
-    // AND the file is actually on disk (guards against external deletion / a
-    // test that wiped DATA_DIR but kept this in-process cache).
-    if (lastWritten.get(p) === h && existsSync(p)) return;
-    await atomicWrite(p, body);
-    lastWritten.set(p, h);
-  }));
+      processedBatches: data.processedBatches || [],
+    }),
+  };
+  for (const phase of WRITE_PHASES) {
+    await Promise.all(phase.map(async (k) => {
+      const p = F[k];
+      const h = String(Bun.hash(bodies[k]));
+      // Skip the I/O only when this section is byte-identical to our last write
+      // AND the file is actually on disk (guards against external deletion / a
+      // test that wiped DATA_DIR but kept this in-process cache).
+      if (lastWritten.get(p) === h && existsSync(p)) return;
+      await atomicWrite(p, bodies[k]);
+      lastWritten.set(p, h);
+    }));
+  }
 }
 
 export async function loadData(): Promise<DevLogData> {
@@ -457,50 +472,8 @@ export function closedNums(tags: TagEntry[], kinds: string[]): Set<number> {
   return nums;
 }
 
-// ─── Orphan closure GC (#230) ──────────────────────────────────────────────
-// A valid `-(done) #5` is rewritten to the opener's TEXT at ingest
-// (resolveClosureNumber), and a phantom `#N` (no such open item) is now SKIPPED
-// by the closure-mismatch guard. But historical data — written before that
-// guard — still holds closer tags whose content is a bare `#N` that resolved
-// nothing. They clutter the activity log and close nothing. This GC removes
-// them, conservatively: a closer is an orphan only when its content is PURELY
-// `#N` token(s) AND none of those numbers belong to an opener in the same
-// project (so a closer pointing at a real item — even an already-closed one —
-// is never touched).
-const PURE_NUM_CLOSURE_RE = /^\s*(?:#\d+\s*)+$/;
-
-export function findOrphanClosures(tags: TagEntry[]): TagEntry[] {
-  // project → set of numbers owned by an opener tag (todo / bug found / security*).
-  const openerNums = new Map<string, Set<number>>();
-  for (const t of tags) {
-    const isOpener = t.tag === "todo" || t.tag === "bug found" || SECURITY_OPEN_TAGS.has(t.tag);
-    if (isOpener && typeof t.num === "number") {
-      let set = openerNums.get(t.project);
-      if (!set) { set = new Set(); openerNums.set(t.project, set); }
-      set.add(t.num);
-    }
-  }
-  return tags.filter(t => {
-    if (!CLOSURE_TAGS.has(t.tag)) return false;
-    if (!PURE_NUM_CLOSURE_RE.test(t.content || "")) return false;
-    const nums = [...(t.content || "").matchAll(/#(\d+)/g)].map(m => parseInt(m[1], 10));
-    if (!nums.length) return false;
-    const known = openerNums.get(t.project) ?? new Set<number>();
-    return nums.every(n => !known.has(n)); // closes nothing that exists → orphan
-  });
-}
-
-/** One-time GC of orphan closure tags. Idempotent via `cleanup_orphan_closures_v1`.
- *  Returns the number of tags removed. */
-export function cleanupOrphanClosures(data: DevLogData): number {
-  if (!data.migrations) data.migrations = {};
-  if (data.migrations.cleanup_orphan_closures_v1) return 0;
-  const orphanIds = new Set(findOrphanClosures(data.tags).map(t => t.id));
-  const before = data.tags.length;
-  data.tags = data.tags.filter(t => !orphanIds.has(t.id));
-  data.migrations.cleanup_orphan_closures_v1 = true;
-  return before - data.tags.length;
-}
+// Orphan closure GC (#230) lives in ./orphan-closures — extracted under the
+// file-size budget; pure over the tags array, consumed by server startup only.
 
 export interface OpenItemOpts {
   /**

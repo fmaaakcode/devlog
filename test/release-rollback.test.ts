@@ -8,7 +8,8 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { rollbackRelease } from "../src/release-rollback";
 import { restoreManifestVersion } from "../src/version-writer";
-import { applyUndo, applyRelease } from "../src/tags-service";
+import { applyRelease } from "../src/tags-service";
+import { applyUndo } from "../src/undo";
 import type { DevLogData, TagEntry, ProjectProfile } from "../src/types";
 
 const TMP = join(import.meta.dir, ".tmp-rollback");

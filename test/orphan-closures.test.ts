@@ -6,7 +6,7 @@
 // closer pointing at a real item (even an already-closed one) is never removed.
 
 import { describe, test, expect } from "bun:test";
-import { findOrphanClosures, cleanupOrphanClosures } from "../src/data";
+import { findOrphanClosures, cleanupOrphanClosures } from "../src/orphan-closures";
 import type { DevLogData, TagEntry } from "../src/types";
 
 const PROJ = "orph-proj";

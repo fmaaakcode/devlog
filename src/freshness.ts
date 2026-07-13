@@ -7,6 +7,35 @@ import { readdir, stat } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { spawn } from "./spawn";
 import { currentLang } from "./i18n";
+import { DATA_DIR, PORT } from "./data";
+
+// ── Critical-env fingerprint (#595) ─────────────────────────────────────────
+// Code freshness alone can't see every way a daemon goes stale: auto-revival
+// respawns it with the environment it INHERITED, which may predate a user-level
+// change (the 2026-07-08 DEVLOG_LANG incident — current code, wrong language,
+// wrong-looking store). These three values decide WHICH store, port and
+// language the daemon serves; they are resolved (not raw env vars) so an
+// explicit default and an implicit one compare equal. Exposed on /api/boot so
+// the hooks — which always run with the session's fresh env — can compare.
+
+export interface CriticalEnv { dataDir: string; port: number; lang: string }
+
+/** This process's resolved critical env — boot-time values by nature (env is
+ *  immutable per process; DATA_DIR/PORT are module-load constants). */
+export function criticalEnv(): CriticalEnv {
+  return { dataDir: DATA_DIR, port: PORT, lang: currentLang() };
+}
+
+/** Pure comparison: the names of the drifted values, empty when aligned.
+ *  Paths compare slash/case-insensitively (Windows). */
+export function envDrift(daemon: CriticalEnv, current: CriticalEnv): string[] {
+  const normPath = (p: string) => (p || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const out: string[] = [];
+  if (normPath(daemon.dataDir) !== normPath(current.dataDir)) out.push("DEVLOG_DATA_DIR");
+  if (daemon.port !== current.port) out.push("DEVLOG_PORT");
+  if (daemon.lang !== current.lang) out.push("DEVLOG_LANG");
+  return out;
+}
 
 /**
  * Pure verdict: is a process booted at `bootMs` running older code than what's

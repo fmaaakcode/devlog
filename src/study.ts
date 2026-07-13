@@ -27,7 +27,7 @@ import {
   CLOSER_FOR, normalizeTagContent,
 } from "./data";
 import { closedItems } from "./closed-items";
-import { retroCorpus, fragileFiles, type FragileFile, type RetroItem } from "./retro";
+import { retroCorpus, fragileFiles, regressionGap, type FragileFile, type RetroItem, type TestGap } from "./retro";
 import { backfillCorpus } from "./features";
 import { isRealVersion, parseVersion } from "./release-html";
 
@@ -137,7 +137,7 @@ export interface StudyAggregates {
   behavior: BehaviorProfile;
   releases: { total: number; dirty: number; securityDirty: number; latest?: { version: string; at: string } };
   plans: { total: number; steps: number; closedSteps: number };
-  problems: { reports: number; reopens: number; fragile: FragileFile[] };
+  problems: { reports: number; reopens: number; fragile: FragileFile[]; testGap: TestGap };
   features: { declared: number; backfilled: number; uncoveredReleases: number };
 }
 
@@ -318,6 +318,10 @@ function buildAggregates(data: DevLogData, project: string, now: number): StudyA
     reports: retro.length,
     reopens: retro.filter(i => typeof i.reopenOf === "number").length,
     fragile: fragileFiles(data, project),
+    // #585: the regression-test gap belongs with the reopen count — a fix with no
+    // test and a fix that came back are the two halves of the same discipline
+    // question, and the study is where a whole history is read at once.
+    testGap: regressionGap(data, project),
   };
 
   const featureTags = tags.filter(t => t.tag === "feature");

@@ -227,6 +227,43 @@ async function markAskServed(command: string): Promise<void> {
   await saveLedger(ledgerFile, ledger);
 }
 
+// === Part 0.5: daemon env-drift check (#595) — once per session ===
+// Auto-revival respawns the daemon with the environment it INHERITED, which can
+// predate a user-level change (the 2026-07-08 DEVLOG_LANG incident): the code-
+// freshness guard stays silent because the code on disk IS current — only the
+// env drifted, so tags land in another store or another language than the
+// session believes. This hook always runs with the session's fresh env; compare
+// it once per session against the daemon's boot fingerprint from /api/boot.
+// Informational only — the warning rides the normal feedback channel.
+// DEVLOG_ENV_DRIFT_CHECK=0 opts out (the e2e harness does: its hook process
+// legitimately runs with a different store than the test server).
+if (sessionId && !ledger.session.envDriftChecked && process.env.DEVLOG_ENV_DRIFT_CHECK !== "0") {
+  try {
+    const r = await fetch(`${SERVER}/api/boot`, { signal: AbortSignal.timeout(3000) });
+    if (r.ok) {
+      const { env } = await r.json() as { env?: { dataDir: string; port: number; lang: string } };
+      // Mark checked only after a successful fetch (server down → retry next Stop).
+      ledger.session.envDriftChecked = true;
+      await saveLedger(ledgerFile, ledger);
+      if (env) {
+        const { criticalEnv, envDrift } = await import("./src/freshness.ts");
+        const mine = criticalEnv();
+        const drifted = envDrift(env, mine);
+        if (drifted.length) {
+          const lines = drifted.map(k =>
+            k === "DEVLOG_DATA_DIR" ? `· DEVLOG_DATA_DIR: daemon=${env.dataDir} ≠ session=${mine.dataDir}`
+            : k === "DEVLOG_PORT" ? `· DEVLOG_PORT: daemon=${env.port} ≠ session=${mine.port}`
+            : `· DEVLOG_LANG: daemon=${env.lang} ≠ session=${mine.lang}`);
+          feedback.push(`\n[devlog env-drift]\n${L(
+            `⚠ the running daemon booted with a DIFFERENT critical environment than this session:\n${lines.join("\n")}\nTags may be landing in the wrong store/language. Restart the daemon (dashboard restart button, or /api/server/restart) so it inherits the current env.`,
+            `⚠ الـdaemon الجاري أقلع ببيئة حرجة مختلفة عن بيئة هذه الجلسة:\n${lines.join("\n")}\nقد تهبط التاقات في مخزن/لغة غير المقصود. أعد تشغيل الخادم (زر إعادة التشغيل في الداشبورد أو /api/server/restart) ليرث البيئة الحالية.`)}\n`);
+          await log(`env-drift: ${drifted.join(",")}`);
+        }
+      }
+    }
+  } catch (e) { await log(`env-drift check error: ${(e as Error).message}`); }
+}
+
 // === Part 1: Parse tags ===
 if (msg) {
   // Tag parsing (allowed-list + regex + noise filters) is shared with the
@@ -386,7 +423,17 @@ if (msg) {
     // The POST itself is unconditional (an all-echo continuation sends an empty
     // batch — a server-side no-op) so the queue drain, response handling and
     // broadcast cadence stay byte-identical to the pre-ledger hook.
-    const body = JSON.stringify({ cwd, session_id: sessionId, entries: freshEntries });
+    //
+    // batch_id (#591): a stable idempotency fingerprint of THIS batch, computed
+    // from the RAW entries BEFORE the server derives any release version, and
+    // baked into the body — so the disk-queue replay (a timeout after the server
+    // already applied the batch, an rm that failed after a drain) carries the
+    // same id and the server drops it instead of re-deriving a fresh, higher
+    // release number from the then-live state. A version-less -(release) in a
+    // NEVER-applied queued batch still derives its version from the live log at
+    // drain time (#592) — the fingerprint only suppresses true replays.
+    const batchId = `b${Bun.hash(JSON.stringify([sessionId, turnId, freshEntries.map(e => [e.tag, e.content, e.breaking ?? false])])).toString(36)}`;
+    const body = JSON.stringify({ cwd, session_id: sessionId, entries: freshEntries, batch_id: batchId });
     // Drain any prior queued tags first (preserves chronological order).
     await flushTagQueue();
     try {
@@ -940,8 +987,9 @@ if (msg && cwd) {
       const r = await fetch(`${SERVER}/api/retro?cwd=${encodeURIComponent(cwd)}`, { signal: AbortSignal.timeout(10000) });
       if (r.ok) {
         await markAskServed("ask:retro");   // record only now the fetch succeeded (#398)
-        const { items = [], fragile = [] } = await r.json() as
-          { items?: any[]; fragile?: Array<{ file: string; count: number; open: number }> };
+        const { items = [], fragile = [], testGap } = await r.json() as
+          { items?: any[]; fragile?: Array<{ file: string; count: number; open: number }>;
+            testGap?: { judged: number; withTest: number; withoutTest: number; unknown: number; items: any[] } };
         const day = (s: string) => String(s).slice(0, 10);
         const line = (it: any) => {
           const num = typeof it.num === "number" ? `#${it.num} ` : "";
@@ -963,8 +1011,16 @@ if (msg && cwd) {
           ? `${L("Most-broken files: ", "الأكثر كسرًا: ")}${fragile.map(f =>
               `${f.file} ×${f.count}${f.open ? L(` (${f.open} open)`, ` (${f.open} مفتوح)`) : ""}`).join(" · ")}\n`
           : "";
+        // Regression-test gap (#585): one quiet ratio, never a nag — "what keeps
+        // breaking?" and "what did we fix with nothing guarding it?" are the same
+        // reflection, so it rides the same header the recurrences do.
+        const gapLine = testGap && testGap.withoutTest > 0
+          ? `${L(
+              `Fixed without touching a test: ${testGap.withoutTest}/${testGap.judged}${testGap.unknown ? ` (${testGap.unknown} unknown)` : ""} — e.g. ${testGap.items.slice(0, 3).map((g: any) => `${typeof g.num === "number" ? `#${g.num}` : ""}`).filter(Boolean).join(" ")}. A fix with no regression test can come back unnoticed.`,
+              `أُصلح بلا لمس أي اختبار: ${testGap.withoutTest}/${testGap.judged}${testGap.unknown ? ` (${testGap.unknown} غير معروف)` : ""} — مثل ${testGap.items.slice(0, 3).map((g: any) => `${typeof g.num === "number" ? `#${g.num}` : ""}`).filter(Boolean).join(" ")}. الإصلاح بلا اختبار انحدار قد يعود دون أن ينتبه أحد.`)}\n`
+          : "";
         const out = items.length
-          ? `${fragileLine}${L(`Problem corpus (${items.length} reports, oldest first) — cluster the recurrences; codify a confirmed pattern with -(rule:add) or -(insight):`,
+          ? `${fragileLine}${gapLine}${L(`Problem corpus (${items.length} reports, oldest first) — cluster the recurrences; codify a confirmed pattern with -(rule:add) or -(insight):`,
               `سجل المشاكل (${items.length} بلاغًا، الأقدم أولًا) — اعنقد المتكرر؛ ثبّت النمط المؤكد بـ-(rule:add) أو -(insight):`)}\n${items.map(line).join("\n")}`
           : L("No problem reports recorded for this project yet.", "لا بلاغات مسجّلة لهذا المشروع بعد.");
         await log(`ask:retro: served ${items.length} item(s)`);
@@ -1075,6 +1131,11 @@ if (msg && cwd) {
         out.push(`  ${L("plans", "الخطط")}: ${a.plans?.total} (${a.plans?.closedSteps}/${a.plans?.steps} ${L("steps closed", "خطوة مغلقة")}) · ${L("problem reports", "البلاغات")}: ${a.problems?.reports} (${L("reopens", "إعادات فتح")} ⟲${a.problems?.reopens})`);
         if (a.problems?.fragile?.length)
           out.push(`  ${L("most-broken files", "الأكثر كسرًا")}: ${a.problems.fragile.map((f: any) => `${f.file} ×${f.count}`).join(" · ")}`);
+        // #585: the whole-history regression-test gap — the discipline number that
+        // pairs with the reopen count above (a fix with no test, and a fix that
+        // came back, are two readings of the same habit).
+        if (a.problems?.testGap?.judged)
+          out.push(`  ${L("fixed without touching a test", "أُصلح بلا لمس اختبار")}: ${a.problems.testGap.withoutTest}/${a.problems.testGap.judged}${a.problems.testGap.unknown ? L(` (${a.problems.testGap.unknown} unknown)`, ` (${a.problems.testGap.unknown} غير معروف)`) : ""}`);
         out.push(`  ${L("capabilities", "القدرات")}: ${a.features?.declared} (${L("backfilled", "معبأة رجعيًا")} ${a.features?.backfilled}) · ${L("uncovered releases", "إصدارات غير مغطاة")}: ${a.features?.uncoveredReleases}`);
 
         out.push(L("— Window delta —", "— دلتا النطاق —"));

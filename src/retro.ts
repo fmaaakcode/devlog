@@ -93,3 +93,74 @@ export function fragileFiles(data: DevLogData, project: string, top = 5): Fragil
     .slice(0, top)
     .map(([file, e]) => ({ file, count: e.count, open: e.open }));
 }
+
+// ── Regression-test gap (#585) ───────────────────────────────────────────────
+// A bug or vulnerability that gets fixed WITHOUT a test can come back, and nothing
+// in the log noticed. The signal is already lying there: position memory stamps
+// every tag with the files its session touched, so a `-(bug fix)` / `-(security
+// fix)` whose footprint never entered a test file is a fix that shipped with
+// nothing standing guard over it.
+//
+// Counted QUIETLY, by design — a per-fix nag would be wrong far too often to
+// survive (see the caveats below), and the value is in the RATIO across a history,
+// not in any single verdict. It surfaces only where a human is already reflecting:
+// the retro header and the study aggregates.
+
+const TEST_SEGMENT = /(^|[/\\])(tests?|__tests__|specs?)([/\\]|$)/i;
+const TEST_FILENAME = /(^test_|[._-](test|spec)\.[a-z0-9]+$|_test\.[a-z0-9]+$)/i;
+
+/** Does this footprint include anything that looks like a test? Path conventions
+ *  across ecosystems: a `test/`-ish folder, `*.test.ts` / `*_test.go` /
+ *  `test_*.py` / `*.spec.js`. */
+export function touchesTests(files: string[] | undefined): boolean {
+  return (files || []).some(f => TEST_SEGMENT.test(f) || TEST_FILENAME.test(f.split(/[/\\]/).pop() || ""));
+}
+
+export interface TestGapItem { num?: number; kind: string; text: string; closedAt?: string }
+
+export interface TestGap {
+  /** Closed fixes whose closer recorded a file footprint — the only ones judgeable. */
+  judged: number;
+  withTest: number;
+  withoutTest: number;
+  /** Closed fixes with NO footprint at all: predate position memory, or the fix
+   *  session touched nothing we recorded. Never counted as a gap — an unknown is
+   *  not a failure, and inflating the number would kill trust in it. */
+  unknown: number;
+  /** The gaps themselves, newest first, capped. */
+  items: TestGapItem[];
+}
+
+/**
+ * Fixes closed without their session ever touching a test file.
+ *
+ * KNOWN BLIND SPOTS, deliberately not "fixed" by widening the heuristic:
+ *   · Rust (and any language with in-source `#[cfg(test)]` tests) writes the
+ *     regression test INSIDE the module it fixes — a real test, invisible here.
+ *   · A fix whose test was written in a LATER session isn't credited.
+ * Both inflate `withoutTest`. That is survivable for a quiet ratio and fatal for a
+ * blocking check, which is exactly why this one never blocks.
+ */
+export function regressionGap(data: DevLogData, project: string, top = 8): TestGap {
+  const root = data.projects[project]?.path || "";
+  let withTest = 0;
+  let withoutTest = 0;
+  let unknown = 0;
+  const items: TestGapItem[] = [];
+
+  for (const c of closedItems(data, project)) {
+    if (!isReport(c.kind)) continue;          // only bugs + security: a -(done) todo owes no test
+    const fixFiles = projectRelativeFiles(c.closerFiles, root);
+    if (!fixFiles?.length) { unknown++; continue; }
+    if (touchesTests(fixFiles)) { withTest++; continue; }
+    withoutTest++;
+    items.push({
+      ...(typeof c.num === "number" ? { num: c.num } : {}),
+      kind: c.kind, text: c.text,
+      ...(c.closedAt ? { closedAt: c.closedAt } : {}),
+    });
+  }
+
+  items.sort((a, b) => +new Date(b.closedAt || 0) - +new Date(a.closedAt || 0));
+  return { judged: withTest + withoutTest, withTest, withoutTest, unknown, items: items.slice(0, top) };
+}
