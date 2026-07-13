@@ -32,7 +32,9 @@ Write the tag content in the user's language.
 - `-(ask:lib) <name…>` before adding a NEW dependency (up to 8 names): DevLog answers
   with the exact version to install — newest stable ≥7 days old, OSV-clean — so never
   research versions yourself or install blind `@latest`. `npm:`/`pypi:`/`crates:`
-  prefix overrides the project ecosystem. Ephemeral, never a stored tag.
+  prefix overrides the project ecosystem. Ephemeral, never a stored tag. Enforced by
+  the PreToolUse install gate: blind `bun add X` is blocked with the advised pin;
+  a deliberate pin passes on re-issue (one advisory block).
 - `-(note)` · `-(decision)` · `-(insight)`
 - `-(doc:report|analysis|plan|comparison|readme)` name\n<markdown>
 

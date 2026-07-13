@@ -137,6 +137,26 @@ export async function adviseLibraries(
   return out;
 }
 
+/**
+ * The project's default ecosystem for un-prefixed names. Manifest evidence
+ * first: the scanner stamps every library with its source manifest's ecosystem,
+ * and that survives cases the language mapping misses — a fresh Astro project
+ * (.astro/.mjs only, no .ts) classifies language "Unknown" while its
+ * package.json already says npm (found live 2026-07-13, project `test astro`).
+ * Majority wins on mixed-manifest projects (Tauri); the per-name prefix
+ * overrides either way. Language mapping is the manifest-less fallback.
+ */
+export function defaultEcoFor(profile: { language?: string; libraries?: Array<{ eco?: string }> } | undefined, langToEco: Record<string, string>): string {
+  const counts = new Map<string, number>();
+  for (const l of profile?.libraries || []) {
+    if (l.eco) counts.set(l.eco, (counts.get(l.eco) || 0) + 1);
+  }
+  let best = "";
+  let bestCount = 0;
+  for (const [eco, n] of counts) if (n > bestCount) { best = eco; bestCount = n; }
+  return best || langToEco[profile?.language || ""] || "";
+}
+
 /** The install command for a suggested version, in the ecosystem's own tool. */
 export function installCmd(eco: string, name: string, version: string): string {
   if (eco === "npm") return `bun add ${name}@${version}`;

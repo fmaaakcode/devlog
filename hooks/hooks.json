@@ -18,7 +18,8 @@
       {
         "matcher": "Bash|PowerShell",
         "hooks": [
-          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/pre-release-hook.sh\"", "timeout": 15 }
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/pre-release-hook.sh\"", "timeout": 15 },
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/pre-install-hook.sh\"", "timeout": 25 }
         ]
       },
       {

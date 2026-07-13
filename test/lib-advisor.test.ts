@@ -6,7 +6,7 @@
 // All lookups injected — no network.
 
 import { describe, test, expect } from "bun:test";
-import { adviseLibraries, parseLibNames, installCmd } from "../src/lib-advisor";
+import { adviseLibraries, parseLibNames, installCmd, defaultEcoFor } from "../src/lib-advisor";
 import type { VersionEntry } from "../src/registry";
 import type { PkgVuln } from "../src/osv";
 
@@ -133,6 +133,29 @@ describe("parseLibNames", () => {
   test("an unknown prefix stays part of the name (scoped npm names keep their @)", () => {
     expect(parseLibNames("@astrojs/check")).toEqual([{ name: "@astrojs/check" }]);
     expect(parseLibNames("weird:name")).toEqual([{ name: "weird:name" }]);
+  });
+});
+
+describe("defaultEcoFor — manifest evidence beats language mapping", () => {
+  const langMap = { TypeScript: "npm", Rust: "crates.io" };
+
+  test("the `test astro` case: language Unknown but package.json stamped the libs npm", () => {
+    const profile = { language: "Unknown", libraries: [{ eco: "npm" }] };
+    expect(defaultEcoFor(profile, langMap)).toBe("npm");
+  });
+
+  test("mixed manifests (Tauri): the majority ecosystem wins", () => {
+    const profile = { language: "Rust", libraries: [{ eco: "npm" }, { eco: "npm" }, { eco: "crates.io" }] };
+    expect(defaultEcoFor(profile, langMap)).toBe("npm");
+  });
+
+  test("no libraries → falls back to the language mapping", () => {
+    expect(defaultEcoFor({ language: "TypeScript", libraries: [] }, langMap)).toBe("npm");
+  });
+
+  test("no evidence at all → empty (never guess)", () => {
+    expect(defaultEcoFor({ language: "Unknown", libraries: [] }, langMap)).toBe("");
+    expect(defaultEcoFor(undefined, langMap)).toBe("");
   });
 });
 

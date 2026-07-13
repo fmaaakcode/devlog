@@ -13,7 +13,7 @@ import { broadcast } from "./broadcast";
 import { softFail } from "./soft-fail";
 import { resolveProjectFor } from "./project-resolve";
 import { ecoMap } from "./eco-map";
-import { adviseLibraries, parseLibNames, installCmd } from "./lib-advisor";
+import { adviseLibraries, parseLibNames, installCmd, defaultEcoFor } from "./lib-advisor";
 import type { ProjectProfile } from "./types";
 
 type ApiReq = Bun.BunRequest;
@@ -63,7 +63,7 @@ export function makeScanRoutes({ checkAndRescanIfStale }: ScanRouteDeps): Record
           const cwd = url.searchParams.get("cwd") || "";
           const data = await loadData();
           const { name: project } = resolveProjectFor(data, cwd);
-          const defaultEco = ecoMap[data.projects[project]?.language || ""] || "";
+          const defaultEco = defaultEcoFor(data.projects[project], ecoMap);
           const items = (await adviseLibraries(defaultEco, requests)).map(it =>
             it.suggest ? { ...it, installCmd: installCmd(it.eco, it.name, it.suggest) } : it);
           return Response.json({ project, items });
