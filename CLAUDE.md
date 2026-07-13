@@ -29,6 +29,10 @@ Write the tag content in the user's language.
   Backfill old history: `-(ask:backfill)` lists releases no capability covers; after
   user approval declare each as `-(feature) [vX.Y.Z] <line>` — the marker pins the
   capability to the past release that shipped it.
+- `-(ask:lib) <name…>` before adding a NEW dependency (up to 8 names): DevLog answers
+  with the exact version to install — newest stable ≥7 days old, OSV-clean — so never
+  research versions yourself or install blind `@latest`. `npm:`/`pypi:`/`crates:`
+  prefix overrides the project ecosystem. Ephemeral, never a stored tag.
 - `-(note)` · `-(decision)` · `-(insight)`
 - `-(doc:report|analysis|plan|comparison|readme)` name\n<markdown>
 

@@ -4,7 +4,7 @@
 // plan's open steps, the last release, and the build→plan-step close hint.
 
 import { describe, test, expect, afterAll } from "bun:test";
-import { buildContext } from "../src/inject";
+import { buildContext, newSecurityAlerts } from "../src/inject";
 import type { DevLogData, TagEntry, PlanEntry, ProjectProfile } from "../src/types";
 
 // This suite asserts the Arabic injection strings, so force Arabic for the whole
@@ -286,5 +286,124 @@ describe("buildContext — describe nudge (missing desc/about)", () => {
     const d = noDescData();
     d.tags = [];   // no tags at all
     expect(buildContext(d, PROJ, "SessionStart")).not.toContain(DESC_WARN);
+  });
+});
+
+// Mid-session security alert (the LA gap, 2026-07-13): a vuln-scan security tag
+// opened AFTER the session's last injection must reach Claude at the very next
+// prompt — not at the next SessionStart. Scanner tags only, high/critical or
+// danger, watermarked by the session's injection log.
+describe("buildContext — UserPromptSubmit security alerts", () => {
+  const SESSION = "sess-sec";
+  const WATERMARK = "2026-06-01T10:00:00Z";   // the session's last injection
+  const AFTER = "2026-06-01T11:00:00Z";       // scan tags minted mid-session
+  const ALERT_HEADER = "عالي الخطورة";        // "…فتح N عنصرًا جديدًا عالي الخطورة"
+  const REMINDER = "منذ آخر تذكير";
+
+  function secData(over: Partial<DevLogData> = {}): DevLogData {
+    const p = profile();
+    p.vulnResults = {
+      astro: { status: "update", icon: "warning", message: "16 ثغرة (high) — رقِّ لـ6.4.6", vulns: 16, severity: "high" },
+      esbuild: { status: "update", icon: "warning", message: "1 ثغرة (low) — رقِّ لـ0.28.1", vulns: 1, severity: "low" },
+      leftpad: { status: "danger", icon: "x", message: "برمجية خبيثة", vulns: 1, severity: "low" },
+      "@astrojs/check": { status: "update", icon: "warning", message: "1 ثغرة (critical)", vulns: 1, severity: "critical" },
+    };
+    return {
+      projects: { [PROJ]: p }, events: [], tags: [], plans: [], worklog: [],
+      injections: [{ id: "i1", project: PROJ, type: "SessionStart", content: "x", chars: 1, session_id: SESSION, timestamp: WATERMARK }],
+      injectionConfig: { sessionStart: true, userPromptSubmit: true, preToolUseRead: false, outdatedLibs: true, describeNudge: true, upcomingItems: true, claudeMd: false, contextMd: false },
+      projectInjectionConfigs: {}, descendants: [], migrations: {},
+      ...over,
+    };
+  }
+  const secTag = (content: string, num: number, timestamp = AFTER): TagEntry =>
+    ({ id: `s${num}`, project: PROJ, tag: "security", content, timestamp, num });
+  const ctx = (d: DevLogData) => buildContext(d, PROJ, "UserPromptSubmit", { sessionId: SESSION });
+
+  test("fires for a scan tag with high severity — #N + content, once past the watermark", () => {
+    const d = secData();
+    d.tags = [secTag("astro@5.12.0 — 16 ثغرة (high) — رقِّ لـ6.4.6", 3)];
+    const out = ctx(d);
+    expect(out).toContain(ALERT_HEADER);
+    expect(out).toContain("#3 — astro@5.12.0");
+    expect(out).toContain("<devlog-context>");
+  });
+
+  test("low severity stays silent (dashboard + SessionStart keep it)", () => {
+    const d = secData();
+    d.tags = [secTag("esbuild@0.27.7 — 1 ثغرة (low) — رقِّ لـ0.28.1", 4)];
+    expect(ctx(d)).toBe("");
+  });
+
+  test("danger status fires even at low severity (malware / no fix)", () => {
+    const d = secData();
+    d.tags = [secTag("leftpad@1.0.0 — برمجية خبيثة", 5)];
+    expect(ctx(d)).toContain("#5 — leftpad@1.0.0");
+  });
+
+  test("scoped npm name resolves via the descriptor's LAST @", () => {
+    const d = secData();
+    d.tags = [secTag("@astrojs/check@0.9.4 — 1 ثغرة (critical)", 6)];
+    expect(ctx(d)).toContain("#6 — @astrojs/check@0.9.4");
+  });
+
+  test("a manual -(security) tag (no name@version descriptor) never alerts — Claude wrote it itself", () => {
+    const d = secData();
+    d.tags = [secTag("تسريب مفاتيح في auth.ts", 7)];
+    expect(ctx(d)).toBe("");
+  });
+
+  test("a tag OLDER than the session's last injection stays silent (delivered once)", () => {
+    const d = secData();
+    d.tags = [secTag("astro@5.12.0 — 16 ثغرة (high) — رقِّ لـ6.4.6", 3, "2026-06-01T09:00:00Z")];
+    expect(ctx(d)).toBe("");
+  });
+
+  test("no injection log for the session → no baseline → silent", () => {
+    const d = secData({ injections: [] });
+    d.tags = [secTag("astro@5.12.0 — 16 ثغرة (high) — رقِّ لـ6.4.6", 3)];
+    expect(ctx(d)).toBe("");
+  });
+
+  test("a tag already closed by `security fix` stays silent", () => {
+    const d = secData();
+    const content = "astro@5.12.0 — 16 ثغرة (high) — رقِّ لـ6.4.6";
+    d.tags = [
+      secTag(content, 3),
+      { id: "f1", project: PROJ, tag: "security fix", content, timestamp: AFTER },
+    ];
+    expect(ctx(d)).toBe("");
+  });
+
+  test("alert and closure reminder coexist — alert block leads", () => {
+    const d = secData();
+    d.tags = [
+      secTag("astro@5.12.0 — 16 ثغرة (high) — رقِّ لـ6.4.6", 3),
+      { id: "c1", project: PROJ, tag: "done", content: "#1", timestamp: AFTER },
+      { id: "t1", project: PROJ, tag: "todo", content: "باقية", timestamp: WATERMARK, num: 9 },
+    ];
+    const out = ctx(d);
+    expect(out).toContain(ALERT_HEADER);
+    expect(out).toContain(REMINDER);
+    expect(out.indexOf(ALERT_HEADER)).toBeLessThan(out.indexOf(REMINDER));
+  });
+
+  test("userPromptSubmit toggle OFF: the alert still fires, the reminder does not smuggle in", () => {
+    const d = secData();
+    d.injectionConfig.userPromptSubmit = false;
+    d.tags = [
+      secTag("astro@5.12.0 — 16 ثغرة (high) — رقِّ لـ6.4.6", 3),
+      { id: "c1", project: PROJ, tag: "done", content: "#1", timestamp: AFTER },
+      { id: "t1", project: PROJ, tag: "todo", content: "باقية", timestamp: WATERMARK, num: 9 },
+    ];
+    const out = ctx(d);
+    expect(out).toContain(ALERT_HEADER);
+    expect(out).not.toContain(REMINDER);
+  });
+
+  test("newSecurityAlerts: missing sessionId → empty", () => {
+    const d = secData();
+    d.tags = [secTag("astro@5.12.0 — 16 ثغرة (high) — رقِّ لـ6.4.6", 3)];
+    expect(newSecurityAlerts(d, PROJ, undefined)).toHaveLength(0);
   });
 });

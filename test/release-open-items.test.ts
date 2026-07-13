@@ -84,4 +84,48 @@ describe("detectReleaseOpenItems", () => {
     const d = data([tag("todo", "their task", 9, "other-proj")]);
     expect(detectReleaseOpenItems(d, PROJ, [{ tag: "release", content: "v1.0.0" }])).toBeNull();
   });
+
+  // In-flight deferral (the 2026-07-13 defer-then-release deadlock): an
+  // `-(upcoming) #N` in the SAME batch moves the item to the tier that never
+  // blocks — the guard must subtract it exactly like an in-flight closure.
+  test("an -(upcoming) #N in the batch clears the open bug for the release", () => {
+    const d = data([tag("bug found", "guard is root-blind", 600)]);
+    const r = detectReleaseOpenItems(d, PROJ, [
+      { tag: "upcoming", content: "#600" },
+      { tag: "release", content: "v1.0.0" },
+    ]);
+    expect(r).toBeNull();
+  });
+
+  test("an -(upcoming) #N in the batch clears an open todo too", () => {
+    const d = data([tag("todo", "later idea", 12)]);
+    expect(detectReleaseOpenItems(d, PROJ, [
+      { tag: "upcoming", content: "#12" },
+      { tag: "release", content: "v1.0.0" },
+    ])).toBeNull();
+  });
+
+  test("deferral NEVER clears security — the release stays blocked", () => {
+    const d = data([tag("security", "token leak", 8)]);
+    const r = detectReleaseOpenItems(d, PROJ, [
+      { tag: "upcoming", content: "#8" },
+      { tag: "release", content: "v1.0.0" },
+    ]);
+    expect(r?.openItems).toEqual([{ num: 8, tag: "security", content: "token leak" }]);
+  });
+
+  test("deferring one plan step clears its SIBLING steps too (whole plan defers)", () => {
+    const plan: PlanEntry = {
+      id: "p2", project: PROJ, title: "later", file_path: "/x/.devlog/docs/later.md",
+      timestamp: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z",
+      steps: [
+        { text: "step a", completed: false, num: 21 },
+        { text: "step b", completed: false, num: 22 },
+      ],
+    };
+    expect(detectReleaseOpenItems(data([], [plan]), PROJ, [
+      { tag: "upcoming", content: "#21" },
+      { tag: "release", content: "v1.0.0" },
+    ])).toBeNull();
+  });
 });

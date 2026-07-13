@@ -11,6 +11,9 @@ import { rescanPreserve } from "./scanner";
 import { generateStackMd, exportStatusMd } from "./export";
 import { broadcast } from "./broadcast";
 import { softFail } from "./soft-fail";
+import { resolveProjectFor } from "./project-resolve";
+import { ecoMap } from "./eco-map";
+import { adviseLibraries, parseLibNames, installCmd } from "./lib-advisor";
 import type { ProjectProfile } from "./types";
 
 type ApiReq = Bun.BunRequest;
@@ -42,6 +45,29 @@ export function makeScanRoutes({ checkAndRescanIfStale }: ScanRouteDeps): Record
         const name = req.params.project;
         checkAndRescanIfStale(name);
         return Response.json({ ok: true });
+      },
+    },
+
+    // Library-version advisor (`-(ask:lib)`): the exact version to install —
+    // newest stable ≥7 days old that OSV certifies clean. Read-only, touches no
+    // tags/profile. Default ecosystem comes from the cwd's project language; an
+    // explicit `npm:`/`pypi:`/`crates:` prefix on a name overrides it, so the
+    // advisor works even from an unregistered cwd when every name is prefixed.
+    "/api/lib-advice": {
+      async GET(req: ApiReq) {
+        try {
+          const url = new URL(req.url);
+          const raw = (url.searchParams.get("names") || "").replace(/,/g, " ");
+          const requests = parseLibNames(raw);
+          if (!requests.length) return Response.json({ error: "names required" }, { status: 400 });
+          const cwd = url.searchParams.get("cwd") || "";
+          const data = await loadData();
+          const { name: project } = resolveProjectFor(data, cwd);
+          const defaultEco = ecoMap[data.projects[project]?.language || ""] || "";
+          const items = (await adviseLibraries(defaultEco, requests)).map(it =>
+            it.suggest ? { ...it, installCmd: installCmd(it.eco, it.name, it.suggest) } : it);
+          return Response.json({ project, items });
+        } catch { return Response.json({ error: "Failed" }, { status: 500 }); }
       },
     },
 

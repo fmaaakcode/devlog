@@ -70,4 +70,21 @@ describe("routes-scan (extracted group) still mounts + behaves", () => {
     const r = await fetch(`${BASE}/api/scan/__none__`, { method: "POST", headers: { "Content-Type": "text/plain" }, body: "x" });
     expect(r.status).toBe(415);
   });
+
+  // /api/lib-advice — network-free verdicts only (an unregistered cwd has no
+  // ecosystem, and an invalid name is refused before any lookup); the pick
+  // logic itself is covered offline in lib-advisor.test.ts.
+  test("GET /api/lib-advice without names → 400", async () => {
+    const r = await fetch(`${BASE}/api/lib-advice`);
+    expect(r.status).toBe(400);
+  });
+
+  test("GET /api/lib-advice: no project eco → unsupported-eco; bad charset → invalid-name", async () => {
+    const r = await fetch(`${BASE}/api/lib-advice?names=${encodeURIComponent("astro b$d")}`);
+    expect(r.status).toBe(200);
+    const { items } = await asJson(r);
+    expect(items).toHaveLength(2);
+    expect(items[0]).toMatchObject({ name: "astro", verdict: "unsupported-eco" });
+    expect(items[1]).toMatchObject({ name: "b$d", verdict: "invalid-name" });
+  });
 });

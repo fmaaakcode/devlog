@@ -203,6 +203,39 @@ function hasClosureSince(data: DevLogData, project: string, since: number): TagE
   );
 }
 
+/**
+ * Vuln-scan security tags that appeared AFTER this session's last injection —
+ * the in-session delivery gap found live 2026-07-13 (project LA): the scan
+ * opened a security tag within minutes of `bun add astro@5.12`, but the
+ * UserPromptSubmit reminder only fired on closures/builds, so Claude kept
+ * building on the vulnerable base and only the NEXT SessionStart would have
+ * told it. Scanner tags only — content `name@version — …` matched against the
+ * profile's vulnResults; a manual `-(security)` was written by Claude itself,
+ * it already knows. Gated to what genuinely must interrupt: `danger` status
+ * (malware / no complete fix) or high/critical severity — lower ones keep
+ * their existing surfaces (dashboard + SessionStart summary). Watermarked by
+ * lastInjectionTime so each tag is delivered once; a session with no
+ * injection log has no baseline and stays silent (SessionStart already
+ * carried the open list).
+ */
+export function newSecurityAlerts(data: DevLogData, project: string, sessionId: string | undefined): TagEntry[] {
+  const since = lastInjectionTime(data, project, sessionId);
+  if (!since) return [];
+  const vulnResults = data.projects[project]?.vulnResults;
+  if (!vulnResults) return [];
+  return openSecurity(data.tags.filter(t => t.project === project)).filter(t => {
+    if (+new Date(t.timestamp) <= since) return false;
+    // "name@version — msg" → name is everything before the descriptor's LAST
+    // `@` (scoped npm names carry a leading one: `@astrojs/check@0.9.4`).
+    const desc = t.content.split(" — ")[0];
+    const at = desc.lastIndexOf("@");
+    if (at <= 0) return false;
+    const vr = vulnResults[desc.slice(0, at)];
+    if (!vr) return false;
+    return vr.status === "danger" || vr.severity === "high" || vr.severity === "critical";
+  });
+}
+
 // The "describe this project" nudges (short `desc` + long `about`). Pulled out
 // so both buildContext paths — the full SessionStart context AND the standalone
 // block emitted when the summary toggle is off — share one definition. Gated by
@@ -268,22 +301,47 @@ export function buildContext(
   // UserPromptSubmit: inject when *either* a closure happened since last
   // reminder (siblings reminder), OR ≥2 builds happened without closure
   // (built-without-done warning — catches the "Claude builds, forgets to
-  // close #N" failure mode that closure-only triggering misses).
+  // close #N" failure mode that closure-only triggering misses), OR the vuln
+  // scan opened a high-severity security tag mid-session (its own trigger —
+  // a fresh vuln must not wait for a closure to hitch a ride on, and it
+  // bypasses the `userPromptSubmit` toggle: security is never deferrable).
   if (type === "UserPromptSubmit") {
+    const config = getEffectiveConfig(data, project);
     const last = lastInjectionTime(data, project, ctx.sessionId);
     const closures = hasClosureSince(data, project, last);
     const builtSince = data.tags.filter(t =>
       t.project === project && t.tag === "built" && +new Date(t.timestamp) > last,
     );
-    if (closures.length === 0 && builtSince.length < 2) return "";
-    const summary = formatOpenSummary(data, project, getEffectiveConfig(data, project).upcomingItems);
-    if (!summary.length) return "";
-    const headerLine = closures.length > 0
-      ? L(`✓ ${closures.length} item(s) closed since the last reminder`,
-          `✓ أُغلق ${closures.length} عنصر منذ آخر تذكير`)
-      : L(`⚠ ${builtSince.length} \`-(built)\` without any closure since the last reminder — check whether some close an open #N.`,
-          `⚠ ${builtSince.length} \`-(built)\` بدون أيّ إغلاق منذ آخر تذكير — تحقَّق هل بعضها يُغلِق #N من المفتوح.`);
-    return ["<devlog-context>", headerLine, ...summary, "</devlog-context>"].join("\n");
+    const secAlerts = newSecurityAlerts(data, project, ctx.sessionId);
+    // The reminder stays behind its toggle even when a security alert forced
+    // this call past the doInject gate — the alert must not smuggle it in.
+    const wantReminder = config.userPromptSubmit && (closures.length > 0 || builtSince.length >= 2);
+    if (!wantReminder && secAlerts.length === 0) return "";
+    const parts: string[] = [];
+    if (secAlerts.length) {
+      parts.push(L(
+        `⚠ The security scan opened ${secAlerts.length} new high-severity item(s) — address them BEFORE building further:`,
+        `⚠ الفحص الأمني فتح ${secAlerts.length} عنصرًا جديدًا عالي الخطورة — عالجه قبل مواصلة البناء:`));
+      for (const t of secAlerts) {
+        parts.push(`- ${typeof t.num === "number" ? `#${t.num} — ` : ""}${safe(t.content)}`);
+      }
+      parts.push(L(
+        "> Upgrade to the fix version; the next scan closes the tag automatically.",
+        "> رقِّ لإصدار الإصلاح؛ الفحص التالي يغلق التاق تلقائيًا."));
+    }
+    if (wantReminder) {
+      const summary = formatOpenSummary(data, project, config.upcomingItems);
+      if (summary.length) {
+        parts.push(closures.length > 0
+          ? L(`✓ ${closures.length} item(s) closed since the last reminder`,
+              `✓ أُغلق ${closures.length} عنصر منذ آخر تذكير`)
+          : L(`⚠ ${builtSince.length} \`-(built)\` without any closure since the last reminder — check whether some close an open #N.`,
+              `⚠ ${builtSince.length} \`-(built)\` بدون أيّ إغلاق منذ آخر تذكير — تحقَّق هل بعضها يُغلِق #N من المفتوح.`));
+        parts.push(...summary);
+      }
+    }
+    if (!parts.length) return "";
+    return ["<devlog-context>", ...parts, "</devlog-context>"].join("\n");
   }
 
   // SessionStart (default): full project profile + compact open summary.

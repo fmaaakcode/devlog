@@ -200,6 +200,17 @@ Available category names are injected at SessionStart under "معايير متا
 
 To dismiss an inapplicable advisory, record it (don't delete from the lockfile): Rust → `audit.toml` `[advisories] ignore = [...]`; any ecosystem → `.devlog/vuln-ignore` (one advisory id per line, or `pkg:<name>`). Always document why with a per-entry comment.
 
+## Library advisor (`ask:lib`)
+
+Before **adding a new dependency**, ask DevLog instead of researching versions yourself (you have no network; the server does). Reply comes back in the same turn; NOT logged as a tag.
+
+| Command | Use |
+|---|---|
+| `-(ask:lib) astro zod` | The exact version to install for each name (up to 8) |
+| `-(ask:lib) crates:serde pypi:requests` | Prefix overrides the project's ecosystem (`npm:`/`pypi:`/`crates:`) |
+
+The suggestion is the newest **stable** release **≥7 days old** (the dependency-maturity rule) that **OSV certifies clean** — vulnerable candidates are stepped past with the reason shown. Guarantees: never a pre-release, never a version younger than 7 days, never a knowingly vulnerable version (a package with no clean matured release is reported, not recommended), and never a near-miss name guess — an unknown name is refused (typo-squatting). If OSV doesn't answer, the maturity pick is flagged as carrying no security certificate. Then install with the returned command — don't substitute blind `@latest`.
+
 ## Releases & GitHub — split roles
 
 **Releasing (the DevLog tag) is the developer's job; git/GitHub is the specialist's.**

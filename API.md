@@ -78,11 +78,12 @@
 
 ## Scan / vuln (`routes-scan.ts`)
 - `/api/vuln/:project` — run a vuln scan (GET)
+- `/api/lib-advice` — version advisor behind `-(ask:lib)` (GET, `?cwd=..&names=a,b,c`): per name, the newest stable release ≥7 days old that OSV certifies clean (`lib-advisor.ts`); vulnerable matured candidates are stepped past (bounded), unknown names refused exactly (no near-miss guesses), `npm:`/`pypi:`/`crates:` prefix overrides the cwd project's ecosystem. Read-only — no tags, no profile writes
 - `/api/check-stale/:project` — manifest-mtime staleness check (POST)
 - `/api/scan/:project` — full manual rescan (POST)
 
 ## Injection (`routes-inject.ts`)
-- `/api/inject` — run context injection (GET/POST). Types: SessionStart (primer + project profile), UserPromptSubmit (conditional open-items reminder), PreToolUse (position memory #486: compact file story on the session's first Read of a file with tag history; gated by `preToolUseRead`, no event recorded, no status.md export). The response may carry a top-level `systemMessage` — the ONE channel Claude Code shows the user for an exit-0 hook (stderr is discarded), so every "your tooling is broken" alert merges into it (`inject-warnings.ts`): a stale daemon (code on disk newer than boot, SessionStart), transcript-shape drift against parse-tags' assumptions (#582, SessionStart + UserPromptSubmit, once per session), and fresh log-integrity damage (#583, SessionStart, last 7 days, pointing at `doctor`)
+- `/api/inject` — run context injection (GET/POST). Types: SessionStart (primer + project profile), UserPromptSubmit (conditional open-items reminder + mid-session security alert: a vuln-scan `security` tag opened after the session's last injection and rated high/critical or `danger` is delivered at the next prompt, once per tag, bypassing the `userPromptSubmit` toggle), PreToolUse (position memory #486: compact file story on the session's first Read of a file with tag history; gated by `preToolUseRead`, no event recorded, no status.md export). The response may carry a top-level `systemMessage` — the ONE channel Claude Code shows the user for an exit-0 hook (stderr is discarded), so every "your tooling is broken" alert merges into it (`inject-warnings.ts`): a stale daemon (code on disk newer than boot, SessionStart), transcript-shape drift against parse-tags' assumptions (#582, SessionStart + UserPromptSubmit, once per session), and fresh log-integrity damage (#583, SessionStart, last 7 days, pointing at `doctor`)
 - `/api/inject/preview` — preview injection without logging (GET)
 - `/api/injections` — injection history (GET)
 - `/api/injection/:id` — delete one history entry (DELETE)

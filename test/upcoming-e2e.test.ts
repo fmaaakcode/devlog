@@ -98,6 +98,26 @@ describe("upcoming tier (E2E)", () => {
     expect(blocked.releaseBlocked.openItems[0].content).toContain("committed work");
   });
 
+  test("defer + release in ONE response passes BOTH guards (the 2026-07-13 deadlock)", async () => {
+    // The documented flow «-(upcoming) #N then -(release)» in a single response
+    // used to deadlock: the hook guard refused to persist ANY tag (including
+    // the deferral that would satisfy it) because its in-flight subtraction
+    // knew closures only, and the transcript echo re-fired it on every
+    // continuation. Drive the REAL Stop hook end-to-end.
+    await post(projDir, [{ tag: "bug found", content: "guard blind to same-turn deferral" }]);
+    const num = (await openItems(projDir)).items[0].num;
+
+    const { err } = await runHook(projDir, `work done\n\n-(upcoming) #${num}\n-(release) v0.1.0 — ship with a deferred bug`);
+    expect(err).not.toContain("cannot ship");   // the guard banner must not fire
+
+    // State proves the whole batch landed: the bug is deferred AND the release stored.
+    const item = (await openItems(projDir)).items.find((it: any) => it.num === num);
+    expect(item.upcoming).toBe(true);
+    const data = await getJson("/api/data");
+    const projName = Object.keys(data.projects).find(n => data.projects[n].path?.includes("upcoming-e2e-proj"));
+    expect(data.tags.some((t: any) => t.project === projName && t.tag === "release" && t.content.startsWith("v0.1.0"))).toBe(true);
+  });
+
   test("a duplicate -(upcoming) echo does not burn a #N — the sequence stays contiguous", async () => {
     const first = await post(projDir, [{ tag: "upcoming", content: "same deferred idea" }]);
     const n1 = first.upcomingChanges[0].num;

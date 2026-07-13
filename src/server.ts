@@ -9,7 +9,7 @@ import { rescanPreserve, scanFreshProfile, applyPreservedScan } from "./scanner"
 import { parseHookEvent } from "./hooks";
 import { exportStatusMd, generateStackMd } from "./export";
 import { rebuildChangelogsMigration } from "./changelog-rebuild";
-import { buildContext, getEffectiveConfig, isDynamicTypeEnabled } from "./inject";
+import { buildContext, getEffectiveConfig, isDynamicTypeEnabled, newSecurityAlerts } from "./inject";
 import { primerFor } from "./primer";
 import { migrateLegacyData } from "./migrate";
 import { refreshDescendants } from "./sessions";
@@ -246,13 +246,17 @@ async function doInject(body: Record<string, unknown>) {
       // describeNudge mirrors outdatedLibs: fire on SessionStart even when the
       // summary is off, so buildContext can emit the standalone desc/about nudge.
       const wantDescribe = type === "SessionStart" && config.describeNudge === true;
+      // A high-severity security tag opened mid-session by the vuln scan
+      // bypasses the userPromptSubmit toggle (security is never deferrable);
+      // buildContext keeps the ordinary reminder behind the toggle.
+      const wantSecurity = type === "UserPromptSubmit" && newSecurityAlerts(data, name, sessionId).length > 0;
       // A file's story injects at most once per session — the first Read is
       // the "position recall" moment; every later Read of the same file would
       // repeat known context and burn budget.
       const alreadyInjected = type === "PreToolUse" && !!injFile && data.injections.some(i =>
         i.type === "PreToolUse" && i.session_id === sessionId && !!sessionId
         && (i.file_path || "").toLowerCase() === injFile.toLowerCase());
-      if ((isDynamicTypeEnabled(config, type) || isOpenCmd || wantOutdated || wantDescribe) && !alreadyInjected) {
+      if ((isDynamicTypeEnabled(config, type) || isOpenCmd || wantOutdated || wantDescribe || wantSecurity) && !alreadyInjected) {
         // Standards catalog names — injected on SessionStart only (awareness
         // that a rules library exists; content is pulled on demand via the
         // -(ask:rules) command handled in the Stop hook). Skipped in the

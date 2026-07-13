@@ -529,15 +529,22 @@ export function detectReleaseOpenItems(
 ): ReleaseBlocked | null {
   // In-flight closures, type-matched (mirrors the Stop-hook guard): done/dropped
   // close todos + plan steps, bug fix closes bugs, security fix closes security*.
+  // In-flight DEFERRALS count too (2026-07-13 deadlock): `-(upcoming) #N` in the same batch
+  // moves the item to the tier that never blocks a release — without this, the
+  // documented defer-then-release flow deadlocks (the deferral that would
+  // satisfy the guard is held by the guard). Security is never subtracted this
+  // way: applyUpcoming refuses to defer it, so the guard must keep blocking.
   const inflightDone = new Set<number>();
   const inflightBugFix = new Set<number>();
   const inflightSecFix = new Set<number>();
+  const inflightDeferred = new Set<number>();
   for (const e of batchEntries) {
     const nums = [...String(e.content || "").matchAll(/#(\d+)/g)].map(m => parseInt(m[1], 10));
     if (!nums.length) continue;
     if (e.tag === "done" || e.tag === "dropped") for (const n of nums) inflightDone.add(n);
     else if (e.tag === "bug fix") for (const n of nums) inflightBugFix.add(n);
     else if (e.tag === "security fix") for (const n of nums) inflightSecFix.add(n);
+    else if (e.tag === "upcoming") for (const n of nums) inflightDeferred.add(n);
   }
   // An un-numbered item (num === undefined) can't be closed by `#N`, so it always
   // counts as open — surfaced by text so Claude can still close it with -(done) <text>.
@@ -547,11 +554,17 @@ export function detectReleaseOpenItems(
   // «قادمة» never blocks a release — that's the whole point of the tier. The
   // release page snapshots them in its own «قادم» section instead.
   const tags = data.tags.filter(t => t.project === project);
+  // Deferring a plan STEP defers the whole owning plan (applyUpcoming's rule),
+  // so an in-flight deferral of one step must clear its siblings too.
+  const allSteps = openPlanSteps(data, project);
+  const deferredPlanTitles = new Set(
+    allSteps.filter(s => typeof s.num === "number" && inflightDeferred.has(s.num)).map(s => s.planTitle));
+  const deferred = (num: number | undefined) => typeof num === "number" && inflightDeferred.has(num);
   const out: ReleaseOpenItem[] = [];
-  for (const t of openTodos(tags)) if (!t.upcoming && stillOpen(t.num, inflightDone)) out.push({ num: t.num, tag: "todo", content: t.content });
-  for (const t of openBugs(tags)) if (!t.upcoming && stillOpen(t.num, inflightBugFix)) out.push({ num: t.num, tag: "bug found", content: t.content });
+  for (const t of openTodos(tags)) if (!t.upcoming && stillOpen(t.num, inflightDone) && !deferred(t.num)) out.push({ num: t.num, tag: "todo", content: t.content });
+  for (const t of openBugs(tags)) if (!t.upcoming && stillOpen(t.num, inflightBugFix) && !deferred(t.num)) out.push({ num: t.num, tag: "bug found", content: t.content });
   for (const t of openSecurity(tags)) if (stillOpen(t.num, inflightSecFix)) out.push({ num: t.num, tag: t.tag, content: t.content });
-  for (const s of openPlanSteps(data, project)) if (!s.planUpcoming && stillOpen(s.num, inflightDone)) out.push({ num: s.num, tag: "plan-step", content: s.text, planTitle: s.planTitle });
+  for (const s of allSteps) if (!s.planUpcoming && stillOpen(s.num, inflightDone) && !deferredPlanTitles.has(s.planTitle)) out.push({ num: s.num, tag: "plan-step", content: s.text, planTitle: s.planTitle });
   return out.length ? { openItems: out } : null;
 }
 

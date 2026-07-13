@@ -322,17 +322,30 @@ if (msg) {
         // dropped close todo+plan-step, bug fix closes bug found, security
         // fix closes security*. Lets Claude close items AND release in the
         // same turn (otherwise the user is forced to split into two turns).
-        const inflight = { done: new Set(), bugFix: new Set(), secFix: new Set() };
+        // In-flight DEFERRALS count too (2026-07-13 deadlock): `-(upcoming) #N` in this same
+        // response moves the item to the never-blocks tier — without this the
+        // documented defer-then-release flow deadlocked (this guard refused to
+        // persist ANY tag, including the deferral that would satisfy it, and
+        // the transcript echo re-fired it on every continuation). Security is
+        // never subtracted by deferral: applyUpcoming refuses to defer it.
+        const inflight = { done: new Set(), bugFix: new Set(), secFix: new Set(), deferred: new Set() };
         for (const e of entries) {
           const nums = [...((e.content || "").matchAll(/#(\d+)/g))].map(m => parseInt(m[1], 10));
           if (!nums.length) continue;
           if (e.tag === "done" || e.tag === "dropped") for (const n of nums) inflight.done.add(n);
           else if (e.tag === "bug fix") for (const n of nums) inflight.bugFix.add(n);
           else if (e.tag === "security fix") for (const n of nums) inflight.secFix.add(n);
+          else if (e.tag === "upcoming") for (const n of nums) inflight.deferred.add(n);
         }
+        // Deferring one plan STEP defers the whole owning plan (applyUpcoming's
+        // rule), so sibling steps of a deferred step clear too — by plan title.
+        const deferredPlans = new Set(rawItems
+          .filter(it => it.tag === "plan-step" && inflight.deferred.has(it.num))
+          .map(it => it.planTitle));
         const items = rawItems.filter(it => {
-          if (it.tag === "todo" || it.tag === "plan-step") return !inflight.done.has(it.num);
-          if (it.tag === "bug found") return !inflight.bugFix.has(it.num);
+          if (it.tag === "todo") return !inflight.done.has(it.num) && !inflight.deferred.has(it.num);
+          if (it.tag === "plan-step") return !inflight.done.has(it.num) && !inflight.deferred.has(it.num) && !deferredPlans.has(it.planTitle);
+          if (it.tag === "bug found") return !inflight.bugFix.has(it.num) && !inflight.deferred.has(it.num);
           if (it.tag === "security" || it.tag === "security:own" || it.tag === "security:dep") return !inflight.secFix.has(it.num);
           return true;
         });
@@ -935,6 +948,65 @@ if (msg && cwd) {
     }
   } catch (e) {
     await log(`ask:closed error: ${(e as Error).message}`);
+  }
+}
+
+// === Part 1.5d2: -(ask:lib) <names…> — version advisor for a new dependency ===
+// Claude has no network to research package versions; the server does. Answers
+// "which exact version of a/b/c should I install?" with the newest STABLE
+// release ≥7 days old (the dep-check maturity rule) that OSV certifies clean —
+// stepping past vulnerable candidates, refusing near-miss name guesses
+// (typo-squatting), and flagging an unanswered OSV honestly. Optional
+// `npm:`/`pypi:`/`crates:` prefix per name overrides the project's ecosystem.
+// Ephemeral like every ask: command — never a logged tag. Longer fetch timeout:
+// this one does registry + OSV round-trips per name (server caches both).
+if (msg && cwd) {
+  try {
+    const m = strippedMsg.match(/^[ \t]*-\(ask:lib\)[ \t]+(\S[^\n]*?)[ \t]*$/m);
+    const cmd = m ? `ask:lib ${m[1]}` : "";
+    if (m && await shouldServeAsk(cmd)) {
+      const r = await fetch(`${SERVER}/api/lib-advice?cwd=${encodeURIComponent(cwd)}&names=${encodeURIComponent(m[1])}`,
+        { signal: AbortSignal.timeout(25000) });
+      if (r.ok) {
+        await markAskServed(cmd);   // record only now the fetch succeeded (#398)
+        const { items = [] } = await r.json() as { items?: any[] };
+        const age = (d: any) => (typeof d === "number") ? L(` (${d}d old)`, ` (عمرها ${d} يوم)`) : "";
+        const lines = items.map((it: any) => {
+          switch (it.verdict) {
+            case "ok": {
+              const stepped = it.steppedBack
+                ? L(`\n    ⚠ newer matured release skipped — vulnerable (${it.vulnNote})`,
+                    `\n    ⚠ تجاوزنا نسخة أحدث ناضجة لأنها مثغورة (${it.vulnNote})`)
+                : "";
+              const fresh = (it.latest && it.latest !== it.suggest && !it.steppedBack)
+                ? L(` · latest ${it.latest}${age(it.latestAgeDays)} not matured yet`,
+                    ` · الأحدث ${it.latest}${age(it.latestAgeDays)} لم تنضج بعد`)
+                : "";
+              return `  ${it.name} → ${it.suggest}${age(it.suggestAgeDays)} ${L("— OSV clean", "— نظيفة OSV")} · ${it.installCmd}${fresh}${stepped}`;
+            }
+            case "ok-unverified":
+              return `  ${it.name} → ${it.suggest}${age(it.suggestAgeDays)} ${L("— ⚠ OSV did not answer; maturity only, NO security certificate", "— ⚠ لم يُجب OSV؛ اختيار نضج فقط بلا شهادة أمان")} · ${it.installCmd}`;
+            case "no-clean":
+              return `  ${it.name} — ${L(`no OSV-clean version among the newest matured releases (${it.vulnNote}). Not recommending a vulnerable version.`, `لا نسخة نظيفة ضمن أحدث النسخ الناضجة (${it.vulnNote}). لن أقترح نسخة مثغورة.`)}`;
+            case "no-mature":
+              return `  ${it.name} — ${L(`nothing matured yet: newest is ${it.latest}${age(it.latestAgeDays)}, under the 7-day rule. Wait or decide explicitly.`, `لا نسخة ناضجة بعد: الأحدث ${it.latest}${age(it.latestAgeDays)} تحت قاعدة الأيام السبعة. انتظر أو قرر صراحةً.`)}`;
+            case "unsupported-eco":
+              return `  ${it.name} — ${L(`ecosystem "${it.eco || "?"}" not supported for version history (npm/pypi/crates only)`, `النظام "${it.eco || "?"}" غير مدعوم لتاريخ النسخ (npm/pypi/crates فقط)`)}`;
+            case "invalid-name":
+              return `  ${it.name} — ${L("invalid package name — refused", "اسم حزمة غير صالح — مرفوض")}`;
+            default:
+              return `  ${it.name} — ${L("not found under this EXACT name (or lookup failed). Verify the name yourself — no near-miss suggestions (typo-squatting).", "غير موجودة بهذا الاسم الحرفي (أو فشل الاستعلام). تحقق من الاسم بنفسك — لا اقتراح أسماء مشابهة (typo-squatting).")}`;
+          }
+        });
+        const out = lines.length ? lines.join("\n") : L("nothing to advise.", "لا شيء يُقترح.");
+        await log(`ask:lib: served ${items.length} item(s)`);
+        blockContinue(`\n[devlog lib-advice]\n${out}\n`);
+      } else {
+        await log(`ask:lib: server replied ${r.status}`);
+      }
+    }
+  } catch (e) {
+    await log(`ask:lib error: ${(e as Error).message}`);
   }
 }
 

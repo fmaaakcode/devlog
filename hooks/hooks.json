@@ -46,7 +46,7 @@
       {
         "hooks": [
           { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/hook\" -H \"Content-Type: application/json\" --data-binary @-", "timeout": 10 },
-          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/parse-tags.sh\"", "timeout": 15 }
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/parse-tags.sh\"", "timeout": 30 }
         ]
       }
     ],
