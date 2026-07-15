@@ -696,7 +696,11 @@ if (msg) {
             const intent = resp.releaseIntent;   // present when the version was computed from -(release:type)
             const sep = L(", ", "، ");
             const bumps = (rel.bumped || []).map((u: any) => `${u.file} ${u.from}→${u.to}`).join(sep) || L("no manifest to bump", "لا مانيفست لرفعه");
-            const downgrades = (rel.rejected || []).map((u: any) => `${u.file} ${u.current}→${u.attempted}`).join(sep);
+            // Entries without a reason predate the field → they are downgrades.
+            const downgrades = (rel.rejected || []).filter((u: any) => u.reason !== "unsupported-layout")
+              .map((u: any) => `${u.file} ${u.current}→${u.attempted}`).join(sep);
+            const unsupported = (rel.rejected || []).filter((u: any) => u.reason === "unsupported-layout")
+              .map((u: any) => u.file).join(sep);
             const out = [
               "════════ DevLog Release ════════",
               L(`✓ Release ${rel.version} recorded in DevLog.`, `✓ الإصدار ${rel.version} سُجِّل في DevLog.`),
@@ -704,6 +708,9 @@ if (msg) {
                               `محسوب: ${intent.auto ? "نوع تلقائي، " : ""}ترقية ${intent.bump} (${intent.from} → ${intent.version})`)] : []),
               L(`Version bump: ${bumps}`, `رفع النسخة: ${bumps}`),
               ...(downgrades ? [L(`⚠ Downgrade refused (manifest is newer): ${downgrades}`, `⚠ رُفض تنزيل النسخة (المانيفست أحدث): ${downgrades}`)] : []),
+              ...(unsupported ? [L(
+                `⚠ Manifest NOT bumped — unsupported layout (no literal version in [package]/[workspace.package]): ${unsupported}. Update it manually if needed.`,
+                `⚠ لم يُرفع المانيفست — تخطيط غير مدعوم (لا version صريح في [package]/[workspace.package]): ${unsupported}. حدّثه يدويًا إن لزم.`)] : []),
               `HTML/changelog: ${rel.htmlGenerated ? L("generated ✓", "أُنشئ ✓") : L("not generated", "لم يُنشأ")}`,
               ...(intent?.warning ? ["", L(
                 `⚠ Your accrued changes look ${intent.warning.suggested}-level but you declared ${intent.bump}. Consider -(release:${intent.warning.suggested}) next time.`,

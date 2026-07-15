@@ -380,9 +380,11 @@ export function diagnoseClosureMismatch(
 export interface ReleaseResult {
   version: string;
   bumped: { file: string; from: string; to: string }[];
-  // Manifests whose current version is NEWER than the released one — refused
-  // rather than silently downgraded. Surfaced to Claude so the typo is caught.
-  rejected: { file: string; current: string; attempted: string }[];
+  // Manifests the writer refused or couldn't reach: "downgrade" (current is
+  // NEWER than the released version — a typo caught, not silently written) or
+  // "unsupported-layout" (no literal version to bump, e.g. a virtual Cargo
+  // workspace). Surfaced to Claude so the user learns the manifest lagged.
+  rejected: { file: string; current: string; attempted: string; reason?: "downgrade" | "unsupported-layout" }[];
   htmlGenerated: boolean;
 }
 
@@ -593,12 +595,12 @@ export async function applyRelease(tagEntry: TagEntry, data: DevLogData, project
       // Remember the version we bumped FROM so a future rollback can restore it
       // even with no earlier release tag to fall back on (QA #2).
       if (bumped.length) tagEntry.prevVersion = bumped[0].from;
-      for (const r of rej) rejected.push({ file: r.file, current: r.current, attempted: r.attempted });
+      for (const r of rej) rejected.push({ file: r.file, current: r.current, attempted: r.attempted, reason: r.reason });
       if (bumped.length) {
         console.log(`[/api/tags release] bumped: ${bumped.map(u => `${u.file} ${u.from}→${u.to}`).join(", ")}`);
       }
       if (rejected.length) {
-        console.error(`[/api/tags release] refused downgrade: ${rejected.map(u => `${u.file} ${u.current}→${u.attempted}`).join(", ")}`);
+        console.error(`[/api/tags release] manifest rejects: ${rejected.map(u => u.reason === "unsupported-layout" ? `${u.file} (unsupported layout)` : `${u.file} ${u.current}→${u.attempted}`).join(", ")}`);
       }
     } catch (e) {
       console.error("[/api/tags release version-bump] error:", (e as Error)?.message);

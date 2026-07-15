@@ -358,6 +358,137 @@ describe("bumpManifests — Cargo.lock root-version sync (release --locked CI fi
   });
 });
 
+describe("bumpManifests — Cargo workspace layouts (#624)", () => {
+  test("virtual workspace: [workspace.package] version is bumped, members' own files untouched", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vw-ws-"));
+    writeFileSync(join(dir, "Cargo.toml"),
+      `[workspace]\nresolver = "3"\nmembers = ["crates/a"]\n\n` +
+      `[workspace.package]\nversion = "1.4.0"\nedition = "2024"\n\n` +
+      `[workspace.dependencies]\nserde = "1.0.200"\n`, "utf8");
+    mkdirSync(join(dir, "crates", "a"), { recursive: true });
+    const memberBefore = `[package]\nname = "a"\nversion.workspace = true\n`;
+    writeFileSync(join(dir, "crates", "a", "Cargo.toml"), memberBefore, "utf8");
+
+    const updates = await bumpManifests(dir, "v1.5.0 — workspace release");
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({ from: "1.4.0", to: "1.5.0" });
+    const root = readFileSync(join(dir, "Cargo.toml"), "utf8");
+    expect(root).toContain(`[workspace.package]\nversion = "1.5.0"`);
+    expect(root).toContain(`serde = "1.0.200"`);                       // workspace dep pin untouched
+    expect(readFileSync(join(dir, "crates", "a", "Cargo.toml"), "utf8")).toBe(memberBefore);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("hybrid root: [package] AND [workspace.package] both carry literals → both move", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vw-hybrid-"));
+    writeFileSync(join(dir, "Cargo.toml"),
+      `[package]\nname = "root"\nversion = "2.0.0"\n\n` +
+      `[workspace]\nmembers = ["sub"]\n\n` +
+      `[workspace.package]\nversion = "2.0.0"\n`, "utf8");
+
+    const updates = await bumpManifests(dir, "v2.1.0 — hybrid");
+
+    expect(updates).toHaveLength(1);
+    const after = readFileSync(join(dir, "Cargo.toml"), "utf8");
+    expect(after).toContain(`name = "root"\nversion = "2.1.0"`);
+    expect(after).toContain(`[workspace.package]\nversion = "2.1.0"`);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("root crate inheriting version.workspace = true: workspace block bumped, inheritance line kept", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vw-inherit-"));
+    writeFileSync(join(dir, "Cargo.toml"),
+      `[package]\nname = "root"\nversion.workspace = true\n\n` +
+      `[workspace]\nmembers = []\n\n` +
+      `[workspace.package]\nversion = "0.9.0"\n`, "utf8");
+
+    const updates = await bumpManifests(dir, "v1.0.0 — inherit");
+
+    expect(updates).toHaveLength(1);
+    const after = readFileSync(join(dir, "Cargo.toml"), "utf8");
+    expect(after).toContain("version.workspace = true");
+    expect(after).toContain(`[workspace.package]\nversion = "1.0.0"`);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("workspace downgrade is refused like a [package] one", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vw-ws-down-"));
+    const before = `[workspace]\nmembers = []\n\n[workspace.package]\nversion = "3.0.0"\n`;
+    writeFileSync(join(dir, "Cargo.toml"), before, "utf8");
+    const rejected: VersionReject[] = [];
+
+    const updates = await bumpManifests(dir, "v2.0.0 — typo", rejected);
+
+    expect(updates).toEqual([]);
+    expect(readFileSync(join(dir, "Cargo.toml"), "utf8")).toBe(before);
+    expect(rejected[0]).toMatchObject({ current: "3.0.0", attempted: "2.0.0", reason: "downgrade" });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("Cargo.lock: every member inheriting the workspace version gets its entry synced", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vw-ws-lock-"));
+    writeFileSync(join(dir, "Cargo.toml"),
+      `[workspace]\nmembers = ["crates/core", "cli"]\n\n[workspace.package]\nversion = "1.0.0"\n`, "utf8");
+    mkdirSync(join(dir, "crates", "core"), { recursive: true });
+    mkdirSync(join(dir, "cli"), { recursive: true });
+    writeFileSync(join(dir, "crates", "core", "Cargo.toml"),
+      `[package]\nname = "core"\nversion = { workspace = true }\n`, "utf8");
+    // cli pins its OWN version — it does not move with the workspace.
+    writeFileSync(join(dir, "cli", "Cargo.toml"),
+      `[package]\nname = "cli"\nversion = "0.3.0"\n`, "utf8");
+    writeFileSync(join(dir, "Cargo.lock"),
+      `[[package]]\nname = "cli"\nversion = "0.3.0"\n\n` +
+      `[[package]]\nname = "core"\nversion = "1.0.0"\n\n` +
+      `[[package]]\nname = "serde"\nversion = "1.0.228"\n`, "utf8");
+
+    const updates = await bumpManifests(dir, "v1.1.0 — ws release");
+
+    const lock = readFileSync(join(dir, "Cargo.lock"), "utf8");
+    expect(lock).toContain(`name = "core"\nversion = "1.1.0"`);   // inheriting member synced
+    expect(lock).toContain(`name = "cli"\nversion = "0.3.0"`);    // independent member untouched
+    expect(lock).toContain(`name = "serde"\nversion = "1.0.228"`); // dependency untouched
+    expect(updates.some(u => u.file.endsWith("Cargo.lock"))).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("bumpManifests — unsupported Cargo layout rejects visibly (#623)", () => {
+  test("virtual workspace WITHOUT [workspace.package] version → unsupported-layout reject", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vw-unsup-"));
+    const before = `[workspace]\nresolver = "3"\nmembers = ["crates/a"]\n\n[profile.release]\nlto = true\n`;
+    writeFileSync(join(dir, "Cargo.toml"), before, "utf8");
+    const rejected: VersionReject[] = [];
+
+    const updates = await bumpManifests(dir, "v1.0.0 — ship it", rejected);
+
+    expect(updates).toEqual([]);
+    expect(readFileSync(join(dir, "Cargo.toml"), "utf8")).toBe(before);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]).toMatchObject({ current: "", attempted: "1.0.0", reason: "unsupported-layout" });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("[package] with the version field omitted → unsupported-layout reject", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vw-nover-"));
+    writeFileSync(join(dir, "Cargo.toml"), `[package]\nname = "x"\nedition = "2024"\n`, "utf8");
+    const rejected: VersionReject[] = [];
+
+    await bumpManifests(dir, "v1.0.0 — ship", rejected);
+
+    expect(rejected[0]?.reason).toBe("unsupported-layout");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("readManifestVersion reads the [workspace.package] version", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rmv-ws-"));
+    writeFileSync(join(dir, "Cargo.toml"),
+      `[workspace]\nmembers = []\n\n[workspace.package]\nversion = "4.2.0"\n`, "utf8");
+    expect(await readManifestVersion(dir)).toBe("4.2.0");
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
 describe("syncCargoLockContent — pure root-version rewrite", () => {
   const LOCK = `[[package]]\nname = "root"\nversion = "1.0.0"\n\n[[package]]\nname = "dep"\nversion = "1.0.0"\n`;
 

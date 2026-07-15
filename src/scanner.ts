@@ -2,6 +2,7 @@ import { readdir, readFile, access } from "node:fs/promises";
 import { join, extname, } from "node:path";
 import { claudeConfigDir, claudeProjectSlug, normalizeSlashes } from "./path-utils";
 import { NESTED_MANIFEST_DIRS } from "./lockfile-tree";
+import { parseCargoDeps, resolveWorkspaceMemberDirs, type CargoDep } from "./cargo-workspace";
 import { bunSpawnSync } from "./spawn";
 import type { ProjectProfile, MemoryFile, RuntimeInfo, DevLogData } from "./types";
 
@@ -187,75 +188,30 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<{ fra
   // Cargo.toml — supports both single-crate and workspace layouts.
   // Workspace roots typically have only [workspace.dependencies] (no plain
   // [dependencies]) and the actual crates live under members in subdirs.
-  // We walk:
-  //   1. The root's [dependencies]/[dev-dependencies]/[build-dependencies]/
-  //      [workspace.dependencies] sections.
+  // Parsing lives in cargo-workspace.ts (shared with version-writer):
+  //   1. The root's dependency sections — plain, dev/build, workspace, the
+  //      platform-conditional [target.'cfg(...)'.dependencies] variants, and
+  //      the [dependencies.NAME] section form.
   //   2. Each member crate's Cargo.toml (same sections), de-duplicated by name.
   const cargoFile = Bun.file(join(dirPath, "Cargo.toml"));
   if (await cargoFile.exists()) {
     try {
       const seen = new Set<string>();
-      const pushDep = (name: string, version: string, dev: boolean) => {
-        if (seen.has(name)) return;
-        seen.add(name);
-        result.libraries.push({ name, version, ...(dev && { dev: true }), eco: "crates.io" });
-      };
-
-      const parseCargoSections = (text: string) => {
-        const sections: [string, boolean][] = [
-          ["[dependencies]", false],
-          ["[dev-dependencies]", true],
-          ["[build-dependencies]", true],
-          ["[workspace.dependencies]", false],
-        ];
-        for (const [section, isDev] of sections) {
-          const start = text.indexOf(section);
-          if (start === -1) continue;
-          const after = text.slice(start + section.length);
-          const end = after.search(/^\[/m);
-          const block = end === -1 ? after : after.slice(0, end);
-          for (const line of block.split("\n")) {
-            const t = line.trim();
-            if (!t || t.startsWith("#")) continue;
-            const m = t.match(/^([a-zA-Z0-9_-]+)\s*=\s*"([^"]+)"/) ||
-                    t.match(/^([a-zA-Z0-9_-]+)\s*=\s*\{.*version\s*=\s*"([^"]+)"/) ||
-                    t.match(/^([a-zA-Z0-9_-]+)\.version\s*=\s*"([^"]+)"/);
-            if (m) pushDep(m[1], m[2], isDev);
-          }
+      const pushDeps = (deps: CargoDep[]) => {
+        for (const d of deps) {
+          if (seen.has(d.name)) continue;
+          seen.add(d.name);
+          result.libraries.push({ name: d.name, version: d.version, ...(d.dev && { dev: true }), eco: "crates.io" });
         }
       };
 
       const rootText = await cargoFile.text();
-      parseCargoSections(rootText);
+      pushDeps(parseCargoDeps(rootText));
 
-      // Resolve workspace members and parse each member's Cargo.toml.
-      // The members list lives inside `[workspace] members = [...]`. A glob
-      // (e.g. `crates/*`) is expanded by listing the parent directory.
-      const wsBlock = rootText.match(/\[workspace\][\s\S]*?(?=\n\[|$)/);
-      if (wsBlock) {
-        const membersMatch = wsBlock[0].match(/members\s*=\s*\[([\s\S]*?)\]/);
-        if (membersMatch) {
-          const patterns = Array.from(membersMatch[1].matchAll(/"([^"]+)"/g)).map(m => m[1]);
-          const memberDirs: string[] = [];
-          for (const pat of patterns) {
-            if (pat.endsWith("/*")) {
-              const parent = join(dirPath, pat.slice(0, -2));
-              try {
-                const entries = await readdir(parent, { withFileTypes: true });
-                for (const e of entries) {
-                  if (e.isDirectory()) memberDirs.push(join(parent, e.name));
-                }
-              } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
-            } else {
-              memberDirs.push(join(dirPath, pat));
-            }
-          }
-          for (const md of memberDirs) {
-            const f = Bun.file(join(md, "Cargo.toml"));
-            if (await f.exists()) {
-              try { parseCargoSections(await f.text()); } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
-            }
-          }
+      for (const md of await resolveWorkspaceMemberDirs(rootText, dirPath)) {
+        const f = Bun.file(join(md, "Cargo.toml"));
+        if (await f.exists()) {
+          try { pushDeps(parseCargoDeps(await f.text())); } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
         }
       }
       // Resolve exact versions from Cargo.lock
