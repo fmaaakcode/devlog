@@ -13,6 +13,13 @@ export interface InstallPkg {
   /** "" = blind install (no version, or a floating dist-tag like @latest). */
   version: string;
   eco: "npm" | "pypi" | "crates";
+  /**
+   * Set when the package arrived via a scaffold command (#606): the original
+   * invocation minus version (`bun create astro`), so block messages can show
+   * the re-issue in the shape the user typed — `bun add create-astro@X` would
+   * be wrong guidance for a `bun create` flow.
+   */
+  scaffoldCmd?: string;
 }
 
 // Floating dist-tags install "whatever is newest right now" — that's a blind
@@ -37,6 +44,64 @@ const MANAGERS: Array<{ re: RegExp; eco: InstallPkg["eco"] }> = [
   { re: /(?:^|\s)(?:pip3?|python3?\s+-m\s+pip)\s+install\s+(.+)$/, eco: "pypi" },
   { re: /(?:^|\s)uv\s+(?:add|pip\s+install)\s+(.+)$/, eco: "pypi" },
 ];
+
+// ── Scaffolders (#606) ───────────────────────────────────────────────────────
+// `bun create astro@5` installed the old generation with zero gating in the
+// wild: scaffold commands both pick a framework version and install it, yet
+// none of them says `add`. npm-family only, by the ecosystems' nature — cargo
+// new/init and uv init scaffold zero third-party deps; those arrive later via
+// the gated add/install commands, or via manifest edits only the scan backstop
+// sees. Unlike add commands, a scaffold takes exactly ONE package — everything
+// after it is template arguments (`bun create astro@5 . --template minimal`),
+// so parsing stops at the first name.
+const SCAFFOLDERS: Array<{ re: RegExp; literal: boolean }> = [
+  // The name resolves to the npm `create-` package (npm-init rules): astro →
+  // create-astro, @scope → @scope/create, @scope/x → @scope/create-x.
+  { re: /(?:^|\s)((?:bun|npm|pnpm|yarn)\s+create|npm\s+init)\s+(.+)$/, literal: false },
+  // Direct executors run the named package as-is — only `create-*` names gate
+  // (`npx prettier` must never gate).
+  { re: /(?:^|\s)(npx|bunx|pnpm\s+dlx|yarn\s+dlx)\s+(.+)$/, literal: true },
+];
+
+const isCreatePackage = (name: string) => /^(?:@[^/]+\/)?create-/.test(name);
+
+// npm-init name resolution. An unscoped name with a slash is a GitHub-shorthand
+// template (`bun create user/repo`), not a registry package → null.
+function mapCreateName(name: string): string | null {
+  if (name.startsWith("@")) {
+    const slash = name.indexOf("/");
+    if (slash < 0) return `${name}/create`;
+    const rest = name.slice(slash + 1);
+    return rest.startsWith("create-") ? name : `${name.slice(0, slash)}/create-${rest}`;
+  }
+  if (name.includes("/")) return null;
+  return name.startsWith("create-") ? name : `create-${name}`;
+}
+
+function parseScaffoldSegment(segment: string): InstallPkg | null {
+  for (const { re, literal } of SCAFFOLDERS) {
+    const m = segment.match(re);
+    if (!m) continue;
+    let skipNext = false;
+    for (const rawTok of m[2].trim().split(/\s+/)) {
+      if (rawTok === "--") break; // forwarded template args, never the package
+      if (skipNext) { skipNext = false; continue; }
+      if (rawTok.startsWith("-")) { skipNext = VALUE_FLAGS.has(rawTok); continue; }
+      const tok = rawTok.replace(/^["']+|["']+$/g, "");
+      if (!tok || isNonRegistryToken(tok)) return null; // path/URL template — not a registry scaffold
+      const parsed = parseAtToken(tok, "npm");
+      if (!parsed) return null;
+      const name = literal
+        ? (isCreatePackage(parsed.name) ? parsed.name : null)
+        : mapCreateName(parsed.name);
+      if (!name) return null;
+      const verb = m[1].replace(/\s+/g, " ");
+      return { ...parsed, name, scaffoldCmd: `${verb} ${parsed.name}` };
+    }
+    return null; // scaffold verb with no package token (`npm init -y`)
+  }
+  return null;
+}
 
 // A token that is clearly not a registry package: local paths, URLs, git refs,
 // tarballs, workspace/link protocols.
@@ -69,6 +134,11 @@ export function parseInstallCommands(cmd: string): InstallPkg[] {
           out.push(pkg);
         }
       }
+    }
+    const scaffold = parseScaffoldSegment(segment);
+    if (scaffold && out.length < 8 && !seen.has(`${scaffold.eco}:${scaffold.name}`)) {
+      seen.add(`${scaffold.eco}:${scaffold.name}`);
+      out.push(scaffold);
     }
   }
   return out;
@@ -136,7 +206,7 @@ export function decideGate(pkgs: InstallPkg[], advice: GateAdvice[], lang: "ar" 
         const cert = a.verdict === "ok"
           ? L("OSV clean", "نظيفة OSV")
           : L("⚠ OSV did not answer — maturity only", "⚠ لم يُجب OSV — نضج فقط");
-        blocks.push(`⛔ ${pkg.name}: ${L(`blind install (no version) — the advisor picks ${a.suggest}${age != null ? ` (${age}d old, ` : " ("}${cert}):`, `تركيب أعمى بلا نسخة — المستشار يختار ${a.suggest}${age != null ? ` (عمرها ${age} يوم، ` : " ("}${cert}):`)} ${a.installCmd || `${pkg.name}@${a.suggest}`}`);
+        blocks.push(`⛔ ${pkg.name}: ${L(`blind install (no version) — the advisor picks ${a.suggest}${age != null ? ` (${age}d old, ` : " ("}${cert}):`, `تركيب أعمى بلا نسخة — المستشار يختار ${a.suggest}${age != null ? ` (عمرها ${age} يوم، ` : " ("}${cert}):`)} ${pkg.scaffoldCmd ? `${pkg.scaffoldCmd}@${a.suggest}` : (a.installCmd || `${pkg.name}@${a.suggest}`)}`);
       } else if (a.verdict === "no-clean") {
         blocks.push(`⛔ ${pkg.name}: ${L(`no OSV-clean version among the matured releases (${a.vulnNote || ""}) — do not install blind; report to the user.`, `لا نسخة نظيفة ضمن الناضجات (${a.vulnNote || ""}) — لا تركيب أعمى؛ أبلغ المستخدم.`)}`);
       } else if (a.verdict === "no-mature") {

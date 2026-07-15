@@ -80,6 +80,29 @@ describe("studyCorpus — window", () => {
     expect(window.prevStudy?.name).toBe("study-2026-03 helper");
     expect(window.prevStudy?.digest).toBe("نمط أ مستمر");
   });
+
+  // #618: doc:* tags stopped persisting as tag rows, so the doc-store watermark
+  // (passed by the /api/study route) must make the study incremental on its own.
+  test("doc-store watermark alone makes the study incremental", () => {
+    const prevDoc = { name: "study-2026-05 helper", at: "2026-05-01T00:00:00Z", content: "study-2026-05 helper\n## الخلاصة\nخلاصة من المخزن" };
+    const { window } = studyCorpus(makeData([
+      { tag: "built", project: "p", content: "x", timestamp: "2026-01-01T00:00:00Z" },
+    ]), "p", NOW, prevDoc);
+    expect(window.foundational).toBe(false);
+    expect(window.from).toBe("2026-05-01T00:00:00Z");
+    expect(window.prevStudy?.digest).toBe("خلاصة من المخزن");
+  });
+
+  test("newest source wins between tag-based and doc-store watermarks", () => {
+    const tagStudy = { tag: "doc:report", project: "p", content: "study-2026-03 old\n## الخلاصة\nقديمة", timestamp: "2026-03-01T00:00:00Z" };
+    const newerDoc = { name: "study-2026-06 new", at: "2026-06-01T00:00:00Z", content: "study-2026-06 new\n## الخلاصة\nأحدث" };
+    const w1 = studyCorpus(makeData([tagStudy]), "p", NOW, newerDoc).window;
+    expect(w1.prevStudy?.name).toBe("study-2026-06 new");
+    expect(w1.prevStudy?.digest).toBe("أحدث");
+    const olderDoc = { name: "study-2026-01 stale", at: "2026-01-01T00:00:00Z", content: "study-2026-01 stale\nبلا خلاصة" };
+    const w2 = studyCorpus(makeData([tagStudy]), "p", NOW, olderDoc).window;
+    expect(w2.prevStudy?.name).toBe("study-2026-03 old");
+  });
 });
 
 describe("studyCorpus — aggregates", () => {

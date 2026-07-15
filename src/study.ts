@@ -51,6 +51,14 @@ const cap = (s: string, n = DELTA_LINE_CAP) => (s.length > n ? `${s.slice(0, n)}
  *  Documented in the skill: `-(doc:report) study-YYYY-MM-DD …` (or دراسة-…). */
 export const STUDY_NAME_RE = /^\s*(study|دراسة)(?:[\s\-_:.]|$)/i;
 
+/** A previous study sourced from the DOC STORE (.devlog/docs) rather than the
+ *  tags store. doc:* tags stopped being persisted as tag rows, so a study saved
+ *  since then is invisible to findPrevStudy — every ask:study came back
+ *  FOUNDATIONAL and the conclusions chain silently broke (#618). The route
+ *  reads the newest study-named report doc and passes it in; `content` follows
+ *  the tag convention (name line + markdown body) so studyDigest applies as-is. */
+export interface PrevStudyDoc { name: string; at: string; content: string }
+
 /** Newest stored study report tag, or undefined when none exists yet
  *  (→ the next study is FOUNDATIONAL: its window is the whole history). */
 export function findPrevStudy(tags: TagEntry[]): TagEntry | undefined {
@@ -389,17 +397,24 @@ function buildDelta(data: DevLogData, project: string, fromMs: number): StudyDel
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 /** The full study corpus for `project`. Pure; `now` injectable for tests. */
-export function studyCorpus(data: DevLogData, project: string, now = Date.now()): StudyCorpus {
+export function studyCorpus(data: DevLogData, project: string, now = Date.now(), prevDoc: PrevStudyDoc | null = null): StudyCorpus {
   const tags = data.tags.filter(t => t.project === project);
-  const prev = findPrevStudy(tags);
+  // Watermark: newest of the two sources. Tag rows cover the pre-change era
+  // (studies that WERE stored as doc:report tags); the doc-store entry covers
+  // everything since doc:* tags stopped persisting as rows (#618).
+  const prevTag = findPrevStudy(tags);
+  let prev: PrevStudyDoc | null = prevTag
+    ? { name: (prevTag.content.split("\n", 1)[0] ?? "").trim(), at: prevTag.timestamp, content: prevTag.content }
+    : null;
+  if (prevDoc && (!prev || +new Date(prevDoc.at) >= +new Date(prev.at))) prev = prevDoc;
   const window: StudyWindow = {
     to: new Date(now).toISOString(),
     foundational: !prev,
     ...(prev ? {
-      from: prev.timestamp,
+      from: prev.at,
       prevStudy: {
-        name: (prev.content.split("\n", 1)[0] ?? "").trim(),
-        at: prev.timestamp,
+        name: prev.name,
+        at: prev.at,
         digest: studyDigest(prev.content),
       },
     } : {}),
@@ -407,6 +422,6 @@ export function studyCorpus(data: DevLogData, project: string, now = Date.now())
   return {
     window,
     aggregates: buildAggregates(data, project, now),
-    delta: buildDelta(data, project, prev ? +new Date(prev.timestamp) : 0),
+    delta: buildDelta(data, project, prev ? +new Date(prev.at) : 0),
   };
 }

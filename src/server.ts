@@ -40,7 +40,7 @@ import { makeFeatureRoutes } from "./routes-features";
 import { makeMiscRoutes } from "./routes-misc";
 import { makeEventRoutes } from "./routes-events";
 import { makeWorkspaceRoutes } from "./routes-workspace";
-import { noteMutation, startAutoRestart } from "./freshness";
+import { isMutatingRequest, noteMutation, startAutoRestart } from "./freshness";
 import { injectSystemMessages } from "./inject-warnings";
 import { makeLifecycleRoutes } from "./routes-lifecycle";
 
@@ -378,9 +378,9 @@ function wrapRoutes<T extends Record<string, unknown>>(routes: T): T {
         wrapped[method] = async (req: Request, ...rest: unknown[]) => {
           const blocked = guard(req);
           if (blocked) return blocked;
-          // Mutating traffic = "someone is mid-turn" — holds the freshness
-          // watchdog's auto-restart. GETs (dashboard polling) don't count.
-          noteMutation();
+          // Holds the freshness watchdog. GET must NOT count (#619) — the
+          // full story lives on isMutatingRequest in freshness.ts.
+          if (isMutatingRequest(req.method)) noteMutation();
           // Bun route handler — variadic shape differs per route, not statically expressible.
           return (handler as (req: Request, ...rest: unknown[]) => unknown)(req, ...rest);
         };

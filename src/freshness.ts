@@ -118,6 +118,14 @@ export async function staleInjectWarning(root: string, bootMs: number): Promise<
 let lastMutationMs = 0;
 export function noteMutation(): void { lastMutationMs = Date.now(); }
 
+/** Which requests hold the watchdog: real mutations only. GET must stay out —
+ *  wrapRoutes once noted EVERY guarded method including GET (#619), so an open
+ *  dashboard tab (or any 3s monitoring poll) reset the idle clock forever and
+ *  the self-restart never fired except in windows of total network silence. */
+export function isMutatingRequest(method: string): boolean {
+  return method !== "GET";
+}
+
 export interface AutoRestartCheck {
   now: number;
   bootMs: number;

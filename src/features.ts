@@ -154,9 +154,12 @@ export interface BackfillRelease {
 
 /**
  * Releases not covered by any declared capability, oldest first. Coverage
- * counts EVERY feature opener — later-removed ones included: a capability that
- * shipped in a release and was retired later still covered it; proposing it
- * again would resurrect a dead capability.
+ * counts features retired AFTER their release shipped — a capability that
+ * genuinely shipped and was removed later still covered it; proposing it again
+ * would resurrect a dead capability. A feature removed BEFORE its attributing
+ * release was cut is different (#617): featureList had already dropped it at
+ * cut time, so that release shipped with NO such capability line — counting it
+ * as coverage hid the release from the backfill list forever.
  */
 export function backfillCorpus(data: DevLogData, project: string): {
   totalReleases: number;
@@ -168,12 +171,30 @@ export function backfillCorpus(data: DevLogData, project: string): {
     .map(t => ({ ms: +new Date(t.timestamp), ...parseVersion(t.content) }))
     .sort((a, b) => a.ms - b.ms);
 
+  // First removal moment per feature number — only the time-attribution path
+  // consults it. Marker ([vX.Y.Z]) declarations keep covering even when removed:
+  // the backfill line documented a PAST ship, and re-proposing it would
+  // resurrect a dead capability (the original rationale above).
+  const removedAt = new Map<number, number>();
+  for (const t of tags) {
+    if (t.tag !== "feature removed") continue;
+    const ms = +new Date(t.timestamp);
+    for (const n of leadingNums(t.content)) {
+      const cur = removedAt.get(n);
+      if (cur === undefined || ms < cur) removedAt.set(n, ms);
+    }
+  }
+
   const covered = new Set<string>();
   for (const t of tags) {
     if (t.tag !== "feature") continue;
     const mk = parseVersionMarker(t.content);
-    const v = mk?.version ?? releases.find(r => r.ms >= +new Date(t.timestamp))?.version;
-    if (v) covered.add(v.replace(/^v/i, ""));
+    if (mk?.version) { covered.add(mk.version.replace(/^v/i, "")); continue; }
+    const rel = releases.find(r => r.ms >= +new Date(t.timestamp));
+    if (!rel) continue;
+    const rm = typeof t.num === "number" ? removedAt.get(t.num) : undefined;
+    if (rm !== undefined && rm <= rel.ms) continue;   // removed before the cut — never shipped (#617)
+    covered.add(rel.version.replace(/^v/i, ""));
   }
 
   const uncovered: BackfillRelease[] = [];

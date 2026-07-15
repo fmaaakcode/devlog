@@ -53,6 +53,47 @@ describe("parseInstallCommands", () => {
   });
 });
 
+// #606 — the test12 live gap: `bun create astro@5` installed the old generation
+// with zero gating because scaffolds never say `add`. A scaffold takes exactly
+// one package; everything after it is template arguments.
+describe("parseInstallCommands — scaffolders (#606)", () => {
+  test("bun create resolves to the create- package; template args never parse", () => {
+    expect(parseInstallCommands("bun create astro@5 . --template minimal --install --no-git"))
+      .toEqual([{ name: "create-astro", version: "5", eco: "npm", scaffoldCmd: "bun create astro" }]);
+  });
+
+  test("npm create with @latest is blind; the app-dir argument is not a package", () => {
+    expect(parseInstallCommands("npm create vite@latest my-app"))
+      .toEqual([{ name: "create-vite", version: "", eco: "npm", scaffoldCmd: "npm create vite" }]);
+  });
+
+  test("npm init scoped forms follow npm's resolution rules", () => {
+    expect(parseInstallCommands("npm init @astrojs")[0].name).toBe("@astrojs/create");
+    expect(parseInstallCommands("npm init @scope/app@2")[0]).toMatchObject({ name: "@scope/create-app", version: "2" });
+  });
+
+  test("direct executors gate create-* names only", () => {
+    expect(parseInstallCommands("npx create-astro@5"))
+      .toEqual([{ name: "create-astro", version: "5", eco: "npm", scaffoldCmd: "npx create-astro" }]);
+    expect(parseInstallCommands("bunx create-next-app")).toHaveLength(1);
+    expect(parseInstallCommands("yarn dlx create-remix@2.9")).toHaveLength(1);
+    expect(parseInstallCommands("npx prettier --write .")).toEqual([]);
+  });
+
+  test("template paths and GitHub shorthands are not registry scaffolds", () => {
+    expect(parseInstallCommands("bun create ./my-template")).toEqual([]);
+    expect(parseInstallCommands("bun create user/repo")).toEqual([]);
+  });
+
+  test("a scaffold verb with no package token never gates", () => {
+    expect(parseInstallCommands("npm init -y")).toEqual([]);
+  });
+
+  test("compound command: the scaffold segment still gates", () => {
+    expect(parseInstallCommands("cd site && bun create astro@5 .")[0].name).toBe("create-astro");
+  });
+});
+
 describe("decideGate", () => {
   const ok = (name: string, suggest: string): GateAdvice =>
     ({ name, verdict: "ok", suggest, suggestAgeDays: 10, installCmd: `bun add ${name}@${suggest}` });
@@ -96,5 +137,24 @@ describe("decideGate", () => {
 
   test("a package with no advice entry passes", () => {
     expect(decideGate([pkg("mystery")], [])).toEqual({ blocks: [], warns: [] });
+  });
+
+  test("blind scaffold block shows the re-issue in create form, not add form (#606)", () => {
+    const d = decideGate(
+      parseInstallCommands("bun create astro"),
+      [{ name: "create-astro", verdict: "ok", suggest: "4.12.0", suggestAgeDays: 12, installCmd: "bun add create-astro@4.12.0" }],
+    );
+    expect(d.blocks).toHaveLength(1);
+    expect(d.blocks[0]).toContain("bun create astro@4.12.0");
+    expect(d.blocks[0]).not.toContain("bun add");
+  });
+
+  test("pinned scaffold disagreeing with the advisor → advisory warn (the test12 flow)", () => {
+    const d = decideGate(
+      parseInstallCommands("bun create astro@5 ."),
+      [ok("create-astro", "4.12.0")],
+    );
+    expect(d.blocks).toHaveLength(0);
+    expect(d.warns).toHaveLength(1);
   });
 });

@@ -14,9 +14,36 @@ import { pathsEqual } from "./path-utils";
 import { featureList, featuresSinceLastRelease, backfillCorpus } from "./features";
 import { collectClientReport, renderClientReportHtml, writeClientReport } from "./client-report";
 import { retroCorpus, fragileFiles, regressionGap } from "./retro";
-import { studyCorpus } from "./study";
+import { studyCorpus, STUDY_NAME_RE, type PrevStudyDoc } from "./study";
 
 type ApiReq = Bun.BunRequest;
+
+/** Newest study-named report in the project's doc store, as the watermark
+ *  studyCorpus consumes. doc:* tags stopped persisting as tag rows, so the tags
+ *  store alone misses every study saved since (#618) — the doc index is the
+ *  durable record. Same slug guards as /api/docs (index.json is dev-writable).
+ *  Best-effort: any read failure degrades to the tag-based watermark. */
+async function newestStudyDoc(root: string | undefined): Promise<PrevStudyDoc | null> {
+  if (!root) return null;
+  try {
+    const docsDir = resolve(join(root, ".devlog", "docs"));
+    const parsed = await Bun.file(join(docsDir, "index.json")).json();
+    let best: { slug: string; name: string; at: string } | null = null;
+    for (const d of (Array.isArray(parsed) ? parsed : [])) {
+      if (!d || typeof d.slug !== "string" || d.type !== "report") continue;
+      const name = String(d.name || d.slug);
+      if (!STUDY_NAME_RE.test(name)) continue;
+      const at = String(d.createdAt || d.updatedAt || "");
+      if (!at) continue;
+      if (!best || +new Date(at) > +new Date(best.at)) best = { slug: d.slug, name, at };
+    }
+    if (!best || !/^[\p{L}\p{N}._-]+$/u.test(best.slug)) return null;
+    const target = resolve(join(docsDir, `${best.slug}.md`));
+    if (!target.startsWith(docsDir + sep)) return null;
+    const body = await Bun.file(target).text();
+    return { name: best.name, at: best.at, content: `${best.name}\n${body}` };
+  } catch { return null; }
+}
 
 /** `?project=` (dashboard, trusted name) or `?cwd=` (hook, resolved + guarded).
  *  Returns the project name, or null when the caller can't be matched. */
@@ -94,7 +121,8 @@ export function makeFeatureRoutes(): Record<string, unknown> {
         const project = await resolveParam(req);
         if (!project) return Response.json({ project: null }, { status: 404 });
         const data = await loadData();
-        return Response.json({ project, ...studyCorpus(data, project) });
+        const prevDoc = await newestStudyDoc(data.projects[project]?.path);
+        return Response.json({ project, ...studyCorpus(data, project, Date.now(), prevDoc) });
       },
     },
 

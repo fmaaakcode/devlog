@@ -210,6 +210,10 @@ async function diagnose(projectPath: string): Promise<DoctorReport> {
   if (latestRelease) {
     const openBefore = openItems.filter(t =>
       (t.tag === "bug found" || t.tag.startsWith("security")) &&
+      // «قادمة» is a sanctioned deferral: the release guard ships past it BY
+      // DESIGN, so doctor must not re-litigate the same decision as critical
+      // (#620). Security never reaches here deferred — the tier refuses it.
+      !t.upcoming &&
       Date.parse(t.timestamp) < Date.parse(latestRelease.timestamp)
     );
     if (openBefore.length) {

@@ -175,6 +175,30 @@ describe("backfillCorpus", () => {
     expect(backfillCorpus(data, P).uncovered).toHaveLength(0);
   });
 
+  // #617: declared then removed BEFORE the cut — featureList had already
+  // dropped it, so that release shipped with no capability line and must
+  // stay in the backfill list.
+  test("a feature removed before its release was cut does NOT cover it", () => {
+    const data = makeData([
+      t("feature", "never shipped", { num: 4, ts: "2026-01-01T00:00:00.000Z" }),
+      t("feature removed", "#4", { ts: "2026-01-01T12:00:00.000Z" }),
+      t("built", "technical work", { ts: "2026-01-01T13:00:00.000Z" }),
+      t("release", "v1.0.0 — r", { ts: "2026-01-02T00:00:00.000Z" }),
+    ]);
+    const c = backfillCorpus(data, P);
+    expect(c.uncovered).toHaveLength(1);
+    expect(c.uncovered[0].version).toBe("v1.0.0");
+  });
+
+  test("a removed [vX.Y.Z] backfill declaration keeps covering (deliberate retirement)", () => {
+    const data = makeData([
+      t("release", "v1.0.0 — r", { ts: "2026-01-02T00:00:00.000Z" }),
+      t("feature", "[v1.0.0] backfilled", { num: 5, ts: "2026-03-01T00:00:00.000Z" }),
+      t("feature removed", "#5", { ts: "2026-03-02T00:00:00.000Z" }),
+    ]);
+    expect(backfillCorpus(data, P).uncovered).toHaveLength(0);
+  });
+
   test("material is capped with a remainder count", () => {
     const tags = [...Array(8)].map((_, i) =>
       t("built", `work ${i}`, { ts: `2026-01-01T0${i}:00:00.000Z` }));

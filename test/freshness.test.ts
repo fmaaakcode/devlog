@@ -4,7 +4,7 @@
 // macOS.
 
 import { test, expect, describe, afterEach } from "bun:test";
-import { isStale, newestSourceMtime, shouldAutoRestart, staleInjectWarning, criticalEnv, envDrift } from "../src/freshness";
+import { isStale, isMutatingRequest, newestSourceMtime, shouldAutoRestart, staleInjectWarning, criticalEnv, envDrift } from "../src/freshness";
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,6 +54,18 @@ describe("critical-env fingerprint (#595)", () => {
       { dataDir: "D:/s", port: 7777, lang: "en" },
       { dataDir: "D:/s", port: 7777, lang: "ar" },
     )).toEqual(["DEVLOG_LANG"]);
+  });
+});
+
+// #619: wrapRoutes noted EVERY guarded method — including GET — so any polling
+// client (an open dashboard tab, a monitoring probe) reset the idle clock
+// forever and the self-restart never fired. Only real mutations may hold it.
+describe("isMutatingRequest (what holds the watchdog)", () => {
+  test("GET never holds the restart", () => {
+    expect(isMutatingRequest("GET")).toBe(false);
+  });
+  test("mutating methods hold it", () => {
+    for (const m of ["POST", "PUT", "PATCH", "DELETE"]) expect(isMutatingRequest(m)).toBe(true);
   });
 });
 
