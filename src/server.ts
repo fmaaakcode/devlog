@@ -311,11 +311,8 @@ async function doInject(body: Record<string, unknown>) {
   // exit-0 hook: `systemMessage`. inject-warnings.ts owns which fire when and
   // merges them, so a third alert never grows this function again.
   const systemMessage = await injectSystemMessages(type, {
-    root: ASSET_ROOT,
-    bootMs: BOOT_MS,
-    transcriptPath: str(body.transcript_path),
-    sessionId,
-    project: name,
+    root: ASSET_ROOT, bootMs: BOOT_MS, transcriptPath: str(body.transcript_path),
+    sessionId, project: name, hookRoot: str(body.hook_root), plugin: body.plugin === true,
   });
   return Response.json({
     hookSpecificOutput: { hookEventName: type, additionalContext },

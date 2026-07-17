@@ -5,7 +5,7 @@
 // also driven by the periodic sweep), so it's injected via deps. Spread into
 // server.ts's routeDefs.
 
-import { loadData, withData } from "./data";
+import { loadData, withData, normalizeTagContent, assignNum, SECURITY_OPEN_TAGS } from "./data";
 import { runVulnScan } from "./vuln-scan";
 import { rescanPreserve } from "./scanner";
 import { generateStackMd, exportStatusMd } from "./export";
@@ -67,6 +67,46 @@ export function makeScanRoutes({ checkAndRescanIfStale }: ScanRouteDeps): Record
           const items = (await adviseLibraries(defaultEco, requests)).map(it =>
             it.suggest ? { ...it, installCmd: installCmd(it.eco, it.name, it.suggest) } : it);
           return Response.json({ project, items });
+        } catch { return Response.json({ error: "Failed" }, { status: 500 }); }
+      },
+    },
+
+    // Conscious override of a KNOWN-vulnerable pinned install (#630). The gate
+    // blocked `bun add lodash@4.17.20` naming its vulns; the verbatim re-issue
+    // passed — this records the accepted risk as an open `security` tag at that
+    // very moment, instead of leaving a scan-sweep-sized blind window. Tag text
+    // arrives in the scanner's own format, so the sweep's later claim dedupes
+    // against it and the upgrade auto-close retires it like any scan tag.
+    "/api/install-override": {
+      async POST(req: ApiReq) {
+        try {
+          const body = (await req.json().catch(() => null)) as { cwd?: unknown; pins?: unknown } | null;
+          const cwd = String(body?.cwd || "");
+          const pins = Array.isArray(body?.pins) ? (body.pins as Array<{ text?: unknown }>) : [];
+          if (!pins.length) return Response.json({ error: "pins required" }, { status: 400 });
+          const snapshot = await loadData();
+          const { name: project } = resolveProjectFor(snapshot, cwd);
+          // Unknown cwd: nothing to attach the tag to — fail-open, the scan
+          // backstop owns the project once it gets registered.
+          if (!snapshot.projects[project]) return Response.json({ ok: false, reason: "unknown-project" });
+          let created = 0;
+          await withData(async (data) => {
+            const existing = new Set(
+              data.tags.filter(t => t.project === project && SECURITY_OPEN_TAGS.has(t.tag)).map(t => normalizeTagContent(t.content)),
+            );
+            const now = new Date().toISOString();
+            for (const p of pins.slice(0, 8)) {
+              const text = String(p?.text || "").slice(0, 100).trim();
+              if (!text) continue;
+              const norm = normalizeTagContent(text);
+              if (existing.has(norm)) continue;
+              data.tags.push({ id: crypto.randomUUID(), project, tag: "security", content: text, timestamp: now, num: assignNum(data, project) });
+              existing.add(norm);
+              created++;
+            }
+          });
+          if (created) broadcast("tags", { project });
+          return Response.json({ ok: true, project, created });
         } catch { return Response.json({ error: "Failed" }, { status: 500 }); }
       },
     },

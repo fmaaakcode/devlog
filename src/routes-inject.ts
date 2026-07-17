@@ -43,6 +43,9 @@ export function makeInjectRoutes({ doInject, MAX_INJECTIONS_LOG }: InjectRouteDe
           // a manual/dev project's hook does not. Decides the primer independent
           // of which session started the shared server.
           plugin: url.searchParams.get("plugin") === "1",
+          // The sending hook's own repo root (#600) — headers carry raw Windows
+          // paths without URL-encoding gymnastics.
+          hook_root: req.headers.get("x-devlog-hook-root") || "",
         });
       },
       async POST(req: ApiReq) {
@@ -50,6 +53,7 @@ export function makeInjectRoutes({ doInject, MAX_INJECTIONS_LOG }: InjectRouteDe
         let body: InjectBody = {};
         try { body = obj(await req.json()); } catch { /* missing/invalid JSON body → treat as empty */ }
         body.plugin = url.searchParams.get("plugin") === "1";
+        body.hook_root = req.headers.get("x-devlog-hook-root") || "";
         return doInject(body);
       },
     },

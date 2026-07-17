@@ -12,7 +12,7 @@
 // A process-wide SCAN_GATE bounds total concurrent scans so a startup sweep of
 // many projects can't open a burst of HTTPS connections (rate-limit/ban risk).
 
-import { loadData, withData, normalizeTagContent, assignNum } from "./data";
+import { loadData, withData, normalizeTagContent, assignNum, SECURITY_OPEN_TAGS } from "./data";
 import { latestVersions, synthesizeStatus, type VersionInfo } from "./registry";
 import { osvEcosystem, scanTree, type PkgVuln } from "./osv";
 import { enumerateDepTree } from "./lockfile-tree";
@@ -239,7 +239,13 @@ export async function runVulnScan(name: string) {
       return currentLibNames.has(m[1].toLowerCase());
     });
 
-    const existingSecTags = data.tags.filter(t => t.project === name && t.tag === "security");
+    // ALL security variants — a hand-authored `security:dep` for the same package
+    // must be superseded/auto-closed like the scanner's own `security` tags, or
+    // the same vuln shows twice and the manual claim dangles open forever
+    // (third recurrence of the `=== "security"` blindness: #235, #159, test-temp
+    // dup 2026-07-17). `security:own` tags are safe here structurally: every
+    // close path below requires the content to start with `<pkg>@`.
+    const existingSecTags = data.tags.filter(t => t.project === name && SECURITY_OPEN_TAGS.has(t.tag));
     const existingSecTexts = new Set(existingSecTags.map(t => normalizeTagContent(t.content)));
     const existingSecFixTexts = new Set(data.tags.filter(t => t.project === name && t.tag === "security fix").map(t => normalizeTagContent(t.content)));
     const existingOutdatedTexts = new Set(data.tags.filter(t => t.project === name && t.tag === "outdated").map(t => normalizeTagContent(t.content)));

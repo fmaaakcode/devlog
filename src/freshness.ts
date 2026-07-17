@@ -97,6 +97,36 @@ export async function staleInjectWarning(root: string, bootMs: number): Promise<
 }
 
 /**
+ * Foreign-root detection (#600): everything above compares the daemon against
+ * its OWN root — which is blind to the daemon running from the WRONG tree. A
+ * process booted from the plugin copy holds the port, its own sources never
+ * change, so isStale() says false while every working-tree edit is dead code —
+ * and the auto-restart watchdog never fires for the same reason (found live
+ * 2026-07-13; verified-by-probing was the only defense since). The probing
+ * hook always knows ITS root, so it advertises it (X-DevLog-Hook-Root) and
+ * this pure check names the mismatch. Callers suppress it for plugin-delivered
+ * sessions: a plugin hook probing a dev-rooted daemon is the developer's
+ * deliberate setup, not a defect.
+ */
+export function foreignRootWarning(daemonRoot: string, hookRoot: string): string | null {
+  if (!hookRoot) return null;   // old hook / no header — nothing to compare
+  // The hook computes its root under git-bash, which speaks MSYS paths
+  // (`/d/helper`) while the daemon speaks Windows (`D:\helper`) — the same
+  // tree, two spellings (caught live on the very first probe). Fold the MSYS
+  // drive prefix into the Windows form before comparing.
+  const norm = (p: string) => {
+    let s = (p || "").replace(/\\/g, "/").replace(/\/+$/, "");
+    const m = s.match(/^\/([a-zA-Z])(\/|$)/);
+    if (m) s = `${m[1]}:${s.slice(2)}`;
+    return s.toLowerCase();
+  };
+  if (norm(daemonRoot) === norm(hookRoot)) return null;
+  return currentLang() === "ar"
+    ? `[DevLog] ⚠ الخادم الجاري يعمل من جذر آخر (${daemonRoot}) لا من شجرة هذا المستودع — تعديلاتك هنا ليست حيّة، والتحديث الذاتي لن يلتقطها لأن مصادر جذره لم تتغيّر. أوقف تلك العملية وأعد التشغيل من هذا الجذر.`
+    : `[DevLog] ⚠ the running daemon is rooted at a different tree (${daemonRoot}) — edits in THIS repo are not live, and the self-restart watchdog will never notice (its own sources are untouched). Stop that process and restart from this root.`;
+}
+
+/**
  * Safe self-restart: the caller hands us the listener's stop (port freed
  * deterministically — no EADDRINUSE race with the replacement), we spawn the
  * successor detached, then exit. `DEVLOG_NO_RESPAWN=1` degrades it to a plain

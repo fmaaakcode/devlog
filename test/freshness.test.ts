@@ -4,7 +4,7 @@
 // macOS.
 
 import { test, expect, describe, afterEach } from "bun:test";
-import { isStale, isMutatingRequest, newestSourceMtime, shouldAutoRestart, staleInjectWarning, criticalEnv, envDrift } from "../src/freshness";
+import { isStale, isMutatingRequest, newestSourceMtime, shouldAutoRestart, staleInjectWarning, criticalEnv, envDrift, foreignRootWarning } from "../src/freshness";
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +21,28 @@ describe("isStale (pure verdict)", () => {
   });
   test("no source found (0) is never stale — the compiled-binary case", () => {
     expect(isStale(Date.now(), 0)).toBe(false);
+  });
+});
+
+describe("foreign-rooted daemon (#600)", () => {
+  test("daemon serving a DIFFERENT tree than the probing hook → warning naming the daemon's root", () => {
+    const w = foreignRootWarning("C:/Users/x/.claude/plugins/devlog", "D:/helper");
+    expect(w).not.toBeNull();
+    expect(w).toContain("C:/Users/x/.claude/plugins/devlog");
+  });
+
+  test("same root → silent, tolerant of slash/case/trailing-slash noise (Windows)", () => {
+    expect(foreignRootWarning("D:\\Helper\\", "d:/helper")).toBeNull();
+    expect(foreignRootWarning("D:/helper", "D:/helper")).toBeNull();
+  });
+
+  test("MSYS spelling of the same tree is not foreign — git-bash hooks send /d/helper", () => {
+    expect(foreignRootWarning("D:\\helper", "/d/helper")).toBeNull();
+    expect(foreignRootWarning("D:/helper", "/c/other")).not.toBeNull();   // different drive stays foreign
+  });
+
+  test("no hook root advertised (older hook) → silent, never a false alarm", () => {
+    expect(foreignRootWarning("D:/helper", "")).toBeNull();
   });
 });
 

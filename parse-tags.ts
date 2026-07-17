@@ -545,6 +545,20 @@ if (msg) {
             feedback.push(`\n[devlog closure]\n${lines.join("\n")}\n`);
             await log(`closure-confirm: ${resp.closed.map((c: any) => c.num).join(", ")}`);
           }
+          // Same-response pairing echo (#633): a closer that resolved to nothing
+          // was paired with the single work item opened in this same response.
+          // Informational, NO exit(2) — the closure already applied; the echo just
+          // keeps the wrong guess (or the number-less form) visible.
+          if (Array.isArray(resp.repairedClosures) && resp.repairedClosures.length) {
+            const lines = resp.repairedClosures.map((r: any) =>
+              r.from != null
+                ? L(`🔗 #${r.from} matches nothing — auto-paired with #${r.num}, the item you opened in this same response (next time close same-response items with NO number).`,
+                    `🔗 #${r.from} لا يطابق شيئاً — قُرن تلقائياً بـ#${r.num}، العنصر الذي فتحتَه في هذا الرد نفسه (المرة القادمة أغلق عناصر نفس الرد بلا رقم).`)
+                : L(`🔗 number-less closure paired with #${r.num}, the item opened in this same response.`,
+                    `🔗 إغلاق بلا رقم قُرن بـ#${r.num}، العنصر المفتوح في هذا الرد نفسه.`));
+            feedback.push(`\n[devlog closure-pair]\n${lines.join("\n")}\n`);
+            await log(`closure-pair: ${resp.repairedClosures.map((r: any) => r.num).join(", ")}`);
+          }
           // Reopen linkage (#556): a stored problem report matched a CLOSED one
           // — the fix didn't hold. Informational only, NO exit(2): the relation
           // is already stored; Claude just learns the history exists.
@@ -648,11 +662,26 @@ if (msg) {
                     `· #${h.num} مغلق سابقاً (نوعه «${h.openerTag}») و-(${h.usedCloser}) لا يُغلِق هذا النوع أصلاً — على الأرجح قصدت عنصراً مفتوحاً آخر؛ تحقّق من الرقم.`)
                 : L(`· #${h.num} is a «${h.openerTag}» — close it with -(${h.suggested}) #${h.num}, not -(${h.usedCloser}).`,
                     `· #${h.num} نوعه «${h.openerTag}» — أغلِقه بـ-(${h.suggested}) #${h.num}، لا -(${h.usedCloser}).`));
+            // #632: the live open list rides the rejection itself — fixing the
+            // number no longer costs an -(ask:open) round-trip (the Mac field
+            // test burned two extra turns exactly here).
+            const snapshot: string[] = [];
+            if (Array.isArray(resp.openSnapshot) && resp.openSnapshot.length) {
+              snapshot.push("", L("Currently open:", "المفتوح حالياً:"));
+              for (const it of resp.openSnapshot) {
+                const up = it.upcoming ? L(" [deferred]", " [مؤجَّل]") : "";
+                snapshot.push(`  #${it.num} (${it.tag}) ${it.content}${up}`);
+              }
+            } else if (Array.isArray(resp.openSnapshot)) {
+              snapshot.push("", L("Nothing is open right now — the item may already be closed; check with -(ask:closed) #N.",
+                                  "لا شيء مفتوح الآن — قد يكون العنصر مغلقاً أصلاً؛ تحقّق بـ-(ask:closed) #N."));
+            }
             const out = [
               "════════ DevLog Closure Mismatch ════════",
               L(`⚠ ${resp.closureHints.length} closure(s) not recorded (closed nothing):`,
                 `⚠ ${resp.closureHints.length} إغلاق لم يُسجَّل (لم يُغلِق شيئاً):`),
               ...lines,
+              ...snapshot,
               "",
               L("Fix the number or the verb above, then re-close.",
                 "صحّح الرقم أو الـverb أعلاه ثم أعد الإغلاق."),

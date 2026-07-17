@@ -44,7 +44,9 @@ Write the tag content in the user's language.
 - `-(doc:report|analysis|plan|comparison|readme)` name\n<markdown>
 
 **Closure is mandatory** — every open item (todo/bug/security/plan step) is closed by
-`#N` in the same response that finishes the work; never copy the text. `#N` numbers
+`#N` in the same response that finishes the work; never copy the text. Opened AND
+finished in the SAME response? emit the closer with NO number — DevLog pairs them
+atomically; never guess the next `#N` (numbers are assigned after the response ends). `#N` numbers
 arrive in the SessionStart context — or emit `-(ask:open)` to pull the live open list
 yourself (bugs/todos/security/plan-steps) mid-session before closing, so you never
 close a stale or wrong number. To check whether an item is *already* closed (and

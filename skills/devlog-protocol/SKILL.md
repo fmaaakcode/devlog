@@ -62,7 +62,7 @@ Every open tag has a closure, emitted in the **same response** as the work.
 | `[ ] step` in `doc:plan` | `-(done) #N` |
 | all `[ ]` under `### Pn` | `-(done) Pn` |
 
-**Text closure is permitted ONLY** when injection is off, or when closing an item created earlier in the *same* response before its `#N` was assigned. Otherwise use `#N`.
+**Opened AND finished in the SAME response** (a `-(bug found)` plus its fix, a `-(todo)` done immediately): emit the closer with **no number at all** — DevLog pairs it with the single work item opened in that response and echoes `🔗` with the real `#N`. Never guess the next `#N`: numbers are assigned only after the response ends, and a guessed number is rejected (or, when it matches nothing and exactly one item was opened this response, auto-paired with a corrective echo). **Text closure is permitted ONLY** when injection is off. Otherwise use `#N`.
 
 **Verify before closing.** "Verified" = observed evidence in this conversation (a passing test in the transcript, a successful tool result, explicit user confirmation). Reading code and concluding "it should work" is **not** verification. If you can't verify this turn, leave it open and emit a `-(note)` stating what's needed.
 
@@ -211,7 +211,7 @@ Before **adding a new dependency**, ask DevLog instead of researching versions y
 
 The suggestion is the newest **stable** release **≥7 days old** (the dependency-maturity rule) that **OSV certifies clean** — vulnerable candidates are stepped past with the reason shown. Guarantees: never a pre-release, never a version younger than 7 days, never a knowingly vulnerable version (a package with no clean matured release is reported, not recommended), and never a near-miss name guess — an unknown name is refused (typo-squatting). If OSV doesn't answer, the maturity pick is flagged as carrying no security certificate. Then install with the returned command — don't substitute blind `@latest`.
 
-**The install gate enforces this.** A PreToolUse hook intercepts package-add commands (`bun|pnpm|yarn add`, `npm i`, `cargo add`, `pip|uv install`) before they run: a **blind** install (no pinned version, or a floating `@latest`-style tag) is blocked with the advisor's pick in the block message — re-issue with the pin. A **pinned** install that disagrees with the advisor gets a one-time advisory block; re-issuing the identical command passes (a pin is a deliberate choice, possibly the user's explicit order). Unknown names, private registries, and a down server all fail open — the vuln scan and the next-prompt security alert are the backstops. Disable with `DEVLOG_INSTALL_GATE=0`.
+**The install gate enforces this.** A PreToolUse hook intercepts package-add commands (`bun|pnpm|yarn add`, `npm i`, `cargo add`, `pip|uv install`) before they run: a **blind** install (no pinned version, or a floating `@latest`-style tag) is blocked with the advisor's pick in the block message — re-issue with the pin. A **pinned** install that disagrees with the advisor gets a one-time advisory block; re-issuing the identical command passes (a pin is a deliberate choice, possibly the user's explicit order). Unknown names, private registries, and a down server all fail open — the vuln scan and the next-prompt security alert are the backstops. `DEVLOG_INSTALL_GATE=strict` flips that: any verification failure (daemon down, network error, unknown name, OSV silent) **blocks** instead, with the same verbatim-re-issue override. Disable with `DEVLOG_INSTALL_GATE=0`.
 
 ## Recall (`ask:search`)
 

@@ -8,7 +8,7 @@
 // the request body is typed (compile-time casts — zero runtime change) so the
 // module carries no `any`. Spread into server.ts's routeDefs.
 
-import { loadData, withData, normalizeTagContent, assignNum, openBugs, openSecurity } from "./data";
+import { loadData, withData, normalizeTagContent, assignNum, openBugs, openSecurity, openTodos, openPlanSteps, CLOSER_KINDS } from "./data";
 import { tsToMs } from "./maintenance";
 import { broadcast } from "./broadcast";
 import { resolveProjectFor } from "./project-resolve";
@@ -18,8 +18,8 @@ import { verifyHintFor } from "./verify-hint";
 import {
   handleDocTag, enforceAtomicContent, resolveClosureNumber, diagnoseClosureMismatch,
   diagnoseClosureTextDivergence, confirmClosure, applyRelease, resolveReleaseIntent,
-  detectReleaseDowngrade, detectReleaseOpenItems, syncPlanSteps,
-  type ClosureMismatch, type ClosureTextDivergence, type ClosureConfirm,
+  detectReleaseDowngrade, detectReleaseOpenItems, syncPlanSteps, pairSameResponseClosure,
+  type ClosureMismatch, type ClosureTextDivergence, type ClosureConfirm, type BatchOpener,
   type ReleaseDowngrade, type ReleaseBlocked, type ReleaseIntent,
 } from "./tags-service";
 import { applyUpcoming, applyTodoPromotion, type UpcomingChange } from "./upcoming";
@@ -133,7 +133,7 @@ export function makeTagsRoutes(): Record<string, unknown> {
             const batchId = typeof body.batch_id === "string" ? body.batch_id : "";
             if (batchId && (data.processedBatches || []).includes(batchId)) {
               console.log(`[/api/tags] batch replay dropped: ${batchId} (${(body.entries || []).length} entries)`);
-              return Response.json({ ok: true, count: 0, batchReplay: true, release: null, releaseIntent: null, releaseDowngrade: null, releaseBlocked: null, rollback: null, closureHints: [], closureTextWarnings: [], featureHints: [], closed: [], upcomingChanges: [], reopenHints: [], verifyHint: null });
+              return Response.json({ ok: true, count: 0, batchReplay: true, release: null, releaseIntent: null, releaseDowngrade: null, releaseBlocked: null, rollback: null, closureHints: [], closureTextWarnings: [], featureHints: [], closed: [], upcomingChanges: [], reopenHints: [], verifyHint: null, openSnapshot: [], repairedClosures: [] });
             }
           let releaseResult: Awaited<ReturnType<typeof applyRelease>> = null;
           let releaseIntent: ReleaseIntent | null = null;
@@ -182,6 +182,12 @@ export function makeTagsRoutes(): Record<string, unknown> {
           const closed: ClosureConfirm[] = [];
           const upcomingChanges: UpcomingChange[] = [];
           const reopenHints: ReopenHint[] = [];
+          // #633: openers stored by THIS batch + numbers already closed in it —
+          // the pairing pool for a closer targeting an item born in the same
+          // response (whose number the model cannot know yet).
+          const batchOpeners: BatchOpener[] = [];
+          const closedInBatch = new Set<number>();
+          const repairedClosures: Array<{ from: number | null; num: number }> = [];
           // Position memory (#486): files this session touched since its
           // previous batch — computed once, stamped on every tag stored below.
           const touchedFiles = sessionTouchedFiles(data, body.session_id, project);
@@ -221,17 +227,59 @@ export function makeTagsRoutes(): Record<string, unknown> {
             // and store a junk `#N` tag. Skip it and collect a correction the
             // Stop hook feeds back so Claude re-closes with the right verb.
             const mismatch = diagnoseClosureMismatch(tag, content, data, project);
+            let pairedThisEntry = false;
             if (mismatch) {
-              // "already-closed": a re-emitted closer with the RIGHT verb for work
-              // that's already closed (chiefly the Stop hook re-scanning one response
-              // across a continuation — done/dropped bypass dedup by design). Drop it
-              // silently like a dup: no phantom tag, NO hint — nagging "closes nothing"
-              // for an item that really IS closed is the false alarm that trapped Claude.
-              // Every OTHER kind (wrong-verb, no-match, already-closed-wrong-verb) is a
-              // real signal — the wrong-verb-on-closed case means a likely number typo
-              // aimed at a different open item (#396) — so surface it. Never stored.
-              if (mismatch.kind !== "already-closed") closureHints.push(mismatch);
-              continue;
+              // #633 rescue: a phantom `#N` alongside exactly ONE compatible
+              // opener stored earlier in this same batch is the "found AND
+              // fixed in one response" slip (#465, reproduced by a fresh model
+              // on macOS) — the model guessed a number it could not know.
+              // Rewrite to the opener's true number and let the closure apply;
+              // the repair is echoed so the wrong guess stays visible.
+              const rescue = mismatch.kind === "no-match"
+                ? pairSameResponseClosure(tag, batchOpeners, closedInBatch)
+                : null;
+              if (rescue) {
+                const tail = content.replace(/^#?\s*\d+\s*/, "").trim();
+                content = tail ? `#${rescue.num} ${tail}` : `#${rescue.num}`;
+                repairedClosures.push({ from: mismatch.num, num: rescue.num });
+                closedInBatch.add(rescue.num);
+                pairedThisEntry = true;
+              } else {
+                // "already-closed": a re-emitted closer with the RIGHT verb for work
+                // that's already closed (chiefly the Stop hook re-scanning one response
+                // across a continuation — done/dropped bypass dedup by design). Drop it
+                // silently like a dup: no phantom tag, NO hint — nagging "closes nothing"
+                // for an item that really IS closed is the false alarm that trapped Claude.
+                // Every OTHER kind (wrong-verb, no-match, already-closed-wrong-verb) is a
+                // real signal — the wrong-verb-on-closed case means a likely number typo
+                // aimed at a different open item (#396) — so surface it. Never stored.
+                if (mismatch.kind !== "already-closed") closureHints.push(mismatch);
+                continue;
+              }
+            } else if (CLOSER_KINDS[tag] && !/#\d/.test(content || "")) {
+              // #633 documented path: a closer with NO number at all. If its text
+              // matches an open item (or an open plan step / a Pn phase code for
+              // done/dropped), the legacy text-closure machinery owns it untouched.
+              // Otherwise pair it with the single compatible opener born in this
+              // batch — that's the sanctioned way to close what you just opened.
+              const norm = normalizeTagContent(content || "");
+              const projTags = data.tags.filter(t => t.project === project);
+              const compatible = CLOSER_KINDS[tag];
+              const textMatchesOpen =
+                [...openTodos(projTags), ...openBugs(projTags), ...openSecurity(projTags)]
+                  .some(t => compatible.includes(t.tag) && normalizeTagContent(t.content) === norm)
+                || ((tag === "done" || tag === "dropped") && (
+                  /^p\d+$/i.test(norm)
+                  || openPlanSteps(data, project).some(s => normalizeTagContent(s.text) === norm)));
+              if (!textMatchesOpen) {
+                const rescue = pairSameResponseClosure(tag, batchOpeners, closedInBatch);
+                if (rescue) {
+                  content = content.trim() ? `#${rescue.num} ${content.trim()}` : `#${rescue.num}`;
+                  repairedClosures.push({ from: null, num: rescue.num });
+                  closedInBatch.add(rescue.num);
+                  pairedThisEntry = true;
+                }
+              }
             }
             // Feature references (`-(feature update)/-(feature removed) #N`)
             // that point at no existing feature would silently no-op forever —
@@ -248,7 +296,10 @@ export function makeTagsRoutes(): Record<string, unknown> {
             // type-compatible number. The closure still applies (the number/verb
             // are valid); we only surface a warning so Claude verifies it targeted
             // the intended item (the slip that hit #310/#311 today).
-            const divergence = diagnoseClosureTextDivergence(tag, content, data, project);
+            // A paired closure (#633) already names its target in the repair echo —
+            // running the divergence check on it would second-guess the pairing
+            // ("did you mean a different number?") right after we announced it.
+            const divergence = pairedThisEntry ? null : diagnoseClosureTextDivergence(tag, content, data, project);
             if (divergence) closureTextWarnings.push(divergence);
             // Positive closure confirmation (#228): capture {num, text} from a
             // valid `#N` closure (pre-resolution num, post-resolution opener text)
@@ -256,7 +307,7 @@ export function makeTagsRoutes(): Record<string, unknown> {
             const preResolve = content;
             content = resolveClosureNumber(tag, content, data, project);
             const closeConfirm = confirmClosure(tag, preResolve, content);
-            if (closeConfirm) closed.push(closeConfirm);
+            if (closeConfirm) { closed.push(closeConfirm); closedInBatch.add(closeConfirm.num); }
 
             if (tag === "desc") {
               console.log(`[/api/tags desc] project='${project}' exists=${!!data.projects[project]} content='${content}'`);
@@ -396,6 +447,9 @@ export function makeTagsRoutes(): Record<string, unknown> {
             const NUMBERED_TAGS = new Set(["todo", "bug found", "security", "security:own", "security:dep", "feature"]);
             if (NUMBERED_TAGS.has(tag) && data.projects[project]) {
               tagEntry.num = assignNum(data, project);
+              // #633: work openers born in this batch are pairing candidates for a
+              // later same-response closer (features aren't closable work items).
+              if (tag !== "feature") batchOpeners.push({ num: tagEntry.num, tag, content: tagEntry.content });
             }
             // «إعادة الفتح» (#556): a problem report matching a CLOSED one marks
             // a fix that didn't hold — store the relation, echo it to the hook.
@@ -434,7 +488,20 @@ export function makeTagsRoutes(): Record<string, unknown> {
           broadcast("tags", { project });
           // Optional verify nudge (#232): a closure with no test run this session.
           const verifyHint = verifyHintFor(storedEntries, data.events, body.session_id || "");
-          return Response.json({ ok: true, count: (body.entries || []).length, release: releaseResult, releaseIntent, releaseDowngrade, releaseBlocked, rollback, closureHints, closureTextWarnings, featureHints, closed, upcomingChanges, reopenHints, verifyHint });
+          // #632: a rejected closure's fastest fix is seeing what IS open — the
+          // list exists right here at rejection time, so ship it with the hints
+          // instead of costing Claude an -(ask:open) round-trip to fetch it.
+          let openSnapshot: Array<{ num: number; tag: string; content: string; upcoming?: boolean }> = [];
+          if (closureHints.length) {
+            const projTags = data.tags.filter(t => t.project === project);
+            const up = (t: { upcoming?: boolean }) => (t.upcoming ? { upcoming: true } : {});
+            for (const t of openTodos(projTags, { numberedOnly: true })) openSnapshot.push({ num: t.num as number, tag: "todo", content: t.content.slice(0, 70), ...up(t) });
+            for (const t of openBugs(projTags, { numberedOnly: true })) openSnapshot.push({ num: t.num as number, tag: "bug found", content: t.content.slice(0, 70), ...up(t) });
+            for (const t of openSecurity(projTags, { numberedOnly: true })) openSnapshot.push({ num: t.num as number, tag: t.tag, content: t.content.slice(0, 70) });
+            for (const s of openPlanSteps(data, project, { numberedOnly: true })) openSnapshot.push({ num: s.num as number, tag: "plan-step", content: s.text.slice(0, 70) });
+            openSnapshot = openSnapshot.slice(0, 15);
+          }
+          return Response.json({ ok: true, count: (body.entries || []).length, release: releaseResult, releaseIntent, releaseDowngrade, releaseBlocked, rollback, closureHints, closureTextWarnings, featureHints, closed, upcomingChanges, reopenHints, verifyHint, openSnapshot, repairedClosures });
           });
         } catch (e) {
           const err = e as { message?: string; stack?: string };

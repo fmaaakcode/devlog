@@ -11,7 +11,7 @@
 // was piling the third, fourth… warning into doInject, which is precisely the
 // growth path the file-size ratchet exists to make painful.
 
-import { staleInjectWarning } from "./freshness";
+import { staleInjectWarning, foreignRootWarning } from "./freshness";
 import { canaryWarningOnce } from "./transcript-canary";
 import { integrityWarning } from "./doctor-invariants";
 import { loadData } from "./data";
@@ -27,6 +27,12 @@ export interface InjectWarningCtx {
   sessionId: string;
   /** Resolved project name — empty when the cwd owns no project. */
   project: string;
+  /** Root of the HOOK that sent this request (X-DevLog-Hook-Root) — "" from
+   *  older hooks. Compared against `root` for the foreign-daemon check (#600). */
+  hookRoot?: string;
+  /** Plugin-delivered session (?plugin=1) — suppresses the foreign-root
+   *  warning: a plugin hook probing a dev-rooted daemon is deliberate. */
+  plugin?: boolean;
 }
 
 /**
@@ -39,6 +45,19 @@ export interface InjectWarningCtx {
  */
 export async function injectSystemMessages(type: string, ctx: InjectWarningCtx): Promise<string | null> {
   const out: string[] = [];
+
+  // Foreign-rooted daemon (#600): this process serves a DIFFERENT tree than the
+  // one whose hook is probing — the failure the stale check below is structurally
+  // blind to (its own sources never change). First because it supersedes
+  // staleness: "wrong tree entirely" matters more than "old code of the right
+  // tree". SessionStart only, and never for plugin sessions (their hook root is
+  // the plugin dir by nature while a dev daemon is a deliberate choice).
+  if (type === "SessionStart" && !ctx.plugin) {
+    try {
+      const w = foreignRootWarning(ctx.root, ctx.hookRoot || "");
+      if (w) out.push(w);
+    } catch (e) { softFail("injectWarnings.foreignRoot", e); }
+  }
 
   // Stale daemon (#326): the running server is older than the code on disk.
   // SessionStart only — once per session, never a per-prompt nag while the

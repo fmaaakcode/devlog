@@ -136,7 +136,62 @@ describe("decideGate", () => {
   });
 
   test("a package with no advice entry passes", () => {
-    expect(decideGate([pkg("mystery")], [])).toEqual({ blocks: [], warns: [] });
+    expect(decideGate([pkg("mystery")], [])).toEqual({ blocks: [], warns: [], vulnPins: [] });
+  });
+
+  test("pin that is ITSELF vulnerable → block naming its vulns + a vulnPins record (#630)", () => {
+    const d = decideGate(
+      [pkg("lodash", "4.17.20")],
+      [{ ...ok("lodash", "4.18.1"), pin: { version: "4.17.20", vulns: 3, severity: "high", message: "3 vulns (high) — upgrade to 4.18.0", fixVersion: "4.18.0" } }],
+    );
+    expect(d.blocks).toHaveLength(1);
+    expect(d.warns).toHaveLength(0);
+    expect(d.blocks[0]).toContain("lodash@4.17.20");
+    expect(d.blocks[0]).toContain("3 vulns (high)");
+    expect(d.blocks[0]).toContain("4.18.1"); // the advisor's way out
+    expect(d.vulnPins).toEqual([
+      { eco: "npm", name: "lodash", version: "4.17.20", text: "lodash@4.17.20 — 3 vulns (high) — upgrade to 4.18.0" },
+    ]);
+  });
+
+  test("vulnerable pin without an OSV message still blocks with a count", () => {
+    const d = decideGate(
+      [pkg("old", "1.0.0")],
+      [{ ...ok("old", "2.0.0"), pin: { version: "1.0.0", vulns: 2, severity: "moderate" } }],
+    );
+    expect(d.blocks).toHaveLength(1);
+    expect(d.blocks[0]).toContain("2 vuln(s) (moderate)");
+    expect(d.vulnPins).toHaveLength(1);
+  });
+
+  test("clean pin younger than the maturity window → the warn names its age (#631)", () => {
+    const d = decideGate(
+      [pkg("fresh", "9.0.0")],
+      [{ ...ok("fresh", "8.0.0"), pin: { version: "9.0.0", vulns: 0 }, pinAgeDays: 2 }],
+    );
+    expect(d.blocks).toHaveLength(0);
+    expect(d.warns).toHaveLength(1);
+    expect(d.warns[0]).toContain("2d old");
+    expect(d.warns[0]).toContain("supply-chain");
+  });
+
+  test("matured clean pin → no age noise in the warn", () => {
+    const d = decideGate(
+      [pkg("astro", "5.12.0")],
+      [{ ...ok("astro", "7.0.6"), pinAgeDays: 300 }],
+    );
+    expect(d.warns).toHaveLength(1);
+    expect(d.warns[0]).not.toContain("300");
+  });
+
+  test("pin OSV-checked clean but differing from the advisor → stays an advisory warn", () => {
+    const d = decideGate(
+      [pkg("astro", "5.12.0")],
+      [{ ...ok("astro", "7.0.6"), pin: { version: "5.12.0", vulns: 0, severity: "none", message: "" } }],
+    );
+    expect(d.blocks).toHaveLength(0);
+    expect(d.warns).toHaveLength(1);
+    expect(d.vulnPins).toHaveLength(0);
   });
 
   test("blind scaffold block shows the re-issue in create form, not add form (#606)", () => {
@@ -156,5 +211,48 @@ describe("decideGate", () => {
     );
     expect(d.blocks).toHaveLength(0);
     expect(d.warns).toHaveLength(1);
+  });
+
+  // DEVLOG_INSTALL_GATE=strict — verification failure fail-closes instead of
+  // fail-opening. Every strict block stays overridable (verbatim re-issue).
+  describe("strict mode", () => {
+    const strict = (pkgs: Parameters<typeof decideGate>[0], advice: GateAdvice[]) =>
+      decideGate(pkgs, advice, "en", true);
+
+    test("not-found: passes by default, blocks in strict", () => {
+      const advice: GateAdvice[] = [{ name: "@corp/internal", verdict: "not-found" }];
+      expect(decideGate([pkg("@corp/internal")], advice).blocks).toHaveLength(0);
+      const d = strict([pkg("@corp/internal")], advice);
+      expect(d.blocks).toHaveLength(1);
+      expect(d.blocks[0]).toContain("not-found");
+    });
+
+    test("missing advice entry: passes by default, blocks in strict", () => {
+      expect(decideGate([pkg("mystery")], []).blocks).toHaveLength(0);
+      expect(strict([pkg("mystery")], []).blocks).toHaveLength(1);
+    });
+
+    test("pinned + ok-unverified (OSV silent): silent by default, blocks in strict", () => {
+      const advice: GateAdvice[] = [{ name: "x", verdict: "ok-unverified", suggest: "1.0.0", suggestAgeDays: 30 }];
+      const dflt = decideGate([pkg("x", "1.0.0")], advice);
+      expect(dflt.blocks).toHaveLength(0);
+      expect(dflt.warns).toHaveLength(0);
+      const d = strict([pkg("x", "1.0.0")], advice);
+      expect(d.blocks).toHaveLength(1);
+      expect(d.blocks[0]).toContain("OSV did not answer");
+    });
+
+    test("verified outcomes are untouched: clean matching pin still passes, blind+ok still blocks the same", () => {
+      const advice = [{ ...ok("hono", "4.12.28"), pin: { version: "4.12.28", vulns: 0, severity: "none" } }];
+      expect(strict([pkg("hono", "4.12.28")], advice)).toEqual({ blocks: [], warns: [], vulnPins: [] });
+      expect(strict([pkg("hono")], [ok("hono", "4.12.28")]).blocks)
+        .toEqual(decideGate([pkg("hono")], [ok("hono", "4.12.28")]).blocks);
+    });
+
+    test("unresolved verdicts never leak into the pinned chain (pinned not-found blocks in strict, passes by default)", () => {
+      const advice: GateAdvice[] = [{ name: "ghost", verdict: "not-found" }];
+      expect(decideGate([pkg("ghost", "2.0.0")], advice).blocks).toHaveLength(0);
+      expect(strict([pkg("ghost", "2.0.0")], advice).blocks).toHaveLength(1);
+    });
   });
 });

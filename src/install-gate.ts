@@ -178,25 +178,57 @@ export interface GateAdvice {
   latestAgeDays?: number | null;
   installCmd?: string;
   vulnNote?: string;
+  /** OSV verdict for the exact pinned version, when the advisor checked it (#630). */
+  pin?: { version: string; vulns: number; severity?: string; message?: string; fixVersion?: string };
+  /** Registry age of the pinned version, when listed (#631). */
+  pinAgeDays?: number | null;
 }
+
+// Parity with dep-check's RULE_MIN_AGE_DAYS. Deliberately NOT imported: this
+// module must stay import-free so the PreToolUse hook's load stays feather-light
+// (dep-check drags the registry fetch machinery in).
+const MIN_AGE_DAYS = 7;
+
+// Verdicts where the advisor could not resolve the name at all — fail-open by
+// default (private registries / workspace names must stay usable), fail-closed
+// under DEVLOG_INSTALL_GATE=strict.
+const UNRESOLVED_VERDICTS = new Set(["not-found", "unsupported-eco", "invalid-name"]);
 
 export interface GateDecision {
   /** Blind installs the gate refuses — each line carries the advisor's pick. */
   blocks: string[];
   /** Pinned installs that disagree with the advisor — advisory, block-once. */
   warns: string[];
+  /** Pinned packages whose exact version is KNOWN vulnerable (#630). The hook
+   *  stores these in the ack file: if the block is then consciously overridden
+   *  (verbatim re-issue), it opens a security tag immediately instead of
+   *  waiting for the next scan sweep. `text` is in the scanner's tag format so
+   *  the sweep's own claim dedupes against it. */
+  vulnPins: Array<{ eco: string; name: string; version: string; text: string }>;
 }
 
 const eq = (a: string, b: string) => a.replace(/^[\^~>=<\s]+/, "") === b.replace(/^[\^~>=<\s]+/, "");
 
-export function decideGate(pkgs: InstallPkg[], advice: GateAdvice[], lang: "ar" | "en" = "en"): GateDecision {
+export function decideGate(pkgs: InstallPkg[], advice: GateAdvice[], lang: "ar" | "en" = "en", strict = false): GateDecision {
   const L = (en: string, ar: string) => (lang === "ar" ? ar : en);
   const byName = new Map(advice.map(a => [a.name, a]));
   const blocks: string[] = [];
   const warns: string[] = [];
+  const vulnPins: GateDecision["vulnPins"] = [];
   for (const pkg of pkgs) {
     const a = byName.get(pkg.name);
-    if (!a) continue;
+    if (!a) {
+      if (strict) blocks.push(`⛔ ${pkg.name}: ${L(
+        "strict mode — the advisor returned no answer for this name, so nothing was verified.",
+        "الوضع الصارم — المستشار لم يُرجع جواباً عن هذا الاسم، فلم يُتحقق من شيء.")}`);
+      continue;
+    }
+    if (UNRESOLVED_VERDICTS.has(a.verdict)) {
+      if (strict) blocks.push(`⛔ ${pkg.name}: ${L(
+        `strict mode — could not verify (${a.verdict}); if this is a private/internal package, re-issue the same command verbatim to override.`,
+        `الوضع الصارم — تعذّر التحقق (${a.verdict})؛ إن كانت حزمة خاصة/داخلية أعد الأمر نفسه حرفياً للتجاوز.`)}`);
+      continue;
+    }
     const age = typeof a.suggestAgeDays === "number" ? a.suggestAgeDays : null;
     if (!pkg.version) {
       // Blind install: block whenever the advisor has something to say. A name
@@ -212,9 +244,34 @@ export function decideGate(pkgs: InstallPkg[], advice: GateAdvice[], lang: "ar" 
       } else if (a.verdict === "no-mature") {
         blocks.push(`⛔ ${pkg.name}: ${L(`nothing matured yet (newest ${a.latest} is ${a.latestAgeDays}d old) — pin a version explicitly if this is a conscious call.`, `لا نسخة ناضجة بعد (الأحدث ${a.latest} عمرها ${a.latestAgeDays} يوم) — ثبّت نسخة صراحةً إن كان قراراً واعياً.`)}`);
       }
+    } else if (a.pin && a.pin.vulns > 0) {
+      // The pinned version ITSELF is known-vulnerable (#630) — say so
+      // explicitly instead of only hinting that the advisor prefers another.
+      // Still overridable (the pin may be the user's explicit order), but an
+      // override opens a security item on the spot, so the risk is on record.
+      const detail = a.pin.message || `${a.pin.vulns} vuln(s)${a.pin.severity && a.pin.severity !== "none" ? ` (${a.pin.severity})` : ""}`;
+      blocks.push(`⛔ ${pkg.name}@${pkg.version}: ${L(
+        `this exact version is vulnerable — ${detail}${a.suggest ? `; the advisor picks ${a.suggest}` : ""}. Overriding records an open security item immediately.`,
+        `هذه النسخة نفسها مثغورة — ${detail}${a.suggest ? `؛ المستشار يختار ${a.suggest}` : ""}. تجاوزُها يفتح بند أمان مفتوحاً فوراً.`)}`);
+      vulnPins.push({ eco: pkg.eco, name: pkg.name, version: pkg.version, text: `${pkg.name}@${pkg.version} — ${detail}`.slice(0, 100) });
     } else if (a.verdict === "ok" && a.suggest && !eq(pkg.version, a.suggest)) {
-      warns.push(`⚠ ${pkg.name}@${pkg.version}: ${L(`the advisor recommends ${a.suggest} (matured, OSV clean). If this pin is deliberate, re-issue the same command — it will pass.`, `المستشار يوصي بـ${a.suggest} (ناضجة، نظيفة OSV). إن كان تثبيتك مقصوداً أعد الأمر نفسه — سيمرّ.`)}`);
+      // A pin younger than the maturity window is the supply-chain risk window
+      // itself (#631) — say the age out loud; "differs from the advisor" alone
+      // undersells a 2-day-old release with zero advisories filed YET.
+      const young = typeof a.pinAgeDays === "number" && a.pinAgeDays < MIN_AGE_DAYS;
+      const ageNote = young
+        ? L(` Your pin is ${a.pinAgeDays}d old — inside the ${MIN_AGE_DAYS}-day maturity window, the supply-chain risk zone (no advisories filed yet ≠ clean).`,
+            ` عمر نسختك ${a.pinAgeDays} يوم — داخل نافذة النضج (${MIN_AGE_DAYS} أيام)، منطقة خطر السبلاي تشين (غياب البلاغات حتى الآن لا يعني النظافة).`)
+        : "";
+      warns.push(`⚠ ${pkg.name}@${pkg.version}: ${L(`the advisor recommends ${a.suggest} (matured, OSV clean).${ageNote} If this pin is deliberate, re-issue the same command — it will pass.`, `المستشار يوصي بـ${a.suggest} (ناضجة، نظيفة OSV).${ageNote} إن كان تثبيتك مقصوداً أعد الأمر نفسه — سيمرّ.`)}`);
+    } else if (strict && a.verdict === "ok-unverified") {
+      // Pinned + OSV silent: the default gate lets this through quietly (the
+      // pin may even equal the maturity pick) — but "OSV did not answer" IS a
+      // verification failure, which is exactly what strict fail-closes on.
+      blocks.push(`⛔ ${pkg.name}@${pkg.version}: ${L(
+        "strict mode — OSV did not answer, this version carries no security verdict; retry, or re-issue the same command verbatim to override.",
+        "الوضع الصارم — لم يُجب OSV، هذه النسخة بلا حكم أمني؛ أعد المحاولة أو أعد الأمر نفسه حرفياً للتجاوز.")}`);
     }
   }
-  return { blocks, warns };
+  return { blocks, warns, vulnPins };
 }

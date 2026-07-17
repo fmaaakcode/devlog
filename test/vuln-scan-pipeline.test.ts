@@ -412,6 +412,52 @@ describe("runVulnScan — informational notices and superseded tags (open-vulns 
     expect(freshOpen[0].content.startsWith("supra@1.0.0")).toBe(true);
     expect(freshOpen[0].content).toContain("1.0.1");                 // the current truth
   });
+
+  test("a hand-authored security:dep for the same package is superseded too (the test-temp dup)", async () => {
+    // Claude declared the vuln itself (`-(security:dep) lodashy@1.0.0 …`) before
+    // the sweep ran. `=== "security"` blindness left both claims open — the
+    // third recurrence of that filter bug (#235, #159). All variants reconcile.
+    cfg.registry = { lodashy: { latest: "1.0.0" } };
+    cfg.osvVulns = { lodashy: [advisory("lodashy", "1.0.1")] };
+    const manual: TagEntry = {
+      id: "manual-dep", project: "p-dep-dup", tag: "security:dep",
+      content: "lodashy@1.0.0 مصابة بثغرة حقن — مُبقاة عمداً بطلب المستخدم", timestamp: "2026-01-01T00:00:00Z", num: 4,
+    };
+    await seed(makeProject({ name: "p-dep-dup", libraries: [{ name: "lodashy", version: "1.0.0" }] }), [manual]);
+
+    await runVulnScan("p-dep-dup");
+    const fixes = await tagsFor("p-dep-dup", "security fix");
+    expect(fixes.map(f => f.content)).toContain(manual.content);      // manual claim superseded
+    const scanTags = await tagsFor("p-dep-dup", "security");
+    expect(scanTags).toHaveLength(1);                                 // the scanner's claim is THE open one
+  });
+
+  test("a hand-authored security:dep auto-closes when the vuln is gone (no orphan-forever)", async () => {
+    cfg.registry = { fixb: { latest: "2.0.0" } };
+    cfg.osvVulns = {};                                                // clean now
+    const manual: TagEntry = {
+      id: "manual-dep2", project: "p-dep-close", tag: "security:dep",
+      content: "fixb@1.0.0 — vulnerable, kept deliberately", timestamp: "2026-01-01T00:00:00Z", num: 7,
+    };
+    await seed(makeProject({ name: "p-dep-close", libraries: [{ name: "fixb", version: "2.0.0" }] }), [manual]);
+
+    await runVulnScan("p-dep-close");
+    const fixes = await tagsFor("p-dep-close", "security fix");
+    expect(fixes.map(f => f.content)).toContain(manual.content);
+  });
+
+  test("security:own about the project's OWN code is never touched (no pkg@ prefix)", async () => {
+    cfg.registry = { safec: { latest: "1.0.0" } };
+    cfg.osvVulns = {};
+    const own: TagEntry = {
+      id: "own-1", project: "p-own", tag: "security:own",
+      content: "تسريب مفتاح API في ملف الإعدادات — يحتاج تدوير", timestamp: "2026-01-01T00:00:00Z", num: 2,
+    };
+    await seed(makeProject({ name: "p-own", libraries: [{ name: "safec", version: "1.0.0" }] }), [own]);
+
+    await runVulnScan("p-own");
+    expect(await tagsFor("p-own", "security fix")).toHaveLength(0);   // untouched
+  });
 });
 
 describe("runVulnScan — safety invariants (the reason for this suite)", () => {

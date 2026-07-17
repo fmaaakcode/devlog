@@ -134,6 +134,63 @@ describe("parseLibNames", () => {
     expect(parseLibNames("@astrojs/check")).toEqual([{ name: "@astrojs/check" }]);
     expect(parseLibNames("weird:name")).toEqual([{ name: "weird:name" }]);
   });
+
+  test("a trailing @version / ==version is a pin — scoped names split at the SECOND @ (#630)", () => {
+    expect(parseLibNames("lodash@4.17.20")).toEqual([{ name: "lodash", pin: "4.17.20" }]);
+    expect(parseLibNames("npm:lodash@4.17.20")).toEqual([{ name: "lodash", eco: "npm", pin: "4.17.20" }]);
+    expect(parseLibNames("@types/node@26.1.1")).toEqual([{ name: "@types/node", pin: "26.1.1" }]);
+    expect(parseLibNames("pypi:requests==2.32.0")).toEqual([{ name: "requests", eco: "pypi", pin: "2.32.0" }]);
+  });
+
+  test("floating tags and range operators never count as a pin", () => {
+    expect(parseLibNames("lodash@latest")).toEqual([{ name: "lodash" }]);
+    expect(parseLibNames("lodash@^4.17.20")).toEqual([{ name: "lodash" }]);
+  });
+});
+
+describe("pinned requests — the exact pinned version gets its own OSV verdict (#630)", () => {
+  test("vulnerable pin → `pin` carries the vuln facts alongside the normal advice", async () => {
+    const deps = fakeDeps(
+      { lodash: hist(["4.18.1", 30], ["4.17.21", 400], ["4.17.20", 500]) },
+      (_n, v) => (v === "4.17.20" ? vulnerable(v, "3 vulns (high) — upgrade to 4.18.0") : clean(v)),
+    );
+    const [it] = await adviseLibraries("npm", parseLibNames("lodash@4.17.20"), deps);
+    expect(it.verdict).toBe("ok");
+    expect(it.suggest).toBe("4.18.1");
+    expect(it.pin).toMatchObject({ version: "4.17.20", vulns: 2, severity: "high" });
+    expect(it.pin?.message).toContain("3 vulns (high)");
+  });
+
+  test("clean pin → pin present with zero vulns (the gate keeps its advisory tone)", async () => {
+    const deps = fakeDeps({ astro: hist(["7.0.7", 10], ["5.12.0", 300]) }, (_n, v) => clean(v));
+    const [it] = await adviseLibraries("npm", parseLibNames("astro@5.12.0"), deps);
+    expect(it.pin).toMatchObject({ version: "5.12.0", vulns: 0 });
+  });
+
+  test("OSV unanswered for the pin → no pin claim at all (unknown must never read as clean)", async () => {
+    const deps = fakeDeps(
+      { astro: hist(["7.0.7", 10]) },
+      (_n, v) => (v === "5.12.0" ? unanswered(v) : clean(v)),
+    );
+    const [it] = await adviseLibraries("npm", parseLibNames("astro@5.12.0"), deps);
+    expect(it.pin).toBeUndefined();
+  });
+
+  test("pin age rides the history payload — young pin gets its true age, unknown pin stays null-free (#631)", async () => {
+    const deps = fakeDeps({ fresh: hist(["9.0.0", 2], ["8.0.0", 30]) }, (_n, v) => clean(v));
+    const [young] = await adviseLibraries("npm", parseLibNames("fresh@9.0.0"), deps);
+    expect(young.pinAgeDays).toBe(2);
+    const [unknown] = await adviseLibraries("npm", parseLibNames("fresh@7.7.7"), deps);
+    expect(unknown.pinAgeDays).toBeUndefined(); // not in the history — no age claim
+  });
+
+  test("unpinned requests never pay the extra OSV call", async () => {
+    const checked: string[] = [];
+    const deps = fakeDeps({ astro: hist(["7.0.7", 10]) }, (_n, v) => { checked.push(v); return clean(v); });
+    const [it] = await adviseLibraries("npm", parseLibNames("astro"), deps);
+    expect(it.pin).toBeUndefined();
+    expect(checked).toEqual(["7.0.7"]); // only the candidate walk, no pin probe
+  });
 });
 
 describe("defaultEcoFor — manifest evidence beats language mapping", () => {

@@ -88,3 +88,74 @@ describe("routes-scan (extracted group) still mounts + behaves", () => {
     expect(items[1]).toMatchObject({ name: "b$d", verdict: "invalid-name" });
   });
 });
+
+// /api/install-override (#630): the gate's conscious-override of a KNOWN-vulnerable
+// pin must land as an open, NUMBERED security tag the moment it passes — and land
+// once, even if the hook fires again inside the ack window.
+describe("POST /api/install-override", () => {
+  let projDir: string;
+  const PIN = { eco: "npm", name: "lodashy", version: "4.17.20", text: "lodashy@4.17.20 — 3 vulns (high) — upgrade to 4.18.0" };
+
+  beforeAll(async () => {
+    projDir = mkdtempSync(join(tmpdir(), "devlog-override-proj-"));
+    // Same registration path a real session uses.
+    await fetch(`${BASE}/api/inject?cwd=${encodeURIComponent(projDir)}&session_id=ov-e2e&type=SessionStart`, { signal: AbortSignal.timeout(4000) });
+  });
+  afterAll(() => rmSync(projDir, { recursive: true, force: true }));
+
+  test("records the accepted risk as an open numbered security item", async () => {
+    const r = await fetch(`${BASE}/api/install-override`, {
+      method: "POST", headers: JSON_HEADERS,
+      body: JSON.stringify({ cwd: projDir, pins: [PIN] }),
+    });
+    expect(r.status).toBe(200);
+    const body = await asJson<{ ok: boolean; created: number }>(r);
+    expect(body.ok).toBe(true);
+    expect(body.created).toBe(1);
+
+    const open = await asJson<{ items: Array<{ num: number; tag: string; content: string }> }>(
+      await fetch(`${BASE}/api/open-items?cwd=${encodeURIComponent(projDir)}`));
+    const sec = open.items.filter(i => i.tag === "security");
+    expect(sec).toHaveLength(1);
+    expect(sec[0].content).toBe(PIN.text);
+    expect(sec[0].num).toBeGreaterThan(0);
+  });
+
+  test("re-firing inside the ack window dedupes — one claim per accepted risk", async () => {
+    const r = await fetch(`${BASE}/api/install-override`, {
+      method: "POST", headers: JSON_HEADERS,
+      body: JSON.stringify({ cwd: projDir, pins: [PIN] }),
+    });
+    expect((await asJson<{ created: number }>(r)).created).toBe(0);
+  });
+
+  test("a hand-authored security:dep with the same text also suppresses creation", async () => {
+    const manualText = "lodashy@4.17.20 — kept deliberately per user order";
+    await fetch(`${BASE}/api/tags`, {
+      method: "POST", headers: JSON_HEADERS,
+      body: JSON.stringify({ cwd: projDir, session_id: "ov-e2e", entries: [{ tag: "security:dep", content: manualText }] }),
+    });
+    const r = await fetch(`${BASE}/api/install-override`, {
+      method: "POST", headers: JSON_HEADERS,
+      body: JSON.stringify({ cwd: projDir, pins: [{ ...PIN, text: manualText }] }),
+    });
+    expect((await asJson<{ created: number }>(r)).created).toBe(0);
+  });
+
+  test("unknown cwd → fail-open (no project to attach to), never a 500", async () => {
+    const r = await fetch(`${BASE}/api/install-override`, {
+      method: "POST", headers: JSON_HEADERS,
+      body: JSON.stringify({ cwd: join(tmpdir(), "no-such-project-here"), pins: [PIN] }),
+    });
+    expect(r.status).toBe(200);
+    expect((await asJson<{ ok: boolean }>(r)).ok).toBe(false);
+  });
+
+  test("no pins → 400", async () => {
+    const r = await fetch(`${BASE}/api/install-override`, {
+      method: "POST", headers: JSON_HEADERS,
+      body: JSON.stringify({ cwd: projDir, pins: [] }),
+    });
+    expect(r.status).toBe(400);
+  });
+});

@@ -29,18 +29,38 @@ const ECO_PREFIX: Record<string, string> = { npm: "npm", pypi: "pypi", crates: "
 // name length) — anything else is refused rather than URL-encoded into a query.
 const NAME_RE = /^[@a-zA-Z0-9._/-]{1,214}$/;
 
-export interface LibRequest { name: string; eco?: string }
+export interface LibRequest { name: string; eco?: string; pin?: string }
+
+// A pin must look like a concrete version — floating dist-tags and range
+// operators are "whatever resolves", not a checkable version.
+const FLOATING_PINS = new Set(["latest", "next", "canary", "beta", "alpha", "rc", "nightly"]);
+
+/** Split a trailing `@version` (npm/cargo) or `==version` (pip) off a name.
+ *  `@` at index 0 is an npm scope, never a version split. */
+function splitPin(tok: string): { name: string; pin?: string } {
+  const eq = tok.indexOf("==");
+  if (eq > 0) return { name: tok.slice(0, eq), pin: tok.slice(eq + 2) };
+  const at = tok.indexOf("@", 1);
+  if (at < 0) return { name: tok };
+  const pin = tok.slice(at + 1);
+  if (!pin || FLOATING_PINS.has(pin.toLowerCase()) || !/^[0-9]/.test(pin)) return { name: tok.slice(0, at) };
+  return { name: tok.slice(0, at), pin };
+}
 
 /** Split the raw `-(ask:lib)` argument into requests. Cap at 8 names per ask —
  *  each costs registry + OSV round-trips. Invalid tokens are kept (flagged by
- *  advise) so the asker learns they were refused, not silently dropped. */
+ *  advise) so the asker learns they were refused, not silently dropped.
+ *  A `name@1.2.3` / `name==1.2.3` token is a pinned request: the advisor
+ *  additionally OSV-checks THAT exact version (#630 — the install gate sends
+ *  pinned installs this way so its block message can name the pin's vulns). */
 export function parseLibNames(raw: string): LibRequest[] {
   const out: LibRequest[] = [];
   for (const tok of (raw || "").trim().split(/\s+/)) {
     if (!tok) continue;
     const m = tok.match(/^([a-z]+):(.+)$/);
-    if (m && ECO_PREFIX[m[1]]) out.push({ name: m[2], eco: ECO_PREFIX[m[1]] });
-    else out.push({ name: tok });
+    const eco = m && ECO_PREFIX[m[1]] ? ECO_PREFIX[m[1]] : undefined;
+    const { name, pin } = splitPin(eco && m ? m[2] : tok);
+    out.push({ name, ...(eco ? { eco } : {}), ...(pin ? { pin } : {}) });
     if (out.length >= 8) break;
   }
   return out;
@@ -60,6 +80,14 @@ export interface LibAdviceItem {
   steppedBack?: boolean;
   /** OSV headline for the vulnerable candidate(s) skipped (or hit, for no-clean). */
   vulnNote?: string;
+  /** Present when the request pinned a version AND OSV answered for it (#630):
+   *  the verdict for THAT exact version, so the install gate can say "the
+   *  version you pinned is itself vulnerable" instead of only "it differs". */
+  pin?: { version: string; vulns: number; severity: string; message: string; fixVersion: string };
+  /** Age of the pinned version per the registry history, when it's listed
+   *  there (#631). Independent of OSV: a 2-day-old pin inside the maturity
+   *  window is a supply-chain risk even with zero advisories filed yet. */
+  pinAgeDays?: number | null;
 }
 
 export interface AdvisorDeps {
@@ -99,6 +127,21 @@ export async function adviseLibraries(
     if (!hist.length) { out.push(base); continue; }
     base.latest = hist[0].version;
     base.latestAgeDays = ageDays(hist[0].date, now);
+
+    // Pinned request: OSV-check the pinned version itself, so the caller can
+    // report ITS vulnerabilities explicitly. Attached to `base` so every
+    // verdict shape below carries it. Silent when OSV can't answer — an
+    // unverifiable pin must read as "unknown", never as "clean".
+    const pinEco = osvEcosystem(eco);
+    if (req.pin && pinEco) {
+      const pv = await osvCheck(pinEco, req.name, req.pin);
+      if (pv.ok) base.pin = { version: req.pin, vulns: pv.vulns, severity: pv.severity, message: pv.message, fixVersion: pv.fixVersion };
+    }
+    // Pin age from the same history payload (#631) — free, no extra fetch.
+    if (req.pin) {
+      const entry = hist.find(e => e.version === req.pin);
+      if (entry) base.pinAgeDays = ageDays(entry.date, now);
+    }
 
     // Matured candidates, newest first. maturedVersion gives the first; the walk
     // below needs the next few too (step past vulnerable ones, bounded).

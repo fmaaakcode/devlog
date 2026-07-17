@@ -204,6 +204,30 @@ export function resolveClosureNumber(tag: string, content: string, data: DevLogD
 }
 
 // ── Positive closure confirmation (#228) ─────────────────────────────────────
+// ── Same-response atomic open+close (#633) ──────────────────────────────────
+export interface BatchOpener { num: number; tag: string; content: string }
+
+/**
+ * Pair a closer that resolves to NOTHING with the single compatible opener
+ * stored earlier in the SAME batch — the "found AND fixed in one response"
+ * case. A model cannot know the number of an item born in the response it is
+ * still writing (numbers are assigned at ingest), so it either guesses the
+ * next `#N` (slip #465 — reproduced verbatim by a fresh model on macOS
+ * 2026-07-17) or burns a whole turn on `-(ask:open)`. Exactly-one candidate
+ * keeps the pairing unambiguous; zero or several returns null and the normal
+ * mismatch feedback (now carrying the live open list, #632) takes over.
+ */
+export function pairSameResponseClosure(
+  closerTag: string,
+  batchOpeners: BatchOpener[],
+  alreadyClosed: Set<number>,
+): BatchOpener | null {
+  const compatible = CLOSER_KINDS[closerTag];
+  if (!compatible) return null;
+  const candidates = batchOpeners.filter(o => compatible.includes(o.tag) && !alreadyClosed.has(o.num));
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
 export interface ClosureConfirm { num: number; text: string; }
 
 /**

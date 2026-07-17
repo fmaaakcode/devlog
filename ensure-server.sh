@@ -60,8 +60,13 @@ PAYLOAD="$(cat)"
 # Forward the event to the server and relay the response to stdout. For
 # SessionStart/UserPromptSubmit, stdout on exit 0 is context Claude can see,
 # and valid JSON is parsed for control fields (systemMessage & friends).
+# X-DevLog-Hook-Root (#600): this script's own root, so the server can warn
+# when the daemon holding the port is rooted at a DIFFERENT tree (a plugin-copy
+# daemon serving stale working-tree edits) — its self-freshness check is blind
+# to that by construction. A header, not a query param: raw Windows paths need
+# no URL-encoding there.
 inject() {
-  printf '%s' "$PAYLOAD" | curl -s -X POST "http://127.0.0.1:$PORT/api/inject$QUERY" -H "Content-Type: application/json" --data-binary @-
+  printf '%s' "$PAYLOAD" | curl -s -X POST "http://127.0.0.1:$PORT/api/inject$QUERY" -H "Content-Type: application/json" -H "X-DevLog-Hook-Root: $DIR" --data-binary @-
 }
 
 # Off switch: set DEVLOG_AUTOSTART_OFF=1 in your environment to skip the

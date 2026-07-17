@@ -139,4 +139,78 @@ describe("closure confirmation E2E (#228)", () => {
     expect(resp.verifyHint).not.toBeNull();
     expect(resp.verifyHint.closers.some((c: any) => c.tag === "done")).toBe(true);
   });
+
+  async function openItems(): Promise<any[]> {
+    const r: any = await asJson(await fetch(`${BASE}/api/open-items?cwd=${encodeURIComponent(projDir)}`));
+    return r.items;
+  }
+
+  // ── #633: same-response atomic open+close ──────────────────────────────────
+
+  test("guessed #N for a bug opened in the SAME batch auto-pairs with it (the macOS slip)", async () => {
+    const resp = await post(projDir, [
+      { tag: "bug found", content: "sv CLI produced a broken dialect in drizzle.config.ts" },
+      { tag: "bug fix", content: "#99 corrected dialect to postgresql" },   // #99 exists nowhere
+    ]);
+    const num = await numFor(project, "sv CLI produced a broken dialect in drizzle.config.ts");
+    expect(resp.closureHints).toEqual([]);
+    expect(resp.repairedClosures).toEqual([{ from: 99, num }]);
+    expect(resp.closed).toEqual([{ num, text: "sv CLI produced a broken dialect in drizzle.config.ts" }]);
+    expect(await openItems()).toEqual([]);                                  // really closed
+  });
+
+  test("a number-less closer pairs with the single item opened this response (the documented path)", async () => {
+    const resp = await post(projDir, [
+      { tag: "bug found", content: "config parser chokes on utf8 bom" },
+      { tag: "bug fix", content: "strip the bom before parsing" },          // no #, different words
+    ]);
+    const num = await numFor(project, "config parser chokes on utf8 bom");
+    expect(resp.repairedClosures).toEqual([{ from: null, num }]);
+    expect(await openItems()).toEqual([]);
+  });
+
+  test("two openers in the batch → ambiguous, no pairing; the hint carries the open snapshot (#632)", async () => {
+    const resp = await post(projDir, [
+      { tag: "bug found", content: "first breakage in the exporter" },
+      { tag: "bug found", content: "second breakage in the importer" },
+      { tag: "bug fix", content: "#99 fixed one of them" },
+    ]);
+    expect(resp.repairedClosures).toEqual([]);
+    expect(resp.closureHints.length).toBe(1);
+    expect(resp.openSnapshot.length).toBe(2);                               // both bugs, live numbers
+    expect(resp.openSnapshot.every((i: any) => i.tag === "bug found" && i.num > 0)).toBe(true);
+  });
+
+  test("a phantom #N with NO same-batch opener → plain hint + the open snapshot (#632)", async () => {
+    await post(projDir, [{ tag: "todo", content: "pre-existing open work" }]);
+    const num = await numFor(project, "pre-existing open work");
+
+    const resp = await post(projDir, [{ tag: "done", content: "#77" }]);
+    expect(resp.closureHints.length).toBe(1);
+    expect(resp.repairedClosures).toEqual([]);
+    expect(resp.openSnapshot).toEqual([{ num, tag: "todo", content: "pre-existing open work" }]);
+  });
+
+  test("verb compatibility gates the pairing: -(bug fix) never pairs with a same-batch todo", async () => {
+    const resp = await post(projDir, [
+      { tag: "todo", content: "some planned work item" },
+      { tag: "bug fix", content: "#99 phantom fix" },
+    ]);
+    expect(resp.repairedClosures).toEqual([]);
+    expect(resp.closureHints.length).toBe(1);
+    expect((await openItems()).length).toBe(1);                             // the todo survives
+  });
+
+  test("a number-less closer whose text MATCHES an open item keeps the legacy text-closure path", async () => {
+    await post(projDir, [{ tag: "todo", content: "polish the readme intro" }]);
+
+    const resp = await post(projDir, [
+      { tag: "todo", content: "a fresh unrelated todo" },
+      { tag: "done", content: "polish the readme intro" },                  // exact text of the OLD item
+    ]);
+    expect(resp.repairedClosures).toEqual([]);                              // no pairing hijack
+    const remaining = await openItems();
+    expect(remaining.length).toBe(1);
+    expect(remaining[0].content).toBe("a fresh unrelated todo");            // old item closed by text
+  });
 });

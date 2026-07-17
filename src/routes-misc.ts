@@ -30,7 +30,9 @@ export function makeMiscRoutes(): Record<string, unknown> {
     // Identity probe for the data-dir single-writer lock (#435): answers "WHICH
     // daemon is this?" so acquireDaemonLock can tell a live holder from a stale
     // lock (freed port, pid reuse, foreign server). Localhost-only via guard().
-    "/api/daemon-id": { GET() { return Response.json({ pid: process.pid, dataDir: DATA_DIR, port: PORT }); } },
+    // `root` (#600): the tree this process serves — lets any probe distinguish a
+    // working-tree daemon from a plugin-copy one without guessing from the pid.
+    "/api/daemon-id": { GET() { return Response.json({ pid: process.pid, dataDir: DATA_DIR, port: PORT, root: join(import.meta.dir, "..") }); } },
 
     // Runtime feature flags for the dashboard. Native version scanning is always
     // available (no external server), so the scan button is always enabled.
