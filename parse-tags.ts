@@ -1017,6 +1017,46 @@ if (msg && cwd) {
   }
 }
 
+// === Part 1.5d3: -(ask:search) <query> — recall from the stored log ===
+// The log answered back: BM25 (recall.ts) over the project's stored tags, so
+// "why did we choose X?" / "have we hit this before?" is answered from recorded
+// history instead of re-derived. `all:` prefix widens the scope to every
+// project. Ephemeral like every ask: command — never a logged tag.
+if (msg && cwd) {
+  try {
+    const m = strippedMsg.match(/^[ \t]*-\(ask:search\)[ \t]+(\S[^\n]*?)[ \t]*$/m);
+    const cmd = m ? `ask:search ${m[1]}` : "";
+    if (m && await shouldServeAsk(cmd)) {
+      let q = m[1];
+      let all = false;
+      const am = q.match(/^all:[ \t]*(.*)$/);
+      if (am) { all = true; q = am[1]; }
+      if (q.trim()) {
+        const r = await fetch(
+          `${SERVER}/api/recall?cwd=${encodeURIComponent(cwd)}&q=${encodeURIComponent(q)}${all ? "&all=1" : ""}`,
+          { signal: AbortSignal.timeout(10000) });
+        if (r.ok) {
+          await markAskServed(cmd);
+          const { results = [] } = await r.json() as { results?: any[] };
+          const lines = results.map((res: any) => {
+            const num = typeof res.num === "number" ? ` #${res.num}` : "";
+            const proj = all ? ` @${res.project}` : "";
+            return `  [${res.tag}${num}]${proj} ${String(res.timestamp || "").slice(0, 10)} — ${res.snippet}`;
+          });
+          const out = lines.length ? lines.join("\n")
+            : L("no matches in the log.", "لا نتائج مطابقة في السجل.");
+          await log(`ask:search: served ${results.length} result(s)`);
+          blockContinue(`\n[devlog recall]\n${out}\n`);
+        } else {
+          await log(`ask:search: server replied ${r.status}`);
+        }
+      }
+    }
+  } catch (e) {
+    await log(`ask:search error: ${(e as Error).message}`);
+  }
+}
+
 // === Part 1.5e: -(ask:features) — pull the current capability inventory ===
 // Companion to -(ask:open) for the feature tier: the client-language "what does
 // the system do today?" list (updates applied, removed dropped, each attributed

@@ -5,6 +5,8 @@ import {
 } from "./data";
 import { currentLang } from "./i18n";
 import { formatFileStoryContext } from "./file-story";
+import { closedItems } from "./closed-items";
+import { similarClosedBugs, type SimilarBug } from "./recall";
 
 const MAX_BUILT = 5;
 
@@ -236,6 +238,34 @@ export function newSecurityAlerts(data: DevLogData, project: string, sessionId: 
   });
 }
 
+/** A fresh bug paired with the historically closed bugs it resembles. */
+export interface RecallHint { bug: TagEntry; similar: SimilarBug[] }
+
+/**
+ * Auto-recall (the log answered back, unprompted): `-(bug found)` tags that
+ * appeared after this session's last injection, matched against historically
+ * CLOSED bugs — when a fix for a similar problem already exists, its number,
+ * date and files are offered BEFORE Claude re-derives it. Same watermark
+ * discipline as newSecurityAlerts (delivered once, silent without a baseline);
+ * unlike security it is advisory, so callers keep it behind the
+ * `userPromptSubmit` toggle. The MIN_SHARED_TOKENS gate lives in recall.ts —
+ * an unrelated bug produces no hint, not a weak one.
+ */
+export function newRecallHints(data: DevLogData, project: string, sessionId: string | undefined): RecallHint[] {
+  const since = lastInjectionTime(data, project, sessionId);
+  if (!since) return [];
+  const fresh = openBugs(data.tags.filter(t => t.project === project))
+    .filter(t => !t.upcoming && +new Date(t.timestamp) > since);
+  if (!fresh.length) return [];
+  const closed = closedItems(data, project);
+  const out: RecallHint[] = [];
+  for (const bug of fresh) {
+    const similar = similarClosedBugs(bug.content, closed, 2);
+    if (similar.length) out.push({ bug, similar });
+  }
+  return out;
+}
+
 // The "describe this project" nudges (short `desc` + long `about`). Pulled out
 // so both buildContext paths — the full SessionStart context AND the standalone
 // block emitted when the summary toggle is off — share one definition. Gated by
@@ -316,7 +346,9 @@ export function buildContext(
     // The reminder stays behind its toggle even when a security alert forced
     // this call past the doInject gate — the alert must not smuggle it in.
     const wantReminder = config.userPromptSubmit && (closures.length > 0 || builtSince.length >= 2);
-    if (!wantReminder && secAlerts.length === 0) return "";
+    // Auto-recall is advisory (unlike security) — the toggle governs it too.
+    const recallHints = config.userPromptSubmit ? newRecallHints(data, project, ctx.sessionId) : [];
+    if (!wantReminder && secAlerts.length === 0 && recallHints.length === 0) return "";
     const parts: string[] = [];
     if (secAlerts.length) {
       parts.push(L(
@@ -328,6 +360,22 @@ export function buildContext(
       parts.push(L(
         "> Upgrade to the fix version; the next scan closes the tag automatically.",
         "> رقِّ لإصدار الإصلاح؛ الفحص التالي يغلق التاق تلقائيًا."));
+    }
+    if (recallHints.length) {
+      parts.push(L(
+        "🧠 Recall — a similar problem was already solved in this project:",
+        "🧠 ذاكرة — مشكلة شبيهة انحلّت سابقًا في هذا المشروع:"));
+      for (const h of recallHints) {
+        for (const s of h.similar) {
+          const ref = typeof s.num === "number" ? `#${s.num} ` : "";
+          const when = s.closedAt ? ` — ${L("closed", "أُغلقت")} ${s.closedAt.slice(0, 10)}` : "";
+          const where = s.closerFiles?.length ? ` · ${s.closerFiles.join(", ")}` : "";
+          parts.push(`- ${ref}${safe(s.text)}${when}${where}`);
+        }
+      }
+      parts.push(L(
+        "> Check the old fix (`-(ask:closed) #N`) before solving from scratch.",
+        "> راجع الحل القديم (`-(ask:closed) #N`) قبل الحل من الصفر."));
     }
     if (wantReminder) {
       const summary = formatOpenSummary(data, project, config.upcomingItems);

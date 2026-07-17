@@ -28,6 +28,7 @@
 ## Tag protocol (`routes-tags.ts`)
 - `/api/tags` — the tag-processing pipeline (POST)
 - `/api/tags/:project` — one project's tags, newest-first, `?limit=` (GET)
+- `/api/recall` — recall search behind `-(ask:search)` (GET, `?q=..&cwd=..&all=1&limit=8`): BM25 with Arabic/English normalization over the stored tags (`recall.ts`), scoped to the cwd's project unless `all=1` widens it to every project. Read-only
 - `/api/tag/:id` — delete a tag (DELETE, token-gated when enabled)
 - `/api/undone` — tags/plan-steps removed by `-(undo)`, read on demand: no params → available months; `?month=YYYY-MM` → that month's undone rows newest-first, `?project=` filters. `-(undo)` archives the row to `archive/undone-YYYY-MM.jsonl` before removing it (and refuses to remove it if that write fails), so each record carries the original entry verbatim — restoring is a re-POST to `/api/tags` (GET)
 - `/api/classify` — classify recent change events (POST)

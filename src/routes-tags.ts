@@ -27,6 +27,7 @@ import { sessionTouchedFiles } from "./file-story";
 import { diagnoseFeatureRef, type FeatureRefProblem } from "./features";
 import { detectReopen, PROBLEM_TAGS, type ReopenHint } from "./reopen";
 import { applyUndo } from "./undo";
+import { searchTags } from "./recall";
 import { listArchiveMonths, readUndoneMonth } from "./event-archive";
 import type { RollbackResult } from "./release-rollback";
 import type { TagEntry } from "./types";
@@ -64,6 +65,27 @@ export function makeTagsRoutes(): Record<string, unknown> {
           .sort((a, b) => tsToMs(b.timestamp) - tsToMs(a.timestamp))
           .slice(0, limit);
         return Response.json({ tags });
+      },
+    },
+
+    // Recall (`-(ask:search)`): BM25 over the stored tags — the log answered
+    // back. Read-only; scope is the cwd's project unless `all=1` widens it to
+    // every project (the cross-project layer: the same library breaking the
+    // same way in two sibling projects is invisible per-project).
+    "/api/recall": {
+      async GET(req: ApiReq) {
+        try {
+          const url = new URL(req.url);
+          const q = (url.searchParams.get("q") || "").trim();
+          if (!q) return Response.json({ error: "q required" }, { status: 400 });
+          const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "8", 10) || 8, 1), 25);
+          const all = url.searchParams.get("all") === "1";
+          const data = await loadData();
+          const { name: project } = resolveProjectFor(data, url.searchParams.get("cwd") || "");
+          const tags = all ? data.tags : data.tags.filter(t => t.project === project);
+          const results = searchTags(tags, q, limit);
+          return Response.json({ project, scope: all ? "all" : "project", results });
+        } catch { return Response.json({ error: "Failed" }, { status: 500 }); }
       },
     },
 

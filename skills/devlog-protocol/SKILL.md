@@ -213,6 +213,17 @@ The suggestion is the newest **stable** release **≥7 days old** (the dependenc
 
 **The install gate enforces this.** A PreToolUse hook intercepts package-add commands (`bun|pnpm|yarn add`, `npm i`, `cargo add`, `pip|uv install`) before they run: a **blind** install (no pinned version, or a floating `@latest`-style tag) is blocked with the advisor's pick in the block message — re-issue with the pin. A **pinned** install that disagrees with the advisor gets a one-time advisory block; re-issuing the identical command passes (a pin is a deliberate choice, possibly the user's explicit order). Unknown names, private registries, and a down server all fail open — the vuln scan and the next-prompt security alert are the backstops. Disable with `DEVLOG_INSTALL_GATE=0`.
 
+## Recall (`ask:search`)
+
+The log answers back: lexical search (BM25, Arabic+English normalization) over every stored tag — decisions, insights, notes, builds, closed bugs *with their fixes*. Prefer it over re-deriving a past decision or re-investigating a solved problem. Reply comes back in the same turn; NOT logged as a tag.
+
+| Command | Use |
+|---|---|
+| `-(ask:search) why sse over websocket` | Best-matching stored tags of THIS project, each with `[tag] #N date — snippet` |
+| `-(ask:search) all: oembed blocked` | Widen to every tracked project (cross-project recurrence) |
+
+Matching is lexical, not semantic — use the vocabulary the log was written in (an English query won't match an Arabic-only tag). Auto-recall rides on it: when a fresh `-(bug found)` resembles a historically closed bug (enough shared terms), the next prompt's injection carries a one-shot `🧠` hint with the old fix's `#N`, close date and files — check it with `-(ask:closed) #N` before solving from scratch.
+
 ## Releases & GitHub — split roles
 
 **Releasing (the DevLog tag) is the developer's job; git/GitHub is the specialist's.**

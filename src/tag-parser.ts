@@ -46,7 +46,7 @@ export const SINGLE_LINE_TAGS = new Set([
 // stored with a trailing "\n\n-(ask:features)").
 export const COMMAND_TAGS = [
   "ask:open", "ask:closed", "ask:features", "ask:retro", "ask:backfill",
-  "ask:study", "ask:rules", "ask:lib", "rules:list", "rule:add", "rule:new", "rule:rm",
+  "ask:study", "ask:rules", "ask:lib", "ask:search", "rules:list", "rule:add", "rule:new", "rule:rm",
   "rule:ack", "rule:acks", "audit",
 ] as const;
 

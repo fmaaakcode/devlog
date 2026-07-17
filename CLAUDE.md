@@ -35,6 +35,11 @@ Write the tag content in the user's language.
   prefix overrides the project ecosystem. Ephemeral, never a stored tag. Enforced by
   the PreToolUse install gate: blind `bun add X` is blocked with the advised pin;
   a deliberate pin passes on re-issue (one advisory block).
+- `-(ask:search) <سؤال>` recall from the recorded log — best-matching stored tags
+  (decisions, insights, closed bugs with their fixes) served same-turn; `all:` prefix
+  widens to every tracked project. Prefer it over re-deriving a past decision.
+  Ephemeral, never stored. New open bugs also get an automatic one-shot recall hint
+  when a similar closed bug exists.
 - `-(note)` · `-(decision)` · `-(insight)`
 - `-(doc:report|analysis|plan|comparison|readme)` name\n<markdown>
 

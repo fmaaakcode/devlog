@@ -36,6 +36,8 @@ Closure is mandatory: every open item (todo/bug/security/plan step) is closed by
 
 Before ADDING a new dependency, emit \`-(ask:lib) <name…>\` (up to 8) — DevLog answers with the exact version to install: newest stable ≥7 days old that OSV certifies clean. Don't research versions yourself and don't install blind \`@latest\`. A \`npm:\`/\`pypi:\`/\`crates:\` prefix on a name overrides the project's ecosystem.
 
+To recall recorded history ("why did we choose X?", "have we hit this before?"), emit \`-(ask:search) <query>\` — DevLog answers with the best-matching stored tags (decisions, insights, closed bugs with their fixes). \`-(ask:search) all: <query>\` widens the search to every tracked project. Prefer it over re-deriving a past decision or re-investigating a solved problem.
+
 Atomic: one concept per tag; no questions or planning prose inside a tag; multiple items → multiple tags.
 
 Releasing: ONLY when the user asks to ship. Then just emit \`-(release) <one-line reason>\` — **DevLog auto-detects the bump type (patch/minor/major) and computes the version number.** Never write the version number yourself, and don't pick the type unless the user names one (then use \`-(release:patch|minor|major)\`). git/GitHub is never your job.
@@ -60,6 +62,8 @@ DevLog مفعّل. في نهاية كل رد أصدر تاقات \`-(tag) conten
 الإغلاق إلزامي: كل عنصر مفتوح (todo/bug/security/خطوة خطة) يُغلَق بـ\`#N\` في نفس رد إنجاز العمل — لا تنسخ النص (يكسر المطابقة). أرقام \`#N\` تصلك في سياق SessionStart؛ اكتب \`?open\` لرؤية النصوص الكاملة، أو أصدر \`-(ask:open)\` بنفسك لسحب قائمة المفتوح الحيّة أثناء الجلسة قبل الإغلاق. وللتأكّد أنّ عنصراً أُغلق بالفعل (ومتى/كيف) أصدر \`-(ask:closed) #N\` — لا تـgrep ملفات \`.devlog/\` ولا تعيد التحقيق في عمل مُنجَز؛ هذا الأثر هو المرجع. وللتحليل الرجعي (كل بلاغات bug/security، المفتوح والمغلق، بالأعمار والملفات — «ما الذي يتكرر كسره؟») أصدر \`-(ask:retro)\` وثبّت الأنماط المتكررة بـ\`-(rule:add)\` أو \`-(insight)\`. وللدراسة العميقة الشاملة (مجاميع الانضباط على كامل التاريخ + دلتا سردية منذ آخر دراسة) أصدر \`-(ask:study)\` وخزّن الناتج بـ\`-(doc:report) study-YYYY-MM-DD <عنوان>\` — بادئة \`study-\` تجعله علامة المياه للدراسة التالية.
 
 قبل إضافة تبعية جديدة أصدر \`-(ask:lib) <اسم…>\` (حتى 8) — يجيبك DevLog بالنسخة الدقيقة للتركيب: أحدث مستقرة عمرها ≥7 أيام يشهد OSV بنظافتها. لا تبحث عن النسخ بنفسك ولا تركّب \`@latest\` أعمى. بادئة \`npm:\`/\`pypi:\`/\`crates:\` على الاسم تتجاوز نظام المشروع.
+
+لاسترجاع التاريخ المسجَّل («لماذا اخترنا X؟»، «هل مررنا بهذا قبل؟») أصدر \`-(ask:search) <سؤال>\` — يجيبك DevLog بأفضل التاقات المطابقة (قرارات، insights، بلاغات مغلقة مع إصلاحاتها). \`-(ask:search) all: <سؤال>\` يوسّع البحث لكل المشاريع المتتبَّعة. فضّله على إعادة اشتقاق قرار ماضٍ أو إعادة التحقيق في مشكلة محلولة.
 
 محتوى ذرّي: مفهوم واحد لكل تاق، بلا أسئلة أو تخطيط داخل التاق؛ عدّة عناصر → عدّة تاقات.
 
