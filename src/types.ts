@@ -81,6 +81,13 @@ export interface EventEntry {
   new_string?: string;
   content?: string;
   command?: string;
+  /** Command events only: numeric exit code when the harness's tool_response
+   *  carried one. Absent = unknown (older hooks, tools without a code). */
+  exit_code?: number;
+  /** Command events only: outcome verdict — from the exit code, an interruption,
+   *  or a test-runner summary line. Absent = unknown; consumers fail OPEN on it
+   *  (unknown must never be treated as failure). */
+  ok?: boolean;
   description?: string;
   agent_type?: string;
   agent_id?: string;

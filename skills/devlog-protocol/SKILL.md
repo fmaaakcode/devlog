@@ -16,6 +16,7 @@ Three hooks enforce these rules mechanically — you don't need to remember, the
 | Hook | Fires on | Blocks when |
 |---|---|---|
 | **Stop closure-check** | every turn end | a `-(built)` / `-(refactor)` fuzzy-matches an open `#N` and you didn't emit its closure. Exit 2 → re-respond with the closure. |
+| **Stop untagged-guard** | a tag-less turn end | code files were written this session and NOT ONE tag was ever stored for it. Blocks once per session — re-respond ending with tags that describe the work. Mute: `DEVLOG_UNTAGGED_CHECK=0`. |
 | **Stop release-guard** | `-(release)` / `-(release:*)` in your response | ANY open item exists (todo, bug, security, plan step). Refuses to persist the release. Close everything first, or `DEVLOG_RELEASE_GUARD=0` to override. |
 | **PreToolUse release-guard** | `gh release create` / `git tag -a v*` / `git push --tags` / `npm publish` / `cargo publish` | same rule; also injects the full since-last-release changelog. |
 
@@ -64,7 +65,7 @@ Every open tag has a closure, emitted in the **same response** as the work.
 
 **Opened AND finished in the SAME response** (a `-(bug found)` plus its fix, a `-(todo)` done immediately): emit the closer with **no number at all** — DevLog pairs it with the single work item opened in that response and echoes `🔗` with the real `#N`. Never guess the next `#N`: numbers are assigned only after the response ends, and a guessed number is rejected (or, when it matches nothing and exactly one item was opened this response, auto-paired with a corrective echo). **Text closure is permitted ONLY** when injection is off. Otherwise use `#N`.
 
-**Verify before closing.** "Verified" = observed evidence in this conversation (a passing test in the transcript, a successful tool result, explicit user confirmation). Reading code and concluding "it should work" is **not** verification. If you can't verify this turn, leave it open and emit a `-(note)` stating what's needed.
+**Verify before closing.** "Verified" = observed evidence in this conversation (a passing test in the transcript, a successful tool result, explicit user confirmation). Reading code and concluding "it should work" is **not** verification. If you can't verify this turn, leave it open and emit a `-(note)` stating what's needed. The Stop hook cross-checks closures against the session trace: a test run that **failed**, or one that **predates your last code edit**, does not count as evidence — run the suite again, after the change, and see it pass.
 
 `-(built)` is not a closure — if work maps to a plan step, also emit `-(done) #N`. Don't fake-close security tags: if you reviewed but didn't fix, say so; don't emit `-(security fix)`.
 

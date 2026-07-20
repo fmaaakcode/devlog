@@ -43,7 +43,7 @@
 - `/api/changes` — recent code-edit events (GET)
 - `/api/changes/last` — last-N edits (GET)
 - `/api/changes/by-id/:id` — one event's full diff (GET)
-- `/api/changes/session` — a session's edits (GET)
+- `/api/changes/session` — a session's edits + its stored-tag count (`tagCount`, feeds the Stop hook's untagged-session guard) (GET)
 
 ## Projects (`routes-projects.ts`)
 - `/api/project-view/:name` — one project's full profile + its tags/events/plans slices; the dashboard's lazy alternative to `/api/data` (GET)

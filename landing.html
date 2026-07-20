@@ -156,7 +156,7 @@ h2 { font-size: clamp(1.5rem, 3.4vw, 2.1rem); font-weight: 800; margin-top: 8px;
 
 /* ---------- enforcement ---------- */
 .enforce {
-    margin-top: 36px; display: grid; grid-template-columns: 1fr 1fr; gap: 18px;
+    margin-top: 36px; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px;
 }
 @media (max-width: 800px) { .enforce { grid-template-columns: 1fr; } }
 .enforce .shell {
@@ -168,6 +168,7 @@ h2 { font-size: clamp(1.5rem, 3.4vw, 2.1rem); font-weight: 800; margin-top: 8px;
 }
 .enforce .shell-head.red { color: var(--pink); }
 .enforce .shell-head.gold { color: var(--gold); }
+.enforce .shell-head.blue { color: var(--blue); }
 /* Arabic-first output: RTL base, individual command lines opt into LTR */
 .enforce .shell-body { padding: 20px; font-family: 'Segoe UI', Tahoma, sans-serif; font-size: .88em; direction: rtl; text-align: right; color: var(--text2); }
 .enforce .shell-body .blocked { color: var(--pink); }
@@ -368,10 +369,20 @@ footer a:hover { color: var(--emerald); }
                     <span class="ok">✓ أغلِق العناصر أولاً — أو تعمّد التجاوز بنفسك</span>
                 </div>
             </div>
+            <div class="shell">
+                <div class="shell-head blue">بوابة التركيب — Install Gate</div>
+                <div class="shell-body">
+                    <span class="cmd">$ bun add zod</span><br>
+                    <span class="blocked">✗ اعتُرض — تثبيت أعمى بلا استشارة</span><br>
+                    <span class="cmd-ar">المستشار: <code>zod@3.23.8</code> — أحدث مستقرة ناضجة، نظيفة في OSV</span><br>
+                    <span class="ok">✓ أعد الأمر بالنسخة المثبّتة ليمرّ</span>
+                </div>
+            </div>
         </div>
         <p class="enforce-note">
             كلود أنهى عملاً يطابق مهمة مفتوحة ولم يغلقها؟ <b>الرد يُرفض حتى يغلقها.</b>
             حاول أحد إطلاق إصدار وخلفه عناصر مفتوحة؟ <b>الأمر يُعترض قبل أن يُنفذ.</b>
+            حاول كلود تثبيت مكتبة بلا استشارة؟ <b>يُحجب الأمر ومعه النسخة الآمنة الموصى بها — أحدث مستقرة عمرها 7 أيام فأكثر ونظيفة في OSV.</b>
             هكذا لا يضيع شيء — ليس لأن أحداً انتبه، بل لأن النظام لا يسمح.
         </p>
     </div>
@@ -401,7 +412,7 @@ footer a:hover { color: var(--emerald); }
             </div>
             <div class="feat">
                 <h3><span class="b" style="background:var(--emerald)"></span>تقارير إصدارات تتولّد وحدها</h3>
-                <p>عند كل إصدار: تقرير يجمع ما بُني وما أُصلح وما أُغلق أمنياً — ويرقّي رقم النسخة في manifest مشروعك آلياً.</p>
+                <p>عند كل إصدار: تقرير يجمع ما بُني وما أُصلح وما أُغلق أمنياً — ويرقّي رقم النسخة في manifest مشروعك آلياً، وإن خرج إصدار بالخطأ فالتراجع عنه ممكن.</p>
             </div>
             <div class="feat">
                 <h3><span class="b" style="background:var(--gold)"></span>ذاكرة جلسات لكلود نفسه</h3>
@@ -414,6 +425,22 @@ footer a:hover { color: var(--emerald); }
             <div class="feat">
                 <h3><span class="b" style="background:var(--blue)"></span>مستندات جاهزة من المحادثة</h3>
                 <p>تقارير وتحليلات وخطط تُكتب كـMarkdown وتُقدَّم كـHTML منسّق — بدون أن يكتب كلود صفحة ويب بيده.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--emerald)"></span>جرد ميزات بلغة العميل — وتقرير جاهز للمشاركة</h3>
+                <p>كل قدرة يراها المستخدم تُسجَّل سطراً بلغة غير تقنية، ويتولّد من الجرد تقرير عميل أنيق تشاركه من اللوحة متى شئت.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--gold)"></span>استدعاء من السجل بدل إعادة الاكتشاف</h3>
+                <p>كلود يسأل «هل مررنا بهذا من قبل؟» فيستلم القرارات والإصلاحات المخزنة في نفس الدور — وبقٌ جديد يشبه بقاً مغلقاً يستدعي إصلاحه القديم تلقائياً.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--pink)"></span>محاضر رجعية ودراسات عميقة</h3>
+                <p>«ما الذي يتكرر انكساره؟» — محضر بكل بق وثغرة عبر التاريخ بأعمارها وملفاتها، ودراسة كاملة تُحفظ مستنداً يقيس التقدم منذ سابقتها.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--blue)"></span>مكتبة معايير تنمو معك</h3>
+                <p>قواعد تُلتقط من تصحيحاتك وتُسحب عند الحاجة حسب اللغة أو نوع التطبيق — فلا يعيد كلود الخطأ نفسه في مشروع آخر.</p>
             </div>
         </div>
     </div>
@@ -439,7 +466,7 @@ footer a:hover { color: var(--emerald); }
             </div>
             <div class="priv">
                 <h3>أمان بمستوى أداة إنتاجية</h3>
-                <p>دفاعات مدمجة ضد DNS rebinding وXSS وتجاوز المسارات — ومغطى بأكثر من 575 اختباراً آلياً.</p>
+                <p>دفاعات مدمجة ضد DNS rebinding وXSS وتجاوز المسارات — ومغطى بأكثر من 1300 اختبار آلي.</p>
             </div>
         </div>
     </div>

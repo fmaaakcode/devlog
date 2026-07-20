@@ -1,16 +1,25 @@
-// Unit tests for the optional verify nudge (#232): a `done` / `bug fix` /
-// `security fix` closure in a session where no test ran should be flagged so the
-// Stop hook can surface a non-blocking reminder.
+// Unit tests for the optional verify nudge (#232, v2 condition): a `done` /
+// `bug fix` / `security fix` closure should be flagged unless the session holds
+// real evidence — a test run AT/AFTER the last code mutation that is not
+// known-failing. Unknown outcome is fail-open (counts as passing).
 
 import { describe, test, expect } from "bun:test";
-import { isTestCommand, sessionRanTests, verifyHintFor } from "../src/verify-hint";
+import { isTestCommand, sessionRanTests, verifyHintFor, lastCodeMutationMs } from "../src/verify-hint";
 import type { EventEntry } from "../src/types";
 
 let _id = 0;
-function ev(sessionId: string, command: string): EventEntry {
+function ev(sessionId: string, command: string, opts: { ts?: string; ok?: boolean } = {}): EventEntry {
   return {
     id: `e${_id++}`, project: "p", event: "PreToolUse", tool: "Bash", type: "Bash",
-    command, session_id: sessionId, timestamp: "2026-06-01T00:00:00Z",
+    command, session_id: sessionId, timestamp: opts.ts ?? "2026-06-01T00:00:00Z",
+    ...(opts.ok === undefined ? {} : { ok: opts.ok }),
+  };
+}
+
+function mut(sessionId: string, filePath: string, ts: string): EventEntry {
+  return {
+    id: `e${_id++}`, project: "p", event: "PostToolUse", tool: "Edit", type: "change",
+    file_path: filePath, session_id: sessionId, timestamp: ts,
   };
 }
 
@@ -81,9 +90,9 @@ describe("verifyHintFor", () => {
   const tests = [ev("s1", "bun test")];
   const noTests: EventEntry[] = [ev("s1", "git status")];
 
-  test("flags a done closure when no test ran", () => {
+  test("flags a done closure when no test ran, with reason no-tests", () => {
     const h = verifyHintFor([{ tag: "done", content: "#5" }], noTests, "s1");
-    expect(h).toEqual({ closers: [{ tag: "done", content: "#5" }] });
+    expect(h).toEqual({ closers: [{ tag: "done", content: "#5" }], reason: "no-tests" });
   });
 
   test("flags bug fix and security fix too", () => {
@@ -102,5 +111,88 @@ describe("verifyHintFor", () => {
 
   test("no hint when there are no closers at all", () => {
     expect(verifyHintFor([{ tag: "built", content: "shipped X" }], noTests, "s1")).toBeNull();
+  });
+
+  test("no hint without a session id (evidence is unattributable — stay quiet)", () => {
+    expect(verifyHintFor([{ tag: "done", content: "#5" }], noTests, "")).toBeNull();
+  });
+});
+
+// The two discovered slips (report `declaration-fragility`): a FAILING run and
+// a run PREDATING the edits both silenced v1. v2 asks the documented question.
+describe("verifyHintFor v2 — freshness and outcome", () => {
+  const closers = [{ tag: "bug fix", content: "#123" }];
+
+  test("failing fresh test does NOT silence — reason failing-tests", () => {
+    const events = [
+      mut("s1", "src/a.ts", "2026-06-01T10:00:00Z"),
+      ev("s1", "bun test", { ts: "2026-06-01T10:05:00Z", ok: false }),
+    ];
+    expect(verifyHintFor(closers, events, "s1")?.reason).toBe("failing-tests");
+  });
+
+  test("passing test BEFORE the last code edit does NOT silence — reason stale-tests", () => {
+    const events = [
+      ev("s1", "bun test", { ts: "2026-06-01T09:00:00Z", ok: true }),
+      mut("s1", "src/a.ts", "2026-06-01T10:00:00Z"),
+    ];
+    expect(verifyHintFor(closers, events, "s1")?.reason).toBe("stale-tests");
+  });
+
+  test("passing test AFTER the last code edit silences", () => {
+    const events = [
+      mut("s1", "src/a.ts", "2026-06-01T10:00:00Z"),
+      ev("s1", "bun test", { ts: "2026-06-01T10:05:00Z", ok: true }),
+    ];
+    expect(verifyHintFor(closers, events, "s1")).toBeNull();
+  });
+
+  test("unknown outcome after the edit silences (fail-open: no tool_response captured)", () => {
+    const events = [
+      mut("s1", "src/a.ts", "2026-06-01T10:00:00Z"),
+      ev("s1", "bun test", { ts: "2026-06-01T10:05:00Z" }),
+    ];
+    expect(verifyHintFor(closers, events, "s1")).toBeNull();
+  });
+
+  test("docs-only edit after a green run does not stale it", () => {
+    const events = [
+      mut("s1", "src/a.ts", "2026-06-01T09:00:00Z"),
+      ev("s1", "bun test", { ts: "2026-06-01T09:30:00Z", ok: true }),
+      mut("s1", "README.md", "2026-06-01T10:00:00Z"),
+    ];
+    expect(verifyHintFor(closers, events, "s1")).toBeNull();
+  });
+
+  test("a fresh failing run trumps an older stale pass (failing-tests, not stale-tests)", () => {
+    const events = [
+      ev("s1", "bun test", { ts: "2026-06-01T09:00:00Z", ok: true }),
+      mut("s1", "src/a.ts", "2026-06-01T10:00:00Z"),
+      ev("s1", "bun test", { ts: "2026-06-01T10:05:00Z", ok: false }),
+    ];
+    expect(verifyHintFor(closers, events, "s1")?.reason).toBe("failing-tests");
+  });
+
+  test("other sessions' runs and edits are invisible", () => {
+    const events = [
+      mut("s1", "src/a.ts", "2026-06-01T10:00:00Z"),
+      ev("s2", "bun test", { ts: "2026-06-01T10:05:00Z", ok: true }),
+    ];
+    expect(verifyHintFor(closers, events, "s1")?.reason).toBe("no-tests");
+  });
+});
+
+describe("lastCodeMutationMs", () => {
+  test("tracks the latest CODE write only", () => {
+    const events = [
+      mut("s1", "src/a.ts", "2026-06-01T09:00:00Z"),
+      mut("s1", "src/b.ts", "2026-06-01T11:00:00Z"),
+      mut("s1", "notes.md", "2026-06-01T12:00:00Z"),
+    ];
+    expect(lastCodeMutationMs(events, "s1")).toBe(+new Date("2026-06-01T11:00:00Z"));
+  });
+
+  test("zero when the session wrote nothing", () => {
+    expect(lastCodeMutationMs([ev("s1", "git status")], "s1")).toBe(0);
   });
 });

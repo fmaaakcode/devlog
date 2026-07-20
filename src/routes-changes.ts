@@ -151,7 +151,11 @@ export function makeChangesRoutes(): Record<string, unknown> {
         const items = (data.events || [])
           .filter(e => (e.type === "change" || e.type === "create") && e.session_id === sessionId && e.file_path)
           .map(summarizeChange);
-        return Response.json({ items, count: items.length });
+        // Session tag count rides along for the Stop hook's untagged-session
+        // guard — one call answers both "what was written" and "was any of it
+        // ever declared", instead of a second session-state endpoint.
+        const tagCount = (data.tags || []).filter(t => t.session_id === sessionId).length;
+        return Response.json({ items, count: items.length, tagCount });
       },
     },
   };

@@ -80,33 +80,158 @@ export function parseCargoDeps(text: string): CargoDep[] {
   return out;
 }
 
-/** Member path patterns declared in `[workspace] members = [...]`. Pure. */
-export function parseWorkspaceMembers(rootText: string): string[] {
+function parseWorkspaceStringArray(rootText: string, key: string): string[] {
   const wsBlock = rootText.match(/\[workspace\][\s\S]*?(?=\n\[|$)/);
   if (!wsBlock) return [];
-  const membersMatch = wsBlock[0].match(/members\s*=\s*\[([\s\S]*?)\]/);
-  if (!membersMatch) return [];
-  return Array.from(membersMatch[1].matchAll(/"([^"]+)"/g)).map((m) => m[1]);
+  const arrMatch = wsBlock[0].match(new RegExp(`${key}\\s*=\\s*\\[([\\s\\S]*?)\\]`));
+  if (!arrMatch) return [];
+  return Array.from(arrMatch[1].matchAll(/"([^"]+)"/g)).map((m) => m[1]);
+}
+
+/** Member path patterns declared in `[workspace] members = [...]`. Pure. */
+export function parseWorkspaceMembers(rootText: string): string[] {
+  return parseWorkspaceStringArray(rootText, "members");
+}
+
+/** Exclusion patterns declared in `[workspace] exclude = [...]`. Pure. */
+export function parseWorkspaceExcludes(rootText: string): string[] {
+  return parseWorkspaceStringArray(rootText, "exclude");
+}
+
+// ── Glob support for member/exclude patterns (#625) ─────────────────────────
+// Cargo resolves members/exclude with real glob semantics; DevLog mirrors the
+// documented forms without a glob dependency: `*` / `?` inside one segment,
+// and `**` spanning segments. `**` recursion is bounded and skips the dirs
+// that can never hold a workspace member but can hold thousands of entries.
+
+const GLOB_SKIP_DIRS = new Set([".git", "target", "node_modules", ".devlog"]);
+const MAX_GLOB_DEPTH = 8;
+
+function hasGlobChars(s: string): boolean {
+  return /[*?]/.test(s);
+}
+
+/** One path segment (no `/`) → a full-match regex. `**` is handled by the
+ *  walker, never here. */
+function segmentRegex(seg: string): RegExp {
+  const rx = seg.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]");
+  return new RegExp(`^${rx}$`);
+}
+
+/** Whole pattern → a full-match regex over a /-normalized relative path.
+ *  Built segment-by-segment: `**` becomes "zero or more whole segments"
+ *  (or "anything" when trailing), other segments get per-segment wildcards. */
+function patternRegex(pattern: string): RegExp {
+  const segs = pattern.split("/").filter(Boolean);
+  let rx = "";
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i];
+    const last = i === segs.length - 1;
+    if (seg === "**") {
+      rx += last ? ".*" : "(?:[^/]+/)*";
+    } else {
+      rx += seg.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]");
+      if (!last) rx += "/";
+    }
+  }
+  return new RegExp(`^${rx}$`);
+}
+
+async function subdirs(dir: string): Promise<string[]> {
+  try {
+    return (await readdir(dir, { withFileTypes: true }))
+      .filter(e => e.isDirectory())
+      .map(e => e.name);
+  } catch {
+    return [];   // best-effort probe: missing/unreadable parent contributes nothing
+  }
+}
+
+async function descendantDirs(dir: string, depth: number, out: string[]): Promise<void> {
+  if (depth <= 0) return;
+  for (const name of await subdirs(dir)) {
+    if (GLOB_SKIP_DIRS.has(name)) continue;
+    const child = join(dir, name);
+    out.push(child);
+    await descendantDirs(child, depth - 1, out);
+  }
+}
+
+async function isDir(p: string): Promise<boolean> {
+  try { await readdir(p); return true; } catch { return false; }
+}
+
+/** Expand one glob member pattern to existing directories under `root`. */
+async function expandGlobDirs(root: string, pattern: string): Promise<string[]> {
+  let frontier = [root];
+  for (const seg of pattern.split("/").filter(Boolean)) {
+    const next = new Set<string>();
+    if (seg === "**") {
+      for (const dir of frontier) {
+        next.add(dir);   // `**` matches zero segments too
+        const desc: string[] = [];
+        await descendantDirs(dir, MAX_GLOB_DEPTH, desc);
+        for (const d of desc) next.add(d);
+      }
+    } else if (hasGlobChars(seg)) {
+      const rx = segmentRegex(seg);
+      for (const dir of frontier) {
+        for (const name of await subdirs(dir)) {
+          if (rx.test(name)) next.add(join(dir, name));
+        }
+      }
+    } else {
+      for (const dir of frontier) {
+        const child = join(dir, seg);
+        if (await isDir(child)) next.add(child);
+      }
+    }
+    frontier = [...next];
+    if (!frontier.length) break;
+  }
+  return frontier.filter(d => d !== root);
+}
+
+const toRel = (root: string, abs: string): string =>
+  abs.slice(root.length).replace(/\\/g, "/").replace(/^\/+/, "");
+
+/** True when `rel` is pruned by an exclude pattern: a glob/exact full match, or
+ *  anything under a literally-excluded directory (Cargo prunes the subtree). */
+function isExcluded(rel: string, excludes: string[]): boolean {
+  for (const ex of excludes) {
+    if (patternRegex(ex).test(rel)) return true;
+    if (!hasGlobChars(ex) && rel.startsWith(`${ex.replace(/\/+$/, "")}/`)) return true;
+  }
+  return false;
 }
 
 /**
- * Expand the members list to absolute directories. Only the trailing `/*` glob
- * Cargo commonly uses is expanded (deeper globs like `**` → #625); a literal
- * pattern is joined as-is. Missing/unreadable dirs contribute nothing.
+ * Expand the members list to absolute directories, honoring `exclude` (#625).
+ * Three pattern classes:
+ *   · literal — joined as-is, no existence check (long-standing contract);
+ *   · trailing `/*` with no other glob — every direct subdirectory (Cargo's
+ *     common layout; kept manifest-blind for back-compat);
+ *   · anything else with `*`/`?`/`**` — real glob walk, and a match must
+ *     contain a Cargo.toml (Cargo requires glob-matched members to be
+ *     packages; without this filter `libs/**` would swallow every src/ dir).
+ * Missing/unreadable dirs contribute nothing.
  */
 export async function resolveWorkspaceMemberDirs(rootText: string, dirPath: string): Promise<string[]> {
+  const excludes = parseWorkspaceExcludes(rootText);
   const memberDirs: string[] = [];
+  const push = (abs: string) => {
+    if (!isExcluded(toRel(dirPath, abs), excludes) && !memberDirs.includes(abs)) memberDirs.push(abs);
+  };
   for (const pat of parseWorkspaceMembers(rootText)) {
-    if (pat.endsWith("/*")) {
+    if (pat.endsWith("/*") && !hasGlobChars(pat.slice(0, -2))) {
       const parent = join(dirPath, pat.slice(0, -2));
-      try {
-        const entries = await readdir(parent, { withFileTypes: true });
-        for (const e of entries) {
-          if (e.isDirectory()) memberDirs.push(join(parent, e.name));
-        }
-      } catch { /* best-effort probe: missing/unreadable parent → pattern contributes nothing */ }
+      for (const name of await subdirs(parent)) push(join(parent, name));
+    } else if (hasGlobChars(pat)) {
+      for (const dir of await expandGlobDirs(dirPath, pat)) {
+        if (await Bun.file(join(dir, "Cargo.toml")).exists()) push(dir);
+      }
     } else {
-      memberDirs.push(join(dirPath, pat));
+      push(join(dirPath, pat));
     }
   }
   return memberDirs;

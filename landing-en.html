@@ -149,7 +149,7 @@ h2 { font-size: clamp(1.5rem, 3.4vw, 2.1rem); font-weight: 800; margin-top: 8px;
 
 /* ---------- enforcement ---------- */
 .enforce {
-    margin-top: 36px; display: grid; grid-template-columns: 1fr 1fr; gap: 18px;
+    margin-top: 36px; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px;
 }
 @media (max-width: 800px) { .enforce { grid-template-columns: 1fr; } }
 .enforce .shell {
@@ -161,6 +161,7 @@ h2 { font-size: clamp(1.5rem, 3.4vw, 2.1rem); font-weight: 800; margin-top: 8px;
 }
 .enforce .shell-head.red { color: var(--pink); }
 .enforce .shell-head.gold { color: var(--gold); }
+.enforce .shell-head.blue { color: var(--blue); }
 .enforce .shell-body { padding: 20px; font-family: var(--mono); font-size: .82em; color: var(--text2); }
 .enforce .shell-body .blocked { color: var(--pink); }
 .enforce .shell-body .cmd { color: var(--text); }
@@ -357,10 +358,20 @@ footer a:hover { color: var(--emerald); }
                     <span class="ok">✓ close the items first — or bypass deliberately, yourself</span>
                 </div>
             </div>
+            <div class="shell">
+                <div class="shell-head blue">Install Gate</div>
+                <div class="shell-body">
+                    <span class="cmd">$ bun add zod</span><br><br>
+                    <span class="blocked">✗ intercepted — blind install, no pinned version</span><br>
+                    <span class="blocked">  advisor: zod@3.23.8 — newest mature stable, OSV-clean</span><br>
+                    <span class="ok">✓ re-run with the pinned version and it passes</span>
+                </div>
+            </div>
         </div>
         <p class="enforce-note">
             Claude finished work that matches an open task and didn't close it? <b>The response is rejected until it does.</b>
             Someone tries to ship a release with items still open? <b>The command is intercepted before it runs.</b>
+            Claude tries to install a dependency blind? <b>The command is blocked with the safe version to pin — the newest stable at least 7 days old and clean in OSV.</b>
             Nothing slips through — not because someone was paying attention, but because the system doesn't allow it.
         </p>
     </div>
@@ -390,7 +401,7 @@ footer a:hover { color: var(--emerald); }
             </div>
             <div class="feat">
                 <h3><span class="b" style="background:var(--emerald)"></span>Release reports that write themselves</h3>
-                <p>On every release: a report grouping what was built, fixed and security-closed — and the version field in your project manifest bumps automatically.</p>
+                <p>On every release: a report grouping what was built, fixed and security-closed — the version field in your project manifest bumps automatically, and a release that went out wrong can be rolled back.</p>
             </div>
             <div class="feat">
                 <h3><span class="b" style="background:var(--gold)"></span>Session memory for Claude itself</h3>
@@ -403,6 +414,22 @@ footer a:hover { color: var(--emerald); }
             <div class="feat">
                 <h3><span class="b" style="background:var(--blue)"></span>Ready-made documents from chat</h3>
                 <p>Reports, analyses and plans written as Markdown and served as styled HTML — without Claude hand-writing a web page.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--emerald)"></span>Client-language feature inventory — and a shareable report</h3>
+                <p>Every user-visible capability is recorded as one plain-language line, and a polished client report is generated from the inventory whenever you need it.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--gold)"></span>Recall from the log instead of rediscovering</h3>
+                <p>Claude asks "have we solved this before?" and gets stored decisions and fixes back in the same turn — and a new bug resembling a closed one automatically surfaces its old fix.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--pink)"></span>Retrospectives and deep studies</h3>
+                <p>"What keeps breaking?" — a retrospective of every bug and vulnerability ever, with ages and files, plus a full-history study saved as a document that measures progress since the last one.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--blue)"></span>A standards library that grows with you</h3>
+                <p>Rules captured from your corrections and pulled on demand by language or app type — so Claude never repeats the same mistake in another project.</p>
             </div>
         </div>
     </div>
@@ -428,7 +455,7 @@ footer a:hover { color: var(--emerald); }
             </div>
             <div class="priv">
                 <h3>Production-grade security</h3>
-                <p>Built-in defenses against DNS rebinding, XSS and path traversal — covered by 575+ automated tests.</p>
+                <p>Built-in defenses against DNS rebinding, XSS and path traversal — covered by 1,300+ automated tests.</p>
             </div>
         </div>
     </div>

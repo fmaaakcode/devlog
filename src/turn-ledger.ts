@@ -25,13 +25,13 @@ import { readFile, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 export interface TurnLedger {
-  session: { hintedVerify: boolean; servedSignatures: string[]; envDriftChecked: boolean };
+  session: { hintedVerify: boolean; hintedUntagged: boolean; servedSignatures: string[]; envDriftChecked: boolean };
   turn: { turnId: string; postedKeys: string[]; servedCommands: string[] };
 }
 
 export function emptyLedger(turnId = ""): TurnLedger {
   return {
-    session: { hintedVerify: false, servedSignatures: [], envDriftChecked: false },
+    session: { hintedVerify: false, hintedUntagged: false, servedSignatures: [], envDriftChecked: false },
     turn: { turnId, postedKeys: [], servedCommands: [] },
   };
 }
@@ -63,6 +63,7 @@ export async function loadLedger(
     const raw = JSON.parse(await readFile(file, "utf-8")) as Partial<TurnLedger>;
     if (raw?.session && typeof raw.session === "object") {
       ledger.session.hintedVerify = raw.session.hintedVerify === true;
+      ledger.session.hintedUntagged = raw.session.hintedUntagged === true;
       ledger.session.servedSignatures = onlyStrings(raw.session.servedSignatures);
       ledger.session.envDriftChecked = raw.session.envDriftChecked === true;
     }

@@ -26,6 +26,7 @@ describe("loadLedger", () => {
     ledger.turn.postedKeys.push(entryKey("todo", "task A"));
     ledger.turn.servedCommands.push("ask:open");
     ledger.session.hintedVerify = true;
+    ledger.session.hintedUntagged = true;
     ledger.session.servedSignatures.push("dep-fresh|x@1.0");
     await saveLedger(file, ledger);
 
@@ -43,7 +44,7 @@ describe("loadLedger", () => {
 
     const { ledger: next } = await loadLedger(dir, "s1", "T2");
     expect(next.turn).toEqual({ turnId: "T2", postedKeys: [], servedCommands: [] });
-    expect(next.session).toEqual({ hintedVerify: true, servedSignatures: ["sig-1"], envDriftChecked: false });
+    expect(next.session).toEqual({ hintedVerify: true, hintedUntagged: false, servedSignatures: ["sig-1"], envDriftChecked: false });
   });
 
   test("corrupt state file fails open to a fresh ledger", async () => {
@@ -56,11 +57,12 @@ describe("loadLedger", () => {
   test("non-string junk inside persisted arrays is dropped", async () => {
     const { file } = await loadLedger(dir, "s1", "T1");
     await Bun.write(file, JSON.stringify({
-      session: { hintedVerify: "yes", servedSignatures: ["ok", 7, null] },
+      session: { hintedVerify: "yes", hintedUntagged: 1, servedSignatures: ["ok", 7, null] },
       turn: { turnId: "T1", postedKeys: [42, "k1"], servedCommands: [{}, "ask:open"] },
     }));
     const { ledger } = await loadLedger(dir, "s1", "T1");
     expect(ledger.session.hintedVerify).toBe(false);      // strict boolean only
+    expect(ledger.session.hintedUntagged).toBe(false);    // strict boolean only
     expect(ledger.session.servedSignatures).toEqual(["ok"]);
     expect(ledger.turn.postedKeys).toEqual(["k1"]);
     expect(ledger.turn.servedCommands).toEqual(["ask:open"]);

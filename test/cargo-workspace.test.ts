@@ -4,7 +4,7 @@
 // [dependencies.NAME] section form used to slip past the vuln scan entirely.
 
 import { test, expect, describe } from "bun:test";
-import { classifyDepHeader, parseCargoDeps, parseWorkspaceMembers, resolveWorkspaceMemberDirs } from "../src/cargo-workspace";
+import { classifyDepHeader, parseCargoDeps, parseWorkspaceMembers, parseWorkspaceExcludes, resolveWorkspaceMemberDirs } from "../src/cargo-workspace";
 import { mkdtemp, writeFile, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -125,6 +125,97 @@ describe("workspace member resolution", () => {
       await writeFile(join(dir, "crates", "not-a-dir.txt"), "x");
       const dirs = await resolveWorkspaceMemberDirs('[workspace]\nmembers = ["crates/*", "cli"]', dir);
       expect(dirs.sort()).toEqual([join(dir, "cli"), join(dir, "crates", "a"), join(dir, "crates", "b")].sort());
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// #625 — advanced globs (`**`, non-trailing `*`) and `exclude` support.
+describe("workspace member globs + exclude (#625)", () => {
+  async function crate(root: string, ...segs: string[]): Promise<string> {
+    const d = join(root, ...segs);
+    await mkdir(d, { recursive: true });
+    await writeFile(join(d, "Cargo.toml"), '[package]\nname = "x"\nversion = "0.1.0"');
+    return d;
+  }
+
+  test("parseWorkspaceExcludes reads the exclude array", () => {
+    const text = '[workspace]\nmembers = ["crates/*"]\nexclude = ["legacy", "crates/experimental"]';
+    expect(parseWorkspaceExcludes(text)).toEqual(["legacy", "crates/experimental"]);
+    expect(parseWorkspaceExcludes("[workspace]\nmembers = []")).toEqual([]);
+  });
+
+  test("`**` expands to every manifest-bearing descendant, at any depth", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "cargo-ws-"));
+    try {
+      const a = await crate(dir, "libs", "a");
+      const deep = await crate(dir, "libs", "group", "deep");
+      // src/ under a crate has no Cargo.toml → must NOT be swallowed by `**`.
+      await mkdir(join(a, "src"), { recursive: true });
+      const dirs = await resolveWorkspaceMemberDirs('[workspace]\nmembers = ["libs/**"]', dir);
+      expect(dirs.sort()).toEqual([a, deep].sort());
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("non-trailing `*` expands mid-pattern", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "cargo-ws-"));
+    try {
+      const b1 = await crate(dir, "packages", "p1", "backend");
+      const b2 = await crate(dir, "packages", "p2", "backend");
+      await crate(dir, "packages", "p1", "frontend");   // doesn't match the pattern
+      const dirs = await resolveWorkspaceMemberDirs('[workspace]\nmembers = ["packages/*/backend"]', dir);
+      expect(dirs.sort()).toEqual([b1, b2].sort());
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("exclude prunes glob-expanded members (exact and glob patterns)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "cargo-ws-"));
+    try {
+      const keep = await crate(dir, "crates", "core");
+      await crate(dir, "crates", "experimental");
+      await crate(dir, "crates", "bench-x");
+      const text = '[workspace]\nmembers = ["crates/*"]\nexclude = ["crates/experimental", "crates/bench-*"]';
+      expect(await resolveWorkspaceMemberDirs(text, dir)).toEqual([keep]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a literally-excluded directory prunes its whole subtree", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "cargo-ws-"));
+    try {
+      const keep = await crate(dir, "libs", "a");
+      await crate(dir, "vendor", "third", "party");
+      const text = '[workspace]\nmembers = ["**"]\nexclude = ["vendor"]';
+      expect(await resolveWorkspaceMemberDirs(text, dir)).toEqual([keep]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("exclude applies to literal members too", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "cargo-ws-"));
+    try {
+      const text = '[workspace]\nmembers = ["cli", "legacy"]\nexclude = ["legacy"]';
+      expect(await resolveWorkspaceMemberDirs(text, dir)).toEqual([join(dir, "cli")]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("`**` skips target/node_modules/.git even when they hold manifests", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "cargo-ws-"));
+    try {
+      const keep = await crate(dir, "libs", "a");
+      await crate(dir, "target", "package", "x");
+      await crate(dir, "node_modules", "y");
+      const dirs = await resolveWorkspaceMemberDirs('[workspace]\nmembers = ["**"]', dir);
+      expect(dirs).toEqual([keep]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

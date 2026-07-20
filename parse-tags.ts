@@ -608,13 +608,21 @@ if (msg) {
             // session even if more closures land. Session-scope → ledger.session.
             if (!ledger.session.hintedVerify) {
               const verbs = [...new Set(resp.verifyHint.closers.map((c: any) => c.tag))].join("/");
-              feedback.push(
-                `\n[devlog verify]\n${L(
-                  `💡 You closed (${verbs}) without running any test this session. "Verified" = observed evidence (a passing test in the conversation), not reading the code. Run the test to confirm.`,
-                  `💡 أغلقتَ (${verbs}) بلا تشغيل أي اختبار في هذه الجلسة. «التحقّق» = دليل مُلاحَظ (اختبار ناجح في المحادثة)، لا قراءة الكود. شغّل الاختبار للتأكيد.`)}\n`);
+              // Reason-aware since verify-hint v2: say WHAT evidence is missing
+              // (none / last run failed / all runs predate the edits) instead of
+              // the generic line a failing or stale run used to satisfy.
+              const msg = resp.verifyHint.reason === "failing-tests"
+                ? L(`💡 You closed (${verbs}) but the last test run AFTER your edits FAILED — that's closing over red. Make it pass, or reopen.`,
+                    `💡 أغلقتَ (${verbs}) وآخر تشغيل اختبار بعد تعديلاتك فاشل — هذا إغلاق فوق أحمر. اجعله ينجح أو تراجع عن الإغلاق.`)
+                : resp.verifyHint.reason === "stale-tests"
+                ? L(`💡 You closed (${verbs}) but every test run predates your last code edit — it proves nothing about it. Re-run the tests now.`,
+                    `💡 أغلقتَ (${verbs}) وكل تشغيلات الاختبار سبقت آخر تعديل كود — لا تثبت عنه شيئًا. أعد تشغيل الاختبارات الآن.`)
+                : L(`💡 You closed (${verbs}) without running any test this session. "Verified" = observed evidence (a passing test in the conversation), not reading the code. Run the test to confirm.`,
+                    `💡 أغلقتَ (${verbs}) بلا تشغيل أي اختبار في هذه الجلسة. «التحقّق» = دليل مُلاحَظ (اختبار ناجح في المحادثة)، لا قراءة الكود. شغّل الاختبار للتأكيد.`);
+              feedback.push(`\n[devlog verify]\n${msg}\n`);
               ledger.session.hintedVerify = true;
               await saveLedger(ledgerFile, ledger);
-              await log(`verify-hint: ${resp.verifyHint.closers.length} closer(s), no test run`);
+              await log(`verify-hint: ${resp.verifyHint.closers.length} closer(s), reason=${resp.verifyHint.reason}`);
             } else {
               await log(`verify-hint: suppressed (already hinted this session)`);
             }
@@ -1466,6 +1474,67 @@ if (cwd && sessionId && !stopHookActive && process.env.DEVLOG_STANDARDS_CHECK !=
     }
   } catch (e) {
     await log(`dep-freshness error: ${(e as Error).message}`);
+  }
+}
+
+// === Part 1.8: Untagged-session guard ===
+// The in-session answer to the silent-omission hole (report
+// `declaration-fragility` 2026-07-20): code was written this session, yet not a
+// single tag was ever stored for it AND this response carries none either — the
+// protocol was ignored wholesale (a competing plugin monopolizing attention, or
+// plain forgetting). The dashboard counters (#434/#558) only tell the HUMAN
+// after the session dies; this speaks into the MODEL's context while it can
+// still correct. Blocks once per session (ack-first, install-gate pattern), so
+// it can never loop; conversation-only sessions (no code writes) never see it.
+if (cwd && sessionId && !stopHookActive && process.env.DEVLOG_UNTAGGED_CHECK !== "0" && !ledger.session.hintedUntagged) {
+  try {
+    // Re-parse is deliberate: `entries` lives inside the Part-1 scope and this
+    // guard must also run on responses that carried no tags at all.
+    const turnEntryCount = tagSegments.flatMap(s => parseTags(s)).length;
+    if (turnEntryCount === 0) {
+      const r = await fetch(`${SERVER}/api/changes/session?session_id=${encodeURIComponent(sessionId)}`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (r.ok) {
+        const { items = [], tagCount } = await r.json() as { items?: any[]; tagCount?: number };
+        // A daemon predating this guard sends no tagCount — that's "unknown",
+        // not "zero": defaulting to 0 would fire on sessions that DID tag.
+        // Fail open until the daemon is current (the freshness guard's job).
+        if (typeof tagCount !== "number") {
+          await log("untagged-guard: daemon sent no tagCount — skipped");
+        } else {
+          const { isCodeWrite } = await import("./src/standards.ts");
+          const { shouldNudgeUntagged } = await import("./src/untagged-guard.ts");
+          const codeFiles = new Set(items.filter(it => isCodeWrite(it.file_path || "")).map(it => it.file_path));
+          if (shouldNudgeUntagged({
+            codeWriteCount: codeFiles.size,
+            sessionTagCount: tagCount,
+            turnEntryCount,
+            stopHookActive,
+            alreadyHinted: ledger.session.hintedUntagged,
+            disabled: false,
+          })) {
+            // Ack BEFORE the block: a crash between the two can only lose the
+            // nudge, never repeat it (the install-gate pattern).
+            ledger.session.hintedUntagged = true;
+            await saveLedger(ledgerFile, ledger);
+            const out = [
+              "════════ DevLog Untagged Session ════════",
+              L(`🪧 ${codeFiles.size} code file(s) were written this session and NOT ONE DevLog tag was recorded — the work is undocumented.`,
+                `🪧 كُتب كود في هذه الجلسة (${codeFiles.size} ملف) دون تسجيل أي تاق DevLog — العمل غير موثَّق.`),
+              L("End your response with tags describing what actually happened: -(built)/-(refactor) for the work, -(bug fix)/-(done) #N for what this finishes, -(decision)/-(insight) for what's worth keeping.",
+                "أنهِ ردّك بتاقات تصف ما جرى فعلًا: -(built)/-(refactor) للعمل، -(bug fix)/-(done) #N لما اكتمل، -(decision)/-(insight) لما يستحق البقاء."),
+              L("(once per session; mute: DEVLOG_UNTAGGED_CHECK=0)", "(مرة واحدة لكل جلسة؛ كتم: DEVLOG_UNTAGGED_CHECK=0)"),
+              "═════════════════════════════════════════",
+            ].join("\n");
+            await log(`untagged-guard BLOCKED: code_files=${codeFiles.size}, session_tags=${tagCount}`);
+            blockContinue(`\n${out}\n`);
+          }
+        }
+      }
+    }
+  } catch (e) {
+    await log(`untagged-guard error: ${(e as Error).message}`);
   }
 }
 
