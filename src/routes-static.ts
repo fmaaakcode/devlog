@@ -38,6 +38,10 @@ export function makeStaticRoutes({ htmlResponse, DEV_ASSETS, ASSET_ROOT }: Stati
       ? htmlResponse(Bun.file(`${ASSET_ROOT}/features.html`))
       : htmlResponse(STATIC_HTML["features.html"]),
 
+    "/deps.html": async () => DEV_ASSETS
+      ? htmlResponse(Bun.file(`${ASSET_ROOT}/deps.html`))
+      : htmlResponse(STATIC_HTML["deps.html"]),
+
     "/assets/:file": async (req: ApiReq) => {
       const name = req.params.file;
       // Only allow simple filenames; reject anything with path separators or traversal

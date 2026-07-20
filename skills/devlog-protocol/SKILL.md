@@ -214,6 +214,17 @@ The suggestion is the newest **stable** release **≥7 days old** (the dependenc
 
 **The install gate enforces this.** A PreToolUse hook intercepts package-add commands (`bun|pnpm|yarn add`, `npm i`, `cargo add`, `pip|uv install`) before they run: a **blind** install (no pinned version, or a floating `@latest`-style tag) is blocked with the advisor's pick in the block message — re-issue with the pin. A **pinned** install that disagrees with the advisor gets a one-time advisory block; re-issuing the identical command passes (a pin is a deliberate choice, possibly the user's explicit order). Unknown names, private registries, and a down server all fail open — the vuln scan and the next-prompt security alert are the backstops. `DEVLOG_INSTALL_GATE=strict` flips that: any verification failure (daemon down, network error, unknown name, OSV silent) **blocks** instead, with the same verbatim-re-issue override. Disable with `DEVLOG_INSTALL_GATE=0`.
 
+## The deps explainer (`lib` / `ask:deps`)
+
+Every dependency raises two questions: *what is it* (the registry's official one-liner — DevLog captures it for free from the freshness lookup) and *why is it in THIS project* — which only the project's own log can answer. That second line is yours to record:
+
+| Command | Use |
+|---|---|
+| `-(lib) zod — التحقق من حمولات الويبهوك` | STORED: one-line purpose in the user's language, emitted right after installing (the ask:lib answer reminds you). Re-emit the same name to update — latest wins. |
+| `-(ask:deps)` | Ephemeral pull: the full inventory (purpose + official description + vuln/outdated status), uncovered libraries first, with a coverage count |
+
+Backfill: when `ask:deps` lists libraries with no purpose, draft one line each, get the **user's approval**, then emit one `-(lib)` per library. The user browses the same data from the dashboard: the `dependencies` button opens `/deps.html` (hover popup unchanged — quick vuln glance only).
+
 ## Recall (`ask:search`)
 
 The log answers back: lexical search (BM25, Arabic+English normalization) over every stored tag — decisions, insights, notes, builds, closed bugs *with their fixes*. Prefer it over re-deriving a past decision or re-investigating a solved problem. Reply comes back in the same turn; NOT logged as a tag.
@@ -230,6 +241,10 @@ Matching is lexical, not semantic — use the vocabulary the log was written in 
 **Releasing (the DevLog tag) is the developer's job; git/GitHub is the specialist's.**
 
 - **You (the developer), only when the user asks to ship:** close every open `#N`, then just emit `-(release) <one-line reason>`. **DevLog auto-detects the bump type** (breaking → major, feature → minor, otherwise patch) and **computes the version** from the project's highest current version (never regresses), bumps the manifests, and writes the release HTML + changelog under `.devlog/releases/`. You don't pick a type or a number. To *force* a type, use `-(release:patch|minor|major)` (DevLog still computes the number, and **warns — never overrides —** if your type is below the evidence). To *force* a number, use `-(release) vX.Y.Z — summary`. Don't hand-edit `version` fields.
+
+  **Exception — manual version mode:** when something else owns the manifests' version format (another plugin, a monorepo tool, a custom release pipeline) and DevLog's writer would conflict with it, hand-edit the manifests to the chosen version FIRST, then emit `-(release) vX.Y.Z — summary` with the **byte-identical** number in the same response. The version writer withdraws on equality — file already at the tag's version = no write at all, not even a same-content rewrite — so formatting stays untouched while the release page, changelog and record are still produced. The numbers must match exactly: a manifest at 1.5.0 under a `-(release) v1.6.0` tag gets bumped to 1.6.0 (or rejected as a downgrade in the opposite direction).
+
+  The no-op guarantee covers every format the writer understands: `X.Y.Z`, `X.Y.Z-prerelease`, calver (`2026.7.20`), build metadata (`2.0.0+build.7`) and four-or-more-part versions (`2.0.0.4`) — all verified byte-untouched under a byte-identical tag. Build metadata additionally never triggers a write on its own: it carries no semver precedence, so a bare `v2.0.0` tag over a `2.0.0+build.7` manifest withdraws instead of stripping the metadata.
 - **The GitHub specialist, separately:** reads the DevLog changelog/release file to see what changed, compares repos, reviews for leaked secrets, then commits + pushes both repos and tags git to match the DevLog version — **no version decisions on the git side.**
 
 Still not yours: `git push` / `git commit` / any GitHub CLI — the `-(release:*)` tag is a DevLog signal, not a git command.

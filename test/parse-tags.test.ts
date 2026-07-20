@@ -114,6 +114,17 @@ describe("parseTags — command markers terminate a body without being captured"
     const out = parseTags("-(decision) pin astro to 5 per user order\n\n-(rule:ack) dep:astro — deliberate\n-(ask:lib) astro");
     expect(out).toEqual([{ tag: "decision", breaking: false, content: "pin astro to 5 per user order" }]);
   });
+  test("ask:deps terminates a body without being captured (#663)", () => {
+    const out = parseTags("-(built) wired the deps page\n\n-(ask:deps)");
+    expect(out).toEqual([{ tag: "built", breaking: false, content: "wired the deps page" }]);
+  });
+});
+
+describe("parseTags — lib purpose tag (#663)", () => {
+  test("lib is a stored tag and single-line: the next prose line is not swallowed", () => {
+    const out = parseTags("-(lib) zod — التحقق من مخططات الإدخال\nfollow-up prose that is not part of the tag");
+    expect(out).toEqual([{ tag: "lib", breaking: false, content: "zod — التحقق من مخططات الإدخال" }]);
+  });
 });
 
 describe("parseTags — content comes from the ORIGINAL message (round-8 F1/F2/F3)", () => {

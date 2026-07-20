@@ -1043,8 +1043,15 @@ if (msg && cwd) {
           }
         });
         const out = lines.length ? lines.join("\n") : L("nothing to advise.", "لا شيء يُقترح.");
+        // Purpose capture (#663): the ask:lib moment is when Claude KNOWS why the
+        // dependency is being added — ask for the one-line record right here,
+        // only when something was actually recommended.
+        const capture = items.some((it: any) => it.verdict === "ok" || it.verdict === "ok-unverified")
+          ? L("\n  After installing, record WHY it's in this project: `-(lib) <name> — <one-line purpose>` (re-emit the name to update).",
+              "\n  بعد التركيب سجّل سبب وجودها في المشروع: `-(lib) <الاسم> — <غرض من سطر واحد>` (أعد إصداره بنفس الاسم للتحديث).")
+          : "";
         await log(`ask:lib: served ${items.length} item(s)`);
-        blockContinue(`\n[devlog lib-advice]\n${out}\n`);
+        blockContinue(`\n[devlog lib-advice]\n${out}${capture}\n`);
       } else {
         await log(`ask:lib: server replied ${r.status}`);
       }
@@ -1126,6 +1133,46 @@ if (msg && cwd) {
     }
   } catch (e) {
     await log(`ask:features error: ${(e as Error).message}`);
+  }
+}
+
+// === Part 1.5e2: -(ask:deps) — the dependency inventory + purpose coverage ===
+// The deps explainer's pull command: every manifest library with its recorded
+// purpose line (`-(lib) name — غرض`, latest wins) and the registry's official
+// one-liner when the vuln scan has cached it. Uncovered libraries listed first
+// so the backfill gap is visible; the footer says how to close it. Served like
+// the other pull commands; never a logged tag.
+if (msg && cwd) {
+  try {
+    if (/^[ \t]*-\(ask:deps\)[ \t]*$/m.test(strippedMsg) && await shouldServeAsk("ask:deps")) {
+      const r = await fetch(`${SERVER}/api/deps?cwd=${encodeURIComponent(cwd)}`, { signal: AbortSignal.timeout(10000) });
+      if (r.ok) {
+        await markAskServed("ask:deps");   // record only now the fetch succeeded (#398)
+        const { libraries = [], total = 0, withPurpose = 0 } = await r.json() as { libraries?: any[]; total?: number; withPurpose?: number };
+        const line = (l: any) => {
+          const dev = l.dev ? " (dev)" : "";
+          const desc = l.description ? ` · ${String(l.description).slice(0, 120)}` : "";
+          return l.purpose
+            ? `  ✓ ${l.name}@${l.version}${dev} — ${l.purpose}${desc}`
+            : `  ∅ ${l.name}@${l.version}${dev} — ${L("no purpose recorded", "بلا غرض مسجَّل")}${desc}`;
+        };
+        const uncovered = total - withPurpose;
+        const footer = uncovered > 0
+          ? L(`\n  ${uncovered} without a purpose — draft one line each, get the user's approval, then record each with \`-(lib) <name> — <purpose>\`.`,
+              `\n  ${uncovered} بلا غرض — اقترح سطرًا لكل واحدة، خذ موافقة المستخدم، ثم سجّل كل واحدة بـ\`-(lib) <الاسم> — <الغرض>\`.`)
+          : "";
+        const out = libraries.length
+          ? `${L(`Project libraries (${total}, ${withPurpose} with a recorded purpose):`, `مكتبات المشروع (${total}، منها ${withPurpose} بغرض مسجَّل):`)}\n${libraries.map(line).join("\n")}${footer}`
+          : L("No libraries known for this project yet (they appear after the first scan).",
+              "لا مكتبات معروفة للمشروع بعد (تظهر بعد أول فحص).");
+        await log(`ask:deps: served ${libraries.length} item(s)`);
+        blockContinue(`\n[devlog deps]\n${out}\n`);
+      } else {
+        await log(`ask:deps: server replied ${r.status}`);
+      }
+    }
+  } catch (e) {
+    await log(`ask:deps error: ${(e as Error).message}`);
   }
 }
 

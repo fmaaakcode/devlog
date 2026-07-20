@@ -427,6 +427,17 @@
             btn.classList.remove('safe', 'warn', 'danger', 'unknown');
             btn.classList.add(status);
 
+            // Click opens the deps explainer page (purpose lines + official
+            // descriptions) — same pattern as stats → stack-map. The hover
+            // popup keeps its quick-glance role unchanged. Attached before the
+            // zero-libs early return so the button behaves uniformly.
+            btn.title = 'اضغط لفتح صفحة المكتبات — الغرض والوصف والحالة';
+            btn.onclick = (e) => {
+                if (e.target.closest('.deps-popup')) return;
+                window.open(`/deps.html?project=${encodeURIComponent(p.name)}`, '_blank');
+            };
+            btn.style.cursor = 'pointer';
+
             // Sort: danger first, then warn, then safe, then unknown
             const rank = (l) => {
                 const v = vulns[l.name];

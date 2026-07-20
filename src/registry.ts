@@ -6,9 +6,13 @@
 export interface VersionInfo {
   version: string | null;
   date: string | null; // ISO publish date of `version`, when the registry exposes it
+  // Official package one-liner, when the SAME response carries one (npm
+  // `description`, crates `crate.description`, pypi `info.summary`) — a free
+  // extra read of an already-fetched payload, feeding the deps explainer (#663).
+  description?: string | null;
 }
 
-const CACHE = new Map<string, { version: string | null; date: string | null; at: number }>();
+const CACHE = new Map<string, { version: string | null; date: string | null; description?: string | null; at: number }>();
 const TTL_MS = 6 * 60 * 60 * 1000; // 6h — registries change slowly; avoid hammering
 // Negative results (version===null: transient failure or 404) get a much shorter
 // TTL so a momentary ECONNRESET doesn't freeze a package as "unknown" for 6h —
@@ -30,11 +34,11 @@ const UA = "devlog-version-check (https://github.com/devlog/devlog)";
 // (optional chaining + Array.isArray guards at every use). Typing them replaces a
 // blanket `any` with a checked contract at the network boundary, without pretending
 // the remote data is trustworthy.
-interface NpmResponse { "dist-tags"?: { latest?: string }; time?: Record<string, string>; }
+interface NpmResponse { "dist-tags"?: { latest?: string }; time?: Record<string, string>; description?: string; }
 interface CratesVersion { num?: string; created_at?: string | null; yanked?: boolean; }
-interface CratesResponse { crate?: { max_stable_version?: string; newest_version?: string }; versions?: CratesVersion[]; }
+interface CratesResponse { crate?: { max_stable_version?: string; newest_version?: string; description?: string }; versions?: CratesVersion[]; }
 interface PypiFile { upload_time_iso_8601?: string; upload_time?: string; }
-interface PypiResponse { info?: { version?: string }; releases?: Record<string, PypiFile[]>; }
+interface PypiResponse { info?: { version?: string; summary?: string }; releases?: Record<string, PypiFile[]>; }
 interface GoProxyLatest { Version?: string; Time?: string | null; }
 interface PackagistVersion { version?: string; time?: string | null; }
 interface PackagistResponse { packages?: Record<string, PackagistVersion[]>; }
@@ -42,6 +46,15 @@ interface VcpkgManifest { version?: string | number; "version-semver"?: string; 
 interface GithubRelease { tag_name?: string; }
 interface GoDlRelease { stable?: boolean; version?: string; }
 interface NodeDistEntry { version?: string; }
+
+// Normalize an external description at the network boundary: first line only,
+// trimmed, capped — a registry payload is untrusted and a multi-KB readme
+// pasted into `description` must not ride into the store.
+function pkgDescription(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const line = raw.split("\n")[0].trim().slice(0, 300);
+  return line || null;
+}
 
 async function fetchJson<T = unknown>(url: string): Promise<T | null> {
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -94,7 +107,7 @@ async function queryRegistry(ecosystem: string, name: string): Promise<VersionIn
       const version = j?.["dist-tags"]?.latest ?? null;
       // npm's `time` maps every version → ISO publish date.
       const date = version ? (j?.time?.[version] ?? null) : null;
-      return { version, date };
+      return { version, date, description: pkgDescription(j?.description) };
     }
     case "crates.io": {
       const j = await fetchJson<CratesResponse>(`https://crates.io/api/v1/crates/${enc}`);
@@ -103,7 +116,7 @@ async function queryRegistry(ecosystem: string, name: string): Promise<VersionIn
       if (version && Array.isArray(j?.versions)) {
         date = j.versions.find(v => v?.num === version)?.created_at ?? null;
       }
-      return { version, date };
+      return { version, date, description: pkgDescription(j?.crate?.description) };
     }
     case "pypi": {
       const j = await fetchJson<PypiResponse>(`https://pypi.org/pypi/${enc}/json`);
@@ -114,7 +127,7 @@ async function queryRegistry(ecosystem: string, name: string): Promise<VersionIn
       const date = Array.isArray(files) && files.length
         ? (files[0]?.upload_time_iso_8601 ?? files[0]?.upload_time ?? null)
         : null;
-      return { version, date };
+      return { version, date, description: pkgDescription(j?.info?.summary) };
     }
     case "go": {
       // Encode each path segment AND drop traversal segments (`.`/`..`/empty) so
@@ -165,10 +178,10 @@ export async function latestVersionInfo(ecosystem: string, name: string): Promis
   const now = Date.now();
   if (cached) {
     const ttl = cached.version == null ? NEG_TTL_MS : TTL_MS;
-    if (now - cached.at < ttl) return { version: cached.version, date: cached.date };
+    if (now - cached.at < ttl) return { version: cached.version, date: cached.date, description: cached.description ?? null };
   }
   const info = await queryRegistry(ecosystem, name);
-  CACHE.set(key, { version: info.version, date: info.date, at: now });
+  CACHE.set(key, { version: info.version, date: info.date, description: info.description ?? null, at: now });
   return info;
 }
 

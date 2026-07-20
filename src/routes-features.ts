@@ -12,6 +12,7 @@ import { loadData } from "./data";
 import { resolveProjectFor } from "./project-resolve";
 import { pathsEqual } from "./path-utils";
 import { featureList, featuresSinceLastRelease, backfillCorpus } from "./features";
+import { buildDepsPayload } from "./deps-explain";
 import { collectClientReport, renderClientReportHtml, writeClientReport } from "./client-report";
 import { retroCorpus, fragileFiles, regressionGap } from "./retro";
 import { studyCorpus, STUDY_NAME_RE, type PrevStudyDoc } from "./study";
@@ -88,6 +89,20 @@ export function makeFeatureRoutes(): Record<string, unknown> {
         if (!project) return Response.json({ project: null, totalReleases: 0, uncovered: [] });
         const data = await loadData();
         return Response.json({ project, ...backfillCorpus(data, project) });
+      },
+    },
+
+    // The deps-explainer payload behind `-(ask:deps)` and the /deps.html page:
+    // every manifest library annotated with its recorded purpose line (`lib`
+    // tags, latest per name wins), the registry's official one-liner (cached
+    // by the vuln scan) and its vuln/outdated status. Uncovered-first order.
+    "/api/deps": {
+      async GET(req: ApiReq) {
+        const project = await resolveParam(req);
+        const empty = { project: null, total: 0, withPurpose: 0, libraries: [] };
+        if (!project) return Response.json(empty);
+        const data = await loadData();
+        return Response.json(buildDepsPayload(data, project) ?? empty);
       },
     },
 

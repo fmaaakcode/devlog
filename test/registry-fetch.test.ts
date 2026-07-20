@@ -23,26 +23,26 @@ function mock(route: (url: string) => { status?: number; body: unknown } | null)
 afterEach(() => { globalThis.fetch = realFetch; });
 
 describe("queryRegistry — per-ecosystem latest-version parsing", () => {
-  test("npm: dist-tags.latest + time[version] date", async () => {
+  test("npm: dist-tags.latest + time[version] date + description", async () => {
     mock(u => u.includes("registry.npmjs.org/npm-a")
-      ? { body: { "dist-tags": { latest: "3.2.1" }, time: { "3.2.1": "2026-02-01T00:00:00Z" } } } : null);
+      ? { body: { "dist-tags": { latest: "3.2.1" }, time: { "3.2.1": "2026-02-01T00:00:00Z" }, description: "Fast schema validation" } } : null);
     expect(await latestVersionInfo("npm", "npm-a"))
-      .toEqual({ version: "3.2.1", date: "2026-02-01T00:00:00Z" });
+      .toEqual({ version: "3.2.1", date: "2026-02-01T00:00:00Z", description: "Fast schema validation" });
   });
 
-  test("crates.io: max_stable_version + matching versions[].created_at", async () => {
+  test("crates.io: max_stable_version + matching versions[].created_at + crate.description", async () => {
     mock(u => u.includes("crates.io/api/v1/crates/crate-a")
-      ? { body: { crate: { max_stable_version: "1.4.0", newest_version: "1.5.0-beta" },
+      ? { body: { crate: { max_stable_version: "1.4.0", newest_version: "1.5.0-beta", description: "Serialization framework" },
           versions: [{ num: "1.4.0", created_at: "2026-03-01T00:00:00Z" }] } } : null);
     expect(await latestVersionInfo("crates.io", "crate-a"))
-      .toEqual({ version: "1.4.0", date: "2026-03-01T00:00:00Z" });
+      .toEqual({ version: "1.4.0", date: "2026-03-01T00:00:00Z", description: "Serialization framework" });
   });
 
-  test("pypi: info.version + releases[version][0] upload time", async () => {
+  test("pypi: info.version + releases[version][0] upload time; missing summary → null description", async () => {
     mock(u => u.includes("pypi.org/pypi/pypi-a/json")
       ? { body: { info: { version: "9.9.9" }, releases: { "9.9.9": [{ upload_time_iso_8601: "2026-04-01T00:00:00Z" }] } } } : null);
     expect(await latestVersionInfo("pypi", "pypi-a"))
-      .toEqual({ version: "9.9.9", date: "2026-04-01T00:00:00Z" });
+      .toEqual({ version: "9.9.9", date: "2026-04-01T00:00:00Z", description: null });
   });
 
   test("go: Version has 'v' stripped, Time passed through", async () => {

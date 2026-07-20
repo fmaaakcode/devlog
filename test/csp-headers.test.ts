@@ -53,7 +53,7 @@ afterAll(async () => {
 });
 
 describe("regression — security R2 D1: CSP on HTML responses", () => {
-  for (const path of ["/", "/stack-map.html"]) {
+  for (const path of ["/", "/stack-map.html", "/deps.html"]) {
     test(`GET ${path} carries CSP with connect-src 'self'`, async () => {
       const r = await fetch(`${BASE}${path}`);
       const csp = r.headers.get("content-security-policy") || "";

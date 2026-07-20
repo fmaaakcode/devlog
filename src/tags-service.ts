@@ -597,7 +597,11 @@ export function detectReleaseOpenItems(
 export async function applyRelease(tagEntry: TagEntry, data: DevLogData, project: string, effectiveCwd: string): Promise<ReleaseResult | null> {
   const content = tagEntry.content;
   if (!/^v?\d/.test(content) || !data.projects[project]) return null;
-  const version = content.match(/v?\d+(?:\.\d+)+/)?.[0] || content.split(/\s+/)[0];
+  // Full capture — prerelease and build metadata included — so the recorded
+  // release version matches what the writer (whose VERSION_RE captures the
+  // same span) puts in the manifests, instead of a truncated 2.0.0 alongside
+  // manifests saying 2.0.0+build.7.
+  const version = content.match(/v?\d+(?:\.\d+)+(?:-[\w.]+)?(?:\+[\w.]+)?/)?.[0] || content.split(/\s+/)[0];
 
   let htmlGenerated = false;
   try {

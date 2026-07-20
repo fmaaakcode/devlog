@@ -140,7 +140,9 @@ export async function runVulnScan(name: string) {
       // synthesizeStatus distinguishes "indeterminate" (registry lookup failed →
       // latest UNKNOWN) from "safe" (R4 code-quality F1).
       const s = synthesizeStatus(p.version, nativeLatest.get(p.name));
-      const fresh = { isLatest: s.isLatest, latestVersion: s.latestVersion, latestReleaseDate: s.date || "", daysSinceLatest: daysSince(s.date) };
+      // description rides the freshness lookup's own response (registry.ts) —
+      // attached here so every direct-dep result shape below carries it.
+      const fresh = { isLatest: s.isLatest, latestVersion: s.latestVersion, latestReleaseDate: s.date || "", daysSinceLatest: daysSince(s.date), description: nativeLatest.get(p.name)?.description || "" };
       const pv = vulnByPkg.get(p.name);
       if (pv?.ok && pv.vulns > 0) {
         // vulnVersion: the resolved version the advisories actually hit. A lockfile
@@ -214,7 +216,7 @@ export async function runVulnScan(name: string) {
               kind: sStr(a?.kind, 20) || "vuln",
             }))
           : [];
-        vulnMap[sStr(pkg.name, 100)] = { status: sStr(pkg.status, 20), icon: sStr(pkg.icon, 20), message: sStr(pkg.message, 500), vulns: pkg.vulns ?? 0, notices: pkg.notices ?? 0, severity: sStr(pkg.severity, 20) || "none", topVuln: pkg.topVuln || null, fixVersion: sStr(pkg.fixVersion, 50), latestVersion: sStr(pkg.latestVersion, 50), isLatest: pkg.isLatest === undefined ? true : pkg.isLatest, unscannableReason: sStr(pkg.unscannableReason, 200), detailsUrl: sUrl(pkg.detailsUrl), daysSinceFix: pkg.daysSinceFix ?? null, daysSinceLatest: pkg.daysSinceLatest ?? null, fixReleaseDate: sStr(pkg.fixReleaseDate, 40), latestReleaseDate: sStr(pkg.latestReleaseDate, 40), advisories, transitive: pkg.direct === false };
+        vulnMap[sStr(pkg.name, 100)] = { status: sStr(pkg.status, 20), icon: sStr(pkg.icon, 20), message: sStr(pkg.message, 500), vulns: pkg.vulns ?? 0, notices: pkg.notices ?? 0, severity: sStr(pkg.severity, 20) || "none", topVuln: pkg.topVuln || null, fixVersion: sStr(pkg.fixVersion, 50), latestVersion: sStr(pkg.latestVersion, 50), isLatest: pkg.isLatest === undefined ? true : pkg.isLatest, unscannableReason: sStr(pkg.unscannableReason, 200), detailsUrl: sUrl(pkg.detailsUrl), daysSinceFix: pkg.daysSinceFix ?? null, daysSinceLatest: pkg.daysSinceLatest ?? null, fixReleaseDate: sStr(pkg.fixReleaseDate, 40), latestReleaseDate: sStr(pkg.latestReleaseDate, 40), description: sStr(pkg.description, 300), advisories, transitive: pkg.direct === false };
       }
       project.vulnResults = vulnMap as typeof project.vulnResults;
       project.vulnScanDate = new Date().toISOString();

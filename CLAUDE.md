@@ -35,6 +35,11 @@ Write the tag content in the user's language.
   prefix overrides the project ecosystem. Ephemeral, never a stored tag. Enforced by
   the PreToolUse install gate: blind `bun add X` is blocked with the advised pin;
   a deliberate pin passes on re-issue (one advisory block).
+- `-(lib) <name> — <غرض من سطر واحد>` after installing: records WHY the library is in
+  THIS project (feeds the deps explainer page + `ask:deps`). Re-emit the same name to
+  update; latest wins. `-(ask:deps)` pulls the inventory (purpose + official
+  description + status) and lists libraries still missing a purpose — backfill them
+  with user approval, one `-(lib)` line each. Ephemeral ask, stored lib.
 - `-(ask:search) <سؤال>` recall from the recorded log — best-matching stored tags
   (decisions, insights, closed bugs with their fixes) served same-turn; `all:` prefix
   widens to every tracked project. Prefer it over re-deriving a past decision.

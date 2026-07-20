@@ -10,6 +10,7 @@
 - `/` — dashboard HTML
 - `/stack-map.html` — stack-map viewer
 - `/features.html` — features page
+- `/deps.html` — the deps explainer page: every manifest library with its recorded purpose line, official registry description and vuln/outdated status (opened from the dashboard's dependencies button; `?project=`)
 - `/assets/:file` — whitelisted static assets
 - `/api/file` — read a project file (symlink-safe, text/plain + nosniff)
 - `/releases/:project` — 301 redirect to the project's slashed index page, so the pages' relative links resolve
@@ -71,6 +72,7 @@
 ## Features / client report (`routes-features.ts`)
 - `/api/features` — the current capability inventory (feature tags resolved: updates applied, removed dropped, each attributed to its shipping release) + since-last-release counters for the release nudge (GET; `?project=` or `?cwd=`) — powers `-(ask:features)`
 - `/api/features-backfill` — releases not covered by any declared capability, each with its summary + built/update material lines (GET; `?project=` or `?cwd=`) — powers `-(ask:backfill)`
+- `/api/deps` — the deps-explainer payload: every manifest library annotated with its recorded purpose (`lib` tags, latest per name wins), cached registry description and vuln/outdated status, uncovered-first (GET; `?project=` or `?cwd=`) — powers `-(ask:deps)` and `/deps.html`
 - `/api/retro` — the full problem corpus: every bug/security report, open and closed, with open/close dates, age in days and project-relative touched files, oldest first, plus `fragile` (files recurring across reports) and `testGap` (fixes closed without their session touching a test — #585) (GET; `?project=` or `?cwd=`) — powers `-(ask:retro)`
 - `/api/study` — the deep-study corpus: whole-history aggregates (monthly trend, time-to-close medians, release hygiene, fragile files, the regression-test gap, capability coverage, work-rhythm behavior profile from tag timestamps) + narrative delta since the previous stored study + that study's conclusions digest (GET; `?project=` or `?cwd=`) — powers `-(ask:study)`
 - `/api/docs` — the project's stored-docs index (doc:report/analysis/…; plans excluded) from `.devlog/docs/index.json` (GET; `?project=` or `?cwd=`) — powers the dashboard's «دراسات» chip

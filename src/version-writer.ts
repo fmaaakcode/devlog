@@ -32,7 +32,12 @@ export interface VersionReject {
   reason: "downgrade" | "unsupported-layout";
 }
 
-const VERSION_RE = /v?(\d+\.\d+\.\d+(?:-[\w.]+)?)/;
+// Captures the version IN FULL: extra numeric parts (2.0.0.4) and build
+// metadata (2.0.0+build.7) included. Truncating here made a byte-identical
+// manual release tag look different from the manifest, so the writer
+// "corrected" the manifest to the truncated form — destroying custom formats
+// owned by external tooling (#664, proven live on bumpManifests).
+const VERSION_RE = /v?(\d+\.\d+\.\d+(?:\.\d+)*(?:-[\w.]+)?(?:\+[\w.]+)?)/;
 
 export function extractVersion(content: string): string | null {
   const first = (content || "").split("\n")[0].trim();
@@ -40,15 +45,18 @@ export function extractVersion(content: string): string | null {
   return m ? m[1] : null;
 }
 
-// Compare two semver-ish strings by their numeric major.minor.patch triple,
-// ignoring any pre-release/build suffix (mirrors version-check.ts). Returns
-// -1 if a < b, 0 if numerically equal, 1 if a > b.
+// Compare two semver-ish strings by ALL their numeric parts, ignoring any
+// pre-release/build suffix. Missing parts read 0 (2.0.0 == 2.0.0.0), so plain
+// X.Y.Z behaves exactly as the old 3-part compare while four-part schemes
+// (2.0.0.4 < 2.0.0.5) order correctly instead of colliding as "equal" — the
+// collision let the downgrade guard wave truncation clobbers through.
+// Returns -1 if a < b, 0 if numerically equal, 1 if a > b.
 export function compareSemver(a: string, b: string): number {
   const parse = (v: string) =>
     v.replace(/^v/i, "").split(/[-+]/)[0].split(".").map((s) => Number(s) || 0);
   const x = parse(a);
   const y = parse(b);
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < Math.max(x.length, y.length, 3); i++) {
     const xi = x[i] || 0;
     const yi = y[i] || 0;
     if (xi < yi) return -1;
@@ -133,6 +141,13 @@ async function atomicWrite(path: string, content: string): Promise<void> {
   await rename(tmp, path);
 }
 
+// Build metadata (`+meta`) carries no precedence (semver §10): a manifest at
+// 2.0.0+build.7 IS 2.0.0. Overwriting it with the bare form would destroy the
+// metadata for zero version change, so every writer treats a metadata-only
+// difference as already-at-target and withdraws.
+const sameIgnoringBuildMeta = (a: string, b: string): boolean =>
+  a.split("+")[0] === b.split("+")[0];
+
 async function bumpPackageJson(filePath: string, newVersion: string, allowDowngrade = false): Promise<VersionUpdate | VersionReject | null> {
   const raw = await readFile(filePath, "utf8");
   // Match: "version": "X.Y.Z" with flexible whitespace. Top-level only —
@@ -141,7 +156,7 @@ async function bumpPackageJson(filePath: string, newVersion: string, allowDowngr
   const m = raw.match(/("version"\s*:\s*")([^"]+)(")/);
   if (!m) return null;
   const from = m[2];
-  if (from === newVersion) return null;
+  if (sameIgnoringBuildMeta(from, newVersion)) return null;
   // Guard against a silent downgrade: only the equality check existed before,
   // so a typo'd release (v1.0.0 after v2.7.0) overwrote the newer manifest.
   // `allowDowngrade` is set by the release-rollback path, where restoring the
@@ -174,7 +189,7 @@ async function bumpCargoToml(filePath: string, newVersion: string, allowDowngrad
     return { file: filePath, current: "", attempted: newVersion, reason: "unsupported-layout" };
   }
   const primary = targets[0];
-  const edits = targets.filter((t) => t.from !== newVersion);
+  const edits = targets.filter((t) => !sameIgnoringBuildMeta(t.from, newVersion));
   if (!edits.length) return null;
   if (!allowDowngrade && compareSemver(newVersion, primary.from) < 0) {
     return { file: filePath, current: primary.from, attempted: newVersion, reason: "downgrade" };
@@ -221,7 +236,7 @@ export function syncCargoLockContent(raw: string, packageName: string, newVersio
   const m = raw.match(re);
   if (!m) return null;
   const from = m[2];
-  if (from === newVersion) return null;
+  if (sameIgnoringBuildMeta(from, newVersion)) return null;
   return { content: raw.replace(m[0], `${m[1]}${newVersion}${m[3]}`), from };
 }
 

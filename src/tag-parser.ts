@@ -6,6 +6,7 @@ export const ALLOWED_TAGS = [
   "desc", "about", "plan", "built", "todo", "upcoming", "done", "dropped", "undo",
   "bug found", "bug fix", "security fix", "security",
   "feature update", "feature removed", "feature",
+  "lib",
   "release", "release:major", "release:minor", "release:patch", "note", "update", "refactor",
   "decision", "insight",
   "security:dep", "security:own",
@@ -32,6 +33,9 @@ export const SINGLE_LINE_TAGS = new Set([
   "security", "security:own", "security:dep", "security fix",
   "note", "outdated", "update",
   "feature", "feature update", "feature removed",
+  // One library, one purpose line — `-(lib) name — غرض` is atomic by design;
+  // re-emitting the same name replaces the purpose (latest wins at read time).
+  "lib",
   // The release reason is one line by protocol. Left out of this set, a
   // release that ends a take swallowed the next continuation's prose on the
   // turn re-read — a new dedup identity, so the re-emitted release POSTed as
@@ -46,7 +50,7 @@ export const SINGLE_LINE_TAGS = new Set([
 // stored with a trailing "\n\n-(ask:features)").
 export const COMMAND_TAGS = [
   "ask:open", "ask:closed", "ask:features", "ask:retro", "ask:backfill",
-  "ask:study", "ask:rules", "ask:lib", "ask:search", "rules:list", "rule:add", "rule:new", "rule:rm",
+  "ask:study", "ask:rules", "ask:lib", "ask:deps", "ask:search", "rules:list", "rule:add", "rule:new", "rule:rm",
   "rule:ack", "rule:acks", "audit",
 ] as const;
 

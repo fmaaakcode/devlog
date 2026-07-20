@@ -507,3 +507,95 @@ describe("syncCargoLockContent — pure root-version rewrite", () => {
     expect(syncCargoLockContent(LOCK, "root", "1.0.0")).toBeNull();
   });
 });
+
+// Regression: DevLog's version pattern used to stop at three numeric parts and
+// before `+`, so a release tag byte-identical to the manifest (2.0.0+build.7,
+// 2.0.0.4) extracted as a bare "2.0.0" — a mismatch the numeric-equal downgrade
+// guard waved through, and the writer "corrected" the manifest to the truncated
+// form. Custom formats owned by external tooling were silently destroyed.
+describe("format-owning manifests survive a matching release (truncation clobber)", () => {
+  function makeProject(pkgContent: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "vw-fmt-"));
+    writeFileSync(join(dir, "package.json"), pkgContent, "utf8");
+    return dir;
+  }
+
+  test.each([
+    ["2.0.0+build.7", "v2.0.0+build.7 — build metadata"],
+    ["2.0.0.4", "v2.0.0.4 — four-part"],
+    ["2.0.0.4-rc.1", "v2.0.0.4-rc.1 — four-part prerelease"],
+  ])("manifest %p under byte-identical tag %p is untouched", async (ver, release) => {
+    const before = `{\n  "name": "demo",\n  "version": "${ver}"\n}\n`;
+    const dir = makeProject(before);
+
+    const updates = await bumpManifests(dir, release);
+
+    expect(updates).toEqual([]);
+    expect(readFileSync(join(dir, "package.json"), "utf8")).toBe(before);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("a bare tag never strips build metadata from a numerically-equal manifest", async () => {
+    const before = `{\n  "version": "2.0.0+build.7"\n}\n`;
+    const dir = makeProject(before);
+
+    const updates = await bumpManifests(dir, "v2.0.0 — same version, no metadata");
+
+    expect(updates).toEqual([]);
+    expect(readFileSync(join(dir, "package.json"), "utf8")).toBe(before);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("prerelease → final is still a real write (2.0.0-beta.2 → 2.0.0)", async () => {
+    const dir = makeProject(`{\n  "version": "2.0.0-beta.2"\n}\n`);
+
+    const updates = await bumpManifests(dir, "v2.0.0 — finalize");
+
+    expect(updates).toHaveLength(1);
+    expect(readFileSync(join(dir, "package.json"), "utf8")).toContain(`"2.0.0"`);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("four-part versions bump forward in full and reject backward", async () => {
+    const dir = makeProject(`{\n  "version": "2.0.0.4"\n}\n`);
+
+    const up = await bumpManifests(dir, "v2.0.0.5 — fourth part bump");
+    expect(up[0]?.from).toBe("2.0.0.4");
+    expect(up[0]?.to).toBe("2.0.0.5");
+
+    const rejected: VersionReject[] = [];
+    const down = await bumpManifests(dir, "v2.0.0.4 — going back", rejected);
+    expect(down).toEqual([]);
+    expect(rejected[0]?.reason).toBe("downgrade");
+    expect(readFileSync(join(dir, "package.json"), "utf8")).toContain(`"2.0.0.5"`);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("Cargo.toml + Cargo.lock honor the metadata-only withdrawal too", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vw-fmt-cargo-"));
+    const toml = `[package]\nname = "demo"\nversion = "2.0.0+build.7"\n`;
+    const lock = `[[package]]\nname = "demo"\nversion = "2.0.0+build.7"\n`;
+    writeFileSync(join(dir, "Cargo.toml"), toml, "utf8");
+    writeFileSync(join(dir, "Cargo.lock"), lock, "utf8");
+
+    const updates = await bumpManifests(dir, "v2.0.0+build.7 — identical");
+
+    expect(updates).toEqual([]);
+    expect(readFileSync(join(dir, "Cargo.toml"), "utf8")).toBe(toml);
+    expect(readFileSync(join(dir, "Cargo.lock"), "utf8")).toBe(lock);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("compareSemver orders every numeric part, not just the first three", () => {
+    expect(compareSemver("2.0.0.4", "2.0.0.5")).toBe(-1);
+    expect(compareSemver("2.0.0.5", "2.0.0.4")).toBe(1);
+    expect(compareSemver("2.0.0", "2.0.0.0")).toBe(0);
+    expect(compareSemver("2.0.0+build.7", "2.0.0")).toBe(0);  // metadata never orders
+    expect(compareSemver("1.2.3", "1.2.4")).toBe(-1);         // 3-part behavior unchanged
+  });
+
+  test("extractVersion keeps build metadata and extra numeric parts", () => {
+    expect(extractVersion("v2.0.0+build.7 — meta")).toBe("2.0.0+build.7");
+    expect(extractVersion("v2.0.0.4 — four-part")).toBe("2.0.0.4");
+  });
+});

@@ -62,6 +62,10 @@ export interface VulnResult {
   daysSinceFix?: number | null;
   advisories?: Array<{ id: string; severity: string; summary: string; fix: string; url: string; kind?: string }>;
   transitive?: boolean;  // vuln came from an indirect (transitive) dependency, not a direct one
+  // Official one-liner from the registry (npm description / crates description /
+  // pypi summary) — captured from the SAME response the freshness lookup already
+  // fetches, so it costs no extra request. Feeds the deps explainer page (#663).
+  description?: string;
 }
 
 export interface RuntimeInfo {
