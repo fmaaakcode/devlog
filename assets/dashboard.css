@@ -507,7 +507,7 @@
             padding: 1px 6px;
             border-radius: 8px;
         }
-        .project-delete, .project-rename {
+        .project-delete, .project-rename, .project-export {
             display: none;
             font-size: 0.7em;
             color: var(--text2);
@@ -521,8 +521,10 @@
         }
         .project-delete:hover { color: var(--pink); background: #2a0a0a; }
         .project-rename:hover { color: var(--accent, #6aa6ff); background: #0a1a2a; }
+        .project-export:hover { color: var(--emerald, #06d6a0); background: #0a2a1a; }
         .project-item:hover .project-delete,
-        .project-item:hover .project-rename { display: block; }
+        .project-item:hover .project-rename,
+        .project-item:hover .project-export { display: block; }
         .project-item:hover .project-item-count { display: none; }
         .project-item:hover .project-live { display: none; }
         .project-live {

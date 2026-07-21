@@ -68,7 +68,8 @@ next study's watermark.
 **Releasing is yours; git is not.** Only when the user asks to ship: close every open
 `#N`, then just emit `-(release) <reason>` — DevLog auto-detects the bump type and
 computes the version + changelog. (Force a type with `-(release:patch|minor|major)`, a
-number with `-(release) vX.Y.Z`.) Never run git/GitHub; the specialist pushes and tags
+number with `-(release) vX.Y.Z` — never both; a type tag starting with a version is
+rejected.) Never run git/GitHub; the specialist pushes and tags
 from the DevLog release. No `-(release)` unless asked.
 
 ## Full protocol reference

@@ -24,6 +24,7 @@
                 <span class="project-item-name">${esc(name)}</span>
                 <span class="project-item-count">${tagCount}</span>
                 ${liveDot}
+                <button class="project-export" data-action="export-project" data-project="${esc(name)}" title="تصدير سجل المشروع كاملًا (ملف JSON) لنقله إلى جهاز آخر">⤓</button>
                 <button class="project-rename" data-action="rename-project" data-project="${esc(name)}" title="إعادة تسمية المشروع">✎</button>
                 <button class="project-delete" data-action="delete-project" data-project="${esc(name)}" title="حذف المشروع">✕</button>
             </div>`;
@@ -92,6 +93,9 @@
                 `<button data-action="${action}" style="width:100%;text-align:right;background:none;border:1px dashed var(--border);border-radius:6px;color:var(--text2);font-size:0.7em;padding:5px 10px;cursor:pointer;margin-top:6px">${label}</button>`;
             let h = '';
             if (summaryTombstones > 0) h += btn('cleanup-tombstones', `🪦 مشاريع مفقودة من القرص 30+ يومًا (${summaryTombstones})`);
+            // Always-on: fold a bundle exported on another machine into this
+            // store (the ⤓ button on each project row produces that file).
+            h += btn('import-project', '⤒ استيراد سجل مشروع (ملف تصدير JSON)');
             el.innerHTML = h;
             el.style.display = h ? '' : 'none';
         }
@@ -109,6 +113,41 @@
                 uiAlert(j.removed?.length ? `حُذفت: ${j.removed.join('، ')}` : 'لا شيء مؤهلًا للحذف (المجلدات عادت أو العلامات حديثة)');
             } catch { uiAlert('تعذّر الاتصال بالخادم'); }
             refreshActiveView(true);
+        }
+
+        // Import a bundle produced by the ⤓ export button on another machine.
+        // The heavy validation lives server-side (/api/project-import); here we
+        // only pre-check the kind so an obviously wrong file fails before the
+        // confirm dialog, and summarize what the merge will do.
+        export function importProjectBundle() {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.json,application/json';
+            input.onchange = async () => {
+                const file = input.files?.[0];
+                if (!file) return;
+                let bundle;
+                try { bundle = JSON.parse(await file.text()); } catch { uiAlert('الملف ليس JSON صالحًا'); return; }
+                if (bundle?.kind !== 'devlog-project-export') { uiAlert('هذا ليس ملف تصدير DevLog — صدّره من زر ⤓ بجانب اسم المشروع على الجهاز الآخر.'); return; }
+                const counts = `${(bundle.tags || []).length} تاق · ${(bundle.events || []).length} حدث · ${(bundle.plans || []).length} خطة`;
+                const mode = data.projects[bundle.project]
+                    ? 'المشروع موجود هنا: سيُدمج في سجله (تخطّي المكرر، وإزاحة أرقام #N المستوردة فوق أرقامك الحالية)'
+                    : 'المشروع غير موجود هنا: سيُسجَّل جديدًا بأرقامه كما هي';
+                if (!(await uiConfirm(`استيراد سجل «${bundle.project}» (${counts})؟\n${mode}.\nتُؤخذ نسخة احتياطية من ملفات البيانات قبل الكتابة.`, { okText: 'استورد', danger: false }))) return;
+                try {
+                    const r = await fetch(`${API}/api/project-import`, {
+                        method: 'POST',
+                        headers: await destructiveHeaders({ 'Content-Type': 'application/json' }),
+                        body: JSON.stringify(bundle),
+                    });
+                    const j = await r.json().catch(() => ({}));
+                    if (!r.ok) { uiAlert(j.error || 'فشل الاستيراد'); return; }
+                    const a = j.added || {};
+                    uiAlert(`اكتمل الاستيراد: +${a.tags || 0} تاق، +${a.events || 0} حدث، +${a.plans || 0} خطة (+${a.planSteps || 0} خطوة)، أرشيف +${j.archive?.added || 0} سطر.\nمتخطّى (موجود مسبقًا): ${j.skipped || 0} · معاد ترقيمه: ${j.renumbered || 0}.`, 'استيراد المشروع');
+                    location.reload();
+                } catch (e) { uiAlert(`تعذّر الاتصال بالخادم: ${e.message}`); }
+            };
+            input.click();
         }
 
         export async function renameProject(name) {

@@ -18,9 +18,9 @@ import { verifyHintFor } from "./verify-hint";
 import {
   handleDocTag, enforceAtomicContent, resolveClosureNumber, diagnoseClosureMismatch,
   diagnoseClosureTextDivergence, confirmClosure, applyRelease, resolveReleaseIntent,
-  detectReleaseDowngrade, detectReleaseOpenItems, syncPlanSteps, pairSameResponseClosure,
+  detectReleaseDowngrade, detectReleaseOpenItems, detectReleaseIntentConflict, syncPlanSteps, pairSameResponseClosure,
   type ClosureMismatch, type ClosureTextDivergence, type ClosureConfirm, type BatchOpener,
-  type ReleaseDowngrade, type ReleaseBlocked, type ReleaseIntent,
+  type ReleaseDowngrade, type ReleaseBlocked, type ReleaseIntent, type ReleaseIntentConflict,
 } from "./tags-service";
 import { applyUpcoming, applyTodoPromotion, type UpcomingChange } from "./upcoming";
 import { sessionTouchedFiles } from "./file-story";
@@ -133,10 +133,11 @@ export function makeTagsRoutes(): Record<string, unknown> {
             const batchId = typeof body.batch_id === "string" ? body.batch_id : "";
             if (batchId && (data.processedBatches || []).includes(batchId)) {
               console.log(`[/api/tags] batch replay dropped: ${batchId} (${(body.entries || []).length} entries)`);
-              return Response.json({ ok: true, count: 0, batchReplay: true, release: null, releaseIntent: null, releaseDowngrade: null, releaseBlocked: null, rollback: null, closureHints: [], closureTextWarnings: [], featureHints: [], closed: [], upcomingChanges: [], reopenHints: [], verifyHint: null, openSnapshot: [], repairedClosures: [] });
+              return Response.json({ ok: true, count: 0, batchReplay: true, release: null, releaseIntent: null, releaseIntentConflict: null, releaseDowngrade: null, releaseBlocked: null, rollback: null, closureHints: [], closureTextWarnings: [], featureHints: [], closed: [], upcomingChanges: [], reopenHints: [], verifyHint: null, openSnapshot: [], repairedClosures: [] });
             }
           let releaseResult: Awaited<ReturnType<typeof applyRelease>> = null;
           let releaseIntent: ReleaseIntent | null = null;
+          let releaseIntentConflict: ReleaseIntentConflict | null = null;
           let releaseDowngrade: ReleaseDowngrade | null = null;
           let releaseBlocked: ReleaseBlocked | null = null;
           let rollback: RollbackResult | null = null;
@@ -198,6 +199,14 @@ export function makeTagsRoutes(): Record<string, unknown> {
             // standard `release` tag, so every step below runs unchanged. An
             // explicit -(release) vX.Y.Z is left untouched (returns null).
             if (typeof entry.tag === "string" && (entry.tag === "release" || entry.tag.startsWith("release:"))) {
+              // Type+number in one tag: the intent path would silently swallow
+              // the number. Reject wholesale before any resolution/storage.
+              const conflict = detectReleaseIntentConflict(entry.tag, entry.content || "");
+              if (conflict) {
+                releaseIntentConflict = conflict;
+                console.warn(`[/api/tags release] rejected type+number conflict: ${entry.tag} + ${conflict.version} (project=${project})`);
+                continue;
+              }
               const intent = await resolveReleaseIntent(entry as Concrete, data, project, data.projects[project]?.path);
               if (intent) releaseIntent = intent;
             }
@@ -501,7 +510,7 @@ export function makeTagsRoutes(): Record<string, unknown> {
             for (const s of openPlanSteps(data, project, { numberedOnly: true })) openSnapshot.push({ num: s.num as number, tag: "plan-step", content: s.text.slice(0, 70) });
             openSnapshot = openSnapshot.slice(0, 15);
           }
-          return Response.json({ ok: true, count: (body.entries || []).length, release: releaseResult, releaseIntent, releaseDowngrade, releaseBlocked, rollback, closureHints, closureTextWarnings, featureHints, closed, upcomingChanges, reopenHints, verifyHint, openSnapshot, repairedClosures });
+          return Response.json({ ok: true, count: (body.entries || []).length, release: releaseResult, releaseIntent, releaseIntentConflict, releaseDowngrade, releaseBlocked, rollback, closureHints, closureTextWarnings, featureHints, closed, upcomingChanges, reopenHints, verifyHint, openSnapshot, repairedClosures });
           });
         } catch (e) {
           const err = e as { message?: string; stack?: string };

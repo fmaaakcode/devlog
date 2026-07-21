@@ -104,6 +104,37 @@ async function appendWithRetry(path: string, body: string, attempts = 6): Promis
   }
 }
 
+/**
+ * Rewrite one month's archive file wholesale — the project-import merge needs
+ * to fold rows from another machine INTO a month, which append-only cannot do.
+ * Plain .jsonl for the current month; .gz for a closed one, with any plain
+ * leftover removed so a later rollover can't re-compress stale pre-merge
+ * content over the merged .gz. Rides the same write chain as the eviction
+ * appends so the two can never interleave on one file.
+ */
+export function rewriteArchiveMonth(stream: ArchiveStream, month: string, records: unknown[], now = new Date()): Promise<boolean> {
+  if (!MONTH_RE.test(month)) return Promise.resolve(false);
+  const body = records.length ? `${records.map(e => JSON.stringify(e)).join("\n")}\n` : "";
+  const result = writeChain.then(async () => {
+    try {
+      await mkdir(ARCHIVE_DIR, { recursive: true });
+      const plain = `${ARCHIVE_DIR}/${stream}-${month}.jsonl`;
+      if (month === currentArchiveMonth(now)) {
+        await Bun.write(plain, body);
+      } else {
+        await Bun.write(`${plain}.gz`, gzipSync(Buffer.from(body)));
+        try { await unlink(plain); } catch { /* no plain twin — the normal case */ }
+      }
+      return true;
+    } catch (e) {
+      console.error(`[event-archive] ${stream}-${month} rewrite failed:`, (e as Error)?.message);
+      return false;
+    }
+  });
+  writeChain = result;
+  return result;
+}
+
 /** Gzip every plain .jsonl whose month is not `currentMonth`, then drop the
  *  plain file. Closed months only ever shrink to one .gz that is never
  *  reopened for writing. */

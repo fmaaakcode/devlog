@@ -116,3 +116,5 @@
 - `/api/data/clear` — wipe all data (DELETE, X-Confirm)
 - `/api/export/:project` — export one project's DEVLOG_STATUS.md (POST)
 - `/api/export-all` — export every project's status (POST)
+- `/api/project-export/:project` — portable bundle of ONE project's full history (profile + tags + plans + events + worklog + monthly archive) as a JSON download; how a log follows its code to another machine (GET)
+- `/api/project-import` — merge a bundle from another machine: unknown project registers as-is; an existing one merges with id-dedup (idempotent re-import), `#N` renumbered past the local high-water mark, `relatedTo` remapped, profile fill-empty, pre-import `.bak` backups (POST)

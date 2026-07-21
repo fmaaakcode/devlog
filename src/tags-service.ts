@@ -465,6 +465,28 @@ function suggestBumpSince(data: DevLogData, project: string, sinceMs: number): B
   return hasFeature ? "minor" : "patch";
 }
 
+export interface ReleaseIntentConflict { declared: BumpType; version: string; }
+
+/**
+ * A `-(release:type)` whose reason STARTS with a version number is almost
+ * always a user who believes that number will be honored — it won't be: an
+ * intent tag treats everything after the type as free-form reason text (field
+ * incident: `-(release:minor) v1.102.0 — …` recorded v1.104.0, silently
+ * swallowing the number, and the user had to rollback). A version deeper in
+ * the reason ("upgrade to Bun 1.2") is legitimate prose and never matches.
+ * Detected BEFORE resolveReleaseIntent so the caller rejects the tag wholesale
+ * — nothing stored, no bump, no HTML — and the Stop hook shows the two valid
+ * forms to re-emit. Pure.
+ */
+export function detectReleaseIntentConflict(tag: string, content: string): ReleaseIntentConflict | null {
+  const declared: BumpType | null =
+    tag === "release:major" ? "major" : tag === "release:minor" ? "minor" : tag === "release:patch" ? "patch" : null;
+  if (!declared) return null;
+  const m = (content || "").trim().match(/^v?\d+(?:\.\d+)+/i);
+  if (!m) return null;
+  return { declared, version: /^v/i.test(m[0]) ? m[0] : `v${m[0]}` };
+}
+
 /**
  * Semver-intent release. `-(release:patch|minor|major)` (or a bare `-(release)`
  * with no explicit version) declares intent, not a number. Compute the next

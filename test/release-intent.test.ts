@@ -1,5 +1,5 @@
 import { expect, test, describe, afterEach } from "bun:test";
-import { resolveReleaseIntent } from "../src/tags-service";
+import { resolveReleaseIntent, detectReleaseIntentConflict } from "../src/tags-service";
 import { parseTags } from "../src/tag-parser";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -74,6 +74,40 @@ describe("resolveReleaseIntent — computes version from intent", () => {
     const d = mkdtempSync(join(tmpdir(), "ri-empty-")); dirs.push(d);
     expect((await resolveReleaseIntent({ tag: "release:minor", content: "first" }, dataWith(), "p", d))?.version).toBe("0.1.0");
     expect((await resolveReleaseIntent({ tag: "release:major", content: "first" }, dataWith(), "p", d))?.version).toBe("1.0.0");
+  });
+});
+
+describe("detectReleaseIntentConflict — type+number in one tag is rejected", () => {
+  test("release:minor whose reason starts with vX.Y.Z → conflict", () => {
+    expect(detectReleaseIntentConflict("release:minor", "v1.102.0 — save entry-mode"))
+      .toEqual({ declared: "minor", version: "v1.102.0" });
+  });
+
+  test("all three types are covered", () => {
+    expect(detectReleaseIntentConflict("release:major", "v2.0.0 breaking")?.declared).toBe("major");
+    expect(detectReleaseIntentConflict("release:patch", "v2.0.1 hotfix")?.declared).toBe("patch");
+  });
+
+  test("number without the v prefix is detected and normalized", () => {
+    expect(detectReleaseIntentConflict("release:minor", "1.102.0 — reason"))
+      .toEqual({ declared: "minor", version: "v1.102.0" });
+  });
+
+  test("version deeper in the reason is legitimate prose → null", () => {
+    expect(detectReleaseIntentConflict("release:minor", "upgrade to Bun 1.2")).toBeNull();
+    expect(detectReleaseIntentConflict("release:patch", "دعم الإصدار v3 من الواجهة")).toBeNull();
+  });
+
+  test("plain reason with no number → null", () => {
+    expect(detectReleaseIntentConflict("release:minor", "add a feature")).toBeNull();
+  });
+
+  test("bare -(release) with a version is the EXPLICIT form → null (honored elsewhere)", () => {
+    expect(detectReleaseIntentConflict("release", "v5.0.0 — big one")).toBeNull();
+  });
+
+  test("a lone major number is not a version (needs at least X.Y)", () => {
+    expect(detectReleaseIntentConflict("release:minor", "8 fixes in one go")).toBeNull();
   });
 });
 

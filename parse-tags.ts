@@ -489,6 +489,26 @@ if (msg) {
             await log(`release-downgrade rejected: ${dg.version} <= ${dg.latest}`);
             blockContinue(`\n${out}\n`);
           }
+          // Type+number conflict: -(release:minor) v1.102.0 — the intent tag
+          // treats the whole reason as prose, so the number would be silently
+          // swallowed and a DIFFERENT version recorded (field incident: user
+          // wrote v1.102.0, DevLog recorded v1.104.0, rollback needed). The
+          // server stored nothing; exit(2) so Claude re-emits ONE valid form.
+          if (resp.releaseIntentConflict) {
+            const c = resp.releaseIntentConflict;
+            const out = [
+              "════════ DevLog Release Rejected ════════",
+              L(`🛑 -(release:${c.declared}) starts with an explicit version (${c.version}) — a type tag never accepts a number and would silently ignore it. Nothing was recorded.`,
+                `🛑 -(release:${c.declared}) يبدأ برقم نسخة صريح (${c.version}) — تاق النوع لا يقبل رقمًا وكان سيتجاهله بصمت. لم يُسجَّل أي شيء.`),
+              "",
+              L("Re-emit exactly ONE of the two forms:", "أعد الإصدار بإحدى الصيغتين فقط:"),
+              `  -(release:${c.declared}) <reason>${L("      → DevLog computes the next number", "      → DevLog يحسب الرقم التالي")}`,
+              `  -(release) ${c.version} — <reason>${L("  → your number is honored", "  → رقمك يُنفَّذ")}`,
+              "═════════════════════════════════════════",
+            ].join("\n");
+            await log(`release-intent-conflict rejected: ${c.declared} + ${c.version}`);
+            blockContinue(`\n${out}\n`);
+          }
           // Open-items guard fired on the SERVER (defense in depth). Reached when
           // the pre-send guard above was bypassed — server unreachable at pre-check
           // (fail-open), un-numbered open items, or the hook not wired. The server

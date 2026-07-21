@@ -1,11 +1,13 @@
 // Misc / utility routes, extracted from server.ts (plan fable/round2 task 3.1).
 // The small leftovers that don't belong to a bigger domain: the data snapshot,
 // liveness + identity probes, dashboard feature flags, upstream-update info,
-// single-event delete, the confirmed data wipe, and the status.md export (one
-// project + all). All shared imports, so makeMiscRoutes() takes no injected
+// single-event delete, the confirmed data wipe, the status.md export (one
+// project + all), and the portable project bundle (export/import between
+// machines). All shared imports, so makeMiscRoutes() takes no injected
 // server state. Spread into server.ts's routeDefs.
 
 import { loadData, withData, cleanupMissingProjects, DATA_DIR, PORT, PLUGIN_MODE, DEFAULT_INJECTION_CONFIG } from "./data";
+import { buildExportBundle, validateBundle, applyImportBundle, mergeArchiveBundle, backupStores, type TransferBundle } from "./project-transfer";
 import { broadcast } from "./broadcast";
 import { appendAudit } from "./audit";
 import { exportStatusMd } from "./export";
@@ -92,6 +94,55 @@ export function makeMiscRoutes(): Record<string, unknown> {
           data.rejections = []; data.migrations = {};
         });
         return Response.json({ ok: true });
+      },
+    },
+
+    // Portable project bundle — the project's ENTIRE recorded history (profile,
+    // tags, plans, events, worklog, monthly archive) as one downloadable JSON.
+    // GET so the dashboard offers it as a plain download link; the store is
+    // per-machine, so this file is how a log follows its code to another
+    // computer (git never carries it).
+    "/api/project-export/:project": {
+      async GET(req: ApiReq) {
+        try {
+          const data = await loadData();
+          const name = req.params.project;
+          const bundle = await buildExportBundle(data, name);
+          if (!bundle) return Response.json({ error: "Not found" }, { status: 404 });
+          const safe = name.replace(/[^\w.-]+/g, "_");
+          const date = new Date().toISOString().slice(0, 10);
+          return new Response(JSON.stringify(bundle), {
+            headers: {
+              "Content-Type": "application/json; charset=utf-8",
+              "Content-Disposition": `attachment; filename="devlog-export-${safe}-${date}.json"`,
+            },
+          });
+        } catch { return Response.json({ error: "Export failed" }, { status: 500 }); }
+      },
+    },
+
+    // Merge a bundle exported on another machine into this store. Unknown
+    // project registers as-is; an existing one merges: id-dedup (idempotent
+    // re-import), #N renumbered past the local high-water mark, relatedTo
+    // remapped, profile fill-empty. Store mutation runs under the withData
+    // lock; the archive months merge in their own file-level pass after it.
+    "/api/project-import": {
+      async POST(req: ApiReq) {
+        let raw: unknown;
+        try { raw = await req.json(); } catch { return Response.json({ error: "Body is not valid JSON" }, { status: 400 }); }
+        const invalid = validateBundle(raw);
+        if (invalid) return Response.json({ error: invalid }, { status: 400 });
+        const bundle = raw as TransferBundle;
+        try {
+          await appendAudit("project.import", req);
+          await backupStores("pre-import");
+          const summary = await withData(async (data) => applyImportBundle(data, bundle));
+          summary.archive = await mergeArchiveBundle(bundle.archive, bundle.project);
+          broadcast("hook", {});
+          return Response.json({ ok: true, ...summary });
+        } catch (e) {
+          return Response.json({ error: e instanceof Error ? e.message : "Import failed" }, { status: 500 });
+        }
       },
     },
 

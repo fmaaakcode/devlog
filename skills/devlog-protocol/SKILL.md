@@ -38,7 +38,7 @@ Three hooks enforce these rules mechanically — you don't need to remember, the
 | `-(decision)` | Architectural decision + rationale |
 | `-(insight)` | Root-cause finding from investigation |
 | `-(undo) <text>` | Delete the most recent tag whose content includes `<text>` |
-| `-(release) summary` | Release — DevLog auto-detects the bump type **and** computes the number. Force a type with `-(release:patch\|minor\|major)`, or a number with `-(release) vX.Y.Z`. **Only when the user explicitly asks.** |
+| `-(release) summary` | Release — DevLog auto-detects the bump type **and** computes the number. Force a type with `-(release:patch\|minor\|major)`, or a number with `-(release) vX.Y.Z` — never both: a type tag whose reason starts with a version is rejected wholesale. **Only when the user explicitly asks.** |
 | `-(doc:TYPE) name\n<markdown>` | Generate `.md` + `.html` (see Doc tags) |
 
 Token-saving: if SessionStart context already shows `desc:` or `about: yes`, don't re-emit them.
