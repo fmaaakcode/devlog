@@ -192,7 +192,7 @@ const MIN_AGE_DAYS = 7;
 // Verdicts where the advisor could not resolve the name at all — fail-open by
 // default (private registries / workspace names must stay usable), fail-closed
 // under DEVLOG_INSTALL_GATE=strict.
-const UNRESOLVED_VERDICTS = new Set(["not-found", "unsupported-eco", "invalid-name"]);
+const UNRESOLVED_VERDICTS = new Set(["not-found", "unsupported-eco", "invalid-name", "need-full-path"]);
 
 export interface GateDecision {
   /** Blind installs the gate refuses — each line carries the advisor's pick. */

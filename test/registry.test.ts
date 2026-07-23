@@ -5,7 +5,7 @@
 // installed version is older than the registry's latest.
 
 import { describe, test, expect } from "bun:test";
-import { isVersionBehind, synthesizeStatus, encodePkgPath, latestEditionFor } from "../src/registry";
+import { isVersionBehind, synthesizeStatus, encodePkgPath, encodeGoModulePath, latestEditionFor } from "../src/registry";
 
 describe("isVersionBehind (outdated gate)", () => {
   test("strictly-newer latest reads as behind", () => {
@@ -54,6 +54,21 @@ describe("encodePkgPath (untrusted package name → safe URL path) — R4 sec L1
   test("special characters are percent-encoded, not left to alter the path", () => {
     expect(encodePkgPath("a b")).toBe("a%20b");
     expect(encodePkgPath("a?b#c")).toBe("a%3Fb%23c");
+  });
+});
+
+describe("encodeGoModulePath — proxy case-encoding on top of the path defense (#675)", () => {
+  test("uppercase letters become !lowercase (module escaping)", () => {
+    expect(encodeGoModulePath("github.com/Masterminds/semver/v3")).toBe("github.com/!masterminds/semver/v3");
+    expect(encodeGoModulePath("github.com/BurntSushi/toml")).toBe("github.com/!burnt!sushi/toml");
+  });
+
+  test("all-lowercase paths pass through unchanged", () => {
+    expect(encodeGoModulePath("github.com/gorilla/websocket")).toBe("github.com/gorilla/websocket");
+  });
+
+  test("traversal defense still holds after case-encoding", () => {
+    expect(encodeGoModulePath("../../../Foo")).toBe("!foo");
   });
 });
 

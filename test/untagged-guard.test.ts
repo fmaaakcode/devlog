@@ -9,6 +9,7 @@ import { shouldNudgeUntagged, type UntaggedCheckInput } from "../src/untagged-gu
 
 const firing: UntaggedCheckInput = {
   codeWriteCount: 3,
+  trackingWriteCount: 0,
   sessionTagCount: 0,
   turnEntryCount: 0,
   stopHookActive: false,
@@ -27,6 +28,14 @@ describe("shouldNudgeUntagged", () => {
 
   test("silent when the session wrote no code (conversation-only)", () => {
     expect(shouldNudgeUntagged({ ...firing, codeWriteCount: 0 })).toBe(false);
+  });
+
+  test("fires on tracking files alone — the markdown-only Superpowers signature (#676)", () => {
+    expect(shouldNudgeUntagged({ ...firing, codeWriteCount: 0, trackingWriteCount: 2 })).toBe(true);
+  });
+
+  test("a single tracking file is enough", () => {
+    expect(shouldNudgeUntagged({ ...firing, codeWriteCount: 0, trackingWriteCount: 1 })).toBe(true);
   });
 
   test("silent when the session already stored tags (partial tagging is #558's counter, not this guard)", () => {

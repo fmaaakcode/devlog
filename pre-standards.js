@@ -49,13 +49,52 @@ for await (const chunk of Bun.stdin.stream()) raw += new TextDecoder().decode(ch
 let data;
 try { data = JSON.parse(raw); } catch { process.exit(0); }
 
-// Same off-switch as the Stop-hook check.
-if (process.env.DEVLOG_STANDARDS_CHECK === "0") process.exit(0);
-
 const filePath = data.tool_input?.file_path || "";
 const sessionId = data.session_id || "";
 const cwd = data.cwd || "";
 if (!sessionId || !filePath) process.exit(0);
+
+// ── Tracking-file gate ────────────────────────────────────────────────────────
+// Layer 1 of the tag-enforcement pair (layer 2 = the Stop-time untagged guard).
+// Writing a manual tracking file (tasks.md / TODO.md / decisions.md /
+// CHANGELOG.md / plans/*.md) duplicates a DevLog tag — the Superpowers
+// coexistence shape: a competing CLAUDE.md steers the model into files instead
+// of tags. Advisory, install-gate pattern: ack is written BEFORE the block, so
+// re-issuing the same write passes for the rest of the session — a deliberate
+// manual file stays possible; only the autopilot is interrupted. Independent of
+// the standards machinery below (own switch, no catalog needed, fail-open).
+if (process.env.DEVLOG_TRACKING_GATE !== "0") {
+  try {
+    const { isTrackingFile, trackingTagFor } = await import("./src/tracking-files.ts");
+    if (isTrackingFile(filePath)) {
+      const ackDir = join(import.meta.dir, ".devlog", "tracking-ack");
+      const safeSid = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+      const ackFile = join(ackDir, `${safeSid}-${Bun.hash(filePath.toLowerCase()).toString(36)}.txt`);
+      if (!existsSync(ackFile)) {
+        await mkdir(ackDir, { recursive: true });
+        await Bun.write(ackFile, String(Date.now())); // ack BEFORE block — a crash can only lose the nudge, never loop it
+        const LANG = (process.env.DEVLOG_LANG || "").trim().toLowerCase().startsWith("ar") ? "ar" : "en";
+        const L = (en, ar) => (LANG === "ar" ? ar : en);
+        const fileName = filePath.split(/[\\/]/).pop() || filePath;
+        const tag = trackingTagFor(filePath);
+        process.stderr.write(`${[
+          "════════ DevLog Tracking Gate ════════",
+          `📋 ${L(
+            `\`${fileName}\` is a manual tracking file — in a DevLog project this content is recorded as TAGS, not files: end your response with ${tag} lines instead.`,
+            `\`${fileName}\` ملف تتبع يدوي — في مشروع DevLog هذا المحتوى يُسجَّل تاقات لا ملفات: أنهِ ردّك بأسطر ${tag} بدلًا منه.`)}`,
+          L("Deliberate manual file? re-issue the SAME write — it passes for the rest of the session.",
+            "ملف يدوي مقصود؟ أعد الكتابة نفسها — ستمرّ لبقية الجلسة."),
+          L("(disable this gate: DEVLOG_TRACKING_GATE=0)", "(تعطيل البوابة: DEVLOG_TRACKING_GATE=0)"),
+          "══════════════════════════════════════",
+        ].join("\n")}\n`);
+        process.exit(2);
+      }
+    }
+  } catch { /* fail-open — the Stop-time guard is the backstop */ }
+}
+
+// Same off-switch as the Stop-hook check.
+if (process.env.DEVLOG_STANDARDS_CHECK === "0") process.exit(0);
 
 try {
   const { scanCatalog, isCodeWrite, inferCategories, gateWriteDecision, coveredCategories, readCategories, resolveContentTemplates, isEnforcementDisabled, AUTO_SERVED_PREFIX } =

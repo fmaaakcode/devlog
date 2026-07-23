@@ -11,12 +11,13 @@ Format: `-(tag) content` (case-sensitive). Append `!` after the tag for a breaki
 
 ## Enforcement (automated)
 
-Three hooks enforce these rules mechanically — you don't need to remember, the harness refuses to end the turn or run the command until you comply:
+These hooks enforce the rules mechanically — you don't need to remember, the harness refuses to end the turn or run the command until you comply:
 
 | Hook | Fires on | Blocks when |
 |---|---|---|
 | **Stop closure-check** | every turn end | a `-(built)` / `-(refactor)` fuzzy-matches an open `#N` and you didn't emit its closure. Exit 2 → re-respond with the closure. |
-| **Stop untagged-guard** | a tag-less turn end | code files were written this session and NOT ONE tag was ever stored for it. Blocks once per session — re-respond ending with tags that describe the work. Mute: `DEVLOG_UNTAGGED_CHECK=0`. |
+| **Stop untagged-guard** | a tag-less turn end | code files — or manual tracking files (tasks/TODO/decisions/CHANGELOG/plans `.md`) — were written this session and NOT ONE tag was ever stored for it. Blocks once per session — re-respond ending with tags that describe the work. Mute: `DEVLOG_UNTAGGED_CHECK=0`. |
+| **PreToolUse tracking-gate** | `Write`/`Edit` of a manual tracking file (`tasks.md`, `TODO.md`, `decisions.md`, `CHANGELOG.md`, `MEMORY.md`, `plans/*.md`) | always, once per file per session — that content IS a DevLog tag (`-(todo)`/`-(decision)`/`-(release)`/`-(doc:plan)`): record it as tags. Deliberate manual file? re-issue the SAME write — it passes. Ordinary docs (README etc.) never trip it. Mute: `DEVLOG_TRACKING_GATE=0`. |
 | **Stop release-guard** | `-(release)` / `-(release:*)` in your response | ANY open item exists (todo, bug, security, plan step). Refuses to persist the release. Close everything first, or `DEVLOG_RELEASE_GUARD=0` to override. |
 | **PreToolUse release-guard** | `gh release create` / `git tag -a v*` / `git push --tags` / `npm publish` / `cargo publish` | same rule; also injects the full since-last-release changelog. |
 
@@ -208,7 +209,8 @@ Before **adding a new dependency**, ask DevLog instead of researching versions y
 | Command | Use |
 |---|---|
 | `-(ask:lib) astro zod` | The exact version to install for each name (up to 8) |
-| `-(ask:lib) crates:serde pypi:requests` | Prefix overrides the project's ecosystem (`npm:`/`pypi:`/`crates:`) |
+| `-(ask:lib) crates:serde pypi:requests` | Prefix overrides the project's ecosystem (`npm:`/`pypi:`/`crates:`/`go:`) |
+| `-(ask:lib) go:github.com/jackc/pgx/v5` | Go takes the FULL module path (the import path) — short names are refused, never guessed. A full path routes to Go even without the prefix |
 
 The suggestion is the newest **stable** release **≥7 days old** (the dependency-maturity rule) that **OSV certifies clean** — vulnerable candidates are stepped past with the reason shown. Guarantees: never a pre-release, never a version younger than 7 days, never a knowingly vulnerable version (a package with no clean matured release is reported, not recommended), and never a near-miss name guess — an unknown name is refused (typo-squatting). If OSV doesn't answer, the maturity pick is flagged as carrying no security certificate. Then install with the returned command — don't substitute blind `@latest`.
 

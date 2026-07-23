@@ -81,6 +81,29 @@ function backoff(attempt: number): Promise<void> {
   return new Promise(r => setTimeout(r, 250 * (attempt + 1)));
 }
 
+// fetchJson's plain-text twin (same retry/404/UA discipline) for endpoints that
+// aren't JSON — the Go proxy's /@v/list is newline-separated versions. Capped:
+// an external payload is untrusted and a module with thousands of tags must not
+// ride into memory unbounded.
+const TEXT_CAP = 256 * 1024;
+async function fetchText(url: string): Promise<string | null> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const r = await fetch(url, {
+        signal: AbortSignal.timeout(8000),
+        headers: { "User-Agent": UA },
+      });
+      if (r.status === 404) return null;
+      if (!r.ok) { if (attempt < 2) { await backoff(attempt); continue; } return null; }
+      return (await r.text()).slice(0, TEXT_CAP);
+    } catch {
+      if (attempt < 2) { await backoff(attempt); continue; }
+      return null;
+    }
+  }
+  return null;
+}
+
 // Encode a multi-segment package name (go module path, packagist vendor/package)
 // for safe interpolation into a URL path. Keeps the `/` separators that the
 // registry format requires, percent-encodes each segment, and DROPS traversal
@@ -93,6 +116,17 @@ export function encodePkgPath(name: string): string {
     .filter(seg => seg && seg !== "." && seg !== "..")
     .map(encodeURIComponent)
     .join("/");
+}
+
+// The Go module proxy additionally case-encodes paths: every uppercase letter
+// becomes `!` + its lowercase (module escaping, golang.org/ref/mod#goproxy).
+// Without it any module with a capital in its path 404s and reads as "unknown
+// version" — proven live: github.com/Masterminds/semver/v3 → 404, while
+// github.com/!masterminds/semver/v3 → 200 (#675). `!` survives
+// encodeURIComponent untouched, so composing with encodePkgPath keeps the
+// traversal-segment defense (R4 sec L1).
+export function encodeGoModulePath(name: string): string {
+  return encodePkgPath(name.replace(/[A-Z]/g, c => `!${c.toLowerCase()}`));
 }
 
 // Query one registry for the latest STABLE version of a package, along with its
@@ -130,10 +164,9 @@ async function queryRegistry(ecosystem: string, name: string): Promise<VersionIn
       return { version, date, description: pkgDescription(j?.info?.summary) };
     }
     case "go": {
-      // Encode each path segment AND drop traversal segments (`.`/`..`/empty) so
-      // an untrusted module name from go.mod can't normalize the URL path —
-      // encodeURIComponent alone leaves `..` intact (`.` is unreserved) (R4 sec L1).
-      const enc = encodePkgPath(name);
+      // Case-encoding included (#675) on top of the traversal-segment defense:
+      // an uppercase module path sent verbatim 404s at the proxy (R4 sec L1).
+      const enc = encodeGoModulePath(name);
       const j = await fetchJson<GoProxyLatest>(`https://proxy.golang.org/${enc}/@latest`);
       const version = j?.Version ? String(j.Version).replace(/^v/, "") : null;
       return { version, date: j?.Time ?? null };
@@ -262,10 +295,34 @@ async function queryHistory(ecosystem: string, name: string): Promise<VersionEnt
       }
       return sortVersionsDesc(out);
     }
+    case "go": {
+      // Two-step by design (#674): /@v/list enumerates versions WITHOUT dates
+      // (plain text, unordered), then per-version .info supplies the publish
+      // time — priced at the TOP few candidates only (the advisor needs the
+      // latest + up to MAX_STEPBACK matured picks), never the full history.
+      const goEnc = encodeGoModulePath(name);
+      const list = await fetchText(`https://proxy.golang.org/${goEnc}/@v/list`);
+      if (!list) return [];
+      // Tagged stable releases only: vX.Y.Z exactly — prereleases, pseudo-
+      // versions (v0.0.0-2020…-abcdef) and +incompatible are not install advice.
+      const entries = list.split("\n")
+        .map(s => s.trim())
+        .filter(v => /^v\d+\.\d+\.\d+$/.test(v))
+        .map(v => ({ version: v.slice(1), date: null as string | null }));
+      const top = sortVersionsDesc(entries).slice(0, GO_INFO_LIMIT);
+      for (const e of top) {
+        const info = await fetchJson<GoProxyLatest>(`https://proxy.golang.org/${goEnc}/@v/v${e.version}.info`);
+        e.date = info?.Time ?? null;
+      }
+      return top;
+    }
     default:
-      return []; // go/packagist/vcpkg: no cheap full history → matured math skipped
+      return []; // packagist/vcpkg: no cheap full history → matured math skipped
   }
 }
+
+// How many Go versions get a per-version .info date fetch (see case "go").
+const GO_INFO_LIMIT = 8;
 
 const HIST_CACHE = new Map<string, { hist: VersionEntry[]; at: number }>();
 

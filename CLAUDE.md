@@ -31,8 +31,9 @@ Write the tag content in the user's language.
   capability to the past release that shipped it.
 - `-(ask:lib) <name…>` before adding a NEW dependency (up to 8 names): DevLog answers
   with the exact version to install — newest stable ≥7 days old, OSV-clean — so never
-  research versions yourself or install blind `@latest`. `npm:`/`pypi:`/`crates:`
-  prefix overrides the project ecosystem. Ephemeral, never a stored tag. Enforced by
+  research versions yourself or install blind `@latest`. `npm:`/`pypi:`/`crates:`/`go:`
+  prefix overrides the project ecosystem; Go takes the FULL module path
+  (`go:github.com/jackc/pgx/v5` — short names are refused, never guessed). Ephemeral, never a stored tag. Enforced by
   the PreToolUse install gate: blind `bun add X` is blocked with the advised pin;
   a deliberate pin passes on re-issue (one advisory block).
 - `-(lib) <name> — <غرض من سطر واحد>` after installing: records WHY the library is in

@@ -81,7 +81,7 @@
 
 ## Scan / vuln (`routes-scan.ts`)
 - `/api/vuln/:project` — run a vuln scan (GET)
-- `/api/lib-advice` — version advisor behind `-(ask:lib)` (GET, `?cwd=..&names=a,b,c`): per name, the newest stable release ≥7 days old that OSV certifies clean (`lib-advisor.ts`); vulnerable matured candidates are stepped past (bounded), unknown names refused exactly (no near-miss guesses), `npm:`/`pypi:`/`crates:` prefix overrides the cwd project's ecosystem. Read-only — no tags, no profile writes
+- `/api/lib-advice` — version advisor behind `-(ask:lib)` (GET, `?cwd=..&names=a,b,c`): per name, the newest stable release ≥7 days old that OSV certifies clean (`lib-advisor.ts`); vulnerable matured candidates are stepped past (bounded), unknown names refused exactly (no near-miss guesses), `npm:`/`pypi:`/`crates:`/`go:` prefix overrides the cwd project's ecosystem (Go: full module path required, short names refused). Read-only — no tags, no profile writes
 - `/api/install-override` — conscious override of a KNOWN-vulnerable pinned install (#630) (POST, `{cwd, pins:[{eco,name,version,text}]}`): the install gate's ack pass-through posts here so the accepted risk lands as an open numbered `security` tag immediately (scanner-format text → the sweep dedupes/supersedes/auto-closes it like its own). Unknown cwd → `ok:false` (fail-open)
 - `/api/check-stale/:project` — manifest-mtime staleness check (POST)
 - `/api/scan/:project` — full manual rescan (POST)

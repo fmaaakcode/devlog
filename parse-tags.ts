@@ -1021,7 +1021,8 @@ if (msg && cwd) {
 // release ≥7 days old (the dep-check maturity rule) that OSV certifies clean —
 // stepping past vulnerable candidates, refusing near-miss name guesses
 // (typo-squatting), and flagging an unanswered OSV honestly. Optional
-// `npm:`/`pypi:`/`crates:` prefix per name overrides the project's ecosystem.
+// `npm:`/`pypi:`/`crates:`/`go:` prefix per name overrides the project's ecosystem
+// (Go wants the full module path; a full path auto-routes to go even unprefixed).
 // Ephemeral like every ask: command — never a logged tag. Longer fetch timeout:
 // this one does registry + OSV round-trips per name (server caches both).
 if (msg && cwd) {
@@ -1055,7 +1056,14 @@ if (msg && cwd) {
             case "no-mature":
               return `  ${it.name} — ${L(`nothing matured yet: newest is ${it.latest}${age(it.latestAgeDays)}, under the 7-day rule. Wait or decide explicitly.`, `لا نسخة ناضجة بعد: الأحدث ${it.latest}${age(it.latestAgeDays)} تحت قاعدة الأيام السبعة. انتظر أو قرر صراحةً.`)}`;
             case "unsupported-eco":
-              return `  ${it.name} — ${L(`ecosystem "${it.eco || "?"}" not supported for version history (npm/pypi/crates only)`, `النظام "${it.eco || "?"}" غير مدعوم لتاريخ النسخ (npm/pypi/crates فقط)`)}`;
+              // Two honest messages, not one misleading blame (#673): an EMPTY
+              // eco means project detection failed — say that, and hand over
+              // the prefix escape hatch instead of "ecosystem ? not supported".
+              return it.eco
+                ? `  ${it.name} — ${L(`ecosystem "${it.eco}" not supported for version history (npm/pypi/crates/go only)`, `النظام "${it.eco}" غير مدعوم لتاريخ النسخ (npm/pypi/crates/go فقط)`)}`
+                : `  ${it.name} — ${L("could not detect this project's ecosystem — prefix the name and re-ask: npm:/pypi:/crates:/go:", "لم أتعرّف على نظام هذا المشروع — أضِف بادئة للاسم وأعد السؤال: npm:/pypi:/crates:/go:")}`;
+            case "need-full-path":
+              return `  ${it.name} — ${L("Go needs the FULL module path (e.g. go:github.com/jackc/pgx/v5) — the proxy knows no short names, and guessing one is typo-squatting territory. Re-ask with the import path.", "Go يتطلب مسار الوحدة الكامل (مثل go:github.com/jackc/pgx/v5) — البروكسي لا يعرف الأسماء القصيرة، وتخمينها باب typo-squatting. أعد السؤال بمسار الاستيراد.")}`;
             case "invalid-name":
               return `  ${it.name} — ${L("invalid package name — refused", "اسم حزمة غير صالح — مرفوض")}`;
             default:
@@ -1572,9 +1580,15 @@ if (cwd && sessionId && !stopHookActive && process.env.DEVLOG_UNTAGGED_CHECK !==
         } else {
           const { isCodeWrite } = await import("./src/standards.ts");
           const { shouldNudgeUntagged } = await import("./src/untagged-guard.ts");
+          const { isTrackingFile } = await import("./src/tracking-files.ts");
           const codeFiles = new Set(items.filter(it => isCodeWrite(it.file_path || "")).map(it => it.file_path));
+          // #676: manual tracking files (tasks/decisions/plans/… .md) count as a
+          // second trigger — they're the incident's own signature and invisible
+          // to isCodeWrite. Ordinary markdown still never trips the guard.
+          const trackingFiles = new Set(items.filter(it => isTrackingFile(it.file_path || "")).map(it => it.file_path));
           if (shouldNudgeUntagged({
             codeWriteCount: codeFiles.size,
+            trackingWriteCount: trackingFiles.size,
             sessionTagCount: tagCount,
             turnEntryCount,
             stopHookActive,
@@ -1585,16 +1599,21 @@ if (cwd && sessionId && !stopHookActive && process.env.DEVLOG_UNTAGGED_CHECK !==
             // nudge, never repeat it (the install-gate pattern).
             ledger.session.hintedUntagged = true;
             await saveLedger(ledgerFile, ledger);
+            const trackingLine = trackingFiles.size
+              ? [L(`🪧 ${trackingFiles.size} manual tracking file(s) (tasks/TODO/decisions/plans .md) were written — that content IS DevLog's job: record it as -(todo)/-(decision)/-(doc:plan) tags instead.`,
+                   `🪧 كُتبت ملفات تتبع يدوية (${trackingFiles.size} ملف — tasks/TODO/decisions/plans) — هذا المحتوى وظيفة DevLog نفسها: سجّله تاقات -(todo)/-(decision)/-(doc:plan) بدلًا منها.`)]
+              : [];
             const out = [
               "════════ DevLog Untagged Session ════════",
-              L(`🪧 ${codeFiles.size} code file(s) were written this session and NOT ONE DevLog tag was recorded — the work is undocumented.`,
-                `🪧 كُتب كود في هذه الجلسة (${codeFiles.size} ملف) دون تسجيل أي تاق DevLog — العمل غير موثَّق.`),
+              ...(codeFiles.size ? [L(`🪧 ${codeFiles.size} code file(s) were written this session and NOT ONE DevLog tag was recorded — the work is undocumented.`,
+                `🪧 كُتب كود في هذه الجلسة (${codeFiles.size} ملف) دون تسجيل أي تاق DevLog — العمل غير موثَّق.`)] : []),
+              ...trackingLine,
               L("End your response with tags describing what actually happened: -(built)/-(refactor) for the work, -(bug fix)/-(done) #N for what this finishes, -(decision)/-(insight) for what's worth keeping.",
                 "أنهِ ردّك بتاقات تصف ما جرى فعلًا: -(built)/-(refactor) للعمل، -(bug fix)/-(done) #N لما اكتمل، -(decision)/-(insight) لما يستحق البقاء."),
               L("(once per session; mute: DEVLOG_UNTAGGED_CHECK=0)", "(مرة واحدة لكل جلسة؛ كتم: DEVLOG_UNTAGGED_CHECK=0)"),
               "═════════════════════════════════════════",
             ].join("\n");
-            await log(`untagged-guard BLOCKED: code_files=${codeFiles.size}, session_tags=${tagCount}`);
+            await log(`untagged-guard BLOCKED: code_files=${codeFiles.size}, tracking_files=${trackingFiles.size}, session_tags=${tagCount}`);
             blockContinue(`\n${out}\n`);
           }
         }

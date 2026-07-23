@@ -20,10 +20,17 @@ import { osvEcosystem, scanPackages, type PkgVuln } from "./osv";
 const MAX_STEPBACK = 3;
 
 /** Ecosystems versionHistory can enumerate with dates (per-version history). */
-const HISTORY_ECOS = new Set(["npm", "pypi", "crates.io"]);
+const HISTORY_ECOS = new Set(["npm", "pypi", "crates.io", "go"]);
 
-/** Explicit per-name ecosystem override: `npm:astro`, `pypi:requests`, `crates:serde`. */
-const ECO_PREFIX: Record<string, string> = { npm: "npm", pypi: "pypi", crates: "crates.io" };
+/** Explicit per-name ecosystem override: `npm:astro`, `pypi:requests`, `crates:serde`, `go:github.com/x/y`. */
+const ECO_PREFIX: Record<string, string> = { npm: "npm", pypi: "pypi", crates: "crates.io", go: "go" };
+
+// A Go module path by spec: the first path element is a domain (contains a
+// dot) followed by more segments. Unambiguous against the other ecosystems —
+// unscoped npm names can't contain `/`, scoped ones start with `@` (excluded),
+// pypi/crates have no slashes — so a full module path routes to go even
+// without the `go:` prefix and without relying on project-ecosystem detection.
+const GO_MODULE_RE = /^[^/@]*\.[^/]*\//;
 
 // Conservative name charset (covers npm scopes, pypi, crates; 214 = npm's max
 // name length) — anything else is refused rather than URL-encoded into a query.
@@ -35,16 +42,18 @@ export interface LibRequest { name: string; eco?: string; pin?: string }
 // operators are "whatever resolves", not a checkable version.
 const FLOATING_PINS = new Set(["latest", "next", "canary", "beta", "alpha", "rc", "nightly"]);
 
-/** Split a trailing `@version` (npm/cargo) or `==version` (pip) off a name.
- *  `@` at index 0 is an npm scope, never a version split. */
+/** Split a trailing `@version` (npm/cargo/go) or `==version` (pip) off a name.
+ *  `@` at index 0 is an npm scope, never a version split. Go pins arrive
+ *  v-prefixed (`@v1.2.3`) — accepted and stored bare, matching the v-stripped
+ *  registry history and OSV's Go version format. */
 function splitPin(tok: string): { name: string; pin?: string } {
   const eq = tok.indexOf("==");
   if (eq > 0) return { name: tok.slice(0, eq), pin: tok.slice(eq + 2) };
   const at = tok.indexOf("@", 1);
   if (at < 0) return { name: tok };
   const pin = tok.slice(at + 1);
-  if (!pin || FLOATING_PINS.has(pin.toLowerCase()) || !/^[0-9]/.test(pin)) return { name: tok.slice(0, at) };
-  return { name: tok.slice(0, at), pin };
+  if (!pin || FLOATING_PINS.has(pin.toLowerCase()) || !/^v?[0-9]/.test(pin)) return { name: tok.slice(0, at) };
+  return { name: tok.slice(0, at), pin: pin.replace(/^v/, "") };
 }
 
 /** Split the raw `-(ask:lib)` argument into requests. Cap at 8 names per ask —
@@ -58,8 +67,10 @@ export function parseLibNames(raw: string): LibRequest[] {
   for (const tok of (raw || "").trim().split(/\s+/)) {
     if (!tok) continue;
     const m = tok.match(/^([a-z]+):(.+)$/);
-    const eco = m && ECO_PREFIX[m[1]] ? ECO_PREFIX[m[1]] : undefined;
+    let eco = m && ECO_PREFIX[m[1]] ? ECO_PREFIX[m[1]] : undefined;
     const { name, pin } = splitPin(eco && m ? m[2] : tok);
+    // Un-prefixed full Go module path → go, by shape alone (see GO_MODULE_RE).
+    if (!eco && GO_MODULE_RE.test(name)) eco = "go";
     out.push({ name, ...(eco ? { eco } : {}), ...(pin ? { pin } : {}) });
     if (out.length >= 8) break;
   }
@@ -69,7 +80,7 @@ export function parseLibNames(raw: string): LibRequest[] {
 export interface LibAdviceItem {
   name: string;
   eco: string;
-  verdict: "ok" | "ok-unverified" | "no-clean" | "no-mature" | "not-found" | "unsupported-eco" | "invalid-name";
+  verdict: "ok" | "ok-unverified" | "no-clean" | "no-mature" | "not-found" | "unsupported-eco" | "invalid-name" | "need-full-path";
   /** The exact version to install (ok / ok-unverified only). */
   suggest?: string;
   suggestAgeDays?: number | null;
@@ -119,6 +130,10 @@ export async function adviseLibraries(
     const base: LibAdviceItem = { name: req.name, eco, verdict: "not-found" };
     if (!NAME_RE.test(req.name)) { out.push({ ...base, verdict: "invalid-name" }); continue; }
     if (!HISTORY_ECOS.has(eco)) { out.push({ ...base, verdict: "unsupported-eco" }); continue; }
+    // Go: the proxy only knows FULL module paths (`github.com/jackc/pgx/v5`) —
+    // a short name (`pgx`) is refused explicitly rather than searched-and-
+    // guessed (#674's recorded call: name guessing is typo-squatting territory).
+    if (eco === "go" && !GO_MODULE_RE.test(req.name)) { out.push({ ...base, verdict: "need-full-path" }); continue; }
 
     // Exact name only — a near-miss suggestion is a typo-squatting foot-gun, so a
     // miss stays a miss. [] also covers a transient lookup failure; the message
@@ -205,5 +220,6 @@ export function installCmd(eco: string, name: string, version: string): string {
   if (eco === "npm") return `bun add ${name}@${version}`;
   if (eco === "pypi") return `pip install ${name}==${version}`;
   if (eco === "crates.io") return `cargo add ${name}@${version}`;
+  if (eco === "go") return `go get ${name}@v${version}`; // history stores versions v-stripped; go tooling wants the v back
   return `${name}@${version}`;
 }

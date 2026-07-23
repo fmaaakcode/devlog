@@ -51,7 +51,7 @@ export function makeScanRoutes({ checkAndRescanIfStale }: ScanRouteDeps): Record
     // Library-version advisor (`-(ask:lib)`): the exact version to install —
     // newest stable ≥7 days old that OSV certifies clean. Read-only, touches no
     // tags/profile. Default ecosystem comes from the cwd's project language; an
-    // explicit `npm:`/`pypi:`/`crates:` prefix on a name overrides it, so the
+    // explicit `npm:`/`pypi:`/`crates:`/`go:` prefix on a name overrides it, so the
     // advisor works even from an unregistered cwd when every name is prefixed.
     "/api/lib-advice": {
       async GET(req: ApiReq) {

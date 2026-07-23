@@ -119,6 +119,37 @@ describe("queryHistory — stable-only, newest-first", () => {
     const h = await versionHistory("crates.io", "hist-crate");
     expect(h.map(e => e.version)).toEqual(["1.0.0"]);
   });
+
+  test("go: /@v/list (plain text) filtered to tagged stables, dates from per-version .info, newest first (#674)", async () => {
+    // /@v/list is NOT JSON — route it raw; .info responses stay JSON.
+    globalThis.fetch = (async (input: unknown) => {
+      const url = String(input);
+      if (url.endsWith("example.com/hist-go/@v/list"))
+        return new Response("v1.0.0\nv1.2.0\nv1.1.0\nv2.0.0-beta\nv0.0.0-20240101000000-abcdef123456\n");
+      const m = url.match(/hist-go\/@v\/v(\d+\.\d+\.\d+)\.info$/);
+      if (m) return new Response(JSON.stringify({ Version: `v${m[1]}`, Time: `2026-0${m[1][0]}-01T00:00:00Z` }));
+      return new Response("nf", { status: 404 });
+    }) as unknown as typeof fetch;
+    const h = await versionHistory("go", "example.com/hist-go");
+    expect(h.map(e => e.version)).toEqual(["1.2.0", "1.1.0", "1.0.0"]); // prerelease + pseudo-version dropped, sorted desc
+    expect(h[0].date).toBe("2026-01-01T00:00:00Z");
+    expect(h.every(e => e.date != null)).toBe(true);
+  });
+
+  test("go: history requests are case-encoded — Masterminds → !masterminds (#675)", async () => {
+    const urls: string[] = [];
+    globalThis.fetch = (async (input: unknown) => {
+      const url = String(input);
+      urls.push(url);
+      if (url.includes("/@v/list")) return new Response("v3.4.0\n");
+      if (url.includes(".info")) return new Response(JSON.stringify({ Time: "2026-01-01T00:00:00Z" }));
+      return new Response("nf", { status: 404 });
+    }) as unknown as typeof fetch;
+    const h = await versionHistory("go", "github.com/Masterminds/semver-hist/v3");
+    expect(h.map(e => e.version)).toEqual(["3.4.0"]);
+    expect(urls[0]).toContain("github.com/!masterminds/semver-hist/v3/@v/list");
+    expect(urls.some(u => u.includes("!masterminds") && u.endsWith("/@v/v3.4.0.info"))).toBe(true);
+  });
 });
 
 describe("queryToolchain — per-language authoritative source", () => {

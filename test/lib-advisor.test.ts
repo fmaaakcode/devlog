@@ -99,8 +99,23 @@ describe("adviseLibraries — the maturity + security pick", () => {
 
   test("unsupported default ecosystem → unsupported-eco (no guessing across registries)", async () => {
     const deps = fakeDeps({ mylib: hist(["1.0.0", 30]) }, (_n, v) => clean(v));
-    const [it] = await adviseLibraries("go", [{ name: "mylib" }], deps);
+    const [it] = await adviseLibraries("maven", [{ name: "mylib" }], deps);
     expect(it.verdict).toBe("unsupported-eco");
+  });
+
+  test("go with a short name → need-full-path, explicit refusal over guessing (#674)", async () => {
+    const deps = fakeDeps({ pgx: hist(["5.7.0", 30]) }, (_n, v) => clean(v));
+    const [it] = await adviseLibraries("go", [{ name: "pgx" }], deps);
+    expect(it.verdict).toBe("need-full-path");
+    expect(it.suggest).toBeUndefined();
+  });
+
+  test("go with a full module path → normal maturity + OSV advice", async () => {
+    const deps = fakeDeps({ "github.com/gorilla/websocket": hist(["1.5.3", 200], ["1.5.2", 400]) }, (_n, v) => clean(v));
+    const [it] = await adviseLibraries("go", [{ name: "github.com/gorilla/websocket" }], deps);
+    expect(it.verdict).toBe("ok");
+    expect(it.suggest).toBe("1.5.3");
+    expect(it.eco).toBe("go");
   });
 
   test("per-name prefix overrides the default ecosystem", async () => {
@@ -145,6 +160,30 @@ describe("parseLibNames", () => {
   test("floating tags and range operators never count as a pin", () => {
     expect(parseLibNames("lodash@latest")).toEqual([{ name: "lodash" }]);
     expect(parseLibNames("lodash@^4.17.20")).toEqual([{ name: "lodash" }]);
+  });
+
+  test("go: prefix routes to the go ecosystem", () => {
+    expect(parseLibNames("go:github.com/jackc/pgx/v5")).toEqual([
+      { name: "github.com/jackc/pgx/v5", eco: "go" },
+    ]);
+  });
+
+  test("an unprefixed FULL module path auto-routes to go — dotted first segment + slash is Go by spec", () => {
+    expect(parseLibNames("github.com/gorilla/websocket")).toEqual([
+      { name: "github.com/gorilla/websocket", eco: "go" },
+    ]);
+    // no slash (npm dotted names) and scoped npm names stay untouched
+    expect(parseLibNames("socket.io")).toEqual([{ name: "socket.io" }]);
+    expect(parseLibNames("@scope.x/pkg")).toEqual([{ name: "@scope.x/pkg" }]);
+  });
+
+  test("a v-prefixed pin (go convention) is accepted and stored bare", () => {
+    expect(parseLibNames("go:github.com/jackc/pgx/v5@v5.7.0")).toEqual([
+      { name: "github.com/jackc/pgx/v5", eco: "go", pin: "5.7.0" },
+    ]);
+    expect(parseLibNames("github.com/gorilla/websocket@v1.5.3")).toEqual([
+      { name: "github.com/gorilla/websocket", eco: "go", pin: "1.5.3" },
+    ]);
   });
 });
 
@@ -221,5 +260,6 @@ describe("installCmd", () => {
     expect(installCmd("npm", "astro", "7.0.7")).toBe("bun add astro@7.0.7");
     expect(installCmd("pypi", "requests", "2.32.0")).toBe("pip install requests==2.32.0");
     expect(installCmd("crates.io", "serde", "1.0.219")).toBe("cargo add serde@1.0.219");
+    expect(installCmd("go", "github.com/gorilla/websocket", "1.5.3")).toBe("go get github.com/gorilla/websocket@v1.5.3");
   });
 });

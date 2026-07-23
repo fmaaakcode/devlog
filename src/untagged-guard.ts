@@ -9,7 +9,11 @@
 // possible.
 //
 // Deliberately narrow so conversation-only sessions never see it:
-//   · fires only when actual CODE files were written this session
+//   · fires only when actual CODE files were written this session — or manual
+//     TRACKING files (tracking-files.ts, #676): the incident's own signature is
+//     markdown-only (tasks/decisions/plans), which isCodeWrite excludes, so
+//     without this second trigger the guard was blind to the very case that
+//     motivated it. Ordinary .md (README, docs) still never counts.
 //   · only when the session stored ZERO tags AND this response carries none
 //   · once per session (ledger flag, acked BEFORE the block — install-gate
 //     pattern — so a crash can't re-fire it), never a blocking loop
@@ -22,6 +26,8 @@
 export interface UntaggedCheckInput {
   /** Distinct code files (isCodeWrite) changed/created this session. */
   codeWriteCount: number;
+  /** Distinct manual tracking files (isTrackingFile) written this session (#676). */
+  trackingWriteCount: number;
   /** Tags already stored server-side for this session. */
   sessionTagCount: number;
   /** Tag entries parsed from the CURRENT response. */
@@ -37,5 +43,5 @@ export interface UntaggedCheckInput {
 export function shouldNudgeUntagged(i: UntaggedCheckInput): boolean {
   if (i.disabled || i.stopHookActive || i.alreadyHinted) return false;
   if (i.turnEntryCount > 0 || i.sessionTagCount > 0) return false;
-  return i.codeWriteCount >= 1;
+  return i.codeWriteCount >= 1 || i.trackingWriteCount >= 1;
 }
