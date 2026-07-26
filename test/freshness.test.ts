@@ -4,7 +4,7 @@
 // macOS.
 
 import { test, expect, describe, afterEach } from "bun:test";
-import { isStale, isMutatingRequest, newestSourceMtime, shouldAutoRestart, staleInjectWarning, criticalEnv, envDrift, foreignRootWarning } from "../src/freshness";
+import { isStale, isMutatingRequest, newestSourceMtime, shouldAutoRestart, staleInjectWarning, criticalEnv, envDrift, foreignRootWarning, isPluginCacheRoot } from "../src/freshness";
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -43,6 +43,58 @@ describe("foreign-rooted daemon (#600)", () => {
 
   test("no hook root advertised (older hook) → silent, never a false alarm", () => {
     expect(foreignRootWarning("D:/helper", "")).toBeNull();
+  });
+
+  test("plugin-vs-plugin version mismatch → dedicated wording naming both roots", () => {
+    const daemon = "C:\\Users\\x\\.claude\\plugins\\cache\\devlog\\devlog\\3.25.0";
+    const hook = "/c/users/x/.claude/plugins/cache/devlog/devlog/3.26.0";
+    const w = foreignRootWarning(daemon, hook);
+    expect(w).not.toBeNull();
+    expect(w).toContain("3.25.0");
+    expect(w).toContain("3.26.0");
+    // The generic "restart from this root" dev wording is wrong here — the fix
+    // is killing the old plugin daemon, and the message must say so.
+    expect(w!.includes("plugin version") || w!.includes("نسخة إضافة")).toBe(true);
+  });
+
+  test("isPluginCacheRoot tells cache paths from dev trees, either slash direction", () => {
+    expect(isPluginCacheRoot("C:\\Users\\x\\.claude\\plugins\\cache\\devlog\\devlog\\3.25.0")).toBe(true);
+    expect(isPluginCacheRoot("/c/users/x/.claude/plugins/cache/devlog/devlog/3.26.0")).toBe(true);
+    expect(isPluginCacheRoot("D:/helper")).toBe(false);
+    expect(isPluginCacheRoot("")).toBe(false);
+  });
+});
+
+// The inject-warnings gate (#600 exemption, narrowed): plugin sessions stay
+// silent about a dev-rooted daemon (deliberate setup) but MUST warn when the
+// daemon is an older plugin version — the blanket exemption used to silence
+// exactly the live 2026-07-23 failure (3.25.0 daemon under a 3.26.0 session).
+describe("foreign-root warning gate for plugin sessions", () => {
+  const baseCtx = {
+    bootMs: 0, transcriptPath: "", sessionId: "gate-test", project: "",
+  };
+
+  test("plugin session + plugin-vs-plugin mismatch → warns", async () => {
+    const { injectSystemMessages } = await import("../src/inject-warnings");
+    const msg = await injectSystemMessages("SessionStart", {
+      ...baseCtx,
+      root: "C:\\Users\\x\\.claude\\plugins\\cache\\devlog\\devlog\\3.25.0",
+      hookRoot: "C:\\Users\\x\\.claude\\plugins\\cache\\devlog\\devlog\\3.26.0",
+      plugin: true,
+    });
+    expect(msg).not.toBeNull();
+    expect(msg).toContain("3.25.0");
+  });
+
+  test("plugin session + dev-rooted daemon → still silent (deliberate dev setup)", async () => {
+    const { injectSystemMessages } = await import("../src/inject-warnings");
+    const msg = await injectSystemMessages("SessionStart", {
+      ...baseCtx,
+      root: "D:/helper",
+      hookRoot: "C:\\Users\\x\\.claude\\plugins\\cache\\devlog\\devlog\\3.26.0",
+      plugin: true,
+    });
+    expect(msg ?? "").not.toContain("D:/helper");
   });
 });
 

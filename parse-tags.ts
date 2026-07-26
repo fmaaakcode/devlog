@@ -647,6 +647,46 @@ if (msg) {
               await log(`verify-hint: suppressed (already hinted this session)`);
             }
           }
+          // Regression-test nudge (#683): a bug fix / security fix closed, tests
+          // ran green, but the session never wrote a test file — the fix shipped
+          // without a regression test (the retro's 3/41 stat). Informational
+          // only, once per session. Mute with DEVLOG_REGRESSION_HINT=0.
+          if (resp.regressionHint && Array.isArray(resp.regressionHint.closers) && resp.regressionHint.closers.length
+              && process.env.DEVLOG_REGRESSION_HINT !== "0") {
+            if (!ledger.session.hintedRegression) {
+              const verbs = [...new Set(resp.regressionHint.closers.map((c: any) => c.tag))].join("/");
+              feedback.push(`\n[devlog regression]\n${L(
+                `💡 You closed (${verbs}) but this session never touched a test file — a fix without a regression test can silently break again. Add a test that pins the fix.`,
+                `💡 أغلقتَ (${verbs}) وهذه الجلسة لم تلمس أي ملف اختبار — إصلاح بلا اختبار انحدار قد يعود دون أن ينتبه أحد. أضِف اختبارًا يثبّت الإصلاح.`)}\n`);
+              ledger.session.hintedRegression = true;
+              await saveLedger(ledgerFile, ledger);
+              await log(`regression-hint: ${resp.regressionHint.closers.length} fix closer(s), no test file written`);
+            } else {
+              await log(`regression-hint: suppressed (already hinted this session)`);
+            }
+          }
+          // Pattern-sweep nudge (#682): the bug just fixed resembles previously
+          // closed bugs — a recurring pattern family (the retro counted the same
+          // defect re-fixed module by module three times). Push a same-pattern
+          // sweep across the rest of the code while the fix is fresh. Once per
+          // session; mute with DEVLOG_SWEEP_HINT=0.
+          if (resp.sweepHint && Array.isArray(resp.sweepHint.similar) && resp.sweepHint.similar.length
+              && process.env.DEVLOG_SWEEP_HINT !== "0") {
+            if (!ledger.session.hintedSweep) {
+              const sibs = resp.sweepHint.similar.map((s: any) =>
+                `· ${s.num != null ? `#${s.num} ` : ""}«${s.text}»${s.closerFiles?.length ? ` — ${s.closerFiles.join(" · ")}` : ""}`);
+              feedback.push(`\n[devlog sweep]\n${L(
+                `🔁 The bug you fixed (#${resp.sweepHint.num}) resembles previously closed bugs — a recurring pattern:`,
+                `🔁 العلة التي أصلحتها (#${resp.sweepHint.num}) تشبه عللًا مغلقة سابقًا — نمط متكرر:`)}\n${sibs.join("\n")}\n${L(
+                "Sweep the same pattern across the OTHER modules now, while the fix is fresh — the log shows this class of bug returns elsewhere.",
+                "امسح نفس النمط في بقية الوحدات الآن والإصلاح طازج — السجل يُظهر أن هذا الصنف من العلل يعود في مواضع أخرى.")}\n`);
+              ledger.session.hintedSweep = true;
+              await saveLedger(ledgerFile, ledger);
+              await log(`sweep-hint: #${resp.sweepHint.num} ~ ${resp.sweepHint.similar.length} sibling(s)`);
+            } else {
+              await log(`sweep-hint: suppressed (already hinted this session)`);
+            }
+          }
           // Closure text divergence (#315): the closure APPLIED (valid number +
           // verb), but the trailing description shares no token with the item #N
           // is about — a likely wrong-but-compatible number (the #310/#311 slip).
@@ -885,16 +925,38 @@ const strippedMsg = msg
   .replace(/```[\s\S]*?```/g, (s: string) => " ".repeat(s.length))
   .replace(/`[^`\n]*`/g, (s: string) => " ".repeat(s.length));
 
+// One `.match()` per command was blind past the FIRST occurrence: the scanned
+// text spans the WHOLE turn (every continuation segment), so after a served ask
+// blocked and Claude re-emitted the command with corrected arguments — exactly
+// what the advisor's refusal messages instruct — the first match was the
+// already-served original and the correction was never even parsed (silently
+// swallowed; #343's cousin one layer up: the guard moved to the ledger but the
+// scan still stopped at occurrence one). Scan ALL occurrences instead and hand
+// back the ones still unserved this turn; callers serve the first (blockContinue
+// exits per serve, so the next hook run picks up the next one) or, for ask:lib,
+// merge them into a single query.
+async function unservedMatches(re: RegExp, toCmd: (m: RegExpMatchArray) => string): Promise<{ m: RegExpMatchArray; cmd: string }[]> {
+  const out: { m: RegExpMatchArray; cmd: string }[] = [];
+  const seen = new Set<string>();
+  for (const m of strippedMsg.matchAll(re)) {
+    const cmd = toCmd(m);
+    if (seen.has(cmd)) continue;
+    seen.add(cmd);
+    if (await shouldServeAsk(cmd)) out.push({ m, cmd });
+  }
+  return out;
+}
+
 if (msg && cwd) {
   try {
-    const m = strippedMsg.match(/^[ \t]*-\(audit\)(?:[ \t]+([^\n]+))?[ \t]*$/m);
-    const cmd = m ? `audit${m[1] ? ` ${m[1].trim()}` : ""}` : "";
-    if (m && await shouldServeAsk(cmd)) {
-      const arg = (m[1] || "").trim();
+    const [hit] = await unservedMatches(/^[ \t]*-\(audit\)(?:[ \t]+([^\n]+))?[ \t]*$/gm,
+      mm => `audit${mm[1] ? ` ${mm[1].trim()}` : ""}`);
+    if (hit) {
+      const arg = (hit.m[1] || "").trim();
       const qs = `cwd=${encodeURIComponent(cwd)}${arg ? `&pkg=${encodeURIComponent(arg)}` : ""}`;
       const r = await fetch(`${SERVER}/api/audit?${qs}`, { signal: AbortSignal.timeout(120000) });
       if (r.ok) {
-        await markAskServed(cmd);   // record only now the fetch succeeded (#398)
+        await markAskServed(hit.cmd);   // record only now the fetch succeeded (#398)
         const report = await r.text();
         await log(`audit: served (${arg || "all"})`);
         if (report.trim()) {
@@ -970,14 +1032,14 @@ if (msg && cwd) {
 // storage). Re-runnable across turns via per-turn command dedup (shouldServeAsk).
 if (msg && cwd) {
   try {
-    const m = strippedMsg.match(/^[ \t]*-\(ask:closed\)(?:[ \t]+#(\d+))?[ \t]*$/m);
-    const cmd = m ? `ask:closed${m[1] ? ` #${m[1]}` : ""}` : "";
-    if (m && await shouldServeAsk(cmd)) {
-      const num = m[1];
+    const [hit] = await unservedMatches(/^[ \t]*-\(ask:closed\)(?:[ \t]+#(\d+))?[ \t]*$/gm,
+      mm => `ask:closed${mm[1] ? ` #${mm[1]}` : ""}`);
+    if (hit) {
+      const num = hit.m[1];
       const qs = `cwd=${encodeURIComponent(cwd)}${num ? `&num=${num}` : ""}`;
       const r = await fetch(`${SERVER}/api/closed-items?${qs}`, { signal: AbortSignal.timeout(10000) });
       if (r.ok) {
-        await markAskServed(cmd);   // record only now the fetch succeeded (#398)
+        await markAskServed(hit.cmd);   // record only now the fetch succeeded (#398)
         const { items = [] } = await r.json() as { items?: any[] };
         const when = (it: any) => it.closedAt
           ? it.closedAt.slice(0, 16).replace("T", " ")
@@ -1027,13 +1089,17 @@ if (msg && cwd) {
 // this one does registry + OSV round-trips per name (server caches both).
 if (msg && cwd) {
   try {
-    const m = strippedMsg.match(/^[ \t]*-\(ask:lib\)[ \t]+(\S[^\n]*?)[ \t]*$/m);
-    const cmd = m ? `ask:lib ${m[1]}` : "";
-    if (m && await shouldServeAsk(cmd)) {
-      const r = await fetch(`${SERVER}/api/lib-advice?cwd=${encodeURIComponent(cwd)}&names=${encodeURIComponent(m[1])}`,
+    const hits = await unservedMatches(/^[ \t]*-\(ask:lib\)[ \t]+(\S[^\n]*?)[ \t]*$/gm, mm => `ask:lib ${mm[1]}`);
+    if (hits.length) {
+      // Several `-(ask:lib)` lines in one turn (or a corrected re-ask after a
+      // refusal) merge into ONE query — the server caps at 8 names, and each
+      // line is marked served individually so a later continuation never
+      // re-serves a line that already rode this batch.
+      const names = hits.map(h => h.m[1]).join(" ");
+      const r = await fetch(`${SERVER}/api/lib-advice?cwd=${encodeURIComponent(cwd)}&names=${encodeURIComponent(names)}`,
         { signal: AbortSignal.timeout(25000) });
       if (r.ok) {
-        await markAskServed(cmd);   // record only now the fetch succeeded (#398)
+        for (const h of hits) await markAskServed(h.cmd);   // record only now the fetch succeeded (#398)
         const { items = [] } = await r.json() as { items?: any[] };
         const age = (d: any) => (typeof d === "number") ? L(` (${d}d old)`, ` (عمرها ${d} يوم)`) : "";
         const lines = items.map((it: any) => {
@@ -1096,10 +1162,9 @@ if (msg && cwd) {
 // project. Ephemeral like every ask: command — never a logged tag.
 if (msg && cwd) {
   try {
-    const m = strippedMsg.match(/^[ \t]*-\(ask:search\)[ \t]+(\S[^\n]*?)[ \t]*$/m);
-    const cmd = m ? `ask:search ${m[1]}` : "";
-    if (m && await shouldServeAsk(cmd)) {
-      let q = m[1];
+    const [hit] = await unservedMatches(/^[ \t]*-\(ask:search\)[ \t]+(\S[^\n]*?)[ \t]*$/gm, mm => `ask:search ${mm[1]}`);
+    if (hit) {
+      let q = hit.m[1];
       let all = false;
       const am = q.match(/^all:[ \t]*(.*)$/);
       if (am) { all = true; q = am[1]; }
@@ -1108,7 +1173,7 @@ if (msg && cwd) {
           `${SERVER}/api/recall?cwd=${encodeURIComponent(cwd)}&q=${encodeURIComponent(q)}${all ? "&all=1" : ""}`,
           { signal: AbortSignal.timeout(10000) });
         if (r.ok) {
-          await markAskServed(cmd);
+          await markAskServed(hit.cmd);
           const { results = [] } = await r.json() as { results?: any[] };
           const lines = results.map((res: any) => {
             const num = typeof res.num === "number" ? ` #${res.num}` : "";

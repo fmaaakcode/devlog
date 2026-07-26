@@ -11,7 +11,7 @@
 // was piling the third, fourth… warning into doInject, which is precisely the
 // growth path the file-size ratchet exists to make painful.
 
-import { staleInjectWarning, foreignRootWarning } from "./freshness";
+import { staleInjectWarning, foreignRootWarning, isPluginCacheRoot } from "./freshness";
 import { canaryWarningOnce } from "./transcript-canary";
 import { integrityWarning } from "./doctor-invariants";
 import { loadData } from "./data";
@@ -31,7 +31,8 @@ export interface InjectWarningCtx {
    *  older hooks. Compared against `root` for the foreign-daemon check (#600). */
   hookRoot?: string;
   /** Plugin-delivered session (?plugin=1) — suppresses the foreign-root
-   *  warning: a plugin hook probing a dev-rooted daemon is deliberate. */
+   *  warning for a DEV-rooted daemon only (a plugin hook probing a dev daemon
+   *  is deliberate); a plugin-vs-plugin root mismatch still warns. */
   plugin?: boolean;
 }
 
@@ -50,9 +51,14 @@ export async function injectSystemMessages(type: string, ctx: InjectWarningCtx):
   // one whose hook is probing — the failure the stale check below is structurally
   // blind to (its own sources never change). First because it supersedes
   // staleness: "wrong tree entirely" matters more than "old code of the right
-  // tree". SessionStart only, and never for plugin sessions (their hook root is
-  // the plugin dir by nature while a dev daemon is a deliberate choice).
-  if (type === "SessionStart" && !ctx.plugin) {
+  // tree". SessionStart only. Plugin sessions are exempt ONLY for a dev-rooted
+  // daemon (their hook root is the plugin dir by nature while a dev daemon is a
+  // deliberate choice) — when BOTH roots are plugin-cache paths the mismatch is
+  // a stale plugin daemon a plugin update left behind, and the blanket
+  // exemption used to silence exactly that (2026-07-23: 3.25.0 daemon serving
+  // a 3.26.0 session, zero warning).
+  if (type === "SessionStart"
+      && (!ctx.plugin || (isPluginCacheRoot(ctx.root) && isPluginCacheRoot(ctx.hookRoot || "")))) {
     try {
       const w = foreignRootWarning(ctx.root, ctx.hookRoot || "");
       if (w) out.push(w);

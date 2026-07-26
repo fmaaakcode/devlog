@@ -66,6 +66,57 @@ export function lastCodeMutationMs(events: EventEntry[], sessionId: string): num
   return last;
 }
 
+// ── Regression-test nudge (#683) ─────────────────────────────────────────────
+// The verify nudge above asks "did the suite RUN green after the edits?"; this
+// one asks the retro's question (3/41 known fixes touched a test): did the fix
+// COME WITH a test? A green run proves the old suite still passes — it says
+// nothing about the fixed bug staying fixed. Scope is bug fix / security fix
+// only: a done'd todo is often not test-shaped, a fixed bug always is.
+
+// Test files by path convention: test/tests/__tests__/spec directories,
+// `.test.` / `.spec.` / `_test.` suffixes, and pytest's `test_*.py`. Inline
+// test blocks (Rust `#[cfg(test)]`) are invisible to a path heuristic — the
+// hint is advisory and muteable, so a rare false nudge beats parsing sources.
+const TEST_FILE_RE =
+  /(^|[\\/])(tests?|__tests__|spec)[\\/]|[._-](test|spec)\.[a-z]+$|(^|[\\/])test_[^\\/]+\.py$/i;
+
+export function isTestFile(path: string): boolean {
+  return TEST_FILE_RE.test(path || "");
+}
+
+/** True if any write event in this session touched a test file. */
+export function sessionWroteTests(events: EventEntry[], sessionId: string): boolean {
+  if (!sessionId) return false;
+  return events.some(e =>
+    e.session_id === sessionId &&
+    (e.type === "change" || e.type === "create") &&
+    isTestFile(e.file_path || ""));
+}
+
+const FIX_CLOSERS = new Set(["bug fix", "security fix"]);
+
+export interface RegressionHint {
+  closers: { tag: string; content: string }[];
+}
+
+/**
+ * Returns the fix closers in `entries` when this session never wrote a test
+ * file — the "fixed without a regression test" case — or null when it did (or
+ * nothing fix-shaped closed). Callers compose it AFTER verifyHintFor: when no
+ * test even ran, the verify nudge already covers the turn and stacking a
+ * second hint on the same closure would be noise.
+ */
+export function regressionHintFor(
+  entries: { tag: string; content: string }[],
+  events: EventEntry[],
+  sessionId: string,
+): RegressionHint | null {
+  const closers = entries.filter(e => FIX_CLOSERS.has(e.tag));
+  if (!closers.length || !sessionId) return null;
+  if (sessionWroteTests(events, sessionId)) return null;
+  return { closers: closers.map(e => ({ tag: e.tag, content: e.content })) };
+}
+
 /**
  * Returns the closers in `entries` that warrant a verify nudge, with the reason
  * — or null when the session holds real evidence: at least one test run at or

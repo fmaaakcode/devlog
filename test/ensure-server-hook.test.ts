@@ -215,3 +215,114 @@ describe.skipIf(!BASH)("ensure-server.sh inject passthrough (live server)", () =
     expect(parsed.hookSpecificOutput.hookEventName).toBeDefined();
   });
 });
+
+// Plugin-update takeover: a plugin update never restarts the daemon, so the old
+// version keeps the port and issues stale verdicts under current-version hooks
+// (live 2026-07-23: a 3.25.0 daemon refused a 3.26.0 session's go: asks). The
+// script must kill a port-holding daemon ONLY when both its own root and the
+// daemon's root are plugin-cache paths of different versions — a dev-rooted
+// daemon stays untouched. The fake daemon below serves /api/ping and
+// /api/daemon-id with a scripted root; --self-root is the test seam for the
+// script's own root (argv, same rationale as --bun-home).
+describe.skipIf(!BASH)("ensure-server.sh plugin-update takeover", () => {
+  const CACHE_A = "C:/Users/x/.claude/plugins/cache/devlog/devlog/1.0.0";
+
+  function spawnFakeDaemon(port: number, root: string): Subprocess {
+    return spawn({
+      cmd: ["bun", "-e", `
+        Bun.serve({ port: ${port}, fetch(req) {
+          const p = new URL(req.url).pathname;
+          if (p === "/api/ping") return new Response("ok");
+          if (p === "/api/daemon-id") return Response.json({ pid: process.pid, root: ${JSON.stringify(root)}, port: ${port} });
+          return new Response("nf", { status: 404 });
+        }});
+      `],
+      cwd: PROJECT_ROOT,
+      stdout: "pipe", stderr: "pipe",
+    });
+  }
+  async function waitPing(port: number): Promise<void> {
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      try { if ((await fetch(`http://127.0.0.1:${port}/api/ping`, { signal: AbortSignal.timeout(500) })).ok) return; } catch { /* not up yet */ }
+      await Bun.sleep(100);
+    }
+    throw new Error("fake daemon never came up");
+  }
+  // A plugin-cache-SHAPED temp root with no src/server.ts inside: the takeover's
+  // respawn attempt no-ops harmlessly instead of launching a real server.
+  function makeCacheRoot(version: string): string {
+    const base = mkdtempSync(join(tmpdir(), "ensure-takeover-"));
+    const root = join(base, "plugins", "cache", "devlog", "devlog", version);
+    mkdirSync(root, { recursive: true });
+    return root;
+  }
+
+  test("daemon from a DIFFERENT plugin-cache version is killed", async () => {
+    const port = 17916;
+    const fake = spawnFakeDaemon(port, CACHE_A);
+    const selfRoot = makeCacheRoot("2.0.0");
+    try {
+      await waitPing(port);
+      const { code, err } = await runScript({
+        env: { DEVLOG_PORT: String(port), DEVLOG_DEBUG: "1" },
+        args: ["--plugin", "--self-root", msysPath(selfRoot)],
+        payload: JSON.stringify({ hook_event_name: "SessionStart", session_id: "takeover-e2e", cwd: PROJECT_ROOT }),
+      });
+      expect(code).toBe(0);
+      expect(err).toContain("takeover: stale plugin daemon");
+      const died = await Promise.race([fake.exited.then(() => true), Bun.sleep(6000).then(() => false)]);
+      expect(died).toBe(true);
+    } finally {
+      try { fake.kill(); } catch { /* already dead — the point */ }
+      rmSync(join(selfRoot, "..", "..", "..", "..", ".."), { recursive: true, force: true });
+    }
+  }, 30000);
+
+  test("dev-rooted daemon is NEVER touched by a plugin hook (deliberate setup)", async () => {
+    const port = 17917;
+    const fake = spawnFakeDaemon(port, "D:/some/dev/tree");
+    const selfRoot = makeCacheRoot("2.0.0");
+    try {
+      await waitPing(port);
+      const { code, err } = await runScript({
+        env: { DEVLOG_PORT: String(port), DEVLOG_DEBUG: "1" },
+        args: ["--plugin", "--self-root", msysPath(selfRoot)],
+        payload: JSON.stringify({ hook_event_name: "SessionStart", session_id: "takeover-e2e-dev", cwd: PROJECT_ROOT }),
+      });
+      expect(code).toBe(0);
+      expect(err).not.toContain("takeover: stale plugin daemon");
+      // Still alive: the ping answers after the script finished.
+      const r = await fetch(`http://127.0.0.1:${port}/api/ping`, { signal: AbortSignal.timeout(1000) });
+      expect(r.ok).toBe(true);
+    } finally {
+      try { fake.kill(); } catch { /* cleanup */ }
+      await Promise.race([fake.exited, Bun.sleep(2000)]);
+      rmSync(join(selfRoot, "..", "..", "..", "..", ".."), { recursive: true, force: true });
+    }
+  }, 30000);
+
+  test("same plugin-cache version already on the port → no kill, no respawn", async () => {
+    const port = 17918;
+    const selfRoot = makeCacheRoot("3.0.0");
+    // The daemon reports the SAME root the script owns (spelled with backslashes,
+    // as the real /api/daemon-id does on Windows) — spelling must not trigger it.
+    const fake = spawnFakeDaemon(port, selfRoot.replaceAll("/", "\\"));
+    try {
+      await waitPing(port);
+      const { code, err } = await runScript({
+        env: { DEVLOG_PORT: String(port), DEVLOG_DEBUG: "1" },
+        args: ["--plugin", "--self-root", msysPath(selfRoot)],
+        payload: JSON.stringify({ hook_event_name: "SessionStart", session_id: "takeover-e2e-same", cwd: PROJECT_ROOT }),
+      });
+      expect(code).toBe(0);
+      expect(err).not.toContain("takeover: stale plugin daemon");
+      const r = await fetch(`http://127.0.0.1:${port}/api/ping`, { signal: AbortSignal.timeout(1000) });
+      expect(r.ok).toBe(true);
+    } finally {
+      try { fake.kill(); } catch { /* cleanup */ }
+      await Promise.race([fake.exited, Bun.sleep(2000)]);
+      rmSync(join(selfRoot, "..", "..", "..", "..", ".."), { recursive: true, force: true });
+    }
+  }, 30000);
+});

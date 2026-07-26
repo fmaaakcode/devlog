@@ -35,14 +35,20 @@ PORT="${DEVLOG_PORT:-7777}"
 # propagation on the Windows runner we could never prove either way.
 QUERY=""
 BUN_HOME="${DEVLOG_BUN_HOME:-$HOME}"
+# --self-root overrides the root this script considers its own (takeover check
+# + spawn cwd below). Test seam ONLY, argv like --bun-home; production always
+# runs with the script's real directory.
+SELF_ROOT=""
 ORIG_ARGS="$*"
 while [ $# -gt 0 ]; do
   case "$1" in
     --plugin) QUERY="?plugin=1" ;;
     --bun-home) shift; [ -n "$1" ] && BUN_HOME="$1" ;;
+    --self-root) shift; [ -n "$1" ] && SELF_ROOT="$1" ;;
   esac
   shift
 done
+SELF_DIR="${SELF_ROOT:-$DIR}"
 
 # DEVLOG_DEBUG=1 diagnostics ride stderr — discarded by Claude Code on exit 0,
 # read by tests and CI logs (soft-fail.ts convention: observe, never alter
@@ -111,17 +117,65 @@ fi
 # response; /api/data would serialize the whole ~5MB dataset just to prove the
 # port is alive (devops R4 F3). curl exits 0 on any HTTP response (even 404),
 # so this still works against an older server that predates /api/ping.
-if ! curl -s -m 1 "http://127.0.0.1:$PORT/api/ping" >/dev/null 2>&1; then
+ALIVE=0
+curl -s -m 1 "http://127.0.0.1:$PORT/api/ping" >/dev/null 2>&1 && ALIVE=1
+
+# Plugin-update takeover: updating the plugin never restarts the daemon, so the
+# previous version keeps the port and issues OLD verdicts while the hooks (this
+# script, parse-tags) already speak the NEW protocol — live failure 2026-07-23:
+# a 3.25.0 daemon answered a 3.26.0 session's `go:` asks with invalid-name, and
+# the #600 foreign-root warning is suppressed for plugin sessions so nothing
+# surfaced. Rule: when BOTH this script's root and the daemon's root live under
+# a plugins cache AND differ, the current install wins — kill the old daemon
+# and fall through to the spawn below. A daemon rooted OUTSIDE a plugins cache
+# (a dev tree) is never touched: probing it from a plugin hook is the
+# developer's deliberate setup. Path spellings are folded first (#634's lesson:
+# MSYS /c/… vs Windows C:\… vs JSON-escaped C:\\… are the same tree).
+norm_root() { printf '%s' "$1" | tr 'A-Z' 'a-z' | tr '\\' '/' | sed -e 's|//*|/|g' -e 's|^/\([a-z]\)/|\1:/|' -e 's|/*$||'; }
+SELF_NORM="$(norm_root "$SELF_DIR")"
+if [ "$ALIVE" = "1" ]; then
+  case "$SELF_NORM" in
+    */plugins/cache/*)
+      ID_JSON="$(curl -s -m 2 "http://127.0.0.1:$PORT/api/daemon-id" 2>/dev/null)"
+      DROOT="$(printf '%s' "$ID_JSON" | sed -n 's/.*"root":"\([^"]*\)".*/\1/p')"
+      DPID="$(printf '%s' "$ID_JSON" | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p')"
+      DROOT_NORM="$(norm_root "$DROOT")"
+      dbg "takeover check: self=$SELF_NORM daemon=$DROOT_NORM pid=$DPID"
+      case "$DROOT_NORM" in
+        */plugins/cache/*)
+          if [ -n "$DPID" ] && [ "$DROOT_NORM" != "$SELF_NORM" ]; then
+            dbg "takeover: stale plugin daemon (pid=$DPID) — killing and respawning from $SELF_DIR"
+            if command -v taskkill >/dev/null 2>&1; then
+              taskkill //F //PID "$DPID" >/dev/null 2>&1
+            else
+              kill "$DPID" 2>/dev/null
+            fi
+            # Wait for the port to actually free before the spawn below —
+            # otherwise the successor dies on EADDRINUSE and the stale daemon's
+            # last breath wins.
+            for _ in 1 2 3 4; do
+              curl -s -m 1 "http://127.0.0.1:$PORT/api/ping" >/dev/null 2>&1 || { ALIVE=0; break; }
+              sleep 0.5
+            done
+            curl -s -m 1 "http://127.0.0.1:$PORT/api/ping" >/dev/null 2>&1 || ALIVE=0
+          fi
+          ;;
+      esac
+      ;;
+  esac
+fi
+
+if [ "$ALIVE" != "1" ]; then
   # Spawn detached. Logs go under .devlog/ so we don't litter the repo.
-  mkdir -p "$DIR/.devlog" 2>/dev/null
+  mkdir -p "$SELF_DIR/.devlog" 2>/dev/null
   # Rotate server.log if it grew past ~5MB (keep one generation) so the append
   # below can't grow the file without limit (#devops-F2).
-  if [ -f "$DIR/.devlog/server.log" ]; then
-    sz=$(wc -c <"$DIR/.devlog/server.log" 2>/dev/null || echo 0)
-    [ "$sz" -gt 5000000 ] && mv -f "$DIR/.devlog/server.log" "$DIR/.devlog/server.log.1" 2>/dev/null
+  if [ -f "$SELF_DIR/.devlog/server.log" ]; then
+    sz=$(wc -c <"$SELF_DIR/.devlog/server.log" 2>/dev/null || echo 0)
+    [ "$sz" -gt 5000000 ] && mv -f "$SELF_DIR/.devlog/server.log" "$SELF_DIR/.devlog/server.log.1" 2>/dev/null
   fi
   (
-    cd "$DIR" || exit 0
+    cd "$SELF_DIR" || exit 0
     # Production mode: NO --watch. --watch restarts the daemon on every source
     # save, dropping /api/hook events during the rebind window — and the worst-
     # hit sessions are DevLog's own dev sessions (devops R2 #1). `bun dev` keeps

@@ -14,7 +14,8 @@ import { broadcast } from "./broadcast";
 import { resolveProjectFor } from "./project-resolve";
 import { exportStatusMd } from "./export";
 import { pathsEqual } from "./path-utils";
-import { verifyHintFor } from "./verify-hint";
+import { verifyHintFor, regressionHintFor } from "./verify-hint";
+import { closedItems } from "./closed-items";
 import {
   handleDocTag, enforceAtomicContent, resolveClosureNumber, diagnoseClosureMismatch,
   diagnoseClosureTextDivergence, confirmClosure, applyRelease, resolveReleaseIntent,
@@ -27,7 +28,7 @@ import { sessionTouchedFiles } from "./file-story";
 import { diagnoseFeatureRef, type FeatureRefProblem } from "./features";
 import { detectReopen, PROBLEM_TAGS, type ReopenHint } from "./reopen";
 import { applyUndo } from "./undo";
-import { searchTags } from "./recall";
+import { searchTags, patternSiblings, type SimilarBug } from "./recall";
 import { listArchiveMonths, readUndoneMonth } from "./event-archive";
 import type { RollbackResult } from "./release-rollback";
 import type { TagEntry } from "./types";
@@ -133,7 +134,7 @@ export function makeTagsRoutes(): Record<string, unknown> {
             const batchId = typeof body.batch_id === "string" ? body.batch_id : "";
             if (batchId && (data.processedBatches || []).includes(batchId)) {
               console.log(`[/api/tags] batch replay dropped: ${batchId} (${(body.entries || []).length} entries)`);
-              return Response.json({ ok: true, count: 0, batchReplay: true, release: null, releaseIntent: null, releaseIntentConflict: null, releaseDowngrade: null, releaseBlocked: null, rollback: null, closureHints: [], closureTextWarnings: [], featureHints: [], closed: [], upcomingChanges: [], reopenHints: [], verifyHint: null, openSnapshot: [], repairedClosures: [] });
+              return Response.json({ ok: true, count: 0, batchReplay: true, release: null, releaseIntent: null, releaseIntentConflict: null, releaseDowngrade: null, releaseBlocked: null, rollback: null, closureHints: [], closureTextWarnings: [], featureHints: [], closed: [], upcomingChanges: [], reopenHints: [], verifyHint: null, regressionHint: null, sweepHint: null, openSnapshot: [], repairedClosures: [] });
             }
           let releaseResult: Awaited<ReturnType<typeof applyRelease>> = null;
           let releaseIntent: ReleaseIntent | null = null;
@@ -181,6 +182,7 @@ export function makeTagsRoutes(): Record<string, unknown> {
           const closureTextWarnings: ClosureTextDivergence[] = [];
           const featureHints: FeatureRefProblem[] = [];
           const closed: ClosureConfirm[] = [];
+          const fixedConfirms: ClosureConfirm[] = [];
           const upcomingChanges: UpcomingChange[] = [];
           const reopenHints: ReopenHint[] = [];
           // #633: openers stored by THIS batch + numbers already closed in it —
@@ -316,7 +318,12 @@ export function makeTagsRoutes(): Record<string, unknown> {
             const preResolve = content;
             content = resolveClosureNumber(tag, content, data, project);
             const closeConfirm = confirmClosure(tag, preResolve, content);
-            if (closeConfirm) { closed.push(closeConfirm); closedInBatch.add(closeConfirm.num); }
+            if (closeConfirm) {
+              closed.push(closeConfirm);
+              closedInBatch.add(closeConfirm.num);
+              // #682: fix-shaped confirms feed the pattern-sweep hint below.
+              if (tag === "bug fix" || tag === "security fix") fixedConfirms.push(closeConfirm);
+            }
 
             if (tag === "desc") {
               console.log(`[/api/tags desc] project='${project}' exists=${!!data.projects[project]} content='${content}'`);
@@ -497,6 +504,22 @@ export function makeTagsRoutes(): Record<string, unknown> {
           broadcast("tags", { project });
           // Optional verify nudge (#232): a closure with no test run this session.
           const verifyHint = verifyHintFor(storedEntries, data.events, body.session_id || "");
+          // #683: fix closed, tests ran green, but the session never wrote a
+          // test file — the fix shipped without a regression test. Only when
+          // the verify nudge is silent: stacking both on one closure is noise.
+          const regressionHint = verifyHint ? null : regressionHintFor(storedEntries, data.events, body.session_id || "");
+          // #682: the just-fixed bug resembles OTHER closed bugs — a recurring
+          // pattern family. Surface the siblings so the same pattern gets swept
+          // across the remaining modules while the fix is fresh. First hit wins:
+          // one sweep nudge per batch is a pointer, more is a lecture.
+          let sweepHint: { num: number; text: string; similar: SimilarBug[] } | null = null;
+          if (fixedConfirms.length) {
+            const closedAll = closedItems(data, project);
+            for (const f of fixedConfirms) {
+              const similar = patternSiblings(f.text, closedAll, f.num);
+              if (similar.length) { sweepHint = { num: f.num, text: f.text, similar }; break; }
+            }
+          }
           // #632: a rejected closure's fastest fix is seeing what IS open — the
           // list exists right here at rejection time, so ship it with the hints
           // instead of costing Claude an -(ask:open) round-trip to fetch it.
@@ -510,7 +533,7 @@ export function makeTagsRoutes(): Record<string, unknown> {
             for (const s of openPlanSteps(data, project, { numberedOnly: true })) openSnapshot.push({ num: s.num as number, tag: "plan-step", content: s.text.slice(0, 70) });
             openSnapshot = openSnapshot.slice(0, 15);
           }
-          return Response.json({ ok: true, count: (body.entries || []).length, release: releaseResult, releaseIntent, releaseIntentConflict, releaseDowngrade, releaseBlocked, rollback, closureHints, closureTextWarnings, featureHints, closed, upcomingChanges, reopenHints, verifyHint, openSnapshot, repairedClosures });
+          return Response.json({ ok: true, count: (body.entries || []).length, release: releaseResult, releaseIntent, releaseIntentConflict, releaseDowngrade, releaseBlocked, rollback, closureHints, closureTextWarnings, featureHints, closed, upcomingChanges, reopenHints, verifyHint, regressionHint, sweepHint, openSnapshot, repairedClosures });
           });
         } catch (e) {
           const err = e as { message?: string; stack?: string };

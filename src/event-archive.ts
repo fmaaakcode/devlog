@@ -135,6 +135,40 @@ export function rewriteArchiveMonth(stream: ArchiveStream, month: string, record
   return result;
 }
 
+/**
+ * Drop every archived row belonging to a project in `gone`, across both
+ * streams and all months — the on-disk twin of purgeProjectData, called by the
+ * same three delete/cleanup paths. A month left with zero rows loses its files
+ * entirely (an empty rewrite would keep the month listed forever); the unlink
+ * rides the write chain like every other archive mutation. Returns the number
+ * of rows removed.
+ */
+export async function purgeProjectArchive(gone: Set<string>): Promise<number> {
+  if (!gone.size) return 0;
+  let removed = 0;
+  for (const stream of ["events", "undone"] as const) {
+    for (const month of await listArchiveMonths(stream)) {
+      const rows: Array<{ project: string }> =
+        stream === "events" ? await readArchiveMonth(month) : await readUndoneMonth(month);
+      const kept = rows.filter(r => !gone.has(r.project));
+      if (kept.length === rows.length) continue;
+      removed += rows.length - kept.length;
+      if (kept.length) {
+        await rewriteArchiveMonth(stream, month, kept);
+      } else {
+        const plain = `${ARCHIVE_DIR}/${stream}-${month}.jsonl`;
+        const result = writeChain.then(async () => {
+          try { await unlink(plain); } catch { /* plain twin absent — fine */ }
+          try { await unlink(`${plain}.gz`); } catch { /* gz twin absent — fine */ }
+        });
+        writeChain = result;
+        await result;
+      }
+    }
+  }
+  return removed;
+}
+
 /** Gzip every plain .jsonl whose month is not `currentMonth`, then drop the
  *  plain file. Closed months only ever shrink to one .gz that is never
  *  reopened for writing. */

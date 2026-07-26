@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach } from "bun:test";
 import { rm, mkdir, appendFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { gzipSync } from "node:zlib";
-import { ARCHIVE_DIR, archiveEvents, listArchiveMonths, readArchiveMonth, currentArchiveMonth } from "../src/event-archive";
+import { ARCHIVE_DIR, archiveEvents, listArchiveMonths, readArchiveMonth, readUndoneMonth, currentArchiveMonth, purgeProjectArchive } from "../src/event-archive";
 import { pruneEvents } from "../src/retention";
 import type { DevLogData, EventEntry } from "../src/types";
 
@@ -93,6 +93,53 @@ describe("month rollover", () => {
 
     expect(existsSync(`${ARCHIVE_DIR}/events-2020-02.jsonl`)).toBe(false);
     expect((await readArchiveMonth("2020-02")).map(e => e.id)).toEqual([old.id]);
+  });
+});
+
+describe("purgeProjectArchive — on-disk twin of the store purge", () => {
+  it("removes one project's rows from a month and keeps the rest", async () => {
+    const mine = ev();
+    const other = ev({ project: "survivor" });
+    await archiveEvents([mine, other]);
+
+    const removed = await purgeProjectArchive(new Set(["arch-test"]));
+
+    expect(removed).toBe(1);
+    const back = await readArchiveMonth(currentArchiveMonth());
+    expect(back.map(e => e.id)).toEqual([other.id]);
+  });
+
+  it("deletes a closed month's files entirely when the purge empties it", async () => {
+    const line = `${JSON.stringify(ev())}\n`;
+    await mkdir(ARCHIVE_DIR, { recursive: true });
+    await Bun.write(`${ARCHIVE_DIR}/events-2020-03.jsonl.gz`, gzipSync(Buffer.from(line)));
+
+    const removed = await purgeProjectArchive(new Set(["arch-test"]));
+
+    expect(removed).toBe(1);
+    expect(existsSync(`${ARCHIVE_DIR}/events-2020-03.jsonl.gz`)).toBe(false);
+    expect(await listArchiveMonths()).toEqual([]);
+  });
+
+  it("purges the undone stream too", async () => {
+    const month = currentArchiveMonth();
+    const rec = (project: string) =>
+      `${JSON.stringify({ undoneAt: new Date().toISOString(), project, kind: "tag", entry: ev({ project }) })}\n`;
+    await mkdir(ARCHIVE_DIR, { recursive: true });
+    await appendFile(`${ARCHIVE_DIR}/undone-${month}.jsonl`, rec("arch-test") + rec("survivor"), "utf-8");
+
+    const removed = await purgeProjectArchive(new Set(["arch-test"]));
+
+    expect(removed).toBe(1);
+    expect((await readUndoneMonth(month)).map(r => r.project)).toEqual(["survivor"]);
+  });
+
+  it("is a no-op when the project has no archived rows", async () => {
+    const keep = ev();
+    await archiveEvents([keep]);
+
+    expect(await purgeProjectArchive(new Set(["__absent__"]))).toBe(0);
+    expect((await readArchiveMonth(currentArchiveMonth())).map(e => e.id)).toEqual([keep.id]);
   });
 });
 

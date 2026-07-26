@@ -39,12 +39,14 @@ describe("loadLedger", () => {
     ledger.turn.postedKeys.push(entryKey("todo", "task A"));
     ledger.turn.servedCommands.push("ask:open");
     ledger.session.hintedVerify = true;
+    ledger.session.hintedRegression = true;
+    ledger.session.hintedSweep = true;
     ledger.session.servedSignatures.push("sig-1");
     await saveLedger(file, ledger);
 
     const { ledger: next } = await loadLedger(dir, "s1", "T2");
     expect(next.turn).toEqual({ turnId: "T2", postedKeys: [], servedCommands: [] });
-    expect(next.session).toEqual({ hintedVerify: true, hintedUntagged: false, servedSignatures: ["sig-1"], envDriftChecked: false });
+    expect(next.session).toEqual({ hintedVerify: true, hintedRegression: true, hintedSweep: true, hintedUntagged: false, servedSignatures: ["sig-1"], envDriftChecked: false });
   });
 
   test("corrupt state file fails open to a fresh ledger", async () => {

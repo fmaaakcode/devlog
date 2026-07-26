@@ -7,7 +7,7 @@
 // semantics (watermark advance) are proven end-to-end in recall-e2e.test.ts.
 
 import { describe, test, expect } from "bun:test";
-import { tokenize, bm25Search, searchTags, similarClosedBugs } from "../src/recall";
+import { tokenize, bm25Search, searchTags, similarClosedBugs, patternSiblings } from "../src/recall";
 import { newRecallHints, buildContext } from "../src/inject";
 import { DEFAULT_INJECTION_CONFIG } from "../src/data";
 import type { ClosedItem } from "../src/closed-items";
@@ -192,5 +192,42 @@ describe("buildContext — recall hint delivery", () => {
   test("userPromptSubmit toggle OFF → no hint (advisory, unlike security)", () => {
     const ctx = buildContext(fixture({ toggle: false }), PROJ, "UserPromptSubmit", { sessionId: SESSION });
     expect(ctx).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// patternSiblings — the pattern-sweep gate (#682)
+// ---------------------------------------------------------------------------
+
+describe("patternSiblings", () => {
+  const closed: ClosedItem[] = [
+    {
+      num: 235, kind: "bug found",
+      text: "داشبورد الأمان يفلتر t.tag === security حرفيًا فيسقط security:own security:dep من العدّ",
+      closedAt: "2026-06-19T00:00:00Z",
+      closerFiles: ["assets/dashboard-panels.js"],
+    },
+    { num: 300, kind: "bug found", text: "زر الحفظ لا يستجيب عند الضغط", closedAt: "2026-06-20T00:00:00Z" },
+    {
+      num: 629, kind: "bug found",
+      text: "تسوية فحص الثغرات تطابق t.tag === security حرفيًا فلا ترى security:dep security:own",
+      closedAt: "2026-07-17T00:00:00Z",
+    },
+  ];
+
+  test("the just-fixed bug matches its pattern sibling but NEVER itself", () => {
+    const res = patternSiblings(closed[2].text, closed, 629);
+    expect(res.length).toBeGreaterThanOrEqual(1);
+    expect(res.map(s => s.num)).toContain(235);
+    expect(res.map(s => s.num)).not.toContain(629);
+  });
+
+  test("a one-off bug with no family → silence", () => {
+    expect(patternSiblings("انهيار نادر في تحويل التاريخ الهجري", closed, 999)).toEqual([]);
+  });
+
+  test("without excludeNum behaves like similarClosedBugs", () => {
+    const res = patternSiblings(closed[2].text, closed);
+    expect(res.map(s => s.num)).toContain(629);
   });
 });

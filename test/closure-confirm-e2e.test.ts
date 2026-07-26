@@ -213,4 +213,31 @@ describe("closure confirmation E2E (#228)", () => {
     expect(remaining.length).toBe(1);
     expect(remaining[0].content).toBe("a fresh unrelated todo");            // old item closed by text
   });
+
+  // Pattern-sweep nudge (#682): fixing a bug whose text resembles an already
+  // closed bug must surface the sibling in the response — and never the just-
+  // fixed bug itself (it becomes a closed item in the same batch).
+  test("fixing a bug similar to a previously closed one returns sweepHint with the sibling", async () => {
+    const older = "المطابقة الحرفية للتاق security تُسقط security:own من عدّ الداشبورد";
+    await post(projDir, [{ tag: "bug found", content: older }]);
+    const first = await numFor(project, older);
+    await post(projDir, [{ tag: "bug fix", content: `#${first}` }]);
+
+    const twin = "المطابقة الحرفية للتاق security تُسقط security:dep من فحص الثغرات";
+    await post(projDir, [{ tag: "bug found", content: twin }]);
+    const second = await numFor(project, twin);
+    const resp = await post(projDir, [{ tag: "bug fix", content: `#${second}` }]);
+
+    expect(resp.sweepHint).toBeTruthy();
+    expect(resp.sweepHint.num).toBe(second);
+    expect(resp.sweepHint.similar.map((s: any) => s.num)).toContain(first);
+    expect(resp.sweepHint.similar.map((s: any) => s.num)).not.toContain(second);
+  });
+
+  test("fixing a one-off bug returns no sweepHint", async () => {
+    await post(projDir, [{ tag: "bug found", content: "انهيار نادر في تحويل التاريخ الهجري" }]);
+    const num = await numFor(project, "انهيار نادر في تحويل التاريخ الهجري");
+    const resp = await post(projDir, [{ tag: "bug fix", content: `#${num}` }]);
+    expect(resp.sweepHint).toBeNull();
+  });
 });

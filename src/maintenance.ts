@@ -165,16 +165,31 @@ export function isTombstone(project: ProjectProfile, maxAgeMs = TOMBSTONE_MS): b
   return !!project.path && !existsSync(project.path);
 }
 
-/** Purge every store row (tags/plans/events/worklog) whose project is in `gone`.
- *  A project's data lives in exactly these four arrays — delete / cleanup-orphans /
- *  cleanup-tombstones all route here so none can forget an array (#408). Returns
- *  the number of rows removed. */
+/** Purge every store row whose project is in `gone`: the four bulk arrays
+ *  (tags/plans/events/worklog) plus the per-project remnants that survived the
+ *  original sweep — injections, rejections, and the meta.json injection-config
+ *  key. Delete / cleanup-orphans / cleanup-tombstones all route here so none
+ *  can forget a store (#408). On-disk archive months are a separate async pass
+ *  (purgeProjectArchive in event-archive.ts) — every caller of this function
+ *  must call that one too. Returns the number of rows removed. */
 export function purgeProjectData(data: DevLogData, gone: Set<string>): number {
   if (!gone.size) return 0;
-  const before = data.tags.length + data.plans.length + data.events.length + data.worklog.length;
+  const count = (d: DevLogData) =>
+    d.tags.length + d.plans.length + d.events.length + d.worklog.length +
+    d.injections.length + (d.rejections?.length ?? 0);
+  const before = count(data);
   data.tags = data.tags.filter(t => !gone.has(t.project));
   data.plans = data.plans.filter(p => !gone.has(p.project));
   data.events = data.events.filter(e => !gone.has(e.project));
   data.worklog = data.worklog.filter(w => !gone.has(w.project));
-  return before - (data.tags.length + data.plans.length + data.events.length + data.worklog.length);
+  data.injections = data.injections.filter(i => !gone.has(i.project));
+  if (data.rejections) data.rejections = data.rejections.filter(r => !gone.has(r.project));
+  let removed = before - count(data);
+  for (const name of gone) {
+    if (data.projectInjectionConfigs[name]) {
+      delete data.projectInjectionConfigs[name];
+      removed++;
+    }
+  }
+  return removed;
 }

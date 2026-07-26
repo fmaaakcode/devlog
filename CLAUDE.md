@@ -46,7 +46,7 @@ Write the tag content in the user's language.
   widens to every tracked project. Prefer it over re-deriving a past decision.
   Ephemeral, never stored. New open bugs also get an automatic one-shot recall hint
   when a similar closed bug exists.
-- `-(note)` · `-(decision)` · `-(insight)`
+- `-(note)` · `-(decision)` — name the rejected alternative and why it lost (wider trade-off study → `-(doc:comparison)`) · `-(insight)`
 - `-(doc:report|analysis|plan|comparison|readme)` name\n<markdown>
 
 **Closure is mandatory** — every open item (todo/bug/security/plan step) is closed by

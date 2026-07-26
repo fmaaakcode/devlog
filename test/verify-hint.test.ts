@@ -4,7 +4,7 @@
 // known-failing. Unknown outcome is fail-open (counts as passing).
 
 import { describe, test, expect } from "bun:test";
-import { isTestCommand, sessionRanTests, verifyHintFor, lastCodeMutationMs } from "../src/verify-hint";
+import { isTestCommand, sessionRanTests, verifyHintFor, lastCodeMutationMs, isTestFile, regressionHintFor } from "../src/verify-hint";
 import type { EventEntry } from "../src/types";
 
 let _id = 0;
@@ -194,5 +194,65 @@ describe("lastCodeMutationMs", () => {
 
   test("zero when the session wrote nothing", () => {
     expect(lastCodeMutationMs([ev("s1", "git status")], "s1")).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression-test nudge (#683) — fix closed, no test file written this session
+// ---------------------------------------------------------------------------
+
+describe("isTestFile", () => {
+  test.each([
+    "test/purge-project.test.ts",
+    "tests/integration/api.py",
+    "src/__tests__/util.spec.tsx",
+    "spec/models/user_spec.rb",
+    "src/foo.test.ts",
+    "app/bar.spec.js",
+    "pkg/name_test.go",
+    "test_scanner.py",
+    "lib/test_utils_test.py",
+  ])("matches %p", (p) => expect(isTestFile(p)).toBe(true));
+
+  test.each([
+    "src/verify-hint.ts",
+    "src/latest.ts",
+    "contest/entry.ts",       // "test" inside a word is not a test dir
+    "attestation.ts",
+    "src/testimonial.ts",
+    "notes.md",
+    "",
+  ])("does not match %p", (p) => expect(isTestFile(p)).toBe(false));
+});
+
+describe("regressionHintFor", () => {
+  const fixClosers = [{ tag: "bug fix", content: "#9 fixed the parser" }];
+
+  test("fix closed + no test file written → hint with the fix closers", () => {
+    const events = [mut("s1", "src/a.ts", "2026-06-01T10:00:00Z")];
+    const hint = regressionHintFor(fixClosers, events, "s1");
+    expect(hint?.closers).toEqual([{ tag: "bug fix", content: "#9 fixed the parser" }]);
+  });
+
+  test("silent when the session wrote a test file", () => {
+    const events = [
+      mut("s1", "src/a.ts", "2026-06-01T10:00:00Z"),
+      mut("s1", "test/a.test.ts", "2026-06-01T10:01:00Z"),
+    ];
+    expect(regressionHintFor(fixClosers, events, "s1")).toBeNull();
+  });
+
+  test("done closers never trigger it — only fix-shaped closures", () => {
+    const events = [mut("s1", "src/a.ts", "2026-06-01T10:00:00Z")];
+    expect(regressionHintFor([{ tag: "done", content: "#4 shipped" }], events, "s1")).toBeNull();
+  });
+
+  test("another session's test write does not satisfy it", () => {
+    const events = [mut("s2", "test/a.test.ts", "2026-06-01T10:01:00Z")];
+    expect(regressionHintFor(fixClosers, events, "s1")?.closers.length).toBe(1);
+  });
+
+  test("silent without a session id", () => {
+    expect(regressionHintFor(fixClosers, [], "")).toBeNull();
   });
 });

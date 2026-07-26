@@ -13,6 +13,8 @@
 //                |                          | audit / rules:<cat>) — recorded AFTER
 //                |                          | a successful serve only (#412)
 //   per session  | session.hintedVerify     | the verify nudge (#232)
+//   per session  | session.hintedRegression | fix-without-regression-test nudge (#683)
+//   per session  | session.hintedSweep      | pattern-sweep nudge (#682)
 //   per session  | session.servedSignatures | dep-freshness violation signatures
 //   forever      | (server store)           | closures — never held here
 //   recomputed   | (none)                   | closure-check / release guard: live
@@ -25,13 +27,13 @@ import { readFile, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 export interface TurnLedger {
-  session: { hintedVerify: boolean; hintedUntagged: boolean; servedSignatures: string[]; envDriftChecked: boolean };
+  session: { hintedVerify: boolean; hintedRegression: boolean; hintedSweep: boolean; hintedUntagged: boolean; servedSignatures: string[]; envDriftChecked: boolean };
   turn: { turnId: string; postedKeys: string[]; servedCommands: string[] };
 }
 
 export function emptyLedger(turnId = ""): TurnLedger {
   return {
-    session: { hintedVerify: false, hintedUntagged: false, servedSignatures: [], envDriftChecked: false },
+    session: { hintedVerify: false, hintedRegression: false, hintedSweep: false, hintedUntagged: false, servedSignatures: [], envDriftChecked: false },
     turn: { turnId, postedKeys: [], servedCommands: [] },
   };
 }
@@ -63,6 +65,8 @@ export async function loadLedger(
     const raw = JSON.parse(await readFile(file, "utf-8")) as Partial<TurnLedger>;
     if (raw?.session && typeof raw.session === "object") {
       ledger.session.hintedVerify = raw.session.hintedVerify === true;
+      ledger.session.hintedRegression = raw.session.hintedRegression === true;
+      ledger.session.hintedSweep = raw.session.hintedSweep === true;
       ledger.session.hintedUntagged = raw.session.hintedUntagged === true;
       ledger.session.servedSignatures = onlyStrings(raw.session.servedSignatures);
       ledger.session.envDriftChecked = raw.session.envDriftChecked === true;

@@ -36,7 +36,7 @@ These hooks enforce the rules mechanically — you don't need to remember, the h
 | `-(upcoming)` | Deferred tier — see «Upcoming» below |
 | `-(feature)` / `-(feature update) #N` / `-(feature removed) #N` | Capability inventory — see «Features» below |
 | `-(note)` | Observation worth keeping |
-| `-(decision)` | Architectural decision + rationale |
+| `-(decision)` | Architectural decision + rationale — name the rejected alternative and why it lost; a wider trade-off study belongs in `-(doc:comparison)` |
 | `-(insight)` | Root-cause finding from investigation |
 | `-(undo) <text>` | Delete the most recent tag whose content includes `<text>` |
 | `-(release) summary` | Release — DevLog auto-detects the bump type **and** computes the number. Force a type with `-(release:patch\|minor\|major)`, or a number with `-(release) vX.Y.Z` — never both: a type tag whose reason starts with a version is rejected wholesale. **Only when the user explicitly asks.** |

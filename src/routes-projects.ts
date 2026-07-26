@@ -8,6 +8,7 @@
 
 import { loadData, withData, SECURITY_OPEN_TAGS } from "./data";
 import { orphanCounts, isTombstone, purgeProjectData } from "./maintenance";
+import { purgeProjectArchive } from "./event-archive";
 import { broadcast } from "./broadcast";
 import { softFail } from "./soft-fail";
 import { appendAudit } from "./audit";
@@ -110,7 +111,7 @@ export function makeProjectRoutes({ releaseWatchersUnder, refreshWatchers, renam
           const registered = new Set(Object.keys(data.projects));
           const gone = new Set(names.filter(n => !registered.has(n)));
           const skipped = names.filter(n => registered.has(n));
-          const removedEntries = purgeProjectData(data, gone);
+          const removedEntries = purgeProjectData(data, gone) + await purgeProjectArchive(gone);
           // Audit the OUTCOME, not the request — a "N names" row written before
           // validation reads as a deletion even when every name was refused.
           await appendAudit("projects.cleanup-orphans", req, {
@@ -146,7 +147,9 @@ export function makeProjectRoutes({ releaseWatchersUnder, refreshWatchers, renam
             removed.push(name);
           }
           if (removed.length) {
-            purgeProjectData(data, new Set(removed));
+            const gone = new Set(removed);
+            purgeProjectData(data, gone);
+            await purgeProjectArchive(gone);
             for (const name of removed) broadcast("delete", { project: name });
           }
           // Outcome, not intent — same rule as cleanup-orphans above.
@@ -164,6 +167,7 @@ export function makeProjectRoutes({ releaseWatchersUnder, refreshWatchers, renam
           if (!data.projects[name]) return Response.json({ error: "Not found" }, { status: 404 });
           delete data.projects[name];
           purgeProjectData(data, new Set([name]));
+          await purgeProjectArchive(new Set([name]));
           broadcast("delete", { project: name });
           return Response.json({ ok: true });
         });

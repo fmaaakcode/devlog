@@ -105,9 +105,20 @@ export async function staleInjectWarning(root: string, bootMs: number): Promise<
  * 2026-07-13; verified-by-probing was the only defense since). The probing
  * hook always knows ITS root, so it advertises it (X-DevLog-Hook-Root) and
  * this pure check names the mismatch. Callers suppress it for plugin-delivered
- * sessions: a plugin hook probing a dev-rooted daemon is the developer's
- * deliberate setup, not a defect.
+ * sessions ONLY when the daemon is dev-rooted (the developer's deliberate
+ * setup) — a plugin-vs-plugin mismatch is a stale daemon a plugin update left
+ * behind, and stays warnable (see isPluginCacheRoot).
  */
+/** True when `p` lives inside a Claude plugin cache (…/plugins/cache/…) — the
+ *  shape that distinguishes a plugin-install root from a dev tree. Used to tell
+ *  "plugin hook probing a dev daemon" (deliberate, stay silent) apart from
+ *  "plugin hook probing an OLDER plugin daemon" (a real defect: a plugin update
+ *  never restarts the daemon, so stale verdicts flow with current-version
+ *  hooks — live failure 2026-07-23, go: asks refused by a 3.25.0 daemon). */
+export function isPluginCacheRoot(p: string): boolean {
+  return /[\\/]plugins[\\/]cache[\\/]/i.test(p || "");
+}
+
 export function foreignRootWarning(daemonRoot: string, hookRoot: string): string | null {
   if (!hookRoot) return null;   // old hook / no header — nothing to compare
   // The hook computes its root under git-bash, which speaks MSYS paths
@@ -121,6 +132,14 @@ export function foreignRootWarning(daemonRoot: string, hookRoot: string): string
     return s.toLowerCase();
   };
   if (norm(daemonRoot) === norm(hookRoot)) return null;
+  // Plugin-vs-plugin mismatch gets its own wording: the fix is not "restart
+  // from this root" (a dev instruction) but "the old plugin daemon must die" —
+  // ensure-server's takeover normally does this automatically; this message is
+  // the belt for when the takeover could not run (old hook, kill refused).
+  if (isPluginCacheRoot(daemonRoot) && isPluginCacheRoot(hookRoot))
+    return currentLang() === "ar"
+      ? `[DevLog] ⚠ الخادم الجاري يعمل من نسخة إضافة أخرى (${daemonRoot}) بينما هوكات هذه الجلسة من (${hookRoot}) — ترقية الإضافة لا تعيد تشغيل الخادم فأحكامه تصدر من الكود القديم. أوقف تلك العملية لتُعاد من النسخة الحالية.`
+      : `[DevLog] ⚠ the running daemon is from a DIFFERENT plugin version (${daemonRoot}) than this session's hooks (${hookRoot}) — a plugin update never restarts the daemon, so its verdicts come from the old code. Stop that process so it respawns from the current version.`;
   return currentLang() === "ar"
     ? `[DevLog] ⚠ الخادم الجاري يعمل من جذر آخر (${daemonRoot}) لا من شجرة هذا المستودع — تعديلاتك هنا ليست حيّة، والتحديث الذاتي لن يلتقطها لأن مصادر جذره لم تتغيّر. أوقف تلك العملية وأعد التشغيل من هذا الجذر.`
     : `[DevLog] ⚠ the running daemon is rooted at a different tree (${daemonRoot}) — edits in THIS repo are not live, and the self-restart watchdog will never notice (its own sources are untouched). Stop that process and restart from this root.`;

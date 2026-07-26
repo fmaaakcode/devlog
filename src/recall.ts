@@ -191,6 +191,19 @@ export interface SimilarBug {
  * common tokens, and returns at most `limit` — this feeds an injection, and
  * injections earn their tokens or stay silent.
  */
+/**
+ * Pattern-sweep siblings (#682): the bug JUST fixed matched against the OTHER
+ * closed bugs. A hit means this pattern already bit before — the retro showed
+ * the same defect re-fixed module by module (literal tag match #235→#629,
+ * nested-manifest blindness #96→#493→#527) — so the closure hint pushes a
+ * same-pattern sweep across the rest of the codebase while the fix is fresh.
+ * Excluding the item's own num is load-bearing: by hint time the fixed bug is
+ * itself a closed item and would always match its own text perfectly.
+ */
+export function patternSiblings(fixedText: string, closed: ClosedItem[], excludeNum?: number, limit = 2): SimilarBug[] {
+  return similarClosedBugs(fixedText, closed.filter(c => c.num == null || c.num !== excludeNum), limit);
+}
+
 export function similarClosedBugs(bugText: string, closed: ClosedItem[], limit = 2): SimilarBug[] {
   const candidates = closed.filter(c => c.kind === "bug found");
   const docs: RecallDoc[] = candidates.map((c, i) => ({
