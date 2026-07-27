@@ -12,7 +12,7 @@ import { resolveProjectFor } from "./project-resolve";
 import { scanFreshProfile, applyPreservedScan } from "./scanner";
 import { generateStackMd, exportStatusMd } from "./export";
 import { runVulnScan } from "./vuln-scan";
-import { parseHookEvent } from "./hooks";
+import { parseHookEvent, attributionCwd } from "./hooks";
 import { listArchiveMonths, readArchiveMonth } from "./event-archive";
 import { softFail } from "./soft-fail";
 import { broadcast } from "./broadcast";
@@ -41,7 +41,9 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
       async POST(req: ApiReq) {
         try {
           const body = await req.json() as { cwd?: string } & Record<string, unknown>;
-          const cwd = body.cwd || "";
+          // Attribution anchor (see attributionCwd): the session's project dir
+          // outranks the payload cwd, which follows shell `cd` drift.
+          const cwd = attributionCwd(req.headers.get("x-devlog-project-dir") || "", body.cwd || "", isRealCwd);
 
           // Reject a malformed cwd (unexpanded "$NAME", relative, or missing on
           // disk) before resolution — mirrors the doInject guard so no phantom
@@ -138,7 +140,8 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
           const sessionId = body.session_id;
           if (!sessionId) return Response.json({ error: "session_id required" }, { status: 400 });
           return await withData(async (data) => {
-            const { name: project } = resolveProjectFor(data, body.cwd || "");
+            const attrCwd = attributionCwd(req.headers.get("x-devlog-project-dir") || "", body.cwd || "", isRealCwd);
+            const { name: project } = resolveProjectFor(data, attrCwd);
             const events = data.events.filter(e => e.session_id === sessionId);
             if (events.length === 0) return Response.json({ ok: true, empty: true });
 

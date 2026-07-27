@@ -59,7 +59,11 @@ export async function runHook(
     // runs with a different DEVLOG_DATA_DIR than the test server it targets,
     // which is exactly the drift the check exists to flag. Tests OF the check
     // re-enable it via extraEnv.
-    env: { ...process.env, DEVLOG_PORT: String(port), DEVLOG_LANG: "en", DEVLOG_DEBUG: "0", DEVLOG_ENV_DRIFT_CHECK: "0", ...extraEnv },
+    // CLAUDE_PROJECT_DIR pinned empty (mirrors the #595 pattern): parse-tags
+    // prefers it over the payload cwd for attribution, and a leaked value from
+    // a surrounding Claude session would silently re-route every test tag to
+    // the real repo. Tests OF the preference re-enable it via extraEnv.
+    env: { ...process.env, DEVLOG_PORT: String(port), DEVLOG_LANG: "en", DEVLOG_DEBUG: "0", DEVLOG_ENV_DRIFT_CHECK: "0", CLAUDE_PROJECT_DIR: "", ...extraEnv },
     stdin: "pipe", stdout: "pipe", stderr: "pipe",
   });
   proc.stdin.write(JSON.stringify(payload));

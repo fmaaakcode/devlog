@@ -903,6 +903,16 @@
             margin-bottom: 4px;
             direction: rtl;
         }
+        /* نسب النموذج (#695): من كتب التاق — شارة هادئة بجوار الوقت */
+        .log-model {
+            font-size: 0.62em;
+            color: var(--text2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0 5px;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
 
         /* Tag colors */
         .tag-plan { background: #082030; color: var(--blue); }

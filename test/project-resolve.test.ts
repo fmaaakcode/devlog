@@ -1,7 +1,8 @@
 import { test, expect, describe } from "bun:test";
 import {
   resolveProjectFor, shouldFoldIntoParent, parentHasSiblingProject, sharesGitRepo,
-  type GitRootFn,
+  parentListsSubdir,
+  type GitRootFn, type MarkerFn,
 } from "../src/project-resolve";
 import type { ProjectProfile } from "../src/types";
 
@@ -163,6 +164,60 @@ describe("convention layer — no-git folds for dot-dirs and conventional subfol
     const p = projects({ container: "D:\\container", "sib-a": "D:\\container\\sib-a" });
     expect(resolveProjectFor({ projects: p }, "D:\\container\\sib-b", noGit))
       .toEqual({ name: "sib-b", cwd: "D:\\container\\sib-b" });
+  });
+});
+
+describe("scan layer — parent's directories listing folds no-git data subfolders (the `reports` incident)", () => {
+  // Parent profile whose scan already listed the subfolder. `noMarkers` mimics
+  // a plain data folder (html/md); `withMarkers` an independent project.
+  function parentWithDirs(name: string, path: string, dirs: string[]): Record<string, ProjectProfile> {
+    return { [name]: { name, path, directories: dirs } as ProjectProfile };
+  }
+  const noMarkers: MarkerFn = () => false;
+  const withMarkers: MarkerFn = () => true;
+
+  test("the live incident: reports/ under a registered no-git parent folds — never minted", () => {
+    const p = parentWithDirs("msa3d al moder", "D:\\msa3d al moder", ["reports"]);
+    expect(resolveProjectFor({ projects: p }, "D:\\msa3d al moder\\reports", noGit, noMarkers))
+      .toEqual({ name: "msa3d al moder", cwd: "D:\\msa3d al moder" });
+  });
+
+  test("a deep descendant folds too via its first segment (reports/img)", () => {
+    const p = parentWithDirs("app", "D:\\app", ["reports"]);
+    expect(resolveProjectFor({ projects: p }, "D:\\app\\reports\\img", noGit, noMarkers))
+      .toEqual({ name: "app", cwd: "D:\\app" });
+  });
+
+  test("directory-name match is case-insensitive (Windows paths)", () => {
+    const p = parentWithDirs("app", "D:\\app", ["Reports"]);
+    expect(parentListsSubdir(p.app, "D:\\app", "D:\\app\\reports", noMarkers)).toBe(true);
+  });
+
+  test("a child with its own project markers stays independent", () => {
+    const p = parentWithDirs("app", "D:\\app", ["reports"]);
+    expect(resolveProjectFor({ projects: p }, "D:\\app\\reports", noGit, withMarkers))
+      .toEqual({ name: "reports", cwd: "D:\\app\\reports" });
+  });
+
+  test("a parent that never scanned the subfolder gives no signal → inverted default holds", () => {
+    const p = parentWithDirs("app", "D:\\app", ["src"]);
+    expect(resolveProjectFor({ projects: p }, "D:\\app\\reports", noGit, noMarkers))
+      .toEqual({ name: "reports", cwd: "D:\\app\\reports" });
+  });
+
+  test("Layer A still outranks: a container with a registered sibling never swallows via its listing", () => {
+    const p = {
+      ...parentWithDirs("container", "D:\\container", ["sib-a", "sib-b"]),
+      "sib-a": { name: "sib-a", path: "D:\\container\\sib-a" } as ProjectProfile,
+    };
+    expect(resolveProjectFor({ projects: p }, "D:\\container\\sib-b", noGit, noMarkers))
+      .toEqual({ name: "sib-b", cwd: "D:\\container\\sib-b" });
+  });
+
+  test("shouldFoldIntoParent ranks the scan layer before git", () => {
+    const p = parentWithDirs("app", "D:\\app", ["reports"]);
+    // git says nothing (no repo anywhere) — the listing alone folds.
+    expect(shouldFoldIntoParent(p, "app", "D:\\app", "D:\\app\\reports", noGit, noMarkers)).toBe(true);
   });
 });
 

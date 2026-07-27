@@ -327,11 +327,13 @@
                     ? ` data-action="show-vulns-tag" data-project="${esc(activeProject)}" data-content="${esc(t.content)}" style="cursor:pointer;text-decoration:underline dotted"`
                     : '';
                 const ttl = t.tag === 'security' ? `${display} — اضغط لتفاصيل الثغرات` : display;
+                // نسب النموذج (#695): شارة صغيرة بمن كتب التاق — تغيب عن التاريخ القديم بلا حقل.
+                const who = t.model ? `<span class="log-model" title="${esc(t.model)}">${esc(String(t.model).replace(/^claude-/, ''))}</span>` : '';
                 h += `<div class="log-item item-new${t.breaking ? ' is-breaking' : ''}">
                     <div class="log-bar bar-${tc}"></div>
                     <span class="log-tag tag-${tc}">${esc(tagLabels[t.tag] || t.tag)}</span>
                     <span class="log-content"${sec} title="${esc(ttl)}">${esc(tagSummary(display))}</span>
-                    <span class="log-time">${timeStr(t.timestamp)}</span>
+                    ${who}<span class="log-time">${timeStr(t.timestamp)}</span>
                 </div>`;
             }
             // History window (R8 perf): older rows exist server-side only —

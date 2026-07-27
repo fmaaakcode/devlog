@@ -121,6 +121,15 @@ export interface TagEntry {
   content: string;
   session_id?: string;
   timestamp: string;
+  /** Model id that emitted this tag (#695) — captured from `message.model` on the
+   *  transcript's assistant entry by the Stop hook, per segment (so a mid-session
+   *  /model switch attributes each tag to its actual author). Permanent "who did
+   *  it" record; absent on pre-#695 history and on the transcript-less fallback path. */
+  model?: string;
+  /** Contextual memory: capped prose excerpt from the response segment that
+   *  emitted this tag — the reasoning at capture time, preserved before the
+   *  transcript auto-deletes. Problem/fix/decision tags only; absent elsewhere. */
+  context?: string;
   /** Optional `!` modifier on the tag — marks a breaking change. */
   breaking?: boolean;
   /** Per-project numeric ID for openable tags (todo, bug found, security*).

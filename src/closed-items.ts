@@ -28,6 +28,10 @@ export interface ClosedItem {
   files?: string[];      // opener ∪ closer session files (position memory #486); feeds ask:retro
   closerFiles?: string[];// the FIX's own footprint — where it was fixed, not where it was found (#585)
   relatedTo?: number;    // the closed report this one reopened (#556); feeds retro ⟲
+  model?: string;        // model that OPENED the item (#695) — who reported/committed to it
+  closerModel?: string;  // model that CLOSED it (#695) — "fix #N was done by whom?", answerable years later
+  context?: string;      // contextual memory: prose around the OPENER — how the problem was described
+  closerContext?: string;// prose around the CLOSER — the reasoning of the fix ("why this way?")
 }
 
 // Openers and their closers partition into groups that share a closer-set
@@ -111,6 +115,10 @@ export function closedItems(data: DevLogData, project: string): ClosedItem[] {
       ...(files.length ? { files } : {}),
       ...(closerFiles.length ? { closerFiles } : {}),
       ...(typeof t.relatedTo === "number" ? { relatedTo: t.relatedTo } : {}),
+      ...(t.model ? { model: t.model } : {}),
+      ...(closer?.model ? { closerModel: closer.model } : {}),
+      ...(t.context ? { context: t.context } : {}),
+      ...(closer?.context ? { closerContext: closer.context } : {}),
     });
   }
 
@@ -134,6 +142,7 @@ export function closedItems(data: DevLogData, project: string): ClosedItem[] {
       out.push({
         num: s.num, kind: "plan-step", text: s.text, planTitle: plan.title, openedAt: plan.timestamp,
         closedBy: closer?.tag ?? "plan-complete", closedAt: closer?.timestamp, closerText: closer?.content,
+        ...(closer?.model ? { closerModel: closer.model } : {}),
       });
     }
   }

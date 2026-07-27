@@ -248,6 +248,27 @@ describe("generateReleaseHtml", () => {
     expect(html).toContain("serialized writes behind the existing lock"); // the cure line
   });
 
+  test("model attribution (#695): items carry a dl-model badge; pre-#695 items don't", () => {
+    const target = { tag: "release", project: "p", content: "v1.0.0", timestamp: "2026-04-03T00:00:00Z" };
+    const data: any = {
+      projects: { p: baseProject },
+      tags: [
+        target,
+        { tag: "built", project: "p", content: "attributed work", model: "claude-fable-5", timestamp: "2026-04-01T00:00:00Z" },
+        { tag: "built", project: "p", content: "legacy work", timestamp: "2026-04-01T01:00:00Z" },
+        { tag: "bug found", project: "p", num: 3, content: "found by opus", model: "claude-opus-4-8", timestamp: "2026-04-01T02:00:00Z" },
+        { tag: "bug fix", project: "p", content: "#3 fixed by fable", model: "claude-fable-5", timestamp: "2026-04-02T00:00:00Z" },
+      ],
+      events: [],
+    };
+    const html = generateReleaseHtml(data, "p", target as any);
+    expect(html).toContain(`<span class="dl-model">fable-5</span>`);   // prefix stripped for display
+    // the paired fix is attributed to its CLOSER (who fixed it), not the opener
+    expect(html).not.toContain("opus-4-8");
+    // exactly two badges: attributed built + the fix — legacy work renders none
+    expect((html.match(/dl-model">/g) || []).length).toBe(2);
+  });
+
   test("context line reports days and sessions of the shipped work", () => {
     const target = { tag: "release", project: "p", content: "v1.0.0", timestamp: "2026-04-03T00:00:00Z" };
     const data: any = {

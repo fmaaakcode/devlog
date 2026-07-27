@@ -71,8 +71,12 @@ PAYLOAD="$(cat)"
 # daemon serving stale working-tree edits) — its self-freshness check is blind
 # to that by construction. A header, not a query param: raw Windows paths need
 # no URL-encoding there.
+# X-DevLog-Project-Dir: the session's project dir (CLAUDE_PROJECT_DIR, set by
+# Claude Code for every hook). The server prefers it over the payload's cwd for
+# project attribution — the payload cwd follows the shell's persistent `cd` and
+# used to mint phantom subfolder projects. Empty when run outside a hook.
 inject() {
-  printf '%s' "$PAYLOAD" | curl -s -X POST "http://127.0.0.1:$PORT/api/inject$QUERY" -H "Content-Type: application/json" -H "X-DevLog-Hook-Root: $DIR" --data-binary @-
+  printf '%s' "$PAYLOAD" | curl -s -X POST "http://127.0.0.1:$PORT/api/inject$QUERY" -H "Content-Type: application/json" -H "X-DevLog-Hook-Root: $DIR" -H "X-DevLog-Project-Dir: ${CLAUDE_PROJECT_DIR:-}" --data-binary @-
 }
 
 # Off switch: set DEVLOG_AUTOSTART_OFF=1 in your environment to skip the

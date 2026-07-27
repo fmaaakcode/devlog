@@ -20,6 +20,24 @@ function capContent(s: unknown): string | undefined {
   return `${s.slice(0, MAX_DIFF_FIELD_BYTES)}\n…[truncated, original ${s.length} chars]`;
 }
 
+/**
+ * Attribution cwd for a hook request: prefer the session's PROJECT DIR (the
+ * X-DevLog-Project-Dir header, filled from CLAUDE_PROJECT_DIR by the sending
+ * hook) over the payload's `cwd`. The payload cwd follows the session's shell —
+ * a persistent `cd subdir/` in Bash drifts it away from the project root, and
+ * under a no-git parent that drift minted phantom projects (the `reports`
+ * incident). The project dir is pinned to where the session was opened, so it
+ * can't drift. An absent/invalid header (old hooks, manual curl, tests) falls
+ * back to the payload cwd unchanged.
+ */
+export function attributionCwd(
+  projectDir: string,
+  cwd: string,
+  isReal: (p: string) => boolean,
+): string {
+  return projectDir && isReal(projectDir) ? projectDir : cwd;
+}
+
 // Shape of a Claude Code hook payload (the fields DevLog reads). Loose + all
 // optional — hooks vary by event; unknown fields are ignored.
 interface HookBody {

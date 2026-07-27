@@ -6,7 +6,7 @@ import { cleanupOldBackups, backupStores } from "./maintenance";
 import { acquireDaemonLock, releaseDaemonLock } from "./daemon-lock";
 import { wsClients, broadcast } from "./broadcast";
 import { rescanPreserve, scanFreshProfile, applyPreservedScan } from "./scanner";
-import { parseHookEvent } from "./hooks";
+import { parseHookEvent, attributionCwd } from "./hooks";
 import { exportStatusMd, generateStackMd } from "./export";
 import { rebuildChangelogsMigration } from "./changelog-rebuild";
 import { buildContext, getEffectiveConfig, isDynamicTypeEnabled, newSecurityAlerts } from "./inject";
@@ -153,7 +153,10 @@ function isRealCwd(cwd: string): boolean {
 }
 
 async function doInject(body: Record<string, unknown>) {
-  const cwd = str(body.cwd);
+  // Attribution anchor: the session's project dir (X-DevLog-Project-Dir, from
+  // CLAUDE_PROJECT_DIR) outranks the payload cwd, which follows shell `cd`
+  // drift and minted phantom subfolder projects (the `reports` incident).
+  const cwd = attributionCwd(str(body.project_dir), str(body.cwd), isRealCwd);
   const type = str(body.hook_event_name) || str(body.type) || "SessionStart";
   const sessionId = str(body.session_id);
   // Position memory (#486): the file a PreToolUse Read is about to open.

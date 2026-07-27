@@ -202,6 +202,54 @@
             modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
         }
 
+        // «أداء النماذج» (#695 follow-up): scorecard modal — من فتح، من أصلح،
+        // إصلاحات مين انتكست (⟲)، ومين شحن إصلاحًا بلا اختبار. نافذة عند الطلب
+        // لا بطاقة دائمة: البيانات صغيرة (نماذج معدودة) وجمهورها لحظة قرار.
+        export async function openModelStatsPanel(projectName) {
+            const res = await fetch(`/api/model-stats?project=${encodeURIComponent(projectName)}`).then(r => r.json()).catch(() => null);
+            const models = res?.models || [];
+            const short = (m) => String(m || '').replace(/^claude-/, '');
+            const num = (v) => (v == null ? '—' : v);
+
+            const rows = models.map(m => `
+                <tr>
+                    <td style="font-weight:600;direction:ltr;text-align:right">${esc(short(m.model))}</td>
+                    <td>${m.tags}</td>
+                    <td>${m.reportsOpened}</td>
+                    <td>${m.closures}</td>
+                    <td>${m.fixes}</td>
+                    <td style="color:${m.reopened ? '#ef476f' : 'var(--text2)'}">${m.reopened}</td>
+                    <td style="color:${m.fixesWithoutTest ? '#ffd166' : 'var(--text2)'}">${m.fixesJudged ? `${m.fixesWithoutTest}/${m.fixesJudged}` : '—'}</td>
+                    <td>${num(m.avgCloseDays)}</td>
+                </tr>`).join('');
+
+            const modal = document.getElementById('modelStatsModal') || (() => {
+                const m = document.createElement('div');
+                m.id = 'modelStatsModal';
+                m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px';
+                document.body.appendChild(m);
+                return m;
+            })();
+
+            modal.innerHTML = `
+                <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;max-width:760px;width:100%;max-height:80vh;overflow-y:auto;padding:20px;direction:rtl">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                        <h3 style="margin:0">أداء النماذج: ${esc(projectName)} 🤖</h3>
+                        <button data-action="close-model-stats-modal" style="background:none;border:none;color:var(--text);font-size:1.5em;cursor:pointer">×</button>
+                    </div>
+                    <div style="color:var(--text2);font-size:0.78em;margin-bottom:14px">من سجل المشروع الفعلي: كل تاق منسوب للنموذج الذي كتبه (منذ v3.30.0). «انتكس» = إصلاحه عاد وانفتح ⟲ · «بلا اختبار» = إصلاحات لم تلمس ملف اختبار من أصل القابل للحكم.</div>
+                    ${models.length ? `
+                    <table style="width:100%;border-collapse:collapse;font-size:0.85em;text-align:center">
+                        <thead><tr style="color:var(--text2);border-bottom:1px solid var(--border)">
+                            <th style="padding:6px;text-align:right">النموذج</th><th>التاقات</th><th>فتح بلاغات</th><th>إغلاقات</th><th>إصلاحات</th><th>انتكس ⟲</th><th>بلا اختبار</th><th>متوسط الإغلاق (يوم)</th>
+                        </tr></thead>
+                        <tbody>${rows}</tbody>
+                    </table>` : '<div style="color:var(--text2);font-size:0.9em;padding:12px 0">لا تاقات منسوبة بعد — النسب يعمل من v3.30.0 وصاعدًا، واللوحة تمتلئ مع الشغل القادم.</div>'}
+                    ${res?.unattributed ? `<div style="color:var(--text2);font-size:0.75em;margin-top:12px">${res.unattributed} تاق تاريخي بلا نسب (سابق لميزة النسب) — غير محسوب في الجدول.</div>` : ''}
+                </div>`;
+            modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+        }
+
         export async function killPid(pid, projectName) {
             if (!(await uiConfirm(`قتل العملية ${pid}؟`, { okText: "اقتل العملية" }))) return;
             // Visible failure on network error instead of a silent unhandled

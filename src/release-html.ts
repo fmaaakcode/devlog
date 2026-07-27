@@ -261,6 +261,7 @@ function standaloneCss(): string {
   .dl-cure { margin:2px 0 2px; color:var(--text2); font-size:0.9em; }
   .dl-cure b { color:var(--c-built); font-weight:600; }
   .dl-tag-files { color:var(--text2); font-size:0.75em; font-family:"Cascadia Code",Consolas,monospace; margin-top:2px; direction:ltr; text-align:right; }
+  .dl-model { color:var(--text2); font-size:0.7em; border:1px solid var(--border); border-radius:8px; padding:0 6px; margin-right:6px; white-space:nowrap; direction:ltr; display:inline-block; }
   .dl-change-list li[data-breaking="true"] { border-right:2px solid var(--c-security); padding-right:8px; }
   .dl-diff { color:var(--text2); font-size:0.78em; font-family:"Cascadia Code",Consolas,monospace; margin-right:6px; }
   .dl-diff-file { font-family:"Cascadia Code",Consolas,monospace; font-size:0.85em; color:var(--text); }
@@ -310,12 +311,14 @@ ${bodyInner}
 // the problem), `cure` the closer's tail (how it was fixed), when available.
 // `files` (#500): the capturing session's in-tree files, project-relative —
 // present only for tags stored since position memory (#486) landed.
-interface ReleaseItem { text: string; breaking?: boolean; cure?: string; files?: string[] }
+// `model` (#695): the model that authored the tag — for a paired fix, the
+// CLOSER's model (who fixed it, not who found it). Absent on pre-#695 history.
+interface ReleaseItem { text: string; breaking?: boolean; cure?: string; files?: string[]; model?: string }
 
 function toItems(tags: TagEntry[], root: string): ReleaseItem[] {
   return tags.map(t => {
     const files = projectRelativeFiles(t.files, root);
-    return { text: t.content, ...(t.breaking ? { breaking: true } : {}), ...(files ? { files } : {}) };
+    return { text: t.content, ...(t.breaking ? { breaking: true } : {}), ...(files ? { files } : {}), ...(t.model ? { model: t.model } : {}) };
   });
 }
 
@@ -334,11 +337,11 @@ function pairFixes(fixTags: TagEntry[], allProjectTags: TagEntry[], root: string
       if (opener) {
         const cure = content.replace(/^(?:\s*#\d+)+[\s,،:—–-]*/, "").trim();
         const files = projectRelativeFiles([...new Set([...(t.files || []), ...(opener.files || [])])], root);
-        return { text: opener.content, ...(cure ? { cure } : {}), ...(t.breaking ? { breaking: true } : {}), ...(files ? { files } : {}) };
+        return { text: opener.content, ...(cure ? { cure } : {}), ...(t.breaking ? { breaking: true } : {}), ...(files ? { files } : {}), ...(t.model ? { model: t.model } : {}) };
       }
     }
     const files = projectRelativeFiles(t.files, root);
-    return { text: content, ...(t.breaking ? { breaking: true } : {}), ...(files ? { files } : {}) };
+    return { text: content, ...(t.breaking ? { breaking: true } : {}), ...(files ? { files } : {}), ...(t.model ? { model: t.model } : {}) };
   });
 }
 
@@ -376,7 +379,9 @@ function changesSection(title: string, kind: string, items: ReleaseItem[]): stri
     const files = t.files?.length
       ? `\n        <div class="dl-tag-files">${t.files.slice(0, 6).map(esc).join(" · ")}${t.files.length > 6 ? ` <span class="dl-diff-more">… و ${t.files.length - 6} أخرى</span>` : ""}</div>`
       : "";
-    return `      <li${breaking}>${esc(t.text)}${cure}${files}</li>`;
+    // نسب النموذج (#695): من نفّذ هذا البند — يغيب عن تاريخ ما قبل الحقل.
+    const model = t.model ? ` <span class="dl-model">${esc(String(t.model).replace(/^claude-/, ""))}</span>` : "";
+    return `      <li${breaking}>${esc(t.text)}${model}${cure}${files}</li>`;
   }).join("\n");
   const sectionAttr = hasBreaking ? ` data-has-breaking="true"` : "";
   return `

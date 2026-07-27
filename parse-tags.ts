@@ -120,19 +120,23 @@ try {
 // timestamp). The turnId lets the pull-command dedup tell "same turn, already
 // served" (a hook-driven continuation keeps the same boundary) from "new user
 // turn" (boundary changes → re-serve allowed).
-// It also returns the turn as `segments` — one string per assistant transcript
-// entry — because a tag's body must NEVER span two assistant messages: parsing
+// It also returns the turn as `segments` — one entry per assistant transcript
+// message, each carrying the `model` that wrote it (#695): the transcript line
+// we already parse for content has `message.model` sitting right next to it,
+// and capturing it PER SEGMENT (not per session) keeps attribution correct
+// when /model switches mid-session. Tags inherit their segment's model.
+// A tag's body must NEVER span two assistant messages: parsing
 // the joined text let the LAST body tag of a take swallow the next
 // continuation's prose (a new dedup identity on every re-read → a grown twin
 // stored as a second tag; same #486/#487 class the single-line cut fixed for
 // headline tags). Callers parse tags per segment and join only for line-anchored
 // command scans (ask:*/audit), which a segment boundary can't split.
-async function readTurnFromTranscript(transcriptPath: string): Promise<{ text: string; turnId: string; segments: string[] }> {
+async function readTurnFromTranscript(transcriptPath: string): Promise<{ text: string; turnId: string; segments: { text: string; model: string }[] }> {
   if (!transcriptPath) return { text: "", turnId: "", segments: [] };
   try {
     const content = await readFile(transcriptPath, "utf-8");
     const lines = content.split("\n").filter(Boolean);
-    let segments: string[] = [];
+    let segments: { text: string; model: string }[] = [];
     let turnId = "";
     for (const line of lines) {
       let obj: any;
@@ -178,9 +182,9 @@ async function readTurnFromTranscript(transcriptPath: string): Promise<{ text: s
           .filter((b): b is { type: string; text: string } => b?.type === "text" && typeof b.text === "string")
           .map(b => b.text).join("\n");
       }
-      if (seg.trim()) segments.push(seg.trim());
+      if (seg.trim()) segments.push({ text: seg.trim(), model: String(obj.message?.model || "") });
     }
-    return { text: segments.join("\n").trim(), turnId, segments };
+    return { text: segments.map(s => s.text).join("\n").trim(), turnId, segments };
   } catch (e) {
     await log(`transcript read error: ${(e as Error).message}`);
     return { text: "", turnId: "", segments: [] };
@@ -192,8 +196,12 @@ const msg = transcriptMsg || data.last_assistant_message || "";
 // Tag extraction runs per assistant message (fallback: the whole msg when the
 // transcript wasn't readable) — see readTurnFromTranscript on why a tag body
 // must not cross a message boundary.
-const tagSegments = transcriptMsg && segments.length ? segments : [msg];
-const cwd = data.cwd || "";
+const tagSegments = transcriptMsg && segments.length ? segments : [{ text: msg, model: "" }];
+// Attribution anchor: CLAUDE_PROJECT_DIR (set by Claude Code for every hook
+// process) is pinned to where the session was opened; the payload cwd follows
+// the shell's persistent `cd` and used to misattribute tags to phantom
+// subfolder projects. Fallback keeps manual/test invocations working.
+const cwd = process.env.CLAUDE_PROJECT_DIR || data.cwd || "";
 const sessionId = data.session_id || "";
 // True when this Stop was itself triggered by a previous hook exit(2)
 // continuation — used to avoid an infinite enforcement loop.
@@ -270,7 +278,35 @@ if (msg) {
   // server and the test suite via src/tag-parser.ts — single source of truth.
   // It used to be duplicated here byte-for-byte (org-audit R2 #1), so the
   // tested copy and the production copy could silently diverge.
-  const entries = tagSegments.flatMap(s => parseTags(s));
+  // Contextual memory (idea 2, 2026-07-27): problem/fix/decision tags carry a
+  // capped excerpt of the PROSE around them — the model's own reasoning at fix
+  // time — because transcripts auto-delete (~30d) and "why did we do it this
+  // way?" is otherwise unanswerable a year later. Tail-anchored: tags are
+  // emitted at the END of a response, so the last prose lines are the summary
+  // nearest the tag. Tag-emission lines themselves are stripped; a segment
+  // that is ALL tags yields no context. Opt out with DEVLOG_TAG_CONTEXT=0.
+  const CONTEXT_TAGS = new Set(["bug found", "bug fix", "security", "security:own", "security:dep", "security fix", "decision"]);
+  const CONTEXT_MAX = 1500;
+  const contextOf = (() => {
+    const memo = new Map<string, string>();
+    return (segText: string): string => {
+      if (process.env.DEVLOG_TAG_CONTEXT === "0") return "";
+      let ctx = memo.get(segText);
+      if (ctx === undefined) {
+        const prose = segText.split("\n").filter(l => !/^[ \t]*-\([^)\n]{1,40}\)/.test(l)).join("\n").trim();
+        ctx = prose.length <= CONTEXT_MAX ? prose : `…${prose.slice(-CONTEXT_MAX)}`;
+        memo.set(segText, ctx);
+      }
+      return ctx;
+    };
+  })();
+  // Each entry inherits its segment's model (#695) — empty model (fallback
+  // path, or an old-format transcript) simply omits the field.
+  const entries = tagSegments.flatMap(s => parseTags(s.text).map(e => ({
+    ...e,
+    ...(s.model ? { model: s.model } : {}),
+    ...(CONTEXT_TAGS.has(e.tag) && contextOf(s.text) ? { context: contextOf(s.text) } : {}),
+  })));
   await log(`matches=${JSON.stringify(entries.map(e => [e.tag, e.breaking, e.content]))} (count ${entries.length}, segments ${tagSegments.length})`);
 
   if (entries.length) {
@@ -1045,6 +1081,9 @@ if (msg && cwd) {
           ? it.closedAt.slice(0, 16).replace("T", " ")
           : L("completed in plan (no timestamp)", "مكتمل في الخطة (بلا وقت مسجّل)");
         const opened = (it: any) => it.openedAt ? it.openedAt.slice(0, 16).replace("T", " ") : "";
+        // Attribution (#695): stored raw ("claude-opus-4-8"); display drops the
+        // vendor prefix. Absent on pre-#695 history — shows nothing, never "unknown".
+        const who = (m: any) => (typeof m === "string" && m ? String(m).replace(/^claude-/, "") : "");
         let out: string;
         if (num) {
           if (!items.length) {
@@ -1055,15 +1094,24 @@ if (msg && cwd) {
             const it = items[0];
             const by = it.closedBy ? ` -(${it.closedBy})` : "";
             const plan = it.planTitle ? ` [${it.planTitle}]` : "";
-            const openedLine = opened(it) ? L(`\nOpened: ${opened(it)}`, `\nفُتح: ${opened(it)}`) : "";
+            const openerWho = who(it.model) ? L(` — by ${who(it.model)}`, ` — بواسطة ${who(it.model)}`) : "";
+            const closerWho = who(it.closerModel) ? L(` — by ${who(it.closerModel)}`, ` — بواسطة ${who(it.closerModel)}`) : "";
+            const openedLine = opened(it) ? L(`\nOpened: ${opened(it)}${openerWho}`, `\nفُتح: ${opened(it)}${openerWho}`) : "";
+            // Contextual memory: the fix-time reasoning, closer's first (the
+            // "why this way?"), opener's as fallback (how it was described).
+            const ctx = typeof it.closerContext === "string" && it.closerContext
+              ? { src: L("fix context", "سياق الإصلاح"), text: it.closerContext }
+              : typeof it.context === "string" && it.context
+              ? { src: L("report context", "سياق البلاغ"), text: it.context } : null;
+            const ctxLine = ctx ? `\n${ctx.src}: «${ctx.text}»` : "";
             out = L(
-              `#${it.num} — ${it.text}${plan}${openedLine}\nClosed: ${when(it)}${by}`,
-              `#${it.num} — ${it.text}${plan}${openedLine}\nأُغلق: ${when(it)}${by}`);
+              `#${it.num} — ${it.text}${plan}${openedLine}\nClosed: ${when(it)}${by}${closerWho}${ctxLine}`,
+              `#${it.num} — ${it.text}${plan}${openedLine}\nأُغلق: ${when(it)}${by}${closerWho}${ctxLine}`);
           }
         } else {
           out = items.length
             ? L(`Recently closed (${items.length}):`, `آخر ما أُغلق (${items.length}):`) + "\n"
-              + items.map((it: any) => `  ${typeof it.num === "number" ? `#${it.num} ` : ""}${it.text} — ${when(it)}${it.closedBy ? ` -(${it.closedBy})` : ""}`).join("\n")
+              + items.map((it: any) => `  ${typeof it.num === "number" ? `#${it.num} ` : ""}${it.text} — ${when(it)}${it.closedBy ? ` -(${it.closedBy})` : ""}${who(it.closerModel) ? ` [${who(it.closerModel)}]` : ""}`).join("\n")
             : L("No closed items yet.", "لا عناصر مغلقة بعد.");
         }
         await log(`ask:closed: served ${items.length} item(s)${num ? ` for #${num}` : ""}`);
@@ -1283,9 +1331,10 @@ if (msg && cwd) {
       const r = await fetch(`${SERVER}/api/retro?cwd=${encodeURIComponent(cwd)}`, { signal: AbortSignal.timeout(10000) });
       if (r.ok) {
         await markAskServed("ask:retro");   // record only now the fetch succeeded (#398)
-        const { items = [], fragile = [], testGap } = await r.json() as
+        const { items = [], fragile = [], testGap, modelStats } = await r.json() as
           { items?: any[]; fragile?: Array<{ file: string; count: number; open: number }>;
-            testGap?: { judged: number; withTest: number; withoutTest: number; unknown: number; items: any[] } };
+            testGap?: { judged: number; withTest: number; withoutTest: number; unknown: number; items: any[] };
+            modelStats?: { models: any[]; unattributed: number } };
         const day = (s: string) => String(s).slice(0, 10);
         const line = (it: any) => {
           const num = typeof it.num === "number" ? `#${it.num} ` : "";
@@ -1315,8 +1364,19 @@ if (msg && cwd) {
               `Fixed without touching a test: ${testGap.withoutTest}/${testGap.judged}${testGap.unknown ? ` (${testGap.unknown} unknown)` : ""} — e.g. ${testGap.items.slice(0, 3).map((g: any) => `${typeof g.num === "number" ? `#${g.num}` : ""}`).filter(Boolean).join(" ")}. A fix with no regression test can come back unnoticed.`,
               `أُصلح بلا لمس أي اختبار: ${testGap.withoutTest}/${testGap.judged}${testGap.unknown ? ` (${testGap.unknown} غير معروف)` : ""} — مثل ${testGap.items.slice(0, 3).map((g: any) => `${typeof g.num === "number" ? `#${g.num}` : ""}`).filter(Boolean).join(" ")}. الإصلاح بلا اختبار انحدار قد يعود دون أن ينتبه أحد.`)}\n`
           : "";
+        // Model scorecard (#695 follow-up): per-model discipline line — only
+        // models that actually closed or opened something; silent when the
+        // attributed history is still empty (pre-v3.30.0 projects).
+        const modelLine = modelStats?.models?.length
+          ? `${L("Models: ", "النماذج: ")}${modelStats.models.map((m: any) => {
+              const name = String(m.model || "").replace(/^claude-/, "");
+              const gap = m.fixesJudged ? `, ${L("no-test", "بلا اختبار")} ${m.fixesWithoutTest}/${m.fixesJudged}` : "";
+              const reop = m.reopened ? `, ⟲${m.reopened}` : "";
+              return `${name} (${L("opened", "فتح")} ${m.reportsOpened}, ${L("fixed", "أصلح")} ${m.fixes}${reop}${gap})`;
+            }).join(" · ")}\n`
+          : "";
         const out = items.length
-          ? `${fragileLine}${gapLine}${L(`Problem corpus (${items.length} reports, oldest first) — cluster the recurrences; codify a confirmed pattern with -(rule:add) or -(insight):`,
+          ? `${fragileLine}${gapLine}${modelLine}${L(`Problem corpus (${items.length} reports, oldest first) — cluster the recurrences; codify a confirmed pattern with -(rule:add) or -(insight):`,
               `سجل المشاكل (${items.length} بلاغًا، الأقدم أولًا) — اعنقد المتكرر؛ ثبّت النمط المؤكد بـ-(rule:add) أو -(insight):`)}\n${items.map(line).join("\n")}`
           : L("No problem reports recorded for this project yet.", "لا بلاغات مسجّلة لهذا المشروع بعد.");
         await log(`ask:retro: served ${items.length} item(s)`);
@@ -1630,7 +1690,7 @@ if (cwd && sessionId && !stopHookActive && process.env.DEVLOG_UNTAGGED_CHECK !==
   try {
     // Re-parse is deliberate: `entries` lives inside the Part-1 scope and this
     // guard must also run on responses that carried no tags at all.
-    const turnEntryCount = tagSegments.flatMap(s => parseTags(s)).length;
+    const turnEntryCount = tagSegments.flatMap(s => parseTags(s.text)).length;
     if (turnEntryCount === 0) {
       const r = await fetch(`${SERVER}/api/changes/session?session_id=${encodeURIComponent(sessionId)}`, {
         signal: AbortSignal.timeout(3000),

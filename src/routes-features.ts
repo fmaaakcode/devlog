@@ -15,6 +15,7 @@ import { featureList, featuresSinceLastRelease, backfillCorpus } from "./feature
 import { buildDepsPayload } from "./deps-explain";
 import { collectClientReport, renderClientReportHtml, writeClientReport } from "./client-report";
 import { retroCorpus, fragileFiles, regressionGap } from "./retro";
+import { modelScorecard } from "./model-stats";
 import { studyCorpus, STUDY_NAME_RE, type PrevStudyDoc } from "./study";
 
 type ApiReq = Bun.BunRequest;
@@ -123,7 +124,23 @@ export function makeFeatureRoutes(): Record<string, unknown> {
           // quiet ratio in the header — "what keeps breaking?" and "what did we
           // fix without guarding?" are the same reflection.
           testGap: regressionGap(data, project),
+          // Model scorecard: per-model discipline aggregates ride the same
+          // reflection surface (in-session audience); the dashboard modal is
+          // the human-eye surface of the SAME numbers via /api/model-stats.
+          modelStats: modelScorecard(data, project),
         });
+      },
+    },
+
+    // The model scorecard behind the dashboard's «أداء النماذج» modal: per-model
+    // open/fix/reopen/test-gap/close-speed aggregates from the attributed tags
+    // (#695). Same computation the retro serves — one source, two audiences.
+    "/api/model-stats": {
+      async GET(req: ApiReq) {
+        const project = await resolveParam(req);
+        if (!project) return Response.json({ project: null, models: [], unattributed: 0, totalTags: 0 });
+        const data = await loadData();
+        return Response.json({ project, ...modelScorecard(data, project) });
       },
     },
 

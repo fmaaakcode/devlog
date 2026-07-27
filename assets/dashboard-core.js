@@ -5,7 +5,7 @@
         import { data, activeProject, showCompletedPlans, setShowCompletedPlans, setTodosTab, setPlansTab } from "./dashboard-state.js";
         import { rescanProject, vulnScan, expandHistory, refreshActiveView } from "./dashboard-data.js";
         import { selectProject, deleteProject, renameProject, cleanupTombstones, importProjectBundle, vulnCache } from "./dashboard-project.js";
-        import { openSessionsPanel, killPid, killServer, refreshProcesses, renderActivePlanCard, renderTodosCard, hidePlan, togglePlanUpcoming, renderProject, planExpanded } from "./dashboard-panels.js";
+        import { openSessionsPanel, openModelStatsPanel, killPid, killServer, refreshProcesses, renderActivePlanCard, renderTodosCard, hidePlan, togglePlanUpcoming, renderProject, planExpanded } from "./dashboard-panels.js";
         import { setLogFilter, clearInjectionOverride, toggleInjection, showInjectionContent, switchInjScope, openInjectionPanel, openStandardsPanel, closeInjectionPanel, closeStandardsPanel, openUpdatesPopup, openTargetFile, ignoreTarget } from "./dashboard-tree-ws.js";
 
         // Derive from where the dashboard is served, so it follows DEVLOG_PORT
@@ -183,6 +183,9 @@
             // Client-facing status report — rendered live server-side; the
             // browser tab is the review/print/save surface.
             else if (action === "open-client-report") window.open(`${API}/api/client-report?project=${encodeURIComponent(activeProject)}`, "_blank", "noopener");
+            // بطاقة أداء النماذج — نافذة عند الطلب من شريحة الرأس (فكرة 1، 2026-07-27).
+            else if (action === "open-model-stats") openModelStatsPanel(activeProject);
+            else if (action === "close-model-stats-modal") { const m = document.getElementById('modelStatsModal'); if (m) m.remove(); }
             else if (action === "open-target-file") openTargetFile();
             else if (action === "ignore-target") ignoreTarget();
             else if (action === "close-injection-panel") closeInjectionPanel();

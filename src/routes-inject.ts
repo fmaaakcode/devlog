@@ -46,6 +46,9 @@ export function makeInjectRoutes({ doInject, MAX_INJECTIONS_LOG }: InjectRouteDe
           // The sending hook's own repo root (#600) — headers carry raw Windows
           // paths without URL-encoding gymnastics.
           hook_root: req.headers.get("x-devlog-hook-root") || "",
+          // The session's project dir (CLAUDE_PROJECT_DIR) — attribution anchor
+          // that survives shell-cwd drift; doInject prefers it over cwd.
+          project_dir: req.headers.get("x-devlog-project-dir") || "",
         });
       },
       async POST(req: ApiReq) {
@@ -54,6 +57,7 @@ export function makeInjectRoutes({ doInject, MAX_INJECTIONS_LOG }: InjectRouteDe
         try { body = obj(await req.json()); } catch { /* missing/invalid JSON body → treat as empty */ }
         body.plugin = url.searchParams.get("plugin") === "1";
         body.hook_root = req.headers.get("x-devlog-hook-root") || "";
+        body.project_dir = req.headers.get("x-devlog-project-dir") || "";
         return doInject(body);
       },
     },

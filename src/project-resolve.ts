@@ -21,10 +21,18 @@
 //     ANOTHER registered project that is a sibling/cousin of cwd, the parent is
 //     a container of independent projects, not a project-with-subfolders →
 //     don't fold.
-//   Layer B (git, only when A is inconclusive): fold only when cwd and the
-//     parent resolve to the SAME git repository (the real Tauri case). No shared
-//     repo / no git → don't fold.
+//   Scan layer (parent profile + child fs): the parent's OWN scanned profile
+//     lists this subfolder in `directories`, and the child carries no project
+//     markers of its own (.git / manifest) → fold. Covers no-git projects
+//     generically (the `reports` incident: a plain data subfolder of a
+//     registered html/md project was minted as a phantom because Layer B had
+//     no git to consult).
+//   Layer B (git, only when the above are inconclusive): fold only when cwd and
+//     the parent resolve to the SAME git repository (the real Tauri case). No
+//     shared repo / no git → don't fold.
 
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { normalizePath, pathsEqual, isPathInside, normalizeSlashes } from "./path-utils";
 import { bunSpawnSync } from "./spawn";
 // The same conventional-subfolder list the scanner already folds manifests from
@@ -105,6 +113,46 @@ export function sharesGitRepo(
   return pathsEqual(childRoot, parentRoot);
 }
 
+// Independence markers — a folder carrying any of these is (very likely) a
+// project of its own, never a foldable data subfolder. `.git` keeps the git
+// layers authoritative for repo-owning children; the manifests catch the
+// no-git-but-real-project case. Distinct from server.ts's MANIFEST_FILES
+// (rescan triggers): this list answers "could this folder stand alone?".
+const OWN_PROJECT_MARKERS = [
+  ".git", "package.json", "Cargo.toml", "pyproject.toml", "requirements.txt",
+  "go.mod", "composer.json", "deno.json", "Gemfile",
+];
+
+export type MarkerFn = (dir: string) => boolean;
+
+export const hasOwnProjectMarkers: MarkerFn = (dir: string): boolean => {
+  try { return OWN_PROJECT_MARKERS.some(m => existsSync(join(dir, m))); }
+  catch { return false; }
+};
+
+// Scan layer — true when the registered parent's own scanned profile already
+// lists cwd's first path segment under it in `directories` (the scanner saw it
+// as part of THIS project), and cwd itself shows no independence markers. This
+// is the positive no-git fold signal Layer B can't provide: a plain subfolder
+// (reports/, assets/, …) of a manifest-less project. Ranked AFTER Layer A so a
+// registered container with registered children can never swallow a new
+// sibling through its own directory listing.
+export function parentListsSubdir(
+  parent: ProjectProfile | undefined,
+  parentPath: string,
+  cwd: string,
+  hasMarkers: MarkerFn = hasOwnProjectMarkers,
+): boolean {
+  const dirs = parent?.directories;
+  if (!dirs?.length) return false;
+  const pSegs = normalizeSlashes(parentPath).split("/").filter(Boolean);
+  const cSegs = normalizeSlashes(cwd).split("/").filter(Boolean);
+  if (cSegs.length <= pSegs.length) return false;
+  const first = cSegs[pSegs.length].toLowerCase();
+  if (!dirs.some(d => d.toLowerCase() === first)) return false;
+  return !hasMarkers(cwd);
+}
+
 // Convention layer — a positive fold signal that works WITHOUT git (bug #529:
 // a no-git Tauri project minted `src-tauri` — and `.devlog` before it — as
 // phantom projects, and the first phantom made Layer A read the parent as a
@@ -137,9 +185,11 @@ export function shouldFoldIntoParent(
   parentPath: string,
   cwd: string,
   gitRootOf: GitRootFn,
+  hasMarkers: MarkerFn = hasOwnProjectMarkers,
 ): boolean {
   if (isConventionalSubfolder(parentPath, cwd, gitRootOf)) return true;
   if (parentHasSiblingProject(projects, parentName, parentPath, cwd)) return false;
+  if (parentListsSubdir(projects[parentName], parentPath, cwd, hasMarkers)) return true;
   return sharesGitRepo(parentPath, cwd, gitRootOf);
 }
 
@@ -152,6 +202,7 @@ export function resolveProjectFor(
   data: { projects: ProjectsMap },
   cwd: string,
   gitRootOf: GitRootFn = gitToplevel,
+  hasMarkers: MarkerFn = hasOwnProjectMarkers,
 ): { name: string; cwd: string } {
   const fallback = { name: baseName(cwd), cwd };
   if (!cwd) return fallback;
@@ -188,7 +239,7 @@ export function resolveProjectFor(
     return fallback;
   }
 
-  if (candidate && shouldFoldIntoParent(data.projects, candidate.name, candidate.cwd, cwd, gitRootOf)) {
+  if (candidate && shouldFoldIntoParent(data.projects, candidate.name, candidate.cwd, cwd, gitRootOf, hasMarkers)) {
     return candidate;
   }
   return fallback;

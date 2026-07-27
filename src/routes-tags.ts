@@ -40,7 +40,7 @@ type ApiReq = Bun.BunRequest;
 // Shapes of the JSON bodies these routes accept. Loose (hooks send varied
 // payloads); the pipeline validates/normalizes each field. Typing them lets the
 // module stay `any`-free while the runtime logic is byte-identical to before.
-interface TagInput { tag?: string; content?: string; breaking?: boolean }
+interface TagInput { tag?: string; content?: string; breaking?: boolean; model?: string; context?: string }
 interface TagsBody { entries?: TagInput[]; cwd?: string; session_id?: string; batch_id?: string }
 interface ClassifyBody { cwd?: string; count?: number; type?: string; note?: string }
 // Entries handed to helpers that require concrete tag/content strings — the guard
@@ -457,6 +457,12 @@ export function makeTagsRoutes(): Record<string, unknown> {
               timestamp: new Date().toISOString(),
             };
             if (entry.breaking) tagEntry.breaking = true;
+            // Attribution (#695): who (which model) emitted this tag. Length-capped
+            // like any hook-supplied string; absent stays absent (never "unknown").
+            if (typeof entry.model === "string" && entry.model.trim()) tagEntry.model = entry.model.trim().slice(0, 80);
+            // Contextual memory: the reasoning excerpt captured with the tag.
+            // Hard server-side cap regardless of what the hook sent.
+            if (typeof entry.context === "string" && entry.context.trim()) tagEntry.context = entry.context.trim().slice(0, 2000);
             if (touchedFiles.length) tagEntry.files = touchedFiles;
             // Assign a per-project number to openable tags so Claude can close
             // them by `#N`. Skip closures, meta, and non-tracking tags.
