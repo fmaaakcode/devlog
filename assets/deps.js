@@ -1,8 +1,10 @@
 // The deps explainer page (#663): every manifest library annotated with its
-// recorded purpose line (`-(lib) name — غرض`), the registry's official
+// recorded purpose line (-(lib) name — purpose), the registry's official
 // one-liner, and its vuln/outdated status — all from GET /api/deps. Standalone
 // on purpose: no dashboard-core import, so the page carries zero dashboard
-// state and stays a plain read-only viewer.
+// state and stays a plain read-only viewer. UI strings come from the shared
+// dictionary (#708).
+import { t as tr, applyI18n } from "./dashboard-i18n.js";
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -21,20 +23,20 @@ const sevColor = { critical: "#ff1744", high: "#ff5252", moderate: "#ff9800", lo
 function card(l) {
   const url = REGISTRY_URL[l.eco]?.(l.name);
   const name = url
-    ? `<a href="${esc(url)}" target="_blank" rel="noopener" title="فتح صفحة المكتبة">${esc(l.name)}</a>`
+    ? `<a href="${esc(url)}" target="_blank" rel="noopener" title="${tr("lib.openPage")}">${esc(l.name)}</a>`
     : esc(l.name);
   // Every interpolation below passes esc(); numbers are coerced explicitly so a
   // malformed payload can't smuggle markup through a "number" field. Colors come
   // from the fixed sevColor map only — the raw severity string never reaches HTML.
   const vuln = l.vulns
-    ? `<span class="badge vuln" style="color:${sevColor[(l.severity || "").toLowerCase()] || "var(--pink)"}">⚠ ${Number(l.vulns) || 0} ثغرة</span>`
+    ? `<span class="badge vuln" style="color:${sevColor[(l.severity || "").toLowerCase()] || "var(--pink)"}">⚠ ${tr("lib.vulnCount", { n: Number(l.vulns) || 0 })}</span>`
     : "";
   const outdated = l.isLatest === false && l.latestVersion
-    ? `<span class="latest" title="النسخة الأحدث">&#8635; ${esc(l.latestVersion)}</span>`
+    ? `<span class="latest" title="${tr("depsPage.latestTitle")}">&#8635; ${esc(l.latestVersion)}</span>`
     : "";
   const purpose = l.purpose
     ? `<div class="purpose">${esc(l.purpose)}</div>`
-    : `<div class="purpose missing">بلا غرض مسجَّل — اطلب من كلود: <span dir="ltr">-(ask:deps)</span></div>`;
+    : `<div class="purpose missing">${tr("depsPage.noPurpose")}</div>`;
   const desc = l.description ? `<div class="desc">${esc(l.description)}</div>` : "";
   const cls = l.vulns ? "card danger" : (l.isLatest === false ? "card stale" : "card");
   return `<div class="${cls}" data-search="${esc(`${l.name} ${l.purpose || ""} ${l.description || ""}`.toLowerCase())}">
@@ -48,30 +50,31 @@ function card(l) {
 }
 
 async function load() {
+  applyI18n();
   const project = new URLSearchParams(location.search).get("project") || "";
   const status = document.getElementById("status");
   const list = document.getElementById("list");
   document.getElementById("projName").textContent = project;
-  document.title = `مكتبات ${project}`;
-  if (!project) { status.textContent = "لا مشروع محدد — افتح الصفحة من زر dependencies في الداشبورد."; return; }
+  document.title = tr("depsPage.title", { project });
+  if (!project) { status.textContent = tr("depsPage.noProject"); return; }
   let payload;
   try {
     const r = await fetch(`/api/deps?project=${encodeURIComponent(project)}`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     payload = await r.json();
   } catch (e) {
-    status.textContent = `تعذّر تحميل المكتبات: ${e.message}`;
+    status.textContent = tr("depsPage.loadFail", { msg: e.message });
     return;
   }
-  if (!payload.project) { status.textContent = "مشروع غير معروف."; return; }
-  if (!payload.libraries.length) { status.textContent = "لا مكتبات معروفة للمشروع بعد (تظهر بعد أول فحص)."; return; }
+  if (!payload.project) { status.textContent = tr("depsPage.unknownProject"); return; }
+  if (!payload.libraries.length) { status.textContent = tr("depsPage.noLibs"); return; }
 
   const cov = document.getElementById("coverage");
   const total = Number(payload.total) || 0;
   const withPurpose = Number(payload.withPurpose) || 0;
   cov.innerHTML = withPurpose === total
-    ? `التغطية كاملة — <b>${total}</b> مكتبة بغرض مسجَّل`
-    : `<b>${total - withPurpose}</b> من ${total} بلا غرض مسجَّل`;
+    ? tr("depsPage.coverageFull", { n: total })
+    : tr("depsPage.coverageMissing", { missing: total - withPurpose, total });
 
   list.innerHTML = payload.libraries.map(card).join("");
   status.hidden = true;

@@ -1,5 +1,6 @@
         import { data, activeProject, headerBuilt, showCompletedPlans, plansTab, todosTab } from "./dashboard-state.js";
         import { API, esc, timeStr, destructiveHeaders, uiAlert, uiConfirm } from "./dashboard-core.js";
+        import { t as tr, locale, uiDir } from "./dashboard-i18n.js";
         import { currentVerdicts, updateCard } from "./dashboard-data.js";
         import { getProjectTags, patchHeader, buildHeaderOnce } from "./dashboard-project.js";
         import { renderFiles } from "./dashboard-tree-ws.js";
@@ -11,13 +12,13 @@
         export function cardTabs(active, action, counts) {
             const btn = (key, label, n) =>
                 `<button class="log-filter${active === key ? ' active' : ''}" data-action="${action}" data-key="${key}">${label}${n ? ` <span class="tab-badge tab-badge-default">${n}</span>` : ''}</button>`;
-            return `<div class="log-filters">${btn('current', 'الحالية', counts.current)}${btn('upcoming', 'القادمة', counts.upcoming)}</div>`;
+            return `<div class="log-filters">${btn('current', tr("tabs.current"), counts.current)}${btn('upcoming', tr("tabs.upcoming"), counts.upcoming)}</div>`;
         }
         const daysAgoStr = (ts) => {
             const d = Math.floor((Date.now() - new Date(ts)) / 86400000);
-            return d <= 0 ? 'اليوم' : d === 1 ? 'منذ يوم' : d === 2 ? 'منذ يومين' : `منذ ${d} يوم`;
+            return d <= 0 ? tr("days.today") : d === 1 ? tr("days.one") : d === 2 ? tr("days.two") : tr("days.n", { d });
         };
-        const addedTitle = (ts) => ts ? `أُضيف: ${String(ts).slice(0, 16).replace('T', ' ')}` : '';
+        const addedTitle = (ts) => ts ? tr("card.addedAt", { ts: String(ts).slice(0, 16).replace('T', ' ') }) : '';
 
         // Targeted refresh for the tasks card alone — the الحالية/القادمة tab
         // switch must not redraw the whole project (that re-fetched the changes
@@ -30,9 +31,9 @@
             const { v } = currentVerdicts();
             const list = v?.fragile || [];
             if (!list.length) return '';
-            let h = '<div style="font-size:0.7em;color:var(--text2);margin:10px 0 4px">الأكثر كسرًا</div>';
+            let h = `<div style="font-size:0.7em;color:var(--text2);margin:10px 0 4px">${tr("sec.fragile")}</div>`;
             for (const f of list) {
-                h += `<div style="display:flex;align-items:center;gap:6px;padding:2px 0;font-size:0.7em" title="ظهر في ${f.count} بلاغ خلل/أمان${f.open ? ` — منها ${f.open} ما زال مفتوحًا` : ''}">
+                h += `<div style="display:flex;align-items:center;gap:6px;padding:2px 0;font-size:0.7em" title="${tr("sec.fragileTitle", { n: f.count })}${f.open ? tr("sec.fragileOpen", { n: f.open }) : ''}">
                     <span style="color:var(--gold);flex-shrink:0">&#9888;</span>
                     <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:ltr;text-align:right;font-family:'Cascadia Code',Consolas,monospace">${esc(f.file)}</span>
                     <span style="color:${f.open ? 'var(--pink)' : 'var(--text2)'};flex-shrink:0;font-family:'Cascadia Code',Consolas,monospace">×${f.count}</span>
@@ -76,40 +77,40 @@
             let inner = '';
             if (todosTab === 'upcoming') {
                 for (const t of upcoming) {
-                    inner += `<div style="display:flex;align-items:center;gap:5px;padding:2px 0;font-size:0.7em;direction:rtl" title="${esc(addedTitle(t.ts))}">
+                    inner += `<div style="display:flex;align-items:center;gap:5px;padding:2px 0;font-size:0.7em" title="${esc(addedTitle(t.ts))}">
                         <span style="flex-shrink:0;color:var(--gold)">☾</span>
                         ${numBadge(t.num)}
-                        <span style="flex:1">${t.bug ? '🐛 ' : ''}${esc(t.text)}</span>
+                        <span dir="auto" style="flex:1">${t.bug ? '🐛 ' : ''}${esc(t.text)}</span>
                         <span style="color:var(--text2);font-size:0.85em;flex-shrink:0">${t.ts ? daysAgoStr(t.ts) : ''}</span>
                     </div>`;
                 }
-                if (!inner) inner = '<div style="font-size:0.7em;color:var(--text2)">لا توجد عناصر قادمة — أنشئ واحدًا بـ<code style="color:var(--gold)">-(upcoming)</code> أو حوّل مهمة بـ<code style="color:var(--gold)">-(upcoming) #N</code></div>';
+                if (!inner) inner = `<div style="font-size:0.7em;color:var(--text2)">${tr("todos.emptyUpcoming")}</div>`;
             } else {
                 for (const t of openTodos) {
-                    inner += `<div style="display:flex;align-items:center;gap:5px;padding:2px 0;font-size:0.7em;direction:rtl" title="${esc(addedTitle(t.ts))}">
+                    inner += `<div style="display:flex;align-items:center;gap:5px;padding:2px 0;font-size:0.7em" title="${esc(addedTitle(t.ts))}">
                         <span style="width:10px;height:10px;border:1.5px solid var(--border);border-radius:2px;flex-shrink:0"></span>
                         ${numBadge(t.num)}
-                        <span style="flex:1">${esc(t.text)}</span>
+                        <span dir="auto" style="flex:1">${esc(t.text)}</span>
                     </div>`;
                 }
                 for (const t of closedTodos) {
-                    inner += `<div style="display:flex;align-items:center;gap:5px;padding:2px 0;font-size:0.7em;direction:rtl;opacity:0.5" title="${esc(addedTitle(t.ts))}">
+                    inner += `<div style="display:flex;align-items:center;gap:5px;padding:2px 0;font-size:0.7em;opacity:0.5" title="${esc(addedTitle(t.ts))}">
                         <span style="width:10px;height:10px;background:var(--emerald);border-radius:2px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:0.6em;color:var(--bg)">&#10003;</span>
                         ${numBadge(t.num)}
-                        <span style="flex:1;text-decoration:line-through;color:var(--text2)">${esc(t.text)}</span>
+                        <span dir="auto" style="flex:1;text-decoration:line-through;color:var(--text2)">${esc(t.text)}</span>
                     </div>`;
                 }
                 if (notes.length) {
                     inner += '<div style="margin-top:6px;border-top:1px solid var(--border);padding-top:4px">';
                     for (const n of notes) {
-                        inner += `<div style="font-size:0.7em;color:var(--text2);padding:2px 0;direction:rtl">📝 ${esc(n.content)}</div>`;
+                        inner += `<div style="font-size:0.7em;color:var(--text2);padding:2px 0" dir="auto">📝 ${esc(n.content)}</div>`;
                     }
                     inner += '</div>';
                 }
-                if (!inner) inner = '<div style="font-size:0.7em;color:var(--text2)">لا توجد مهام</div>';
+                if (!inner) inner = `<div style="font-size:0.7em;color:var(--text2)">${tr("todos.empty")}</div>`;
             }
             const tabs = cardTabs(todosTab, 'set-todos-tab', { current: openTodos.length, upcoming: upcoming.length });
-            return `<div style="font-size:0.6em;color:var(--text2);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">المهام</div>${tabs}<div style="overflow-y:auto;flex:1;min-height:0">${inner}</div>`;
+            return `<div style="font-size:0.6em;color:var(--text2);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">${tr("card.todos")}</div>${tabs}<div style="overflow-y:auto;flex:1;min-height:0">${inner}</div>`;
         }
 
         export async function patchSessions(projectName) {
@@ -129,8 +130,8 @@
                 }
                 const pids = sessions.map(s => s.pid).join(', ');
                 let text = sessions.length ? `PID ${pids} claude.exe` : '';
-                if (active) text += ` · ${active} عملية خلفية`;
-                if (orphans) text += ` · ⚠️ ${orphans} معلّقة`;
+                if (active) text += ` · ${tr("sess.bgCount", { n: active })}`;
+                if (orphans) text += ` · ⚠️ ${tr("sess.orphanCount", { n: orphans })}`;
                 const newBg = orphans ? '#2e0d0d' : '#0d2e1f';
                 const newColor = orphans ? '#ef476f' : '#06d6a0';
                 if (el.textContent !== text) {
@@ -157,10 +158,10 @@
                 <div style="padding:8px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;background:var(--bg2)">
                     <div style="font-weight:600;color:#06d6a0">PID ${s.pid} · claude.exe</div>
                     <div style="font-size:0.75em;color:var(--text2);margin-top:3px">
-                        session: ${esc((s.sessionId || '').slice(0, 8))}... · بدأت: ${new Date(s.startedAt).toLocaleString('ar')}
+                        session: ${esc((s.sessionId || '').slice(0, 8))}... · ${tr("sess.startedAt", { date: new Date(s.startedAt).toLocaleString(locale()) })}
                     </div>
                 </div>
-            `).join('') || '<div style="color:var(--text2);font-size:0.85em">لا توجد جلسات نشطة</div>';
+            `).join('') || `<div style="color:var(--text2);font-size:0.85em">${tr("sess.none")}</div>`;
 
             const activeProcs = procs.filter(p => !p.orphaned);
             const orphanProcs = procs.filter(p => p.orphaned);
@@ -171,7 +172,7 @@
                         <div style="font-weight:600;color:${p.orphaned ? '#ef476f' : '#ffd166'}">PID ${p.pid} · ${esc(p.name || '')}</div>
                         <div style="font-size:0.9em;color:var(--text2);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.command || '')}">${esc((p.command || '').slice(0, 120))}</div>
                     </div>
-                    <button data-action="kill-pid" data-pid="${p.pid}" data-project="${esc(projectName)}" style="padding:4px 10px;background:#ef476f;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.85em">قتل</button>
+                    <button data-action="kill-pid" data-pid="${p.pid}" data-project="${esc(projectName)}" style="padding:4px 10px;background:#ef476f;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.85em">${tr("sess.kill")}</button>
                 </div>
             `;
 
@@ -184,18 +185,18 @@
             })();
 
             modal.innerHTML = `
-                <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;max-width:800px;width:100%;max-height:80vh;overflow-y:auto;padding:20px;direction:rtl">
+                <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;max-width:800px;width:100%;max-height:80vh;overflow-y:auto;padding:20px;direction:${uiDir()}">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px">
-                        <h3 style="margin:0">جلسات وعمليات: ${esc(projectName)}</h3>
+                        <h3 style="margin:0">${tr("sess.title", { name: esc(projectName) })}</h3>
                         <button data-action="close-sessions-modal" style="background:none;border:none;color:var(--text);font-size:1.5em;cursor:pointer">×</button>
                     </div>
-                    <h4 style="margin:12px 0 8px;color:#06d6a0">🟢 جلسات Claude نشطة (${sessions.length})</h4>
+                    <h4 style="margin:12px 0 8px;color:#06d6a0">${tr("sess.claudeActive", { n: sessions.length })}</h4>
                     ${sessionRows}
-                    <h4 style="margin:15px 0 8px;color:#ffd166">⚙️ عمليات خلفية نشطة (${activeProcs.length})</h4>
-                    ${activeProcs.length ? activeProcs.map(procRow).join('') : '<div style="color:var(--text2);font-size:0.85em">لا توجد</div>'}
-                    ${orphanProcs.length ? `<h4 style="margin:15px 0 8px;color:#ef476f">⚠️ عمليات معلّقة من جلسات مغلقة (${orphanProcs.length})</h4>${orphanProcs.map(procRow).join('')}` : ''}
+                    <h4 style="margin:15px 0 8px;color:#ffd166">${tr("sess.bgActive", { n: activeProcs.length })}</h4>
+                    ${activeProcs.length ? activeProcs.map(procRow).join('') : `<div style="color:var(--text2);font-size:0.85em">${tr("sess.noneShort")}</div>`}
+                    ${orphanProcs.length ? `<h4 style="margin:15px 0 8px;color:#ef476f">${tr("sess.orphaned", { n: orphanProcs.length })}</h4>${orphanProcs.map(procRow).join('')}` : ''}
                     <div style="margin-top:15px;text-align:left">
-                        <button data-action="refresh-processes" data-project="${esc(projectName)}" style="padding:6px 14px;background:var(--border);color:var(--text);border:none;border-radius:4px;cursor:pointer">تحديث</button>
+                        <button data-action="refresh-processes" data-project="${esc(projectName)}" style="padding:6px 14px;background:var(--border);color:var(--text);border:none;border-radius:4px;cursor:pointer">${tr("sess.refresh")}</button>
                     </div>
                 </div>
             `;
@@ -213,7 +214,7 @@
 
             const rows = models.map(m => `
                 <tr>
-                    <td style="font-weight:600;direction:ltr;text-align:right">${esc(short(m.model))}</td>
+                    <td style="font-weight:600;direction:ltr;text-align:${uiDir() === "rtl" ? "right" : "left"}">${esc(short(m.model))}</td>
                     <td>${m.tags}</td>
                     <td>${m.reportsOpened}</td>
                     <td>${m.closures}</td>
@@ -232,34 +233,34 @@
             })();
 
             modal.innerHTML = `
-                <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;max-width:760px;width:100%;max-height:80vh;overflow-y:auto;padding:20px;direction:rtl">
+                <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;max-width:760px;width:100%;max-height:80vh;overflow-y:auto;padding:20px;direction:${uiDir()}">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-                        <h3 style="margin:0">أداء النماذج: ${esc(projectName)} 🤖</h3>
+                        <h3 style="margin:0">${tr("models.title", { name: esc(projectName) })}</h3>
                         <button data-action="close-model-stats-modal" style="background:none;border:none;color:var(--text);font-size:1.5em;cursor:pointer">×</button>
                     </div>
-                    <div style="color:var(--text2);font-size:0.78em;margin-bottom:14px">من سجل المشروع الفعلي: كل تاق منسوب للنموذج الذي كتبه (منذ v3.30.0). «انتكس» = إصلاحه عاد وانفتح ⟲ · «بلا اختبار» = إصلاحات لم تلمس ملف اختبار من أصل القابل للحكم.</div>
+                    <div style="color:var(--text2);font-size:0.78em;margin-bottom:14px">${tr("models.explainer")}</div>
                     ${models.length ? `
                     <table style="width:100%;border-collapse:collapse;font-size:0.85em;text-align:center">
                         <thead><tr style="color:var(--text2);border-bottom:1px solid var(--border)">
-                            <th style="padding:6px;text-align:right">النموذج</th><th>التاقات</th><th>فتح بلاغات</th><th>إغلاقات</th><th>إصلاحات</th><th>انتكس ⟲</th><th>بلا اختبار</th><th>متوسط الإغلاق (يوم)</th>
+                            <th style="padding:6px;text-align:${uiDir() === "rtl" ? "right" : "left"}">${tr("models.thModel")}</th><th>${tr("models.thTags")}</th><th>${tr("models.thOpened")}</th><th>${tr("models.thClosures")}</th><th>${tr("models.thFixes")}</th><th>${tr("models.thReopened")}</th><th>${tr("models.thNoTest")}</th><th>${tr("models.thAvgDays")}</th>
                         </tr></thead>
                         <tbody>${rows}</tbody>
-                    </table>` : '<div style="color:var(--text2);font-size:0.9em;padding:12px 0">لا تاقات منسوبة بعد — النسب يعمل من v3.30.0 وصاعدًا، واللوحة تمتلئ مع الشغل القادم.</div>'}
-                    ${res?.unattributed ? `<div style="color:var(--text2);font-size:0.75em;margin-top:12px">${res.unattributed} تاق تاريخي بلا نسب (سابق لميزة النسب) — غير محسوب في الجدول.</div>` : ''}
+                    </table>` : `<div style="color:var(--text2);font-size:0.9em;padding:12px 0">${tr("models.empty")}</div>`}
+                    ${res?.unattributed ? `<div style="color:var(--text2);font-size:0.75em;margin-top:12px">${tr("models.unattributed", { n: res.unattributed })}</div>` : ''}
                 </div>`;
             modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
         }
 
         export async function killPid(pid, projectName) {
-            if (!(await uiConfirm(`قتل العملية ${pid}؟`, { okText: "اقتل العملية" }))) return;
+            if (!(await uiConfirm(tr("sess.killConfirm", { pid }), { okText: tr("sess.killOk") }))) return;
             // Visible failure on network error instead of a silent unhandled
             // rejection (R3 P7), matching the alert pattern used elsewhere.
             try {
                 const r = await fetch(`${API}/api/kill-pid/${pid}`, { method: 'POST', headers: await destructiveHeaders() }).then(r => r.json());
                 if (r.ok) openSessionsPanel(projectName);
-                else uiAlert(`فشل: ${r.error || 'غير معروف'}`);
+                else uiAlert(tr("err.failedMsg", { msg: r.error || tr("err.unknown") }));
             } catch (e) {
-                uiAlert(`فشل الاتصال بالخادم: ${e?.message || e}`);
+                uiAlert(tr("err.connServer", { msg: e?.message || e }));
             }
         }
 
@@ -268,7 +269,7 @@
                 await fetch(`${API}/api/processes/refresh`, { method: 'POST' });
                 openSessionsPanel(projectName);
             } catch (e) {
-                uiAlert(`فشل تحديث العمليات: ${e?.message || e}`);
+                uiAlert(tr("sess.refreshFail", { msg: e?.message || e }));
             }
         }
 
@@ -313,11 +314,11 @@
             const numbersEl = document.getElementById('statsNumbers');
             if (numbersEl) {
                 const numbersHtml = `
-                    <div><div class="ss-val" style="color:var(--emerald)">${builts}</div><div class="ss-label">بناء</div></div>
-                    <div><div class="ss-val" style="color:var(--gold)">${openTodos}</div><div class="ss-label">مهام</div></div>
-                    <div><div class="ss-val" style="color:${openBugs > 0 ? 'var(--pink)' : 'var(--emerald)'}">${openBugs}</div><div class="ss-label">خلل</div></div>
-                    <div><div class="ss-val" style="color:${openSec > 0 ? 'var(--pink)' : 'var(--emerald)'}">${openSec}</div><div class="ss-label">أمني</div></div>
-                    <div><div class="ss-val" style="color:${outdatedCount > 0 ? 'var(--gold)' : 'var(--emerald)'}">${outdatedCount}</div><div class="ss-label">قديمة</div></div>
+                    <div><div class="ss-val" style="color:var(--emerald)">${builts}</div><div class="ss-label">${tr("stats.built")}</div></div>
+                    <div><div class="ss-val" style="color:var(--gold)">${openTodos}</div><div class="ss-label">${tr("stats.todos")}</div></div>
+                    <div><div class="ss-val" style="color:${openBugs > 0 ? 'var(--pink)' : 'var(--emerald)'}">${openBugs}</div><div class="ss-label">${tr("stats.bugs")}</div></div>
+                    <div><div class="ss-val" style="color:${openSec > 0 ? 'var(--pink)' : 'var(--emerald)'}">${openSec}</div><div class="ss-label">${tr("stats.sec")}</div></div>
+                    <div><div class="ss-val" style="color:${outdatedCount > 0 ? 'var(--gold)' : 'var(--emerald)'}">${outdatedCount}</div><div class="ss-label">${tr("stats.outdated")}</div></div>
                 `;
                 if (statsHashes.numbers !== numbersHtml) {
                     statsHashes.numbers = numbersHtml;
@@ -329,8 +330,7 @@
                 // assumed-open fallback — so they're never silently trusted as live (#414).
                 numbersEl.style.opacity = verdictsStale ? '0.5' : '1';
                 numbersEl.title = verdictsStale
-                    ? (v ? 'أحكام قديمة — تعذّر تحديث /api/verdicts؛ تُعرض آخر لقطة سليمة'
-                         : 'تعذّر جلب /api/verdicts — تُعرض العناصر كمفتوحة افتراضًا')
+                    ? (v ? tr("stats.staleKept") : tr("stats.staleOpen"))
                     : '';
             }
 
@@ -338,13 +338,13 @@
             const bars = [];
             if (totalSteps > 0) {
                 const pct = Math.min(100, Math.round((doneSteps / totalSteps) * 100));
-                const tip = `تنفيذ الخطط والمهام: ${doneSteps}/${totalSteps} (${pct}%)`;
+                const tip = tr("stats.planProgress", { done: doneSteps, total: totalSteps, pct });
                 bars.push(`<div class="progress-track" title="${tip}"><div class="progress-fill" style="width:${pct}%;background:var(--emerald)"></div></div>`);
             }
             if (bugsAll.length > 0) {
                 const fixedCount = bugsAll.length - openBugs;
                 const pct = Math.min(100, Math.round((fixedCount / bugsAll.length) * 100));
-                const tip = `إصلاح الأخطاء المكتشفة: ${fixedCount}/${bugsAll.length} (${pct}%)`;
+                const tip = tr("stats.bugProgress", { done: fixedCount, total: bugsAll.length, pct });
                 bars.push(`<div class="progress-track" title="${tip}"><div class="progress-fill" style="width:${pct}%;background:var(--pink)"></div></div>`);
             }
             const barsHtml = bars.length > 0 ? `<div class="center-stats-bars">${bars.join('')}</div>` : '';
@@ -379,13 +379,13 @@
             const currentPlans = showCompletedPlans ? allPlans : allPlans.filter(p => !isComplete(p));
             const projectPlans = plansTab === 'upcoming' ? upcomingPlans : currentPlans;
 
-            const header = `<div style="font-size:0.6em;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">الخطط النشطة${projectPlans.length > 1 ? ` (${projectPlans.length})` : ''}</div>`
+            const header = `<div style="font-size:0.6em;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">${tr("card.plans")}${projectPlans.length > 1 ? ` (${projectPlans.length})` : ''}</div>`
                 + cardTabs(plansTab, 'set-plans-tab', { current: currentPlans.length, upcoming: upcomingPlans.length });
 
             if (projectPlans.length === 0 && (plansTab === 'upcoming' || completedPlans.length === 0)) {
                 const hint = plansTab === 'upcoming'
-                    ? 'لا خطط قادمة — أجّل خطة بزر ☾ أو بـ<code style="color:var(--gold);font-family:\'Cascadia Code\',monospace">-(upcoming) #N</code> على إحدى خطواتها.'
-                    : 'لا توجد خطط نشطة. أرسل <code style="color:var(--gold);font-family:\'Cascadia Code\',monospace">-(doc:plan) name</code> لبدء واحدة.';
+                    ? tr("plans.emptyUpcoming")
+                    : tr("plans.empty");
                 updateCard('cardActivePlan', `${header}<div style="font-size:0.7em;color:var(--text2)">${hint}</div>`, flash);
                 return;
             }
@@ -409,10 +409,10 @@
                 // with 409 anyway (routes-plan); this is the UI half.
                 const complete = isComplete(plan);
                 const deferBtn = plan.upcoming
-                    ? `<button data-action="toggle-plan-upcoming" data-plan-id="${esc(plan.id)}" data-upcoming="false" title="ترقية إلى الخطط الحالية" style="background:none;border:none;color:var(--emerald);cursor:pointer;font-size:0.85em;padding:0 4px;flex-shrink:0">⬆</button>`
+                    ? `<button data-action="toggle-plan-upcoming" data-plan-id="${esc(plan.id)}" data-upcoming="false" title="${tr("plans.promote")}" style="background:none;border:none;color:var(--emerald);cursor:pointer;font-size:0.85em;padding:0 4px;flex-shrink:0">⬆</button>`
                     : complete
-                        ? `<button disabled title="الخطة مكتملة — التأجيل للخطط غير المكتملة فقط" style="background:none;border:none;color:var(--text2);opacity:0.35;cursor:default;font-size:0.85em;padding:0 4px;flex-shrink:0">☾</button>`
-                        : `<button data-action="toggle-plan-upcoming" data-plan-id="${esc(plan.id)}" data-upcoming="true" title="تأجيل إلى القادمة (لا توقف الإصدار)" style="background:none;border:none;color:var(--gold);cursor:pointer;font-size:0.85em;padding:0 4px;flex-shrink:0">☾</button>`;
+                        ? `<button disabled title="${tr("plans.completeNoDefer")}" style="background:none;border:none;color:var(--text2);opacity:0.35;cursor:default;font-size:0.85em;padding:0 4px;flex-shrink:0">☾</button>`
+                        : `<button data-action="toggle-plan-upcoming" data-plan-id="${esc(plan.id)}" data-upcoming="true" title="${tr("plans.defer")}" style="background:none;border:none;color:var(--gold);cursor:pointer;font-size:0.85em;padding:0 4px;flex-shrink:0">☾</button>`;
 
                 const sortedSteps = [
                     ...visible.filter(s => !s.completed),
@@ -426,7 +426,7 @@
                     <div style="display:flex;align-items:flex-start;gap:6px;padding:3px 0;font-size:0.7em;${s.completed ? 'opacity:0.55' : ''}">
                         <span style="flex-shrink:0;width:11px;height:11px;border-radius:2px;margin-top:3px;${s.completed ? 'background:var(--emerald)' : 'border:1.5px solid var(--border)'}"></span>
                         ${numHtml}
-                        <span style="flex:1;${s.completed ? 'text-decoration:line-through;color:var(--text2)' : ''}">${esc(s.text)}</span>
+                        <span dir="auto" style="flex:1;${s.completed ? 'text-decoration:line-through;color:var(--text2)' : ''}">${esc(s.text)}</span>
                     </div>`;
                 }).join("") : '';
 
@@ -434,10 +434,10 @@
                 <div data-plan-id="${esc(plan.id)}" style="margin-bottom:8px;border:1px solid var(--border);border-radius:6px;overflow:hidden">
                     <div data-action="toggle-plan" data-plan-id="${esc(plan.id)}" style="display:flex;align-items:center;gap:6px;padding:6px 8px;cursor:pointer;background:var(--bg2);user-select:none">
                         <span style="font-size:0.7em;color:var(--text2);width:10px">${arrow}</span>
-                        <span style="flex:1;font-size:0.78em;color:var(--text);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(plan.title)}">${esc(plan.title)}</span>
+                        <span style="flex:1;font-size:0.78em;color:var(--text);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" dir="auto" title="${esc(plan.title)}">${esc(plan.title)}</span>
                         <span style="color:var(--text2);font-weight:400;font-size:0.7em;flex-shrink:0">${done}/${total}</span>
                         ${deferBtn}
-                        <button data-action="hide-plan" data-plan-id="${esc(plan.id)}" data-plan-title="${esc(plan.title)}" title="إخفاء من الداشبورد (الملفات تبقى)" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:0.85em;padding:0 4px;flex-shrink:0">👁️</button>
+                        <button data-action="hide-plan" data-plan-id="${esc(plan.id)}" data-plan-title="${esc(plan.title)}" title="${tr("plans.hideTitle")}" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:0.85em;padding:0 4px;flex-shrink:0">👁️</button>
                     </div>
                     <div style="height:3px;background:var(--bg3)"><div style="width:${pct}%;height:100%;background:var(--emerald);transition:width 0.3s"></div></div>
                     ${expanded ? `<div style="padding:6px 8px;max-height:200px;overflow-y:auto">${stepRows}</div>` : ''}
@@ -446,7 +446,7 @@
 
             const completedToggle = plansTab === 'current' && completedPlans.length > 0
                 ? `<div data-action="toggle-completed-plans" style="margin-top:6px;padding:5px 8px;font-size:0.7em;color:var(--text2);cursor:pointer;border-top:1px solid var(--border);user-select:none;text-align:center">
-                     ${showCompletedPlans ? '◂ إخفاء' : '▾ إظهار'} ${completedPlans.length} خطة مكتملة
+                     ${showCompletedPlans ? tr("plans.hideCompleted", { n: completedPlans.length }) : tr("plans.showCompleted", { n: completedPlans.length })}
                    </div>`
                 : '';
 
@@ -459,9 +459,9 @@
         }
 
         export async function killServer(btn) {
-            if (!(await uiConfirm("إيقاف السيرفر؟\nإذا كان مُشغَّلاً بـ`bun --watch` فسيعود تلقائياً، وإلا ستحتاج تشغيله يدوياً.", { okText: "أوقف السيرفر" }))) return;
+            if (!(await uiConfirm(tr("srv.stopConfirm"), { okText: tr("srv.stopOk") }))) return;
             btn.classList.add("loading");
-            btn.textContent = "...جاري الإيقاف";
+            btn.textContent = tr("srv.stopping");
             try {
                 await fetch(`${API}/api/server/stop`, { method: "POST", headers: await destructiveHeaders({ "Content-Type": "application/json" }) });
             } catch { /* expected — server died mid-response */ }
@@ -478,7 +478,7 @@
                     body: JSON.stringify({ upcoming }),
                 });
                 if (!res.ok) {
-                    let msg = "فشل تبديل حالة الخطة";
+                    let msg = tr("plans.toggleFail");
                     try { const j = await res.json(); if (j.error) msg = j.error; } catch { /* non-JSON error body */ }
                     uiAlert(msg);
                     return;
@@ -488,12 +488,12 @@
                 renderActivePlanCard(activeProject);
                 updateSidebarStats();
             } catch (e) {
-                uiAlert(`خطأ: ${e.message}`);
+                uiAlert(tr("core.errorMsg", { msg: e.message }));
             }
         }
 
         export async function hidePlan(planId, planTitle) {
-            if (!(await uiConfirm(`إخفاء الخطة "${planTitle}" من الداشبورد؟\nالملفات (.md/.html) تبقى — يمكن استعادتها بإعادة إرسال -(doc:plan) بنفس الاسم.`, { okText: "أخفِ الخطة" }))) return;
+            if (!(await uiConfirm(tr("plans.hideConfirm", { title: planTitle }), { okText: tr("plans.hideOk") }))) return;
             try {
                 const res = await fetch(`${API}/api/plan/${encodeURIComponent(planId)}`, { method: "DELETE", headers: await destructiveHeaders() });
                 if (res.ok) {
@@ -501,14 +501,16 @@
                     delete planExpanded[planId];
                     renderActivePlanCard(activeProject);
                 } else {
-                    uiAlert("فشل الإخفاء");
+                    uiAlert(tr("plans.hideFail"));
                 }
             } catch (e) {
-                uiAlert(`خطأ: ${e.message}`);
+                uiAlert(tr("core.errorMsg", { msg: e.message }));
             }
         }
 
-        const CHANGES_HEADER = `<div style="font-size:0.6em;color:var(--text2);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">التغييرات في الكود</div>`;
+        // Header resolves per render (not a module const) so a language toggle
+        // re-labels the card on the next paint.
+        const changesHeader = () => `<div style="font-size:0.6em;color:var(--text2);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">${tr("card.changes")}</div>`;
         const CHANGES_LIST_STYLE = `overflow-y:auto;flex:1;min-height:0;direction:ltr;font-size:0.72em`;
 
         export async function renderChangesCard(project) {
@@ -520,7 +522,7 @@
             // fetch — a visible blink + scroll reset whenever any OTHER card's
             // data changed (round-8 UI finding; pinned by ui-smoke scenario E).
             if (!el.querySelector('#changesList')) {
-                updateCard('cardChanges', `${CHANGES_HEADER}<div id="changesList" style="${CHANGES_LIST_STYLE}">جاري التحميل…</div>`, false);
+                updateCard('cardChanges', `${changesHeader()}<div id="changesList" style="${CHANGES_LIST_STYLE}">${tr("misc.loading")}</div>`, false);
             }
             try {
                 const r = await fetch(`${API}/api/changes?project=${encodeURIComponent(project)}&n=30`);
@@ -531,7 +533,7 @@
                 const items = j.items || [];
                 let listHtml;
                 if (!items.length) {
-                    listHtml = `<div style="color:var(--text2);font-size:0.95em;text-align:center;padding-top:12px">لا توجد تعديلات بعد</div>`;
+                    listHtml = `<div style="color:var(--text2);font-size:0.95em;text-align:center;padding-top:12px">${tr("changes.empty")}</div>`;
                 } else {
                     listHtml = items.map(it => {
                     const fname = (it.file_path || '').replace(/\\/g, '/').split('/').pop() || '?';
@@ -539,7 +541,7 @@
                     const time = timeStr(it.timestamp);
                     const adds = it.lines_added > 0 ? `<span style="color:var(--emerald)">+${it.lines_added}</span>` : '';
                     const dels = it.lines_removed > 0 ? `<span style="color:var(--pink)">−${it.lines_removed}</span>` : '';
-                    const stale = it.has_full_content ? '' : `<span title="المحتوى مُجرَّد بعد retention" style="color:var(--text2);font-size:0.85em">·archived</span>`;
+                    const stale = it.has_full_content ? '' : `<span title="${tr("changes.archivedTitle")}" style="color:var(--text2);font-size:0.85em">·archived</span>`;
                     const action = it.action === 'create' ? 'create' : 'edit';
                     return `<div class="ch-row" data-id="${esc(it.id)}" style="padding:6px 8px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;gap:8px;align-items:center;justify-content:space-between">
                         <div style="min-width:0;flex:1;display:flex;flex-direction:column;gap:2px">
@@ -553,7 +555,7 @@
                         <div style="display:flex;gap:6px;align-items:center;flex-shrink:0">
                             ${adds}${dels}
                             <span style="color:var(--text2);font-size:0.85em">${esc(time)}</span>
-                            <button class="ch-story" data-file="${esc(it.file_path || '')}" title="قصة الملف" style="background:transparent;border:1px solid var(--border);color:var(--text2);border-radius:6px;padding:1px 6px;cursor:pointer;font-family:inherit">📍</button>
+                            <button class="ch-story" data-file="${esc(it.file_path || '')}" title="${tr("changes.storyTitle")}" style="background:transparent;border:1px solid var(--border);color:var(--text2);border-radius:6px;padding:1px 6px;cursor:pointer;font-family:inherit">📍</button>
                         </div>
                     </div>`;
                     }).join('');
@@ -561,7 +563,7 @@
                 // Hash-guarded like every other card: identical content → no DOM
                 // write, old nodes + their listeners stay; changed → rewrite,
                 // flash, and rebind into the fresh nodes.
-                const wrote = updateCard('cardChanges', `${CHANGES_HEADER}<div id="changesList" style="${CHANGES_LIST_STYLE}">${listHtml}</div>`);
+                const wrote = updateCard('cardChanges', `${changesHeader()}<div id="changesList" style="${CHANGES_LIST_STYLE}">${listHtml}</div>`);
                 if (!wrote) return;
                 const list = document.getElementById('changesList');
                 if (!list) return;
@@ -573,7 +575,7 @@
                 });
             } catch (e) {
                 const list = document.getElementById('changesList');
-                if (list) list.innerHTML = `<div style="color:var(--pink)">فشل تحميل التغييرات: ${esc(String(e.message || e))}</div>`;
+                if (list) list.innerHTML = `<div style="color:var(--pink)">${tr("changes.loadFail", { msg: esc(String(e.message || e)) })}</div>`;
             }
         }
 
@@ -592,7 +594,7 @@
                             <span style="color:var(--text2);font-size:0.75em">${esc(timeStr(t.timestamp))}</span>
                         </div>
                         <div style="color:var(--text);font-size:0.9em;margin-top:2px">${esc(t.content)}</div>
-                    </div>`).join('') || `<div style="color:var(--text2);padding:10px;font-size:0.9em">لا تاقات مرتبطة بهذا الملف بعد</div>`;
+                    </div>`).join('') || `<div style="color:var(--text2);padding:10px;font-size:0.9em">${tr("story.noTags")}</div>`;
                 const evs = [...(s.events || []), ...(s.archived || [])];
                 const evRows = evs.map(e => `
                     <div class="fs-ev" data-id="${esc(e.id)}" data-full="${e.has_full_content ? '1' : ''}" style="display:flex;gap:10px;align-items:center;padding:5px 10px;border-bottom:1px solid var(--border);${e.has_full_content ? 'cursor:pointer' : ''}">
@@ -601,7 +603,7 @@
                         ${e.lines_added > 0 ? `<span style="color:var(--emerald);font-size:0.85em">+${e.lines_added}</span>` : ''}
                         ${e.lines_removed > 0 ? `<span style="color:var(--pink);font-size:0.85em">−${e.lines_removed}</span>` : ''}
                         ${e.has_full_content ? '' : `<span style="color:var(--text2);font-size:0.75em">·archived</span>`}
-                    </div>`).join('') || `<div style="color:var(--text2);padding:10px;font-size:0.9em">لا تعديلات مسجلة</div>`;
+                    </div>`).join('') || `<div style="color:var(--text2);padding:10px;font-size:0.9em">${tr("story.noEvents")}</div>`;
                 const overlay = document.createElement('div');
                 overlay.id = 'fileStoryOverlay';
                 overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:30px';
@@ -610,12 +612,12 @@
                         <span>📍</span>
                         <span style="font-family:'Cascadia Code',Consolas,monospace;color:var(--gold);font-size:0.9em;direction:ltr">${esc(fname)}</span>
                         <span style="color:var(--text2);font-size:0.72em;direction:ltr;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.file || '')}</span>
-                        <button id="fsClose" style="margin-right:auto;background:transparent;border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 12px;cursor:pointer;font-family:inherit;flex-shrink:0">إغلاق</button>
+                        <button id="fsClose" style="margin-inline-start:auto;background:transparent;border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 12px;cursor:pointer;font-family:inherit;flex-shrink:0">${tr("core.close")}</button>
                     </div>
                     <div style="overflow:auto;flex:1">
-                        <div style="padding:8px 10px;color:var(--text2);font-size:0.8em;border-bottom:1px solid var(--border)">التاقات (${(s.tags || []).length})</div>
+                        <div style="padding:8px 10px;color:var(--text2);font-size:0.8em;border-bottom:1px solid var(--border)">${tr("story.tags", { n: (s.tags || []).length })}</div>
                         ${tagRows}
-                        <div style="padding:8px 10px;color:var(--text2);font-size:0.8em;border-bottom:1px solid var(--border)">التعديلات (${evs.length})</div>
+                        <div style="padding:8px 10px;color:var(--text2);font-size:0.8em;border-bottom:1px solid var(--border)">${tr("story.events", { n: evs.length })}</div>
                         ${evRows}
                     </div>
                 </div>`;
@@ -628,7 +630,7 @@
                     rw.addEventListener('click', () => openDiffModal(rw.dataset.id));
                 });
             } catch (e) {
-                uiAlert(`فشل تحميل قصة الملف: ${e.message}`);
+                uiAlert(tr("story.loadFail", { msg: e.message }));
             }
         }
 
@@ -646,11 +648,11 @@
                 overlay.id = 'diffOverlay';
                 overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:30px';
                 overlay.innerHTML = `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;width:100%;max-width:1100px;height:100%;display:flex;flex-direction:column;direction:ltr">
-                    <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;direction:rtl">
+                    <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;direction:${uiDir()}">
                         <span style="font-family:'Cascadia Code',Consolas,monospace;color:var(--gold);font-size:0.9em">${esc(fname)}</span>
                         <span style="color:var(--text2);font-size:0.75em">${esc(e.file_path || '')}</span>
-                        <span style="margin-right:auto;color:var(--text2);font-size:0.75em">${esc(timeStr(e.timestamp))}</span>
-                        <button id="diffClose" style="background:transparent;border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 12px;cursor:pointer;font-family:inherit">إغلاق</button>
+                        <span style="margin-inline-start:auto;color:var(--text2);font-size:0.75em">${esc(timeStr(e.timestamp))}</span>
+                        <button id="diffClose" style="background:transparent;border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 12px;cursor:pointer;font-family:inherit">${tr("core.close")}</button>
                     </div>
                     <div style="overflow:auto;flex:1;padding:0;font-family:'Cascadia Code',Consolas,monospace;font-size:0.78em;line-height:1.55;direction:ltr">${diffHtml}</div>
                 </div>`;
@@ -695,7 +697,7 @@
             for (const l of newMid) out.push(row('+', '#9f9', 'rgba(80,255,150,0.08)', l, nNum++));
             let aN = oldLines.length - suffix + 1;
             for (const l of ctxAfter) { out.push(row(' ', 'var(--text2)', 'transparent', l, aN++)); }
-            if (out.length === 0) return `<div style="padding:20px;color:var(--text2);text-align:center">لا فرق</div>`;
+            if (out.length === 0) return `<div style="padding:20px;color:var(--text2);text-align:center">${tr("diff.none")}</div>`;
             return out.join('');
         }
 

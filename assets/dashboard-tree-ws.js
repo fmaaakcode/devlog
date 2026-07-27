@@ -4,6 +4,7 @@
         import { getProjectTags, projectFromHash, selectProject, registryUrl } from "./dashboard-project.js";
         import { extIcons, renderActivePlanCard, renderChangesCard, buildTodosHtml, fragileFilesHtml } from "./dashboard-panels.js";
         import { buildDocsHtml, refreshDocsCard } from "./dashboard-docs-card.js";
+        import { t as tr, locale, uiDir } from "./dashboard-i18n.js";
 
         function renderTreeNodes(nodes, basePath) {
             let html = '';
@@ -43,12 +44,12 @@
             if (dir) {
                 e.preventDefault();
                 setCtxTarget(dir.getAttribute('data-path') || '', '');
-                document.getElementById('ctxIgnoreLabel').textContent = 'تجاهل هذا المجلد';
+                document.getElementById('ctxIgnoreLabel').textContent = tr("ctx.ignoreDir");
                 document.getElementById('ctxOpenLabel').style.display = 'none';
             } else if (file) {
                 e.preventDefault();
                 setCtxTarget(file.getAttribute('data-dir') || '', file.getAttribute('data-name') || '');
-                document.getElementById('ctxIgnoreLabel').textContent = 'تجاهل هذا الملف';
+                document.getElementById('ctxIgnoreLabel').textContent = tr("ctx.ignoreFile");
                 document.getElementById('ctxOpenLabel').style.display = 'block';
             } else {
                 return;
@@ -226,21 +227,22 @@
             // though only the tree was unavailable. Layout + data-driven cards
             // must never depend on the tree fetch.
             if (!document.getElementById('cardTree')) {
+                const dir = uiDir();
                 el.innerHTML = `<div style="display:flex;gap:8px;height:100%;direction:ltr">
                     <div id="cardTree" style="flex:1;min-width:0;background:var(--bg3);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column"></div>
                     <div style="flex:1;min-width:0;min-height:0;display:grid;grid-template-rows:1fr 1fr;gap:8px">
-                        <div id="cardDocs" style="background:var(--bg3);border-radius:8px;padding:10px 12px;min-height:0;display:flex;flex-direction:column;direction:rtl;overflow:hidden"></div>
+                        <div id="cardDocs" style="background:var(--bg3);border-radius:8px;padding:10px 12px;min-height:0;display:flex;flex-direction:column;direction:${dir};overflow:hidden"></div>
                         <div id="eventsCard" style="background:var(--bg3);border-radius:8px;padding:10px 12px;min-height:0;display:flex;flex-direction:column;direction:ltr;overflow:hidden"></div>
                     </div>
                     <div style="flex:1;min-width:0;min-height:0;display:grid;grid-template-rows:1fr 1fr;gap:8px">
-                        <div id="cardSecurity" style="background:var(--bg3);border-radius:8px;padding:10px 12px;min-height:0;display:flex;flex-direction:column;direction:rtl;overflow:hidden"></div>
-                        <div id="cardTodos" style="background:var(--bg3);border-radius:8px;padding:10px 12px;min-height:0;display:flex;flex-direction:column;direction:rtl;overflow:hidden"></div>
+                        <div id="cardSecurity" style="background:var(--bg3);border-radius:8px;padding:10px 12px;min-height:0;display:flex;flex-direction:column;direction:${dir};overflow:hidden"></div>
+                        <div id="cardTodos" style="background:var(--bg3);border-radius:8px;padding:10px 12px;min-height:0;display:flex;flex-direction:column;direction:${dir};overflow:hidden"></div>
                     </div>
                     <div style="flex:2;min-width:0;min-height:0;display:grid;grid-template-rows:1fr 1fr;gap:8px">
-                        <div id="cardTags" style="background:var(--bg3);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;direction:rtl;min-height:0;overflow:hidden"></div>
+                        <div id="cardTags" style="background:var(--bg3);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;direction:${dir};min-height:0;overflow:hidden"></div>
                         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;min-height:0">
-                            <div id="cardActivePlan" style="background:var(--bg3);border-radius:8px;padding:10px 12px;min-width:0;min-height:0;display:flex;flex-direction:column;direction:rtl;overflow:hidden"></div>
-                            <div id="cardChanges" style="background:var(--bg3);border-radius:8px;padding:10px 12px;min-width:0;min-height:0;display:flex;flex-direction:column;direction:rtl;overflow:hidden"></div>
+                            <div id="cardActivePlan" style="background:var(--bg3);border-radius:8px;padding:10px 12px;min-width:0;min-height:0;display:flex;flex-direction:column;direction:${dir};overflow:hidden"></div>
+                            <div id="cardChanges" style="background:var(--bg3);border-radius:8px;padding:10px 12px;min-width:0;min-height:0;display:flex;flex-direction:column;direction:${dir};overflow:hidden"></div>
                         </div>
                     </div>
                 </div>`;
@@ -275,8 +277,8 @@
                 const treeCard = document.getElementById('cardTree');
                 if (treeCard) {
                     treeCard.innerHTML = `
-                        <div style="font-size:0.6em;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">الملفات <span style="opacity:0.6">${total}</span></div>
-                        <div style="overflow-y:auto;flex:1;min-height:0"><div class="tree">${tree && tree.length > 0 ? renderTreeNodes(tree, (project.path || '').replace(/\\/g, '/')) : '<span style="color:var(--text2);font-size:0.75em">لا توجد ملفات</span>'}</div></div>`;
+                        <div style="font-size:0.6em;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">${tr("card.files")} <span style="opacity:0.6">${total}</span></div>
+                        <div style="overflow-y:auto;flex:1;min-height:0"><div class="tree">${tree && tree.length > 0 ? renderTreeNodes(tree, (project.path || '').replace(/\\/g, '/')) : `<span style="color:var(--text2);font-size:0.75em">${tr("card.noFiles")}</span>`}</div></div>`;
                     treeCard.querySelectorAll('.tree-dir').forEach(dir => {
                         dir.addEventListener('click', () => {
                             dir.classList.toggle('collapsed');
@@ -287,7 +289,7 @@
                 }
             } catch {
                 const treeCard = document.getElementById('cardTree');
-                if (treeCard) treeCard.innerHTML = `<div style="font-size:0.6em;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">الملفات</div><div style="color:var(--text2);font-size:0.75em">تعذّر تحميل شجرة الملفات</div>`;
+                if (treeCard) treeCard.innerHTML = `<div style="font-size:0.6em;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">${tr("card.files")}</div><div style="color:var(--text2);font-size:0.75em">${tr("card.treeFail")}</div>`;
             }
         }
 
@@ -313,7 +315,7 @@
                     <span style="color:var(--border);flex-shrink:0">${timeStr(e.timestamp)}</span>
                 </div>`;
             }
-            return `<div style="font-size:0.6em;color:var(--text2);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px;direction:rtl">الأحداث</div><div style="overflow-y:auto;flex:1;min-height:0">${inner || '<div style="color:var(--text2);font-size:0.7em;direction:rtl">لا توجد أحداث</div>'}</div>`;
+            return `<div style="font-size:0.6em;color:var(--text2);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px;direction:${uiDir()}">${tr("card.events")}</div><div style="overflow-y:auto;flex:1;min-height:0">${inner || `<div style="color:var(--text2);font-size:0.7em;direction:${uiDir()}">${tr("card.noEvents")}</div>`}</div>`;
         }
 
         // buildTodosHtml + the الحالية/القادمة cardTabs live in dashboard-panels.js
@@ -353,16 +355,16 @@
                 const dateStr = v ? (kind === 'fix' ? v.fixReleaseDate : v.latestReleaseDate) : '';
                 const days = v ? (kind === 'fix' ? v.daysSinceFix : v.daysSinceLatest) : null;
                 const isFresh = kind === 'latest' && typeof days === 'number' && days < 7;
-                const dateLabel = kind === 'fix' ? 'صدر الفيكس' : 'صدر الإصدار الجديد';
+                const dateLabel = kind === 'fix' ? tr("sec.fixReleased") : tr("sec.latestReleased");
                 const datePart = dateStr ? new Date(dateStr).toISOString().slice(0, 10) : '';
                 const caption = (typeof days === 'number' || datePart)
-                    ? `<div dir="rtl" style="margin-right:22px;color:${isFresh ? 'var(--gold)' : 'var(--text2)'};font-size:0.85em;padding-top:1px">
-                          ${isFresh ? '⏳ ' : ''}${esc(dateLabel)}${typeof days === 'number' ? ` منذ ${days} يوم` : ''}${datePart ? ` · ${esc(datePart)}` : ''}
+                    ? `<div dir="${uiDir()}" style="margin-right:22px;color:${isFresh ? 'var(--gold)' : 'var(--text2)'};font-size:0.85em;padding-top:1px">
+                          ${isFresh ? '⏳ ' : ''}${esc(dateLabel)}${typeof days === 'number' ? tr("sec.daysAgoPart", { d: days }) : ''}${datePart ? ` · ${esc(datePart)}` : ''}
                        </div>` : '';
                 const verStyle = strike ? 'text-decoration:line-through;color:var(--text2)' : `color:${accent}`;
                 const url = registryUrl(project?.language, parsed.name);
                 const nameEl = url
-                    ? `<a href="${esc(url)}" target="_blank" rel="noopener" title="فتح صفحة المكتبة للتأكد يدوياً" style="color:${accent};font-weight:600;text-decoration:none;cursor:pointer">${esc(parsed.name)}</a>`
+                    ? `<a href="${esc(url)}" target="_blank" rel="noopener" title="${tr("lib.openVerify")}" style="color:${accent};font-weight:600;text-decoration:none;cursor:pointer">${esc(parsed.name)}</a>`
                     : `<span style="color:${accent};font-weight:600">${esc(parsed.name)}</span>`;
                 return `<div style="padding:5px 0;font-size:0.72em;opacity:${opacity}">
                     <div dir="ltr" style="display:flex;align-items:center;gap:6px;white-space:nowrap;overflow:hidden">
@@ -405,16 +407,16 @@
             const totalIssues = totalFixed + totalOpen;
 
             if (totalIssues === 0 && outdatedTags.length === 0) {
-                return '<div style="color:var(--text2);font-size:0.75em;padding:10px;text-align:center">لا توجد مشاكل أمنية</div>';
+                return `<div style="color:var(--text2);font-size:0.75em;padding:10px;text-align:center">${tr("sec.none")}</div>`;
             }
 
             const pct = totalIssues > 0 ? Math.round((totalFixed / totalIssues) * 100) : 0;
             let h = '';
 
             h += `<div style="display:flex;gap:10px;margin-bottom:10px">
-                <div style="text-align:center;flex:1"><span style="font-size:1.2em;font-weight:700;color:${totalOpen > 0 ? 'var(--pink)' : 'var(--emerald)'}">${totalOpen}</span><div style="font-size:0.6em;color:var(--text2)">مفتوحة</div></div>
-                <div style="text-align:center;flex:1"><span style="font-size:1.2em;font-weight:700;color:var(--emerald)">${totalFixed}</span><div style="font-size:0.6em;color:var(--text2)">مُصلحة</div></div>
-                <div style="text-align:center;flex:1"><span style="font-size:1.2em;font-weight:700;color:var(--gold)">${outdatedTags.length}</span><div style="font-size:0.6em;color:var(--text2)">قديمة</div></div>
+                <div style="text-align:center;flex:1"><span style="font-size:1.2em;font-weight:700;color:${totalOpen > 0 ? 'var(--pink)' : 'var(--emerald)'}">${totalOpen}</span><div style="font-size:0.6em;color:var(--text2)">${tr("sec.open")}</div></div>
+                <div style="text-align:center;flex:1"><span style="font-size:1.2em;font-weight:700;color:var(--emerald)">${totalFixed}</span><div style="font-size:0.6em;color:var(--text2)">${tr("sec.fixed")}</div></div>
+                <div style="text-align:center;flex:1"><span style="font-size:1.2em;font-weight:700;color:var(--gold)">${outdatedTags.length}</span><div style="font-size:0.6em;color:var(--text2)">${tr("sec.outdated")}</div></div>
             </div>`;
 
             h += `<div class="progress-row" style="margin-bottom:12px">
@@ -424,10 +426,10 @@
 
             // ‏#N، مذيَّلة بشارة ⟲ عند إعادة فتح بلاغ مغلق (#556) — الإصلاح لم يصمد.
             const numCode = (t) => (typeof t.num === "number" ? `<span style="font-size:0.85em;color:var(--text2);font-family:'Cascadia Code',Consolas,monospace;flex-shrink:0">#${t.num}</span>` : '')
-                + (typeof t.relatedTo === "number" ? `<span style="font-size:0.8em;color:var(--gold);flex-shrink:0;font-family:'Cascadia Code',Consolas,monospace" title="إعادة فتح محتملة للبلاغ المغلق #${t.relatedTo} — افحص انتكاس الإصلاح القديم">&#10560;#${t.relatedTo}</span>` : '');
-            const delBtn = (id, kind) => `<button data-action="delete-tag" data-tag-id="${esc(id)}" data-tag-kind="${kind}" title="حذف نهائي (لـfalse positive أو إدخال خاطئ)" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:1em;padding:0 4px;flex-shrink:0;line-height:1">×</button>`;
+                + (typeof t.relatedTo === "number" ? `<span style="font-size:0.8em;color:var(--gold);flex-shrink:0;font-family:'Cascadia Code',Consolas,monospace" title="${tr("sec.reopenTitle", { n: t.relatedTo })}">&#10560;#${t.relatedTo}</span>` : '');
+            const delBtn = (id, kind) => `<button data-action="delete-tag" data-tag-id="${esc(id)}" data-tag-kind="${kind}" title="${tr("sec.delTitle")}" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:1em;padding:0 4px;flex-shrink:0;line-height:1">×</button>`;
             if (openSec.length > 0) {
-                h += '<div style="font-size:0.7em;color:var(--text2);margin:8px 0 4px">ثغرات مفتوحة</div>';
+                h += `<div style="font-size:0.7em;color:var(--text2);margin:8px 0 4px">${tr("sec.openVulns")}</div>`;
                 for (const s of openSec) {
                     // The content is clickable → opens the per-CVE modal for this
                     // library (parses the lib name out of the "name@ver — …" headline).
@@ -435,7 +437,7 @@
                     const sattr = clickable
                         ? ` data-action="show-vulns-tag" data-project="${esc(activeProject)}" data-content="${esc(s.content)}" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--pink);cursor:pointer;text-decoration:underline dotted"`
                         : ` style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--pink)"`;
-                    const stitle = [clickable ? `${s.content} — اضغط لتفاصيل الثغرات` : s.content, openedTitle(s.timestamp)].filter(Boolean).join('\n');
+                    const stitle = [clickable ? tr("vuln.clickDetails", { text: s.content }) : s.content, openedTitle(s.timestamp)].filter(Boolean).join('\n');
                     h += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:0.72em">
                         <span style="color:var(--pink)">!</span>
                         ${numCode(s)}
@@ -445,7 +447,7 @@
                 }
             }
             if (openBugs.length > 0) {
-                h += '<div style="font-size:0.7em;color:var(--text2);margin:8px 0 4px">أخطاء مفتوحة</div>';
+                h += `<div style="font-size:0.7em;color:var(--text2);margin:8px 0 4px">${tr("sec.openBugs")}</div>`;
                 for (const b of openBugs) {
                     h += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:0.72em">
                         <span style="color:var(--pink)">!</span>
@@ -464,20 +466,20 @@
                 // compromises (event-stream, nx, ua-parser-js) stayed live
                 // for hours-to-days before discovery — rapid auto-upgrades
                 // were the attack vector.
-                h += '<div style="font-size:0.7em;color:var(--text2);margin:8px 0 4px">مكتبات قديمة</div>';
+                h += `<div style="font-size:0.7em;color:var(--text2);margin:8px 0 4px">${tr("sec.outdatedLibs")}</div>`;
                 for (const o of outdatedTags) {
                     h += libRow(o.content, 'latest', { accent: 'var(--gold)', icon: '&#8635;' });
                 }
             }
             h += fragileFilesHtml();   // «الأكثر كسرًا» (#557) — قبل قوائم المُغلق التاريخية
             if (closedSec.length > 0) {
-                h += '<div style="font-size:0.7em;color:var(--text2);margin:8px 0 4px;border-top:1px solid var(--border);padding-top:8px">ثغرات مُصلحة</div>';
+                h += `<div style="font-size:0.7em;color:var(--text2);margin:8px 0 4px;border-top:1px solid var(--border);padding-top:8px">${tr("sec.fixedVulns")}</div>`;
                 for (const s of closedSec) {
                     h += libRow(s.content, 'fix', { accent: 'var(--emerald)', icon: '&#10003;', strike: true, opacity: 0.6 });
                 }
             }
             if (closedBugs.length > 0) {
-                h += '<div style="font-size:0.7em;color:var(--text2);margin:8px 0 4px">أخطاء مُصلحة</div>';
+                h += `<div style="font-size:0.7em;color:var(--text2);margin:8px 0 4px">${tr("sec.fixedBugs")}</div>`;
                 for (const b of closedBugs) {
                     h += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:0.72em;opacity:0.6">
                         <span style="color:var(--emerald)">&#10003;</span>
@@ -510,16 +512,19 @@
             history: [],
         };
 
+        // Labels/subs resolve through the dictionary at render time (getters)
+        // so the panel re-labels on a language toggle. Fixed technical labels
+        // (hook names, file names) stay literal.
         const injTypeMeta = {
-            sessionStart:     { label: "SessionStart",     sub: "حقن ملخص المشروع عند بدء الجلسة",              dynamic: true },
-            userPromptSubmit: { label: "UserPromptSubmit", sub: "تذكير تلقائي بالمهام المتبقية لكلود كود",         dynamic: true },
-            preToolUseRead:   { label: "PreToolUse(Read)", sub: "حقن ذاكرة الملف قبل قراءته",                   dynamic: true },
-            outdatedLibs:     { label: "مكتبات منتهية",     sub: "تنبيه كلود بكل المكتبات القديمة عند بدء الجلسة", dynamic: true },
-            describeNudge:    { label: "تذكير الوصف",       sub: "تنبيه كلود لإضافة desc/about الناقصَين. يعمل حتى مع إطفاء «حقن البداية»", dynamic: true },
-            upcomingItems:    { label: "سطر القادمة",       sub: "عرض العناصر المؤجلة (قادمة) في ملخص بداية الجلسة — للعلم فقط، لا توقف شيئًا", dynamic: true },
-            claudeMd:         { label: "CLAUDE.md",        sub: "كتابة ملخص المشروع في ملف CLAUDE.md (قيد التطوير)", dynamic: false },
-            contextMd:        { label: ".devlog/context.md", sub: "كتابة سياق إضافي في ملف (قيد التطوير)",       dynamic: false },
-            standardsEnforce: { label: "إجبار المعايير",   sub: "يمنع كتابة الكود حتى يسحب كلود معايير المشروع. أوقفه للمشاريع المطبَّقة أصلاً (السحب اليدوي يبقى متاحاً)." },
+            sessionStart:     { label: "SessionStart",     get sub() { return tr("inj.subSessionStart"); },  dynamic: true },
+            userPromptSubmit: { label: "UserPromptSubmit", get sub() { return tr("inj.subUserPrompt"); },    dynamic: true },
+            preToolUseRead:   { label: "PreToolUse(Read)", get sub() { return tr("inj.subPreRead"); },       dynamic: true },
+            outdatedLibs:     { get label() { return tr("inj.outdatedLabel"); }, get sub() { return tr("inj.outdatedSub"); }, dynamic: true },
+            describeNudge:    { get label() { return tr("inj.descLabel"); },     get sub() { return tr("inj.descSub"); },     dynamic: true },
+            upcomingItems:    { get label() { return tr("inj.upcomingLabel"); }, get sub() { return tr("inj.upcomingSub"); }, dynamic: true },
+            claudeMd:         { label: "CLAUDE.md",        get sub() { return tr("inj.claudeMdSub"); },      dynamic: false },
+            contextMd:        { label: ".devlog/context.md", get sub() { return tr("inj.contextMdSub"); },   dynamic: false },
+            standardsEnforce: { get label() { return tr("inj.enforceLabel"); },  get sub() { return tr("inj.enforceSub"); } },
         };
 
         export async function openInjectionPanel(project) {
@@ -543,13 +548,13 @@
             document.getElementById('stdProjectName').textContent = project || '';
             document.getElementById('stdModal').classList.add('open');
             const body = document.getElementById('stdBody');
-            body.innerHTML = '<div class="inj-empty">جارٍ التحميل…</div>';
+            body.innerHTML = `<div class="inj-empty">${tr("misc.loading")}</div>`;
             const cwd = (data.projects?.[project]?.path) || '';
             try {
                 const res = await fetch(`${API}/api/standards?cwd=${encodeURIComponent(cwd)}`);
                 body.innerHTML = renderStandards(await res.json());
             } catch {
-                body.innerHTML = '<div class="inj-empty">فشل تحميل المعايير</div>';
+                body.innerHTML = `<div class="inj-empty">${tr("std.loadFail")}</div>`;
             }
         }
 
@@ -559,7 +564,7 @@
 
         function renderStandards(j) {
             const cats = j.categories || [];
-            if (!cats.length) return '<div class="inj-empty">الكتالوج فارغ — أضف ملفات .md في ~/.claude/standards/</div>';
+            if (!cats.length) return `<div class="inj-empty">${tr("std.emptyCatalog")}</div>`;
             const c = j.counts || {};
             const byAxis = {};
             for (const cat of cats) {
@@ -571,30 +576,30 @@
                 return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
             });
             const kindBadge = (k) => k === 'check'
-                ? '<span class="std-kind std-check">فحص</span>'
-                : '<span class="std-kind std-guide">نصيحة</span>';
-            let html = `<div class="std-summary">${c.categories || 0} تصنيف · ${c.rules || 0} قاعدة · ${c.enforced || 0} فاحص يحجب</div>`;
+                ? `<span class="std-kind std-check">${tr("std.check")}</span>`
+                : `<span class="std-kind std-guide">${tr("std.guide")}</span>`;
+            let html = `<div class="std-summary">${tr("std.summary", { cats: c.categories || 0, rules: c.rules || 0, enforced: c.enforced || 0 })}</div>`;
             for (const ax of axes) {
                 html += `<div class="std-axis">${esc(ax)}</div>`;
                 for (const cat of byAxis[ax]) {
-                    const scope = cat.scope === 'project' ? '<span class="std-scope">خاص بالمشروع</span>' : '<span class="std-scope std-global">عام</span>';
-                    const enforced = cat.enforcedBy ? `<span class="std-enforced" title="يحجب فعلاً">🛡 ${esc(cat.enforcedBy)}</span>` : '';
+                    const scope = cat.scope === 'project' ? `<span class="std-scope">${tr("std.scopeProject")}</span>` : `<span class="std-scope std-global">${tr("std.scopeGlobal")}</span>`;
+                    const enforced = cat.enforcedBy ? `<span class="std-enforced" title="${tr("std.enforcedTitle")}">🛡 ${esc(cat.enforcedBy)}</span>` : '';
                     html += `<div class="std-cat"><div class="std-cat-head"><span class="std-cat-name">${esc(cat.category)}</span>${scope}${enforced}</div>`;
                     if (cat.rules?.length) {
                         html += '<div class="std-rules">';
                         for (const r of cat.rules) html += `<div class="std-rule">${kindBadge(r.kind)}<span>${esc(r.text)}</span></div>`;
                         html += '</div>';
                     } else if (cat.rich) {
-                        html += '<div class="std-rules std-norules">📄 معيار مرجعي موسّع — افتح الملف لعرض تفاصيله</div>';
+                        html += `<div class="std-rules std-norules">${tr("std.rich")}</div>`;
                     } else {
-                        html += '<div class="std-rules std-norules">لا قواعد بعد</div>';
+                        html += `<div class="std-rules std-norules">${tr("std.noRules")}</div>`;
                     }
                     html += '</div>';
                 }
             }
             const acks = j.acks || [];
             if (acks.length) {
-                html += `<div class="std-axis">مؤكَّدات هذا المشروع (ack)</div><div class="std-acks">`;
+                html += `<div class="std-axis">${tr("std.acks")}</div><div class="std-acks">`;
                 for (const a of acks) html += `<span class="std-ack">${esc(a)}</span>`;
                 html += '</div>';
             }
@@ -639,7 +644,7 @@
             const body = document.getElementById('injBody');
             const c = injState.config || {};
             const overrideHint = injState.scope === "project" && injState.hasOverride
-                ? `<div class="inj-override-note">⚙️ هذا المشروع له إعدادات خاصة تطغى على العام <button class="inj-clear-override" data-action="clear-injection-override">إزالة التخصيص</button></div>`
+                ? `<div class="inj-override-note">${tr("inj.overrideNote")} <button class="inj-clear-override" data-action="clear-injection-override">${tr("inj.clearOverride")}</button></div>`
                 : "";
 
             const dynamicRows = ["sessionStart","userPromptSubmit","preToolUseRead","outdatedLibs","describeNudge","upcomingItems"].map(k => {
@@ -660,7 +665,7 @@
             const enforceOn = c.standardsEnforce !== false;
             const enforceGroup = injState.scope === "project"
                 ? `<div class="inj-group">
-                    <div class="inj-group-title">الإجبار</div>
+                    <div class="inj-group-title">${tr("inj.groupEnforce")}</div>
                     <div class="inj-toggle-row">
                         <div>
                             <div class="inj-toggle-label">${esc(em.label)}</div>
@@ -670,8 +675,8 @@
                     </div>
                 </div>`
                 : `<div class="inj-group">
-                    <div class="inj-group-title">الإجبار</div>
-                    <div class="inj-empty">إجبار المعايير يُضبط لكل مشروع — افتح تبويب «خاص بالمشروع».</div>
+                    <div class="inj-group-title">${tr("inj.groupEnforce")}</div>
+                    <div class="inj-empty">${tr("inj.enforceNote")}</div>
                 </div>`;
 
             const staticRows = ["claudeMd","contextMd"].map(k => {
@@ -681,43 +686,43 @@
                         <div class="inj-toggle-label">${esc(m.label)}</div>
                         <span class="inj-toggle-sub">${esc(m.sub)}</span>
                     </div>
-                    <div class="inj-switch disabled ${c[k] ? 'on' : ''}" title="قيد التطوير"></div>
+                    <div class="inj-switch disabled ${c[k] ? 'on' : ''}" title="${tr("inj.wip")}"></div>
                 </div>`;
             }).join("");
 
             const preview = await loadInjectionPreview();
             const histHtml = injState.history.length === 0
-                ? '<div class="inj-empty">لا توجد حقنات مسجلة لهذا المشروع</div>'
+                ? `<div class="inj-empty">${tr("inj.histEmpty")}</div>`
                 : injState.history.map(h => `<div class="inj-hist-item">
                     <span class="inj-hist-type">${esc(h.type)}</span>
                     <span style="flex:1"></span>
-                    <span class="inj-hist-size">${h.chars}ح</span>
-                    <span class="inj-hist-time">${new Date(h.timestamp).toLocaleString('ar-SA', {month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false})}</span>
-                    <button class="inj-hist-view" data-action="show-injection-content" data-id="${esc(h.id)}">عرض</button>
+                    <span class="inj-hist-size">${tr("inj.chars", { n: h.chars })}</span>
+                    <span class="inj-hist-time">${new Date(h.timestamp).toLocaleString(locale() === 'ar' ? 'ar-SA' : 'en-GB', {month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false})}</span>
+                    <button class="inj-hist-view" data-action="show-injection-content" data-id="${esc(h.id)}">${tr("inj.view")}</button>
                 </div>`).join("");
 
             body.innerHTML = `
                 <div class="inj-section">
                     <div class="inj-scope-tabs">
-                        <button class="inj-scope-tab ${injState.scope==='global'?'active':''}" data-action="switch-inj-scope" data-scope="global">الإعدادات العامة</button>
-                        <button class="inj-scope-tab ${injState.scope==='project'?'active':''}" data-action="switch-inj-scope" data-scope="project">خاص بالمشروع</button>
+                        <button class="inj-scope-tab ${injState.scope==='global'?'active':''}" data-action="switch-inj-scope" data-scope="global">${tr("inj.tabGlobal")}</button>
+                        <button class="inj-scope-tab ${injState.scope==='project'?'active':''}" data-action="switch-inj-scope" data-scope="project">${tr("inj.tabProject")}</button>
                     </div>
                     ${overrideHint}
                     <div class="inj-group">
-                        <div class="inj-group-title">حقن ديناميكي (لـ Claude)</div>
+                        <div class="inj-group-title">${tr("inj.groupDynamic")}</div>
                         ${dynamicRows}
                     </div>
                     ${enforceGroup}
                     <div class="inj-group">
-                        <div class="inj-group-title">حقن ثابت (ملفات المشروع)</div>
+                        <div class="inj-group-title">${tr("inj.groupStatic")}</div>
                         ${staticRows}
                     </div>
                 </div>
                 <div class="inj-section">
-                    <h4>معاينة حية (${preview.chars} حرف)</h4>
-                    <div class="inj-preview">${esc(preview.content || '— لا يوجد محتوى يُحقن حالياً —')}</div>
-                    <div class="inj-preview-meta">هذا ما سيُحقن الآن لو بدأت جلسة جديدة في هذا المشروع.</div>
-                    <h4 style="margin-top:14px">السجل التاريخي (${injState.history.length})</h4>
+                    <h4>${tr("inj.preview", { n: preview.chars })}</h4>
+                    <div class="inj-preview">${esc(preview.content || tr("inj.previewEmpty"))}</div>
+                    <div class="inj-preview-meta">${tr("inj.previewMeta")}</div>
+                    <h4 style="margin-top:14px">${tr("inj.history", { n: injState.history.length })}</h4>
                     <div class="inj-history">${histHtml}</div>
                 </div>
             `;
@@ -753,7 +758,7 @@
             const item = injState.history.find(h => h.id === id);
             if (!item) return;
             const w = window.open("", "_blank", "width=780,height=600");
-            w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>حقنة ${esc(item.type)}</title>
+            w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${tr("inj.docTitle", { type: esc(item.type) })}</title>
                 <style>body{background:#0a1420;color:#eaeaea;font-family:'Cascadia Code',Consolas,monospace;padding:20px;font-size:13px;white-space:pre-wrap;direction:ltr;text-align:left}h3{color:#ffd166}</style></head>
                 <body><h3>${esc(item.type)} · ${esc(String(item.chars))} chars · ${esc(new Date(item.timestamp).toLocaleString())}</h3><hr>${esc(item.content)}</body></html>`);
         }
@@ -800,8 +805,8 @@
             const tools = (updatesState.tools || []).filter(t => t.hasUpdate);
             if (tools.length === 0) { badge.style.display = "none"; return; }
             const names = tools.map(t => `${t.name} → v${t.latestVersion}`).join("، ");
-            badge.textContent = `🔄 ${tools.length === 1 ? "تحديث" : `${tools.length} تحديثات`} متاحة`;
-            badge.title = `${names}\n(انقر للتفاصيل)`;
+            badge.textContent = tr("upd.badge", { what: tools.length === 1 ? tr("upd.one") : tr("upd.many", { n: tools.length }) });
+            badge.title = `${names}\n${tr("upd.clickDetails")}`;
             badge.style.display = "inline-block";
         }
         export function openUpdatesPopup() {
@@ -815,9 +820,9 @@
             // Show the right upgrade path: a plugin install updates from inside
             // Claude Code, a clone updates with git.
             const how = updatesState.pluginMode
-                ? "\n\nللتحديث داخل Claude Code:\n/plugin marketplace update"
-                : "\n\nللتحديث:\ngit pull ثم أعد تشغيل الخادم";
-            uiAlert(`تحديثات متاحة:\n\n${lines}${how}`, "تحديثات متاحة");
+                ? tr("upd.howPlugin")
+                : tr("upd.howGit");
+            uiAlert(tr("upd.body", { lines, how }), tr("upd.title"));
         }
 
         // Bootstrap moved into initDashboard() (R3 #3): with modules, this file

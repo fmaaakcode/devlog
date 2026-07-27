@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>مكتبات المشروع</title>
+<title data-i18n="depsPage.docTitle">Project libraries</title>
 <style>
   :root {
     --pink: #ef476f;
@@ -76,12 +76,12 @@
 </head>
 <body>
 <header>
-  <a class="back" href="/">&rarr; الداشبورد</a>
-  <h1>مكتبات <span id="projName"></span></h1>
+  <a class="back" href="/" data-i18n="depsPage.back">← Dashboard</a>
+  <h1><span data-i18n="depsPage.h1">Libraries of</span> <span id="projName"></span></h1>
   <span id="coverage"></span>
-  <input id="search" type="search" placeholder="ابحث باسم المكتبة أو الغرض…">
+  <input id="search" type="search" data-i18n-ph="depsPage.searchPh" placeholder="Search by library name or purpose…">
 </header>
-<div id="status">جارِ التحميل…</div>
+<div id="status" data-i18n="misc.loading">Loading…</div>
 <main id="list" hidden></main>
 <script type="module" src="/assets/deps.js"></script>
 </body>

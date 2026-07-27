@@ -1,5 +1,6 @@
         import { data, setData, activeProject, setActiveProject, setHeaderBuilt, setCachedTree, logFilter, fullRenderNeeded, setFullRenderNeeded, lastDataHash, setLastDataHash } from "./dashboard-state.js";
-        import { API, esc, timeStr, tagClass, tagLabels, tagSummary, filterGroups, filterLabels, resolveTagDisplay, refreshActiveSessions } from "./dashboard-core.js";
+        import { API, esc, timeStr, tagClass, tagLabel, tagSummary, filterGroups, filterLabel, resolveTagDisplay, refreshActiveSessions } from "./dashboard-core.js";
+        import { t as tr } from "./dashboard-i18n.js";
         import { renderSidebar, getProjectTags, patchHeader, patchLibraries, vulnCache } from "./dashboard-project.js";
         import { renderChangesCard, renderActivePlanCard, updateSidebarStats, renderProject, buildTodosHtml } from "./dashboard-panels.js";
         import { buildEventsHtml, buildSecurityHtml } from "./dashboard-tree-ws.js";
@@ -138,9 +139,9 @@
             bar.id = "viewErrorBar";
             bar.style.cssText = "margin:8px 12px;padding:9px 14px;border:1px solid var(--pink);border-radius:8px;color:var(--pink);font-size:0.85em;display:flex;gap:12px;align-items:center;flex:0 0 auto";
             const msg = document.createElement("span");
-            msg.textContent = `تعذّر جلب بيانات المشروع "${name}" من الخادم`;
+            msg.textContent = tr("err.fetchProject", { name });
             const btn = document.createElement("button");
-            btn.textContent = "أعد المحاولة";
+            btn.textContent = tr("err.retry");
             btn.className = "confirm-btn";
             btn.onclick = () => { btn.disabled = true; refreshActiveView(true).finally(() => { btn.disabled = false; }); };
             bar.append(msg, btn);
@@ -307,17 +308,17 @@
         // item-new highlight ran on the surgical path only. Returns the complete
         // card (header + filter row + scroll container + rows).
         export function buildTagsHtml(tags) {
-            const head = `<div style="font-size:0.6em;color:var(--text2);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">التاقات</div>`;
+            const head = `<div style="font-size:0.6em;color:var(--text2);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">${tr("card.tags")}</div>`;
             if (!tags || tags.length === 0) {
-                return `${head}<div style="color:var(--text2);font-size:0.7em">لا توجد تاقات</div>`;
+                return `${head}<div style="color:var(--text2);font-size:0.7em">${tr("card.noTags")}</div>`;
             }
             const filtered = logFilter === "all" ? tags : tags.filter(t => filterGroups[logFilter]?.includes(t.tag));
             const projectPlans = (data.plans || []).filter(p => p.project === activeProject);
             let h = `${head}<div class="log-filters">`;
-            for (const [key, label] of Object.entries(filterLabels)) {
+            for (const key of Object.keys(filterGroups)) {
                 const count = key === "all" ? tags.length : tags.filter(t => filterGroups[key].includes(t.tag)).length;
                 if (key !== "all" && count === 0) continue;
-                h += `<button class="log-filter${logFilter === key ? ' active' : ''}" data-action="set-log-filter" data-key="${esc(key)}">${esc(label)} <span class="tab-badge tab-badge-default">${count}</span></button>`;
+                h += `<button class="log-filter${logFilter === key ? ' active' : ''}" data-action="set-log-filter" data-key="${esc(key)}">${esc(filterLabel(key))} <span class="tab-badge tab-badge-default">${count}</span></button>`;
             }
             h += '</div><div style="overflow-y:auto;flex:1;min-height:0">';
             for (const t of filtered) {
@@ -326,20 +327,20 @@
                 const sec = t.tag === 'security'
                     ? ` data-action="show-vulns-tag" data-project="${esc(activeProject)}" data-content="${esc(t.content)}" style="cursor:pointer;text-decoration:underline dotted"`
                     : '';
-                const ttl = t.tag === 'security' ? `${display} — اضغط لتفاصيل الثغرات` : display;
+                const ttl = t.tag === 'security' ? tr("vuln.clickDetails", { text: display }) : display;
                 // نسب النموذج (#695): شارة صغيرة بمن كتب التاق — تغيب عن التاريخ القديم بلا حقل.
                 const who = t.model ? `<span class="log-model" title="${esc(t.model)}">${esc(String(t.model).replace(/^claude-/, ''))}</span>` : '';
                 h += `<div class="log-item item-new${t.breaking ? ' is-breaking' : ''}">
                     <div class="log-bar bar-${tc}"></div>
-                    <span class="log-tag tag-${tc}">${esc(tagLabels[t.tag] || t.tag)}</span>
-                    <span class="log-content"${sec} title="${esc(ttl)}">${esc(tagSummary(display))}</span>
+                    <span class="log-tag tag-${tc}">${esc(tagLabel(t.tag))}</span>
+                    <span class="log-content" dir="auto"${sec} title="${esc(ttl)}">${esc(tagSummary(display))}</span>
                     ${who}<span class="log-time">${timeStr(t.timestamp)}</span>
                 </div>`;
             }
             // History window (R8 perf): older rows exist server-side only —
             // the button lifts the window for this project (expand-history).
             if ((data.tagsTotal || 0) > tags.length) {
-                h += `<button class="log-filter" data-action="expand-history" style="width:100%;margin-top:4px">عرض كامل التاريخ (${data.tagsTotal} تاق)</button>`;
+                h += `<button class="log-filter" data-action="expand-history" style="width:100%;margin-top:4px">${tr("card.fullHistory", { n: data.tagsTotal })}</button>`;
             }
             return `${h}</div>`;
         }
@@ -378,7 +379,7 @@
 
         export async function rescanProject(name, btn) {
             btn.classList.add("loading");
-            btn.textContent = "جاري المسح...";
+            btn.textContent = tr("scan.scanning");
             try {
                 await fetch(`${API}/api/scan/${encodeURIComponent(name)}`, { method: "POST" });
                 setHeaderBuilt(false);
@@ -388,7 +389,7 @@
                 // Scan failed or timed out — the button reset below re-arms it.
             }
             btn.classList.remove("loading");
-            btn.textContent = "إعادة مسح";
+            btn.textContent = tr("scan.rescan");
         }
 
         function setVulnStatus(panel, msg, color = 'var(--text2)', spinner = false) {
@@ -400,21 +401,21 @@
 
         export async function vulnScan(name, btn) {
             btn.classList.add("loading");
-            btn.textContent = "جاري الفحص...";
+            btn.textContent = tr("vuln.scanning");
             const panel = document.getElementById("vuln-panel");
-            setVulnStatus(panel, "جاري الاتصال بسيرفر الفحص...", 'var(--text2)', true);
+            setVulnStatus(panel, tr("vuln.connecting"), 'var(--text2)', true);
             try {
                 const res = await fetch(`${API}/api/vuln/${encodeURIComponent(name)}`);
                 if (!res.ok) {
-                    setVulnStatus(panel, `استجابة غير متوقعة من السيرفر (HTTP ${res.status})`, 'var(--pink)');
-                    btn.classList.remove("loading"); btn.textContent = "فحص أمني"; return;
+                    setVulnStatus(panel, tr("vuln.badStatus", { status: res.status }), 'var(--pink)');
+                    btn.classList.remove("loading"); btn.textContent = tr("vuln.scanBtn"); return;
                 }
-                setVulnStatus(panel, "تم استلام النتائج، جاري التحليل...", 'var(--text2)', true);
+                setVulnStatus(panel, tr("vuln.analyzing"), 'var(--text2)', true);
                 let d;
                 try { d = await res.json(); }
                 catch {
-                    setVulnStatus(panel, "فشل قراءة استجابة السيرفر (JSON غير صالح)", 'var(--pink)');
-                    btn.classList.remove("loading"); btn.textContent = "فحص أمني"; return;
+                    setVulnStatus(panel, tr("vuln.badJson"), 'var(--pink)');
+                    btn.classList.remove("loading"); btn.textContent = tr("vuln.scanBtn"); return;
                 }
 
                 // Save results to cache and re-render libraries
@@ -445,22 +446,22 @@
                 if (d.libraries?.summary) {
                     const s = d.libraries.summary;
                     h += `<div style="display:flex;gap:12px;font-size:0.75em;font-weight:600;${d.runtime ? 'margin-top:6px' : ''}">
-                        <span style="color:var(--emerald)">✅ ${s.safe} آمنة</span>
-                        ${s.update > 0 ? `<span style="color:var(--pink)">❌ ${s.update} تحتاج تحديث</span>` : ''}
-                        ${s.danger > 0 ? `<span style="color:var(--gold)">⚠️ ${s.danger} خطيرة</span>` : ''}
+                        <span style="color:var(--emerald)">✅ ${tr("vuln.safeCount", { n: s.safe })}</span>
+                        ${s.update > 0 ? `<span style="color:var(--pink)">❌ ${tr("vuln.updateCount", { n: s.update })}</span>` : ''}
+                        ${s.danger > 0 ? `<span style="color:var(--gold)">⚠️ ${tr("vuln.dangerCount", { n: s.danger })}</span>` : ''}
                     </div>`;
                 }
                 if (!d.libraries?.results?.length && !d.runtime) {
-                    h = '<div style="color:var(--text2);font-size:0.8em">لا توجد مكتبات أو runtime لفحصها</div>';
+                    h = `<div style="color:var(--text2);font-size:0.8em">${tr("vuln.nothing")}</div>`;
                 }
                 if (h) { panel.innerHTML = h; panel.style.display = "flex"; }
                 else { panel.style.display = "none"; }
             } catch (err) {
-                const msg = err?.message ? `فشل الاتصال بسيرفر الفحص — ${err.message}` : 'فشل الاتصال بسيرفر الفحص (تأكد من تشغيل خدمة الفحص)';
+                const msg = err?.message ? tr("vuln.connFailMsg", { msg: err.message }) : tr("vuln.connFail");
                 setVulnStatus(panel, msg, 'var(--pink)');
             }
             btn.classList.remove("loading");
-            btn.textContent = "فحص أمني";
+            btn.textContent = tr("vuln.scanBtn");
         }
 
         // ===== Sidebar =====

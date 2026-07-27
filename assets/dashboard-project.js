@@ -2,6 +2,7 @@
         import { API, esc, safeHref, langColors, destructiveHeaders, uiAlert, uiConfirm, uiPrompt, activeSessionsByProject } from "./dashboard-core.js";
         import { summaryTagCounts, summaryVulnClass, summaryLastActivity, summaryTombstones, ACTIVE_WINDOW_MS, fetchProjectView, refreshActiveView } from "./dashboard-data.js";
         import { patchSessions } from "./dashboard-panels.js";
+        import { t as tr, uiDir } from "./dashboard-i18n.js";
 
         function renderProjectItem(name) {
             const p = data.projects[name];
@@ -10,23 +11,23 @@
             const tagCount = summaryTagCounts[name] || 0;
             const color = langColors[p.language] || langColors.default;
             const vulnCls = summaryVulnClass[name] || '';
-            const title = vulnCls === 'vuln-danger' ? 'يحتوي مكتبات ذات ثغرات أمنية'
-                        : vulnCls === 'vuln-warn' ? 'يحتوي مكتبات غير محدثة'
-                        : vulnCls === 'vuln-safe' ? 'كل المكتبات سليمة ومحدثة'
+            const title = vulnCls === 'vuln-danger' ? tr("side.vulnDanger")
+                        : vulnCls === 'vuln-warn' ? tr("side.vulnWarn")
+                        : vulnCls === 'vuln-safe' ? tr("side.vulnSafe")
                         : '';
             const livePids = activeSessionsByProject[name] || [];
             const liveDot = livePids.length
-                ? `<span class="project-live" title="جلسة Claude Code شغّالة · PID ${livePids.join(', ')}"></span>`
+                ? `<span class="project-live" title="${tr("side.liveTitle", { pids: livePids.join(', ') })}"></span>`
                 : '';
-            const itemTitle = title || (livePids.length ? `جلسة شغّالة · PID ${livePids.join(', ')}` : '');
+            const itemTitle = title || (livePids.length ? tr("side.liveShort", { pids: livePids.join(', ') }) : '');
             return `<div class="project-item ${activeProject === name ? 'active' : ''} ${vulnCls}" data-action="select-project" data-project="${esc(name)}" ${itemTitle ? `title="${esc(itemTitle)}"` : ''}>
                 <span class="project-dot" style="background:${color}"></span>
                 <span class="project-item-name">${esc(name)}</span>
                 <span class="project-item-count">${tagCount}</span>
                 ${liveDot}
-                <button class="project-export" data-action="export-project" data-project="${esc(name)}" title="تصدير سجل المشروع كاملًا (ملف JSON) لنقله إلى جهاز آخر">⤓</button>
-                <button class="project-rename" data-action="rename-project" data-project="${esc(name)}" title="إعادة تسمية المشروع">✎</button>
-                <button class="project-delete" data-action="delete-project" data-project="${esc(name)}" title="حذف المشروع">✕</button>
+                <button class="project-export" data-action="export-project" data-project="${esc(name)}" title="${tr("side.exportTitle")}">⤓</button>
+                <button class="project-rename" data-action="rename-project" data-project="${esc(name)}" title="${tr("side.renameTitle")}">✎</button>
+                <button class="project-delete" data-action="delete-project" data-project="${esc(name)}" title="${tr("side.deleteTitle")}">✕</button>
             </div>`;
         }
 
@@ -46,7 +47,7 @@
             const elOther = document.getElementById("projectListOther");
             const names = Object.keys(data.projects);
             if (names.length === 0) {
-                setListHtml(elActive, "active", '<div class="sidebar-empty">لا توجد مشاريع بعد<br>ابدأ العمل في أي مشروع وسيظهر هنا تلقائياً</div>');
+                setListHtml(elActive, "active", `<div class="sidebar-empty">${tr("side.empty")}</div>`);
                 setListHtml(elOther, "other", '');
                 // #401: the orphan/tombstone sweep must still render with an EMPTY
                 // registry — that corrupted-registry case (names in the stores but no
@@ -76,8 +77,8 @@
                 </div>${items}`;
             };
 
-            setListHtml(elActive, "active", renderCard("نشطة (آخر 7 أيام)", active, "لا توجد مشاريع نشطة"));
-            setListHtml(elOther, "other", renderCard("باقي المشاريع", other, "لا يوجد"));
+            setListHtml(elActive, "active", renderCard(tr("side.active"), active, tr("side.activeEmpty")));
+            setListHtml(elOther, "other", renderCard(tr("side.other"), other, tr("side.otherEmpty")));
             renderMaintRow();
         }
 
@@ -90,18 +91,18 @@
             const el = document.getElementById('maintRow');
             if (!el) return;
             const btn = (action, label) =>
-                `<button data-action="${action}" style="width:100%;text-align:right;background:none;border:1px dashed var(--border);border-radius:6px;color:var(--text2);font-size:0.7em;padding:5px 10px;cursor:pointer;margin-top:6px">${label}</button>`;
+                `<button data-action="${action}" style="width:100%;text-align:${uiDir() === 'rtl' ? 'right' : 'left'};background:none;border:1px dashed var(--border);border-radius:6px;color:var(--text2);font-size:0.7em;padding:5px 10px;cursor:pointer;margin-top:6px">${label}</button>`;
             let h = '';
-            if (summaryTombstones > 0) h += btn('cleanup-tombstones', `🪦 مشاريع مفقودة من القرص 30+ يومًا (${summaryTombstones})`);
+            if (summaryTombstones > 0) h += btn('cleanup-tombstones', tr("maint.tombstones", { n: summaryTombstones }));
             // Always-on: fold a bundle exported on another machine into this
             // store (the ⤓ button on each project row produces that file).
-            h += btn('import-project', '⤒ استيراد سجل مشروع (ملف تصدير JSON)');
+            h += btn('import-project', tr("maint.import"));
             el.innerHTML = h;
             el.style.display = h ? '' : 'none';
         }
 
         export async function cleanupTombstones() {
-            if (!(await uiConfirm('حذف المشاريع التي اختفى مجلدها من القرص منذ 30+ يومًا نهائيًا بكل بياناتها (تاقات/أحداث/خطط)؟', { okText: 'احذف نهائيًا' }))) return;
+            if (!(await uiConfirm(tr("maint.tombConfirm"), { okText: tr("core.deleteForever") }))) return;
             try {
                 const r = await fetch(`${API}/api/cleanup-tombstones`, {
                     method: 'POST',
@@ -109,9 +110,9 @@
                     body: '{}',
                 });
                 const j = await r.json().catch(() => ({}));
-                if (!r.ok) { uiAlert(j.error || 'فشل الكنس'); return; }
-                uiAlert(j.removed?.length ? `حُذفت: ${j.removed.join('، ')}` : 'لا شيء مؤهلًا للحذف (المجلدات عادت أو العلامات حديثة)');
-            } catch { uiAlert('تعذّر الاتصال بالخادم'); }
+                if (!r.ok) { uiAlert(j.error || tr("maint.sweepFail")); return; }
+                uiAlert(j.removed?.length ? tr("maint.removed", { list: j.removed.join('، ') }) : tr("maint.nothing"));
+            } catch { uiAlert(tr("err.connGeneric")); }
             refreshActiveView(true);
         }
 
@@ -127,13 +128,13 @@
                 const file = input.files?.[0];
                 if (!file) return;
                 let bundle;
-                try { bundle = JSON.parse(await file.text()); } catch { uiAlert('الملف ليس JSON صالحًا'); return; }
-                if (bundle?.kind !== 'devlog-project-export') { uiAlert('هذا ليس ملف تصدير DevLog — صدّره من زر ⤓ بجانب اسم المشروع على الجهاز الآخر.'); return; }
-                const counts = `${(bundle.tags || []).length} تاق · ${(bundle.events || []).length} حدث · ${(bundle.plans || []).length} خطة`;
+                try { bundle = JSON.parse(await file.text()); } catch { uiAlert(tr("imp.badJson")); return; }
+                if (bundle?.kind !== 'devlog-project-export') { uiAlert(tr("imp.wrongKind")); return; }
+                const counts = tr("imp.counts", { tags: (bundle.tags || []).length, events: (bundle.events || []).length, plans: (bundle.plans || []).length });
                 const mode = data.projects[bundle.project]
-                    ? 'المشروع موجود هنا: سيُدمج في سجله (تخطّي المكرر، وإزاحة أرقام #N المستوردة فوق أرقامك الحالية)'
-                    : 'المشروع غير موجود هنا: سيُسجَّل جديدًا بأرقامه كما هي';
-                if (!(await uiConfirm(`استيراد سجل «${bundle.project}» (${counts})؟\n${mode}.\nتُؤخذ نسخة احتياطية من ملفات البيانات قبل الكتابة.`, { okText: 'استورد', danger: false }))) return;
+                    ? tr("imp.modeMerge")
+                    : tr("imp.modeNew");
+                if (!(await uiConfirm(tr("imp.confirm", { project: bundle.project, counts, mode }), { okText: tr("imp.ok"), danger: false }))) return;
                 try {
                     const r = await fetch(`${API}/api/project-import`, {
                         method: 'POST',
@@ -141,17 +142,17 @@
                         body: JSON.stringify(bundle),
                     });
                     const j = await r.json().catch(() => ({}));
-                    if (!r.ok) { uiAlert(j.error || 'فشل الاستيراد'); return; }
+                    if (!r.ok) { uiAlert(j.error || tr("imp.fail")); return; }
                     const a = j.added || {};
-                    uiAlert(`اكتمل الاستيراد: +${a.tags || 0} تاق، +${a.events || 0} حدث، +${a.plans || 0} خطة (+${a.planSteps || 0} خطوة)، أرشيف +${j.archive?.added || 0} سطر.\nمتخطّى (موجود مسبقًا): ${j.skipped || 0} · معاد ترقيمه: ${j.renumbered || 0}.`, 'استيراد المشروع');
+                    uiAlert(tr("imp.done", { tags: a.tags || 0, events: a.events || 0, plans: a.plans || 0, steps: a.planSteps || 0, archive: j.archive?.added || 0, skipped: j.skipped || 0, renumbered: j.renumbered || 0 }), tr("imp.title"));
                     location.reload();
-                } catch (e) { uiAlert(`تعذّر الاتصال بالخادم: ${e.message}`); }
+                } catch (e) { uiAlert(tr("err.connServer", { msg: e.message })); }
             };
             input.click();
         }
 
         export async function renameProject(name) {
-            const next = await uiPrompt(`إعادة تسمية المشروع "${name}"\nسيُعاد تسمية مجلده على القرص أيضاً (إن وُجد)، وتنتقل التاقات والميموري.`, name, { title: 'إعادة تسمية', okText: 'أعد التسمية' });
+            const next = await uiPrompt(tr("ren.prompt", { name }), name, { title: tr("ren.title"), okText: tr("ren.ok") });
             if (next === null) return;                 // cancelled
             const newName = next.trim();
             if (!newName || newName === name) return;
@@ -162,26 +163,26 @@
                     body: JSON.stringify({ newName }),
                 });
                 const result = await res.json().catch(() => ({}));
-                if (!res.ok) { uiAlert(result.error || "تعذّرت إعادة التسمية"); return; }
+                if (!res.ok) { uiAlert(result.error || tr("ren.fail")); return; }
                 // Note what the server actually did (folder + memory) so the user
                 // knows whether the on-disk folder moved and if any memory card
                 // was left behind (not overwritten at the destination).
                 const bits = [];
-                if (result.movedFolder) bits.push(`المجلد → ${result.newPath}`);
+                if (result.movedFolder) bits.push(tr("ren.movedFolder", { path: result.newPath }));
                 const mv = result.memory?.moved?.length || 0;
                 const sk = result.memory?.skipped?.length || 0;
-                if (mv) bits.push(`نُقل ${mv} بطاقة ميموري`);
-                if (sk) bits.push(`تُخطّي ${sk} بطاقة موجودة مسبقاً`);
+                if (mv) bits.push(tr("ren.movedMem", { n: mv }));
+                if (sk) bits.push(tr("ren.skippedMem", { n: sk }));
                 if (bits.length) console.log("[rename]", bits.join(" · "));
-                if (sk) uiAlert(`تمّت إعادة التسمية.\nتُخطّي ${sk} بطاقة ميموري لوجود نظيرة لها في الوجهة (لم تُطمَس).`);
+                if (sk) uiAlert(tr("ren.doneSkipped", { n: sk }));
                 // The WS "rename" broadcast refreshes data; switch selection if needed.
                 if (activeProject === name) { setActiveProject(newName); setHeaderBuilt(false); setCachedTree(null); }
                 await refreshActiveView(true);
-            } catch { uiAlert("تعذّر الاتصال بالخادم"); }
+            } catch { uiAlert(tr("err.connGeneric")); }
         }
 
         export async function deleteProject(name) {
-            if (!(await uiConfirm(`حذف المشروع "${name}"؟\nسيتم حذف جميع التاقات والأحداث المرتبطة به.`, { okText: "احذف المشروع" }))) return;
+            if (!(await uiConfirm(tr("del.confirm", { name }), { okText: tr("del.ok") }))) return;
             try {
                 const res = await fetch(`${API}/api/project/${encodeURIComponent(name)}`, { method: "DELETE", headers: await destructiveHeaders() });
                 if (res.ok) {
@@ -268,7 +269,7 @@
         function aboutBtnAttrs(hasAbout) {
             return {
                 cls: `about-btn ${hasAbout ? 'has-about' : 'no-about'}`,
-                title: hasAbout ? 'مرر الماوس لعرض التفاصيل' : 'لا يوجد about — أرسل -(about) لإضافته',
+                title: hasAbout ? tr("about.hover") : tr("about.missing"),
             };
         }
 
@@ -281,7 +282,7 @@
                 const href = p.gitRepoSlug ? `https://github.com/${p.gitRepoSlug}` : safeHref(p.gitRemote);
                 return `<a href="${esc(href)}" target="_blank" rel="noopener" id="hdr-git" data-remote="${esc(remote)}" style="font-size:0.7em;padding:2px 8px;border-radius:4px;background:#0d1f2e;color:#7cc4f5;font-weight:600;text-decoration:none" title="${esc(remote)}">🔗 ${esc(p.gitRepoSlug || 'remote')}</a>`;
             }
-            return `<span id="hdr-git" data-remote="" style="font-size:0.7em;padding:2px 8px;border-radius:4px;background:#1a1a1a;color:var(--text2);font-weight:600" title="No git remote configured">📁 local</span>`;
+            return `<span id="hdr-git" data-remote="" style="font-size:0.7em;padding:2px 8px;border-radius:4px;background:#1a1a1a;color:var(--text2);font-weight:600" title="${tr("git.noRemote")}">📁 local</span>`;
         }
 
         export function buildHeaderOnce(p, tags) {
@@ -294,9 +295,9 @@
             document.getElementById("topbarLeft").innerHTML = `
                 <span class="brand-name" id="hdr-name">${esc(p.name)}</span>
                 <span class="brand-version" id="hdr-version" data-release-pop="1" data-action="open-releases" style="cursor:pointer;${versionStr ? '' : 'display:none'}" title="">${esc(versionStr)}</span>
-                <span class="brand-version" id="hdr-next-release" data-action="open-release-preview" style="cursor:pointer;opacity:0.75" title="معاينة الإصدار القادم قبل إصداره — تُولَّد حيًّا ولا تكتب شيئًا">القادم ⏳</span>
-                <span class="brand-version" id="hdr-client-report" data-action="open-client-report" style="cursor:pointer;opacity:0.85" title="تقرير حالة موجّه للعميل: قدرات النظام وآخر إصدار والاعتمادية — أعداد فقط بلا تفاصيل داخلية أو أمنية">تقرير العميل 🧾</span>
-                <span class="brand-version" id="hdr-model-stats" data-action="open-model-stats" style="cursor:pointer;opacity:0.85" title="أداء النماذج من سجلك الفعلي: من فتح البلاغات ومن أصلحها، إصلاحات من انتكست، ومن شحن إصلاحًا بلا اختبار">أداء النماذج 🤖</span>
+                <span class="brand-version" id="hdr-next-release" data-action="open-release-preview" style="cursor:pointer;opacity:0.75" title="${tr("hdr.nextTitle")}">${tr("hdr.next")}</span>
+                <span class="brand-version" id="hdr-client-report" data-action="open-client-report" style="cursor:pointer;opacity:0.85" title="${tr("hdr.clientReportTitle")}">${tr("hdr.clientReport")}</span>
+                <span class="brand-version" id="hdr-model-stats" data-action="open-model-stats" style="cursor:pointer;opacity:0.85" title="${tr("hdr.modelStatsTitle")}">${tr("hdr.modelStats")}</span>
                 <span class="deps-btn unknown" id="hdr-deps">
                     <span class="deps-dot"></span>
                     <span>dependencies</span>
@@ -312,7 +313,7 @@
                 <span class="framework-badge" id="hdr-framework" style="background:#04201a;color:var(--emerald);${p.framework ? '' : 'display:none'}">${esc(p.framework || '')}</span>
                 <span id="hdr-runtime" style="font-size:0.7em;padding:2px 8px;border-radius:4px;background:#1a1a2e;color:#7c8cf5;font-weight:600;${p.runtime ? '' : 'display:none'}">${p.runtime ? `${esc(p.runtime.name || '')}${p.runtime.version ? ` ${esc(p.runtime.version)}` : ''}${p.runtime.edition ? ` · ${esc(p.runtime.edition)}` : ''}` : ''}</span>
                 ${gitBadgeHtml(p)}
-                <span id="hdr-sessions" data-action="open-sessions" data-project="${esc(p.name)}" style="display:none;font-size:0.7em;padding:2px 8px;border-radius:4px;background:#0d2e1f;color:#06d6a0;font-weight:600;cursor:pointer" title="جلسات Claude النشطة"></span>
+                <span id="hdr-sessions" data-action="open-sessions" data-project="${esc(p.name)}" style="display:none;font-size:0.7em;padding:2px 8px;border-radius:4px;background:#0d2e1f;color:#06d6a0;font-weight:600;cursor:pointer" title="${tr("hdr.sessionsTitle")}"></span>
             `;
             document.getElementById("topbar").classList.add("has-project");
 
@@ -322,8 +323,8 @@
             // updates #hdr-desc-text only, so the about button survives live patches.
             // Container shows if there's a description OR an about to view.
             document.getElementById("projectHeader").innerHTML = `
-                <div id="hdr-desc" style="font-size:0.8em;color:var(--text2);direction:rtl;${(p.description || hasAbout) ? '' : 'display:none'}">
-                    <span id="hdr-desc-text" style="${p.description ? '' : 'display:none'}">${esc(p.description || '')}</span>
+                <div id="hdr-desc" style="font-size:0.8em;color:var(--text2);direction:${uiDir()};${(p.description || hasAbout) ? '' : 'display:none'}">
+                    <span id="hdr-desc-text" dir="auto" style="${p.description ? '' : 'display:none'}">${esc(p.description || '')}</span>
                     <span class="${ab.cls}" data-about-btn="1" id="hdr-about-btn" title="${ab.title}">about</span>
                 </div>
             `;
@@ -347,16 +348,16 @@
 
             const exts = Object.entries(p.files || {}).sort((a, b) => b[1] - a[1]);
 
-            let html = '<div class="stats-section-title">إحصائيات</div>';
+            let html = `<div class="stats-section-title">${tr("statsPop.title")}</div>`;
             html += '<div class="stats-grid">';
-            html += `<div class="stats-row"><span class="stats-key">ملف</span><span class="stats-value">${filesN}</span></div>`;
-            html += `<div class="stats-row"><span class="stats-key">مكتبة</span><span class="stats-value">${libsN}</span></div>`;
-            html += `<div class="stats-row"><span class="stats-key">مجلد</span><span class="stats-value">${dirsN}</span></div>`;
-            html += `<div class="stats-row"><span class="stats-key">تاق</span><span class="stats-value">${tagsN}</span></div>`;
+            html += `<div class="stats-row"><span class="stats-key">${tr("statsPop.files")}</span><span class="stats-value">${filesN}</span></div>`;
+            html += `<div class="stats-row"><span class="stats-key">${tr("statsPop.libs")}</span><span class="stats-value">${libsN}</span></div>`;
+            html += `<div class="stats-row"><span class="stats-key">${tr("statsPop.dirs")}</span><span class="stats-value">${dirsN}</span></div>`;
+            html += `<div class="stats-row"><span class="stats-key">${tr("statsPop.tags")}</span><span class="stats-value">${tagsN}</span></div>`;
             html += '</div>';
 
             if (exts.length > 0) {
-                html += '<div class="stats-section-title">أنواع الملفات</div>';
+                html += `<div class="stats-section-title">${tr("statsPop.exts")}</div>`;
                 html += '<div class="stats-grid">';
                 for (const [ext, n] of exts) {
                     html += `<div class="stats-ext"><span class="ext-name">.${esc(ext)}</span><span class="ext-count">${n}</span></div>`;
@@ -368,7 +369,7 @@
 
             const btn = document.getElementById('hdr-stats');
             if (btn) {
-                btn.title = 'اضغط لفتح خريطة المشروع';
+                btn.title = tr("statsPop.open");
                 btn.onclick = (e) => {
                     if (e.target.closest('.stats-popup')) return;
                     window.open(`/stack-map.html?project=${encodeURIComponent(p.name)}`, '_blank');
@@ -423,7 +424,7 @@
                 let href = safeHref(v?.detailsUrl);
                 if (href === '#') href = registryUrl(p.language, l.name) || '#';
                 const nameTag = href !== '#'
-                    ? `<a href="${esc(href)}" target="_blank" rel="noopener" title="فتح صفحة المكتبة" style="color:${nameColor};text-decoration:none;font-weight:${isBad ? '700' : '400'}">${esc(l.name)}</a>`
+                    ? `<a href="${esc(href)}" target="_blank" rel="noopener" title="${tr("lib.openPage")}" style="color:${nameColor};text-decoration:none;font-weight:${isBad ? '700' : '400'}">${esc(l.name)}</a>`
                     : `<span style="color:${nameColor}">${esc(l.name)}</span>`;
                 const verColor = isBad ? 'var(--pink)' : 'var(--emerald)';
                 const updateTarget = v?.fixVersion || v?.latestVersion || '';
@@ -431,14 +432,14 @@
                 const sevColors = { critical: '#ff1744', high: '#ff5252', moderate: '#ff9800', low: '#ffd93d', none: 'var(--pink)' };
                 const sev = (v?.severity || '').toLowerCase();
                 const vulnColor = sevColors[sev] || 'var(--pink)';
-                const vulnTitle = v && v.vulns > 0 ? `${v.vulns} ثغرة${v.topVuln ? ` — ${v.topVuln.id} (${v.topVuln.severity}${v.topVuln.score ? ` ${v.topVuln.score}` : ''})` : ''}${sev && sev !== 'none' ? ` — خطورة: ${sev}` : ''}` : '';
-                const vulnCount = v && v.vulns > 0 ? `<span data-action="show-vulns" data-project="${esc(p.name)}" data-lib="${esc(l.name)}" style="color:${vulnColor};margin-left:4px;font-size:0.85em;cursor:pointer" title="${esc(vulnTitle)} — اضغط للتفاصيل">⚠${v.vulns}${(sev === 'critical' || sev === 'high') ? '!' : ''}</span>` : '';
+                const vulnTitle = v && v.vulns > 0 ? `${tr("lib.vulnCount", { n: v.vulns })}${v.topVuln ? ` — ${v.topVuln.id} (${v.topVuln.severity}${v.topVuln.score ? ` ${v.topVuln.score}` : ''})` : ''}${sev && sev !== 'none' ? tr("lib.sevPart", { sev }) : ''}` : '';
+                const vulnCount = v && v.vulns > 0 ? `<span data-action="show-vulns" data-project="${esc(p.name)}" data-lib="${esc(l.name)}" style="color:${vulnColor};margin-left:4px;font-size:0.85em;cursor:pointer" title="${esc(vulnTitle)}${tr("lib.clickSuffix")}">⚠${v.vulns}${(sev === 'critical' || sev === 'high') ? '!' : ''}</span>` : '';
                 const isOutdated = !isBad && v && v.isLatest === false && l.version !== 'latest';
                 const outdatedBorder = isOutdated ? '#4a3a00' : '';
                 const outdatedBg = isOutdated ? '#1a1500' : '';
                 const finalBorder = isBad ? borderColor : (isOutdated ? outdatedBorder : borderColor);
                 const finalBg = isBad ? bgColor : (isOutdated ? outdatedBg : bgColor);
-                const outdatedBadge = isOutdated ? '<span style="color:var(--gold);margin-left:4px;font-size:0.8em" title="مكتبة قديمة">&#8635;</span>' : '';
+                const outdatedBadge = isOutdated ? `<span style="color:var(--gold);margin-left:4px;font-size:0.8em" title="${tr("lib.outdated")}">&#8635;</span>` : '';
                 return `<span style="font-size:0.7em;padding:2px 8px;border-radius:4px;background:${finalBg};border:1px solid ${finalBorder};font-family:'Cascadia Code',Consolas,monospace;transition:all 0.3s">${l.dev ? '<span style="font-size:0.85em;color:var(--text2);background:var(--border);padding:0 4px;border-radius:3px;margin-left:4px">dev</span>' : ''}${nameTag}<span style="color:${verColor};margin-left:4px">${esc(l.version)}</span>${fixVer}${vulnCount}${outdatedBadge}</span>`;
             }).join("");
         }
@@ -471,7 +472,7 @@
             // descriptions) — same pattern as stats → stack-map. The hover
             // popup keeps its quick-glance role unchanged. Attached before the
             // zero-libs early return so the button behaves uniformly.
-            btn.title = 'اضغط لفتح صفحة المكتبات — الغرض والوصف والحالة';
+            btn.title = tr("deps.openTitle");
             btn.onclick = (e) => {
                 if (e.target.closest('.deps-popup')) return;
                 window.open(`/deps.html?project=${encodeURIComponent(p.name)}`, '_blank');
@@ -489,7 +490,7 @@
             const sorted = [...libs].sort((a, b) => rank(a) - rank(b));
 
             if (libs.length === 0) {
-                popup.innerHTML = '<div class="deps-empty">لا توجد مكتبات</div>';
+                popup.innerHTML = `<div class="deps-empty">${tr("deps.empty")}</div>`;
                 return;
             }
             popup.innerHTML = sorted.map(l => {
@@ -511,13 +512,13 @@
                 const devTag = l.dev ? '<span class="lib-tag">dev</span>' : '';
                 const url = registryUrl(p.language, l.name);
                 const nameEl = url
-                    ? `<a class="lib-name" href="${esc(url)}" target="_blank" rel="noopener" title="فتح صفحة المكتبة">${esc(l.name)}</a>`
+                    ? `<a class="lib-name" href="${esc(url)}" target="_blank" rel="noopener" title="${tr("lib.openPage")}">${esc(l.name)}</a>`
                     : `<span class="lib-name">${esc(l.name)}</span>`;
                 // Supply-chain safety net (Vuln API v0.6.0): warn when the fix
                 // was published recently — compromised packages have stayed
                 // live for hours-to-days before discovery (event-stream, nx).
                 const freshFix = cls === 'danger' && v && typeof v.daysSinceFix === 'number' && v.daysSinceFix < 7
-                    ? `<span class="lib-fresh" title="الفيكس صدر قبل ${v.daysSinceFix} يوم — انتظر قبل الترقية">⏳ منذ ${v.daysSinceFix} يوم</span>` : '';
+                    ? `<span class="lib-fresh" title="${tr("deps.freshTitle", { d: v.daysSinceFix })}">${tr("deps.freshLabel", { d: v.daysSinceFix })}</span>` : '';
                 return `<div class="deps-row ${cls}">
                     ${devTag}
                     ${nameEl}

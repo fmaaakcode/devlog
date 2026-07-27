@@ -17,6 +17,17 @@ const L = <T>(en: T, ar: T): T => (currentLang() === "ar" ? ar : en);
 // request type is enough — no `any`-typed json() override needed.
 type ApiReq = Bun.BunRequest;
 
+// #701: the dashboard pages ship with a neutral `lang="ar" dir="rtl"` marker;
+// at serve time it becomes the server's DEVLOG_LANG default, stamped as
+// data-default-lang so the client dictionary (dashboard-i18n.js) can fall back
+// to it when localStorage holds no explicit choice.
+export function localizeHtmlLang(html: string): string {
+  const attrs = currentLang() === "ar"
+    ? `lang="ar" dir="rtl" data-default-lang="ar"`
+    : `lang="en" dir="ltr" data-default-lang="en"`;
+  return html.replace(`<html lang="ar" dir="rtl">`, `<html ${attrs}>`);
+}
+
 export interface StaticRouteDeps {
   htmlResponse: (file: unknown) => Response;
   DEV_ASSETS: boolean;
@@ -25,22 +36,20 @@ export interface StaticRouteDeps {
 
 /** Build the static/viewer route group. Spread into server.ts's routeDefs. */
 export function makeStaticRoutes({ htmlResponse, DEV_ASSETS, ASSET_ROOT }: StaticRouteDeps): Record<string, unknown> {
+  // Shared serve path for the four dashboard pages: read (disk in dev,
+  // embedded bytes compiled) then stamp the server-default language (#701).
+  const page = (name: string) => async () => {
+    const raw = DEV_ASSETS ? await Bun.file(`${ASSET_ROOT}/${name}`).text() : STATIC_HTML[name];
+    return htmlResponse(localizeHtmlLang(raw));
+  };
   return {
-    "/": async () => DEV_ASSETS
-      ? htmlResponse(Bun.file(`${ASSET_ROOT}/dashboard.html`))
-      : htmlResponse(STATIC_HTML["dashboard.html"]),
+    "/": page("dashboard.html"),
 
-    "/stack-map.html": async () => DEV_ASSETS
-      ? htmlResponse(Bun.file(`${ASSET_ROOT}/stack-map.html`))
-      : htmlResponse(STATIC_HTML["stack-map.html"]),
+    "/stack-map.html": page("stack-map.html"),
 
-    "/features.html": async () => DEV_ASSETS
-      ? htmlResponse(Bun.file(`${ASSET_ROOT}/features.html`))
-      : htmlResponse(STATIC_HTML["features.html"]),
+    "/features.html": page("features.html"),
 
-    "/deps.html": async () => DEV_ASSETS
-      ? htmlResponse(Bun.file(`${ASSET_ROOT}/deps.html`))
-      : htmlResponse(STATIC_HTML["deps.html"]),
+    "/deps.html": page("deps.html"),
 
     "/assets/:file": async (req: ApiReq) => {
       const name = req.params.file;

@@ -240,4 +240,45 @@ describe("closure confirmation E2E (#228)", () => {
     const resp = await post(projDir, [{ tag: "bug fix", content: `#${num}` }]);
     expect(resp.sweepHint).toBeNull();
   });
+
+  // ── Bare-phase expansion: the log stores step texts, never the literal `Pn` ──
+  // (SNIP audit 2026-07-27: four stored «done P1..P4» tags read as nothing.)
+
+  const PLAN_MD = [
+    "### P1 — النواة",
+    "- [ ] بناء طبقة التخزين",
+    "- [ ] بناء موجّه الأوامر",
+    "### P2 — لاحق",
+    "- [ ] أمر التصدير",
+  ].join("\n");
+
+  test("`-(done) P1` stores one resolved closure per step and echoes each #N — no opaque tag", async () => {
+    await post(projDir, [{ tag: "doc:plan", content: `خطة-التجربة\n${PLAN_MD}` }]);
+
+    const resp = await post(projDir, [{ tag: "done", content: "P1" }]);
+
+    const data: any = await asJson(await fetch(`${BASE}/api/data`));
+    const dones = data.tags.filter((t: any) => t.project === project && t.tag === "done");
+    expect(dones.map((t: any) => t.content).sort()).toEqual(["بناء طبقة التخزين", "بناء موجّه الأوامر"]);
+    expect(dones.some((t: any) => t.content.trim() === "P1")).toBe(false);   // the literal never lands
+    // Each expanded closure is confirmed with its own #N, same shape as the #N path.
+    expect(resp.closed.map((c: any) => c.text).sort()).toEqual(["بناء طبقة التخزين", "بناء موجّه الأوامر"]);
+    expect(resp.closed.every((c: any) => typeof c.num === "number")).toBe(true);
+    // P2's step is untouched and still open.
+    const remaining = await openItems();
+    expect(remaining.map((i: any) => i.content)).toEqual(["أمر التصدير"]);
+  });
+
+  test("a bare phase with no open steps stores nothing and rides the rejections channel", async () => {
+    await post(projDir, [{ tag: "doc:plan", content: `خطة-فارغة\n${PLAN_MD}` }]);
+    await post(projDir, [{ tag: "done", content: "P1" }]);
+
+    await post(projDir, [{ tag: "done", content: "P1" }]);                   // re-close: nothing open now
+
+    const data: any = await asJson(await fetch(`${BASE}/api/data`));
+    const dones = data.tags.filter((t: any) => t.project === project && t.tag === "done");
+    expect(dones.length).toBe(2);                                            // no third/fourth tag appeared
+    const rej = (data.rejections || []).filter((r: any) => r.project === project);
+    expect(rej.at(-1)?.reason).toBe("empty-phase");
+  });
 });

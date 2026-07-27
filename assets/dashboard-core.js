@@ -2,11 +2,14 @@
         // cross-file functions are explicit imports — a renamed or missing one
         // now fails at load with a visible import error instead of a swallowed
         // TypeError at click time.
-        import { data, activeProject, showCompletedPlans, setShowCompletedPlans, setTodosTab, setPlansTab } from "./dashboard-state.js";
+        import { data, activeProject, showCompletedPlans, setShowCompletedPlans, setTodosTab, setPlansTab, setHeaderBuilt } from "./dashboard-state.js";
         import { rescanProject, vulnScan, expandHistory, refreshActiveView } from "./dashboard-data.js";
         import { selectProject, deleteProject, renameProject, cleanupTombstones, importProjectBundle, vulnCache } from "./dashboard-project.js";
         import { openSessionsPanel, openModelStatsPanel, killPid, killServer, refreshProcesses, renderActivePlanCard, renderTodosCard, hidePlan, togglePlanUpcoming, renderProject, planExpanded } from "./dashboard-panels.js";
         import { setLogFilter, clearInjectionOverride, toggleInjection, showInjectionContent, switchInjScope, openInjectionPanel, openStandardsPanel, closeInjectionPanel, closeStandardsPanel, openUpdatesPopup, openTargetFile, ignoreTarget } from "./dashboard-tree-ws.js";
+        // i18n (#700): UI strings come from the shared dictionary. Imported as
+        // `tr` because `t` is the conventional loop/param name for tags here.
+        import { t as tr, toggleLang, applyI18n } from "./dashboard-i18n.js";
 
         // Derive from where the dashboard is served, so it follows DEVLOG_PORT
         // instead of hardcoding 7777 (R3 P5).
@@ -51,7 +54,7 @@
         // (R3 review #1). Now a replacement runs the same teardown as a normal
         // cancel: resolve, unlisten, remove.
         let closeActiveDialog = null;
-        function uiDialog(message, { title = "تنبيه", okText = "حسنًا", cancelText = null, danger = false, input = null } = {}) {
+        function uiDialog(message, { title = tr("core.alertTitle"), okText = tr("core.ok"), cancelText = null, danger = false, input = null } = {}) {
             return new Promise((resolve) => {
                 if (closeActiveDialog) closeActiveDialog();
                 const wrap = document.createElement("div");
@@ -60,7 +63,7 @@
                 const box = document.createElement("div");
                 box.className = "inj-modal confirm-modal";
                 box.dataset.action = "noop";
-                box.innerHTML = '<div class="inj-header"><span class="inj-title"></span><button class="inj-close" title="إغلاق">✕</button></div><div class="confirm-msg"></div><div class="confirm-actions"></div>';
+                box.innerHTML = `<div class="inj-header"><span class="inj-title"></span><button class="inj-close" title="${tr("core.close")}">✕</button></div><div class="confirm-msg"></div><div class="confirm-actions"></div>`;
                 box.querySelector(".inj-title").textContent = title;
                 box.querySelector(".confirm-msg").textContent = message;
                 let inputEl = null;
@@ -99,10 +102,10 @@
                 if (inputEl) inputEl.select();
             });
         }
-        export const uiAlert = (message, title = "تنبيه") => uiDialog(message, { title });
-        export const uiConfirm = (message, opts = {}) => uiDialog(message, { title: opts.title || "تأكيد", okText: opts.okText || "نعم، نفّذ", cancelText: opts.cancelText || "إلغاء", danger: opts.danger !== false });
+        export const uiAlert = (message, title = tr("core.alertTitle")) => uiDialog(message, { title });
+        export const uiConfirm = (message, opts = {}) => uiDialog(message, { title: opts.title || tr("core.confirmTitle"), okText: opts.okText || tr("core.confirmOk"), cancelText: opts.cancelText || tr("core.cancel"), danger: opts.danger !== false });
         // prompt() replacement: resolves the trimmed string, or null on cancel.
-        export const uiPrompt = (message, initial, opts = {}) => uiDialog(message, { title: opts.title || "إدخال", okText: opts.okText || "موافق", cancelText: "إلغاء", danger: false, input: initial ?? "" });
+        export const uiPrompt = (message, initial, opts = {}) => uiDialog(message, { title: opts.title || tr("core.promptTitle"), okText: opts.okText || tr("core.promptOk"), cancelText: tr("core.cancel"), danger: false, input: initial ?? "" });
 
         // Delegated listener for [data-action] elements. Replaces the old
         // onclick="fn('${esc(x)}')" pattern, which was XSS-prone because
@@ -186,6 +189,18 @@
             // بطاقة أداء النماذج — نافذة عند الطلب من شريحة الرأس (فكرة 1، 2026-07-27).
             else if (action === "open-model-stats") openModelStatsPanel(activeProject);
             else if (action === "close-model-stats-modal") { const m = document.getElementById('modelStatsModal'); if (m) m.remove(); }
+            // تبديل لغة الداشبورد (#702): يقلب اللغة ويعيد رسم كل شيء فورًا —
+            // النصوص الثابتة عبر applyI18n والبطاقات عبر إعادة الجلب الكاملة.
+            else if (action === "toggle-lang") {
+                toggleLang();
+                applyI18n();
+                setHeaderBuilt(false);
+                // The cards layout bakes direction:<dir> inline and is built only
+                // once — blank it so renderFiles rebuilds it in the new direction.
+                const pf = document.getElementById("panel-files");
+                if (pf) pf.innerHTML = "";
+                refreshActiveView(true);
+            }
             else if (action === "open-target-file") openTargetFile();
             else if (action === "ignore-target") ignoreTarget();
             else if (action === "close-injection-panel") closeInjectionPanel();
@@ -193,18 +208,18 @@
         });
 
         async function deleteTag(tagId, kind) {
-            const label = kind === "security" ? "ثغرة" : kind === "bug" ? "خلل" : "تاق";
-            if (!(await uiConfirm(`حذف هذه الـ${label} نهائياً؟\nاستخدم هذا فقط للـfalse positive أو الإدخال الخاطئ. للإصلاح الفعلي استخدم -(security fix) #N أو -(bug fix) #N.`, { okText: "احذف نهائيًا" }))) return;
+            const label = kind === "security" ? tr("tag.security") : kind === "bug" ? tr("tag.bug") : tr("tag.generic");
+            if (!(await uiConfirm(tr("core.deleteTagConfirm", { label }), { okText: tr("core.deleteForever") }))) return;
             try {
                 const res = await fetch(`${API}/api/tag/${encodeURIComponent(tagId)}`, { method: "DELETE", headers: await destructiveHeaders() });
                 if (res.ok) {
                     data.tags = (data.tags || []).filter(t => t.id !== tagId);
                     renderProject();
                 } else {
-                    uiAlert("فشل الحذف");
+                    uiAlert(tr("core.deleteFailed"));
                 }
             } catch (e) {
-                uiAlert(`خطأ: ${e.message}`);
+                uiAlert(tr("core.errorMsg", { msg: e.message }));
             }
         }
 
@@ -237,7 +252,7 @@
                 titleCount = v.vulns > 0 ? ` — ${v.vulns}` : '';
                 const list = Array.isArray(v.advisories) ? v.advisories : [];
                 fixLine = v.fixVersion
-                    ? `<div class="vuln-fix">رقِّ لـ <b>${esc(v.fixVersion)}</b> ${list.some(a => !a.fix) ? '(يبقى بعضها بلا إصلاح)' : 'لإغلاقها كلها'}</div>`
+                    ? `<div class="vuln-fix">${tr("vuln.fixLine", { ver: esc(v.fixVersion), rest: list.some(a => !a.fix) ? tr("vuln.someNoFix") : tr("vuln.closesAll") })}</div>`
                     : '';
                 // Older cached results have no advisories[] — fall back to the headline.
                 rows = list.length
@@ -252,21 +267,21 @@
                         // warnings, not CVEs — a gold label instead of the red
                         // "لا إصلاح" chip that made archived crates read as danger.
                         const kind = (a.kind && a.kind !== 'vuln') ? String(a.kind) : '';
-                        const kindLabel = kind === 'unmaintained' ? 'غير مُصان'
-                            : kind === 'unsound' ? 'غير سليم (unsound)'
-                            : kind ? 'إشعار' : '';
+                        const kindLabel = kind === 'unmaintained' ? tr("vuln.unmaintained")
+                            : kind === 'unsound' ? tr("vuln.unsound")
+                            : kind ? tr("vuln.notice") : '';
                         const fix = kindLabel
                             ? `<span class="vuln-row-fix" style="color:var(--gold)">${esc(kindLabel)}</span>`
                             : (a.fix
                                 ? `<span class="vuln-row-fix">fix ${esc(a.fix)}</span>`
-                                : `<span class="vuln-row-nofix">لا إصلاح</span>`);
+                                : `<span class="vuln-row-nofix">${tr("vuln.noFix")}</span>`);
                         return `<div class="vuln-item"><span class="vuln-dot" style="background:${col}"></span><div class="vuln-item-main"><div class="vuln-item-top"><span class="vuln-sev" style="color:${col}">${esc(sev)}</span> ${idHtml}</div><div class="vuln-item-sum">${esc(a.summary || '')}</div></div>${fix}</div>`;
                     }).join("")
-                    : `<div class="vuln-item"><div class="vuln-item-main">${esc(v.message || 'تفاصيل غير متوفّرة')}${safeHref(v.detailsUrl) !== '#' ? ` <a href="${esc(safeHref(v.detailsUrl))}" target="_blank" rel="noopener" style="color:var(--blue)">↗</a>` : ''}</div></div>`;
+                    : `<div class="vuln-item"><div class="vuln-item-main">${esc(v.message || tr("vuln.noDetails"))}${safeHref(v.detailsUrl) !== '#' ? ` <a href="${esc(safeHref(v.detailsUrl))}" target="_blank" rel="noopener" style="color:var(--blue)">↗</a>` : ''}</div></div>`;
             } else if (fallbackText) {
                 // No scanned detail (data cleared, or a pre-advisories scan) — show
                 // the tag headline + a hint to re-scan for the full per-CVE list.
-                rows = `<div class="vuln-item"><div class="vuln-item-main">${esc(fallbackText)}<div class="vuln-item-sum" style="margin-top:6px;color:var(--gold)">اضغط «افحص الآن» لتفاصيل كل ثغرة.</div></div></div>`;
+                rows = `<div class="vuln-item"><div class="vuln-item-main">${esc(fallbackText)}<div class="vuln-item-sum" style="margin-top:6px;color:var(--gold)">${tr("vuln.scanHint")}</div></div></div>`;
             } else {
                 return;
             }
@@ -276,7 +291,7 @@
             wrap.id = 'vulnsModal';
             wrap.className = 'inj-modal-bg open';
             wrap.dataset.action = 'close-vulns-modal';
-            wrap.innerHTML = `<div class="inj-modal" data-action="noop" style="width:min(680px,92vw)"><div class="inj-header"><span class="inj-title">ثغرات ${esc(lib)}${titleCount}</span><button class="inj-close" data-action="close-vulns-modal" title="إغلاق">✕</button></div><div class="vuln-modal-body">${fixLine}${rows}</div></div>`;
+            wrap.innerHTML = `<div class="inj-modal" data-action="noop" style="width:min(680px,92vw)"><div class="inj-header"><span class="inj-title">${tr("vuln.modalTitle", { lib: esc(lib) })}${titleCount}</span><button class="inj-close" data-action="close-vulns-modal" title="${tr("core.close")}">✕</button></div><div class="vuln-modal-body">${fixLine}${rows}</div></div>`;
             document.body.appendChild(wrap);
         }
 
@@ -306,7 +321,7 @@
                 el.innerHTML =
                     `<div class="pop-name">${esc(payload.name)}</div>` +
                     (payload.description ? `<div class="pop-desc">${esc(payload.description)}</div>` : "") +
-                    `<div class="pop-body">${esc(payload.body || "(فارغ)")}</div>`;
+                    `<div class="pop-body">${esc(payload.body || tr("pop.empty"))}</div>`;
                 el.style.display = "block";
                 el.scrollTop = 0;
                 positionPopover(anchor);
@@ -319,7 +334,7 @@
                 show(row, {
                     name: item.name || item.file,
                     description: item.description,
-                    body: item.body || "(فارغ — قد تحتاج إعادة مسح)",
+                    body: item.body || tr("pop.emptyRescan"),
                 });
             }
 
@@ -330,7 +345,7 @@
                 show(btn, {
                     name: proj.name,
                     description: proj.description || "",
-                    body: has ? proj.about : "لا يوجد محتوى about لهذا المشروع. أرسل `-(about) ...` لإضافته.",
+                    body: has ? proj.about : tr("pop.noAbout"),
                 });
             }
 
@@ -345,8 +360,8 @@
                 if (!rel) return;
                 const when = new Date(rel.timestamp).toLocaleDateString("en-GB", { year: "numeric", month: "2-digit", day: "2-digit" });
                 show(el, {
-                    name: rel.content.match(/v[\d.]+/)?.[0] || "آخر إصدار",
-                    description: `صدر ${when} — اضغط لفتح صفحة الريليزات`,
+                    name: rel.content.match(/v[\d.]+/)?.[0] || tr("pop.lastRelease"),
+                    description: tr("pop.releasedAt", { when }),
                     body: rel.content,
                 });
             }
@@ -392,13 +407,13 @@
             Vue: "#42b883", Svelte: "#ff3e00", default: "#118ab2"
         };
 
-        export const tagLabels = {
-            plan: "خطة", built: "بناء", todo: "مهمة", done: "منجز", dropped: "ملغي",
-            "bug found": "خلل", "bug fix": "إصلاح", security: "أمني", "security fix": "إصلاح أمني",
-            release: "إصدار", note: "ملاحظة", update: "تحديث", refactor: "إعادة هيكلة", outdated: "قديم",
-            decision: "قرار", insight: "تحقيق",
-            "security:dep": "أمني (تبعية)", "security:own": "أمني (كود)"
-        };
+        // Tag display label — dictionary-backed (#703); unknown tags fall back
+        // to the raw tag name, matching the old `tagLabels[t.tag] || t.tag`.
+        export function tagLabel(tag) {
+            const key = `tagLabel.${tag}`;
+            const s = tr(key);
+            return s === key ? tag : s;
+        }
 
         // Filter groups for log tab
         export const filterGroups = {
@@ -410,10 +425,9 @@
             knowledge: ["decision", "insight", "note"],
             other: ["release"]
         };
-        export const filterLabels = {
-            all: "الكل", build: "البناء", bugs: "الأخطاء",
-            security: "الأمان", tasks: "المهام", knowledge: "معرفة", other: "أخرى"
-        };
+        // Filter labels resolve from the dictionary per render (filter.<key>)
+        // so a language toggle re-labels the row without a reload.
+        export const filterLabel = (key) => tr(`filter.${key}`);
 
         // Mirror of SECURITY_OPEN_TAGS in src/data.ts — the opener tags that count
         // as a security item. The dashboard used to filter `t.tag === "security"`
@@ -442,7 +456,7 @@
         }
         // Opened-at line for hover tooltips (security card's open lists; mirrors
         // the tasks card's addedTitle and ?open/ask:closed's «فُتح» line).
-        export const openedTitle = (ts) => ts ? `فُتحت: ${String(ts).slice(0, 16).replace('T', ' ')}` : '';
+        export const openedTitle = (ts) => ts ? tr("core.openedAt", { ts: String(ts).slice(0, 16).replace('T', ' ') }) : '';
         export function tagClass(tag) { return tag.replace(/[\s:]+/g, ""); }
         // For closure tags whose content is `#N` or `Pn(.m)`, show a richer
         // label by looking up the original item. Falls back to raw content.
@@ -463,7 +477,7 @@
                 const code = phaseM[1];
                 for (const p of plans) {
                     const matched = (p.steps || []).filter(s => s.phase === code);
-                    if (matched.length) return `${code} — ${matched.length} خطوة في "${p.title}"`;
+                    if (matched.length) return tr("core.stepsInPlan", { code, n: matched.length, title: p.title });
                 }
             }
             return c;
@@ -507,13 +521,13 @@
                 bar.id = 'freshnessBar';
                 bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:1000;display:flex;gap:12px;align-items:center;justify-content:center;padding:7px 16px;font-size:13px;background:#2a2210;color:#ffd166;border-bottom:1px solid #c98500';
                 const msg = document.createElement('span');
-                msg.textContent = 'الخادم يشغّل نسخة أقدم من الكود الموجود على القرص — أعد التشغيل لاستلام التحديث';
+                msg.textContent = tr("fresh.stale");
                 const btn = document.createElement('button');
-                btn.textContent = 'إعادة تشغيل الخادم';
+                btn.textContent = tr("fresh.restart");
                 btn.style.cssText = 'background:#c98500;color:#161718;border:0;border-radius:6px;padding:4px 12px;font-size:12px;cursor:pointer;font-family:inherit';
                 btn.onclick = async () => {
                     btn.disabled = true;
-                    btn.textContent = 'يعيد التشغيل…';
+                    btn.textContent = tr("fresh.restarting");
                     try {
                         await fetch(`${API}/api/server/restart`, { method: 'POST', headers: await destructiveHeaders() });
                     } catch {
@@ -529,7 +543,7 @@
                             if (p.ok) { location.reload(); return; }
                         } catch { /* still swapping */ }
                     }
-                    btn.textContent = 'تعذّرت الإعادة — أعد تشغيل الخادم يدويًا';
+                    btn.textContent = tr("fresh.failed");
                 };
                 bar.append(msg, btn);
                 document.body.prepend(bar);

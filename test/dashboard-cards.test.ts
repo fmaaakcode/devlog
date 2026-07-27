@@ -36,8 +36,10 @@ describe("dashboard about-button state unified (#229)", () => {
     expect((SRC.match(/function\s+aboutBtnAttrs\s*\(/g) || [])).toHaveLength(1);
   });
 
-  test("the about title literal appears once (only inside aboutBtnAttrs)", () => {
-    const hits = SRC.match(/مرر الماوس لعرض التفاصيل/g) || [];
+  test("the about title key appears once (only inside aboutBtnAttrs)", () => {
+    // Since the i18n extraction (#703) the literal lives in the dictionary;
+    // the single-source invariant now pins the KEY's lone use site.
+    const hits = SRC.match(/about\.hover/g) || [];
     expect(hits).toHaveLength(1);
   });
 

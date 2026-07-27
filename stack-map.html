@@ -120,27 +120,27 @@
 </head>
 <body>
 <header>
-  <a class="back" href="/">← الرئيسية</a>
+  <a class="back" href="/" data-i18n="stack.back">← Home</a>
   <h1 id="title">Stack Map</h1>
   <span id="stackAge" style="font-size:12px;color:var(--text2)"></span>
   <div class="controls">
-    <input id="searchBox" type="search" placeholder="بحث بالاسم…" autocomplete="off"
-           title="يوهج المطابقات ويقفز إليها — Enter يركّز على الأفضل">
-    <button type="button" id="regenStack" title="إعادة توليد DEVLOG_STACK.md من الكود الحالي" style="display:none">تحديث الخريطة</button>
-    <select id="layoutMode" title="نوع الترتيب">
-      <option value="radial">شعاعي (افتراضي)</option>
-      <option value="force">قوى (عناقيد)</option>
-      <option value="layered">طبقي (call graph)</option>
+    <input id="searchBox" type="search" data-i18n-ph="stack.searchPh" placeholder="Search by name…" autocomplete="off"
+           data-i18n-title="stack.searchTitle" title="Highlights matches and jumps to them — Enter focuses the best one">
+    <button type="button" id="regenStack" data-i18n-title="stack.regenTitle" title="Regenerate DEVLOG_STACK.md from the current code" style="display:none" data-i18n="stack.regen">Regenerate map</button>
+    <select id="layoutMode" data-i18n-title="stack.layoutTitle" title="Layout mode">
+      <option value="radial" data-i18n="stack.layoutRadial">Radial (default)</option>
+      <option value="force" data-i18n="stack.layoutForce">Force (clusters)</option>
+      <option value="layered" data-i18n="stack.layoutLayered">Layered (call graph)</option>
     </select>
-    <button type="button" id="toggleActivity" title="إبراز الملفات النشطة مؤخراً">نشاط: ON</button>
-    <button type="button" id="reLayout">إعادة ترتيب تلقائي</button>
+    <button type="button" id="toggleActivity" data-i18n="stack.activityOn" data-i18n-title="stack.activityTitle" title="Highlight recently active files">Activity: ON</button>
+    <button type="button" id="reLayout" data-i18n="stack.relayout">Auto re-layout</button>
   </div>
 </header>
 <main>
   <canvas id="map"></canvas>
-  <div id="status">تحميل…</div>
+  <div id="status" data-i18n="misc.loading">Loading…</div>
   <div id="tooltip"></div>
 </main>
-<script src="/assets/stack-map.js"></script>
+<script type="module" src="/assets/stack-map.js"></script>
 </body>
 </html>

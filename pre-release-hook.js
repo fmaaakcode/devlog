@@ -64,7 +64,9 @@ const RELEASE_PATTERNS = [
 const isRelease = RELEASE_PATTERNS.some(re => re.test(cmd));
 if (!isRelease) process.exit(0);
 
-const cwd = body.cwd || process.cwd();
+// Attribution anchor (see attributionCwd in src/hooks.ts): the session's
+// project dir outranks the payload cwd, which follows the shell's `cd` drift.
+const cwd = process.env.CLAUDE_PROJECT_DIR || body.cwd || process.cwd();
 const sessionId = body.session_id || "";
 await log(`fire: tool=${tool} cmd=${cmd.slice(0, 120)} cwd=${cwd}`);
 

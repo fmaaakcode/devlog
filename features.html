@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DevLog — جولة في المميزات</title>
+<title data-i18n="feat.docTitle">DevLog — feature tour</title>
 <style>
   :root {
     --pink: #ef476f;
@@ -182,33 +182,33 @@
 <nav class="nav">
   <div class="brand">DevLog<span class="dot">.</span></div>
   <div class="links">
-    <a href="#basics">الأساسيات</a>
-    <a href="#advanced">المتقدّمة</a>
-    <a href="#api">واجهة API</a>
-    <a href="/">الداش بورد</a>
+    <a href="#basics" data-i18n="feat.navBasics">Basics</a>
+    <a href="#advanced" data-i18n="feat.navAdvanced">Advanced</a>
+    <a href="#api" data-i18n="feat.navApi">API</a>
+    <a href="/" data-i18n="feat.navDash">Dashboard</a>
   </div>
 </nav>
 
 <header class="hero">
   <h1>DevLog<span class="dot">.</span></h1>
-  <p class="tag">سجلّ تطوير تلقائي لمشاريع Claude Code. كلود يكتب تاقات قصيرة في ردوده، وخطّاف Stop يلتقطها ويغذّي داش بورد محلّي — بلا تلويث أي مستودع ولا استهلاك سياق كلود.</p>
+  <p class="tag" data-i18n="feat.heroTag">An automatic dev log for Claude Code projects. Claude writes short tags in its replies, and the Stop hook captures them to feed a local dashboard — polluting no repository and consuming none of Claude's context.</p>
   <div class="badges">
-    <span class="badge on">صفر تبعيات runtime</span>
-    <span class="badge on">محلّي 127.0.0.1 فقط</span>
-    <span class="badge on">بلا تتبّع</span>
+    <span class="badge on" data-i18n="feat.badgeZeroDeps">Zero runtime dependencies</span>
+    <span class="badge on" data-i18n="feat.badgeLocal">Local 127.0.0.1 only</span>
+    <span class="badge on" data-i18n="feat.badgeNoTracking">No tracking</span>
     <span class="badge">Bun + Node built-ins</span>
   </div>
 </header>
 
 <div class="shot-wrap">
-  <img class="shot" src="/assets/dashboard.jpeg" alt="واجهة DevLog">
-  <p class="shot-cap">الداش بورد الرئيسي — نشاط كل مشروع، الخطط، الإصدارات، والملاحظات الأمنية في مكان واحد.</p>
+  <img class="shot" src="/assets/dashboard.jpeg" alt="DevLog interface">
+  <p class="shot-cap" data-i18n="feat.shotCap">The main dashboard — every project's activity, plans, releases and security notes in one place.</p>
 </div>
 
 <!-- ================= BASICS ================= -->
 <div class="wrap">
-  <div class="section-title" id="basics">الأساسيات</div>
-  <div class="section-lead">ما تراه من أول نظرة</div>
+  <div class="section-title" id="basics" data-i18n="feat.secBasics">Basics</div>
+  <div class="section-lead" data-i18n="feat.leadBasics">What you see at first glance</div>
 
   <div class="grid">
 
@@ -216,7 +216,7 @@
     <div class="card">
       <div class="demo">
         <div class="mk" style="width:100%">
-          <div class="chat-line">…أضفت دالة المصادقة وأغلقت الثغرة.</div>
+          <div class="chat-line" data-i18n="feat.dChat">…added the auth function and closed the vulnerability.</div>
           <div class="tagline">-(<span class="k">built</span>) auth.ts — JWT issuance</div>
           <div class="tagline">-(<span class="k">security fix</span>) #11</div>
           <div class="arrow">↓ &nbsp;Stop hook</div>
@@ -225,10 +225,10 @@
         </div>
       </div>
       <div class="body">
-        <span class="pill core">أساسي</span>
-        <h3>التقاط التاقات تلقائياً</h3>
-        <p>كلود يُنهي ردّه بعلامات <code>-(tag) محتوى</code>. خطّاف Stop يمسح الرد، يلتقطها، ويرسلها للداش بورد — مبنيّ، إصلاح خطأ، todo، ملاحظة أمنية، قرار معماري… بلا أي ملف يدوي.</p>
-        <div class="api">يلتقطها <b>parse-tags.js</b> ← <b>POST /api/tags</b></div>
+        <span class="pill core" data-i18n="feat.pillCore">Core</span>
+        <h3 data-i18n="feat.captureH3">Automatic tag capture</h3>
+        <p data-i18n-html="feat.captureP">Claude ends its reply with <code>-(tag) content</code> markers. The Stop hook scans the reply, captures them and sends them to the dashboard — built, bug fix, todo, security note, architectural decision… with no manual file.</p>
+        <div class="api" data-i18n-html="feat.captureApi">Captured by <b>parse-tags.js</b> ← <b>POST /api/tags</b></div>
       </div>
     </div>
 
@@ -236,20 +236,20 @@
     <div class="card flip">
       <div class="demo">
         <div class="mk" style="width:100%">
-          <div class="muted" style="margin-bottom:8px">خطة: ميزة تسجيل الدخول</div>
-          <div class="step"><span class="cbx on"></span> صفحة الدخول</div>
-          <div class="step"><span class="cbx on"></span> التحقق من النموذج</div>
+          <div class="muted" style="margin-bottom:8px" data-i18n="feat.dPlanTitle">Plan: login feature</div>
+          <div class="step"><span class="cbx on"></span> <span data-i18n="feat.dPlanS1">Login page</span></div>
+          <div class="step"><span class="cbx on"></span> <span data-i18n="feat.dPlanS2">Form validation</span></div>
           <div class="step"><span class="cbx"></span> POST /api/login</div>
-          <div class="step"><span class="cbx"></span> إصدار JWT</div>
+          <div class="step"><span class="cbx"></span> <span data-i18n="feat.dPlanS4">JWT issuance</span></div>
           <div class="bar"><i style="width:50%"></i></div>
-          <div class="muted" style="margin-top:6px">2 / 4 — تُغلَق من الشات بـ <span class="tagline">-(<span class="k">done</span>) #N</span></div>
+          <div class="muted" style="margin-top:6px"><span data-i18n="feat.dPlanClose">2 / 4 — closed from chat with</span> <span class="tagline">-(<span class="k">done</span>) #N</span></div>
         </div>
       </div>
       <div class="body">
-        <span class="pill core">أساسي</span>
-        <h3>خطط قابلة للتتبّع</h3>
-        <p>تاق <code>-(doc:plan)</code> يولّد مستند markdown + html ويسجّل كل <code>[ ]</code> كخطوة. الخانات تنقلب والأشرطة تتحرّك عبر الجلسات — كله من المحادثة، مع تتبّع الإكمال بالأرقام <code>#N</code>.</p>
-        <div class="api">يكتبها <b>doc-store.ts</b> تحت <b>&lt;project&gt;/.devlog/docs/</b></div>
+        <span class="pill core" data-i18n="feat.pillCore">Core</span>
+        <h3 data-i18n="feat.plansH3">Trackable plans</h3>
+        <p data-i18n-html="feat.plansP">A <code>-(doc:plan)</code> tag generates a markdown + html document and registers every <code>[ ]</code> as a step. Boxes flip and bars move across sessions — all from the conversation, with #N completion tracking.</p>
+        <div class="api" data-i18n-html="feat.plansApi">Written by <b>doc-store.ts</b> under <b>&lt;project&gt;/.devlog/docs/</b></div>
       </div>
     </div>
 
@@ -260,17 +260,17 @@
           <div class="mk-bar"><i style="background:var(--pink)"></i><i style="background:var(--gold)"></i><i style="background:var(--emerald)"></i></div>
           <div class="mk-body">
             <div class="muted">$ gh release create v2.6.0</div>
-            <div style="color:var(--pink);margin-top:6px">⛔ مرفوض — عناصر مفتوحة:</div>
-            <div class="row"><span class="dotmark" style="background:var(--gold)"></span> todo #7 — توثيق الـAPI</div>
-            <div class="row"><span class="dotmark" style="background:var(--pink)"></span> bug #12 — تسرّب ذاكرة</div>
-            <div class="muted" style="margin-top:6px">أغلِق الكل قبل الإصدار.</div>
+            <div style="color:var(--pink);margin-top:6px" data-i18n="feat.dRejected">⛔ Rejected — open items:</div>
+            <div class="row"><span class="dotmark" style="background:var(--gold)"></span> <span data-i18n="feat.dRejTodo">todo #7 — API docs</span></div>
+            <div class="row"><span class="dotmark" style="background:var(--pink)"></span> <span data-i18n="feat.dRejBug">bug #12 — memory leak</span></div>
+            <div class="muted" style="margin-top:6px" data-i18n="feat.dRejClose">Close everything before releasing.</div>
           </div>
         </div>
       </div>
       <div class="body">
-        <span class="pill core">أساسي</span>
-        <h3>إلزام الإغلاق + حارس الإصدار</h3>
-        <p>خطّاف Stop يطابق المبنيّ مع العناصر المفتوحة ويذكّر بإغلاقها. وخطّاف PreToolUse يعترض أوامر الإصدار (<code>gh release</code>، <code>git tag -a</code>، <code>npm publish</code>…) ويرفضها ما دام فيه عمل مفتوح.</p>
+        <span class="pill core" data-i18n="feat.pillCore">Core</span>
+        <h3 data-i18n="feat.closureH3">Closure enforcement + release guard</h3>
+        <p data-i18n-html="feat.closureP">The Stop hook matches built work against open items and reminds you to close them. The PreToolUse hook intercepts release commands (<code>gh release</code>, <code>git tag -a</code>, <code>npm publish</code>…) and rejects them while open work remains.</p>
         <div class="api"><b>closure-check.ts</b> · <b>pre-release-hook.js</b></div>
       </div>
     </div>
@@ -279,17 +279,17 @@
     <div class="card flip">
       <div class="demo">
         <div class="mk" style="width:100%">
-          <div class="muted" style="margin-bottom:8px">فحص إصدارات المكتبات</div>
+          <div class="muted" style="margin-bottom:8px" data-i18n="feat.dLibTitle">Library version scan</div>
           <div class="lib"><span class="dotmark" style="background:var(--pink)"></span> react <span class="old">18.2.0</span> → <span class="new">19.1.0</span></div>
           <div class="lib"><span class="dotmark" style="background:var(--pink)"></span> zod <span class="old">3.22</span> → <span class="new">3.24</span></div>
-          <div class="lib"><span class="dotmark" style="background:var(--gold)"></span> vite <span class="new">6.0.1</span> <span class="warn">⏳ &lt; 7 أيام</span></div>
+          <div class="lib"><span class="dotmark" style="background:var(--gold)"></span> vite <span class="new">6.0.1</span> <span class="warn" data-i18n-html="feat.dLibFresh">⏳ &lt; 7 days</span></div>
           <div class="muted" style="margin-top:8px">npm · crates.io · PyPI · Go · Packagist · vcpkg</div>
         </div>
       </div>
       <div class="body">
-        <span class="pill core">أساسي</span>
-        <h3>فحص إصدارات المكتبات</h3>
-        <p>زرّ «فحص أمني» يقارن كل تبعية بسجلّ نظامها الرسمي ويُبرز المتأخّرة — الإصدار الأحدث وتاريخه، مع تحذير ⏳ للإصدارات الأطرى من 7 أيام. مدمج بالكامل: بلا خدمة خارجية ولا مفتاح API.</p>
+        <span class="pill core" data-i18n="feat.pillCore">Core</span>
+        <h3 data-i18n="feat.libscanH3">Library version scanning</h3>
+        <p data-i18n="feat.libscanP">The "Security scan" button compares every dependency against its official registry and highlights the stale ones — latest version and its date, with a ⏳ warning for versions fresher than 7 days. Fully built-in: no external service, no API key.</p>
         <div class="api"><b>registry.ts</b> · <b>GET /api/vuln/:project</b></div>
       </div>
     </div>
@@ -299,8 +299,8 @@
 
 <!-- ================= ADVANCED ================= -->
 <div class="wrap">
-  <div class="section-title" id="advanced">المميزات المتقدّمة</div>
-  <div class="section-lead">القدرات «المخفية» — موجودة وشغّالة، خلف واجهة API</div>
+  <div class="section-title" id="advanced" data-i18n="feat.secAdvanced">Advanced features</div>
+  <div class="section-lead" data-i18n="feat.leadAdvanced">The "hidden" capabilities — present and working, behind the API</div>
 
   <div class="grid">
 
@@ -330,9 +330,9 @@
         </svg>
       </div>
       <div class="body">
-        <span class="pill hidden">مخفي</span>
-        <h3>محرّك تحليل كود ساكن</h3>
-        <p>مُحلِّل (tokenizer + مستخرِج رموز متعدّد اللغات) يرسم مسارات HTTP، <b>رسم استدعاء الدوال</b> (call graph)، رسم اعتماد الوحدات، الخيوط، رسائل IPC، أنواع البيانات، وأنماطاً حسّاسة أمنياً — دون قواعد لغة خارجية.</p>
+        <span class="pill hidden" data-i18n="feat.pillHidden">Hidden</span>
+        <h3 data-i18n="feat.analysisH3">Static code analysis engine</h3>
+        <p data-i18n-html="feat.analysisP">An analyzer (tokenizer + multi-language symbol extractor) maps HTTP routes, the <b>function call graph</b>, module dependency graph, threads, IPC messages, data types and security-sensitive patterns — with no external language grammars.</p>
         <div class="api"><b>GET /api/analyze</b> · <b>analyze.ts</b> · <b>tokenizer.ts</b> · <b>symbols.ts</b></div>
       </div>
     </div>
@@ -345,15 +345,15 @@
           <div class="mk-body proc">
             <div class="row"><span class="dotmark" style="background:var(--emerald)"></span> claude.exe <span class="muted">· pid 8124</span></div>
             <div class="row indent"><span class="muted">bun src/server.ts · 9210</span></div>
-            <div class="row indent"><span class="muted">node build · 9344</span> <span class="kill">إنهاء</span></div>
+            <div class="row indent"><span class="muted">node build · 9344</span> <span class="kill" data-i18n="feat.dKill">kill</span></div>
             <div class="row" style="margin-top:6px"><span class="dotmark" style="background:var(--gold)"></span> claude.exe <span class="muted">· pid 7700</span></div>
           </div>
         </div>
       </div>
       <div class="body">
-        <span class="pill hidden">مخفي</span>
-        <h3>مراقبة العمليات الحيّة + إنهاؤها</h3>
-        <p>يعرض جلسات Claude Code النشطة ويبني <b>شجرة العمليات المتفرّعة</b> على ويندوز — فتشوف العمليات الجامحة وتُنهي أي PID مباشرة من الداش بورد.</p>
+        <span class="pill hidden" data-i18n="feat.pillHidden">Hidden</span>
+        <h3 data-i18n="feat.procsH3">Live process monitoring + kill</h3>
+        <p data-i18n-html="feat.procsP">Shows active Claude Code sessions and builds the <b>spawned process tree</b> on Windows — so you spot runaway processes and kill any PID straight from the dashboard.</p>
         <div class="api"><b>GET /api/processes</b> · <b>POST /api/kill-pid/:pid</b> · <b>sessions.ts</b></div>
       </div>
     </div>
@@ -362,20 +362,20 @@
     <div class="card">
       <div class="demo">
         <div class="mk" style="width:100%">
-          <div class="muted" style="margin-bottom:8px">auth.ts — تعديل #34</div>
+          <div class="muted" style="margin-bottom:8px" data-i18n="feat.dDiffTitle">auth.ts — edit #34</div>
           <div class="diff">
             <div class="del">- const token = sign(user)</div>
             <div class="del">- return token</div>
             <div class="add">+ const token = sign(user, { exp: '1h' })</div>
             <div class="add">+ return { token, exp }</div>
           </div>
-          <div class="muted" style="margin-top:8px">لكل تعديل · لكل ملف · لكل جلسة</div>
+          <div class="muted" style="margin-top:8px" data-i18n="feat.dDiffScope">per edit · per file · per session</div>
         </div>
       </div>
       <div class="body">
-        <span class="pill hidden">مخفي</span>
-        <h3>تتبّع تغييرات الملفات مع diff</h3>
-        <p>يخزّن <code>old_string</code> / <code>new_string</code> لكل تعديل يجريه كلود ويعرض <b>diff داخلياً</b> — على مستوى التعديل الواحد، أو الملف، أو الجلسة كاملة.</p>
+        <span class="pill hidden" data-i18n="feat.pillHidden">Hidden</span>
+        <h3 data-i18n="feat.diffH3">File change tracking with diff</h3>
+        <p data-i18n-html="feat.diffP">Stores <code>old_string</code> / <code>new_string</code> for every edit Claude makes and renders the <b>diff in-house</b> — at the level of a single edit, a file, or a whole session.</p>
         <div class="api"><b>GET /api/changes</b> · <b>/changes/by-id/:id</b> · <b>/changes/session</b></div>
       </div>
     </div>
@@ -393,9 +393,9 @@
         </div>
       </div>
       <div class="body">
-        <span class="pill hidden">مخفي</span>
-        <h3>خريطة Stack عبر المشاريع</h3>
-        <p>نظرة شاملة على لغات وأُطر ومكتبات كل مشاريعك في صفحة واحدة، مع تخطيط قابل للحفظ — لترى تقنياتك من علٍ عبر المحفظة كلها.</p>
+        <span class="pill hidden" data-i18n="feat.pillHidden">Hidden</span>
+        <h3 data-i18n="feat.stackH3">Cross-project stack map</h3>
+        <p data-i18n="feat.stackP">A bird's-eye view of every project's languages, frameworks and libraries on one page, with a saveable layout — see your technologies from above across the whole portfolio.</p>
         <div class="api"><b>stack-map.html</b> · <b>GET /api/stack/:project</b> · <b>/stack/:project/layout</b></div>
       </div>
     </div>
@@ -408,14 +408,14 @@
           <div class="row indent" style="padding-inline-start:16px"><span class="muted">server.ts</span></div>
           <div class="row indent" style="padding-inline-start:16px"><span class="muted">analyze.ts</span></div>
           <div class="row indent" style="padding-inline-start:16px"><span class="muted">📁 hooks/</span></div>
-          <div class="arrow">↓ معاينة الحقن</div>
+          <div class="arrow" data-i18n="feat.dInjPreview">↓ injection preview</div>
           <div class="tagline" style="font-size:0.95em">todos: #5 · bugs: #11 · plan "auth": #33</div>
         </div>
       </div>
       <div class="body">
-        <span class="pill hidden">مخفي</span>
-        <h3>متصفّح الشجرة · التصدير · معاينة الحقن</h3>
-        <p>تصفّح شجرة المشروع داخل الداش بورد، صدّر مشروعاً (أو الكل) إلى JSON محمول، وعايِن كتلة سياق SessionStart <b>بالضبط</b> قبل حقنها — مع سجلّ الحقن السابق.</p>
+        <span class="pill hidden" data-i18n="feat.pillHidden">Hidden</span>
+        <h3 data-i18n="feat.treeH3">Tree browser · export · injection preview</h3>
+        <p data-i18n-html="feat.treeP">Browse the project tree inside the dashboard, export a project (or all of them) to portable JSON, and preview the SessionStart context block <b>exactly</b> before it's injected — with the past injection log.</p>
         <div class="api"><b>/api/tree/:project</b> · <b>/api/export-all</b> · <b>/api/inject/preview</b></div>
       </div>
     </div>
@@ -424,17 +424,17 @@
     <div class="card flip">
       <div class="demo">
         <div class="mk" style="width:100%">
-          <div class="row"><span class="dotmark" style="background:var(--emerald)"></span> WebSocket متّصل — تحديث حيّ</div>
-          <div class="act-row" style="margin-top:8px"><span class="dotmark" style="background:var(--blue)"></span> الآن · built · scanner.ts</div>
-          <div class="muted" style="margin-top:10px">سياسة الاحتفاظ:</div>
-          <div class="row"><span class="muted">أحداث قديمة → تُقلَّم</span></div>
-          <div class="row"><span class="dotmark" style="background:var(--gold)"></span> العناصر المرتبطة بالإغلاق محميّة</div>
+          <div class="row"><span class="dotmark" style="background:var(--emerald)"></span> <span data-i18n="feat.dWsLive">WebSocket connected — live updates</span></div>
+          <div class="act-row" style="margin-top:8px"><span class="dotmark" style="background:var(--blue)"></span> <span data-i18n="feat.dWsNow">now · built · scanner.ts</span></div>
+          <div class="muted" style="margin-top:10px" data-i18n="feat.dWsRet">Retention policy:</div>
+          <div class="row"><span class="muted" data-i18n="feat.dWsOld">old events → trimmed</span></div>
+          <div class="row"><span class="dotmark" style="background:var(--gold)"></span> <span data-i18n="feat.dWsProtected">closure-linked items protected</span></div>
         </div>
       </div>
       <div class="body">
-        <span class="pill hidden">مخفي</span>
-        <h3>تحديث حيّ + سياسة احتفاظ</h3>
-        <p>الداش بورد يشترك عبر WebSocket فتظهر التاقات والعمليات فوراً بلا تحديث للصفحة. وفي الخلفية تُقلَّم الأحداث القديمة وفق سياسة احتفاظ تحمي العناصر المرتبطة بالإغلاق.</p>
+        <span class="pill hidden" data-i18n="feat.pillHidden">Hidden</span>
+        <h3 data-i18n="feat.liveH3">Live updates + retention policy</h3>
+        <p data-i18n="feat.liveP">The dashboard subscribes over WebSocket so tags and processes appear instantly with no page refresh. In the background, old events are trimmed by a retention policy that protects closure-linked items.</p>
         <div class="api"><b>broadcast.ts</b> · <b>retention.ts</b></div>
       </div>
     </div>
@@ -444,29 +444,30 @@
 
 <!-- ================= API REFERENCE ================= -->
 <div class="wrap">
-  <div class="section-title" id="api">واجهة API</div>
-  <div class="section-lead">كل ذلك داخل سيرفر Bun واحد على المنفذ 7777</div>
+  <div class="section-title" id="api" data-i18n="feat.secApi">API</div>
+  <div class="section-lead" data-i18n="feat.leadApi">All of it inside one Bun server on port 7777</div>
 
   <table>
-    <thead><tr><th>الميزة</th><th>نقطة الدخول</th><th>الملف</th></tr></thead>
+    <thead><tr><th data-i18n="feat.thFeature">Feature</th><th data-i18n="feat.thEntry">Entry point</th><th data-i18n="feat.thFile">File</th></tr></thead>
     <tbody>
-      <tr><td>تحليل الكود الساكن</td><td><span class="mono">GET /api/analyze</span></td><td><code>analyze.ts</code></td></tr>
-      <tr><td>مراقبة/إنهاء العمليات</td><td><span class="mono">GET /api/processes · POST /api/kill-pid/:pid</span></td><td><code>sessions.ts</code></td></tr>
-      <tr><td>تتبّع التغييرات + diff</td><td><span class="mono">GET /api/changes/by-id/:id</span></td><td><code>server.ts</code></td></tr>
-      <tr><td>خريطة Stack</td><td><span class="mono">GET /api/stack/:project · /layout</span></td><td><code>stack-map.html</code></td></tr>
-      <tr><td>متصفّح الشجرة</td><td><span class="mono">GET /api/tree/:project</span></td><td><code>tree.ts</code></td></tr>
-      <tr><td>التصدير</td><td><span class="mono">GET /api/export/:project · /api/export-all</span></td><td><code>export.ts</code></td></tr>
-      <tr><td>معاينة الحقن</td><td><span class="mono">GET /api/inject/preview · /api/injections</span></td><td><code>inject.ts</code></td></tr>
-      <tr><td>فحص المكتبات</td><td><span class="mono">GET /api/vuln/:project</span></td><td><code>registry.ts</code></td></tr>
-      <tr><td>التقاط التاقات</td><td><span class="mono">POST /api/tags</span></td><td><code>tags-service.ts</code></td></tr>
+      <tr><td data-i18n="feat.rowAnalysis">Static code analysis</td><td><span class="mono">GET /api/analyze</span></td><td><code>analyze.ts</code></td></tr>
+      <tr><td data-i18n="feat.rowProcs">Process monitoring/kill</td><td><span class="mono">GET /api/processes · POST /api/kill-pid/:pid</span></td><td><code>sessions.ts</code></td></tr>
+      <tr><td data-i18n="feat.rowChanges">Change tracking + diff</td><td><span class="mono">GET /api/changes/by-id/:id</span></td><td><code>server.ts</code></td></tr>
+      <tr><td data-i18n="feat.rowStack">Stack map</td><td><span class="mono">GET /api/stack/:project · /layout</span></td><td><code>stack-map.html</code></td></tr>
+      <tr><td data-i18n="feat.rowTree">Tree browser</td><td><span class="mono">GET /api/tree/:project</span></td><td><code>tree.ts</code></td></tr>
+      <tr><td data-i18n="feat.rowExport">Export</td><td><span class="mono">GET /api/export/:project · /api/export-all</span></td><td><code>export.ts</code></td></tr>
+      <tr><td data-i18n="feat.rowInject">Injection preview</td><td><span class="mono">GET /api/inject/preview · /api/injections</span></td><td><code>inject.ts</code></td></tr>
+      <tr><td data-i18n="feat.rowVuln">Library scan</td><td><span class="mono">GET /api/vuln/:project</span></td><td><code>registry.ts</code></td></tr>
+      <tr><td data-i18n="feat.rowTags">Tag capture</td><td><span class="mono">POST /api/tags</span></td><td><code>tags-service.ts</code></td></tr>
     </tbody>
   </table>
 </div>
 
-<footer>
-  DevLog — كل البيانات محلّية، السيرفر يستمع على <code>127.0.0.1</code> فقط، بلا تتبّع.<br>
-  للمرجع الكامل راجع <a href="https://github.com/">README</a> و <code>docs/CLAUDE.md</code> (بروتوكول التاقات).
+<footer data-i18n-html="feat.footer">
+  DevLog — all data is local, the server listens on <code>127.0.0.1</code> only, no tracking.<br>
+  For the full reference see the <a href="https://github.com/">README</a> and <code>docs/CLAUDE.md</code> (the tag protocol).
 </footer>
 
+<script type="module" src="/assets/page-i18n.js"></script>
 </body>
 </html>

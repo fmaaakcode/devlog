@@ -8,9 +8,11 @@ import "./dashboard-data.js";
 import "./dashboard-project.js";
 import "./dashboard-panels.js";
 import { initDashboard } from "./dashboard-tree-ws.js";
+import { applyI18n } from "./dashboard-i18n.js";
 
 // Startup (initial fetch + WS connect + polling timers) runs only after the
 // entire module graph has evaluated — inside the graph a cycle-order call can
 // hit another module's `const` in its TDZ (that exact bug shipped and died
 // during this conversion: a blank page with a clean console).
+applyI18n();
 initDashboard();

@@ -51,7 +51,9 @@ try { data = JSON.parse(raw); } catch { process.exit(0); }
 
 const filePath = data.tool_input?.file_path || "";
 const sessionId = data.session_id || "";
-const cwd = data.cwd || "";
+// Attribution anchor (see attributionCwd in src/hooks.ts): the session's
+// project dir outranks the payload cwd, which follows the shell's `cd` drift.
+const cwd = process.env.CLAUDE_PROJECT_DIR || data.cwd || "";
 if (!sessionId || !filePath) process.exit(0);
 
 // ── Tracking-file gate ────────────────────────────────────────────────────────

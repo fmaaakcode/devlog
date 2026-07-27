@@ -32,7 +32,6 @@
             line-height: 1.5;
             color: var(--text);
             box-shadow: 0 8px 24px rgba(0,0,0,0.5);
-            direction: rtl;
         }
         #memPopover .pop-name {
             font-weight: 700;
@@ -317,6 +316,7 @@
             direction: rtl;
             font-weight: 400;
         }
+        html[dir="ltr"] .stats-popup { direction: ltr; }
         .stats-btn:hover .stats-popup { display: block; }
         .stats-section-title {
             font-size: 0.78em;
@@ -382,7 +382,8 @@
             overflow-y: auto;
             background: var(--bg3);
             border-radius: 8px;
-            margin: 0 16px 0 0;
+            margin: 0;
+            margin-inline-start: 16px;
         }
         .project-list-active {
             margin-top: 16px;
@@ -399,7 +400,8 @@
            unstyled full-width container read as misaligned against the cards'
            16px right margin. Bottom 16px keeps the sidebar's edge rhythm. */
         #maintRow {
-            margin: 0 16px 16px 0;
+            margin: 0 0 16px;
+            margin-inline-start: 16px;
         }
         .project-list-title {
             display: flex; align-items: center; gap: 6px;
@@ -410,7 +412,7 @@
             margin-bottom: 6px;
         }
         .project-list-title .count {
-            margin-right: auto; background: var(--bg);
+            margin-inline-start: auto; background: var(--bg);
             padding: 1px 6px; border-radius: 8px;
         }
         .project-list-empty {
@@ -453,6 +455,7 @@
             direction: rtl;
             box-sizing: border-box;
         }
+        html[dir="ltr"] .stats-numbers { direction: ltr; }
         .stats-numbers > div { display: flex; align-items: baseline; gap: 6px; }
         .stats-numbers .ss-label { margin-top: 0; }
         .center-stats-bars {
@@ -562,7 +565,6 @@
             align-items: center;
             gap: 16px;
             padding: 12px 24px;
-            direction: rtl;
         }
         .project-header {
             padding: 0;
@@ -674,7 +676,7 @@
             font-size: 0.78em;
             padding: 0 5px;
             border-radius: 8px;
-            margin-right: 4px;
+            margin-inline-start: 4px;
         }
         .tab-badge-default { background: var(--border); color: var(--text2); }
         .tab-badge-warn { background: #3a1525; color: var(--pink); }
@@ -696,7 +698,6 @@
             gap: 12px;
             height: 100%;
             overflow: hidden;
-            direction: rtl;
         }
         .summary-column {
             flex: 1;
@@ -711,7 +712,6 @@
             border-radius: 8px;
             padding: 14px;
             color: var(--text);
-            direction: rtl;
         }
         .card-title {
             font-size: 0.72em;
@@ -724,8 +724,7 @@
             font-size: 1.4em;
             font-weight: 700;
             color: var(--gold);
-            direction: rtl;
-            text-align: right;
+            text-align: start;
         }
         .summary-version small {
             font-size: 0.5em;
@@ -737,14 +736,13 @@
         .summary-stat {
             font-size: 1.8em;
             font-weight: 700;
-            direction: rtl;
-            text-align: right;
+            text-align: start;
         }
         .summary-stat small {
             font-size: 0.4em;
             color: var(--text2);
             font-weight: 400;
-            margin-right: 6px;
+            margin-inline-start: 6px;
         }
         .stat-emerald { color: var(--emerald); }
         .stat-pink { color: var(--pink); }
@@ -843,7 +841,6 @@
             gap: 6px;
             margin-bottom: 14px;
             flex-wrap: wrap;
-            direction: rtl;
         }
         .log-filter {
             font-size: 0.75em;
@@ -864,7 +861,6 @@
             align-items: center;
             gap: 5px;
             padding: 2px 0;
-            direction: rtl;
         }
         .log-bar {
             width: 3px;
@@ -901,7 +897,6 @@
             padding: 10px 0 6px;
             border-bottom: 1px solid var(--border);
             margin-bottom: 4px;
-            direction: rtl;
         }
         /* نسب النموذج (#695): من كتب التاق — شارة هادئة بجوار الوقت */
         .log-model {
@@ -1287,7 +1282,6 @@
             display: flex;
             gap: 12px;
             margin-bottom: 16px;
-            direction: rtl;
         }
         .sec-stat-card {
             flex: 1;
@@ -1306,7 +1300,6 @@
             margin-top: 4px;
         }
 
-        .sec-list { direction: rtl; }
         .sec-item {
             display: flex;
             align-items: center;
@@ -1349,7 +1342,7 @@
         }
         .lib-card {
             background: var(--bg3);
-            border-right: 2px solid var(--emerald);
+            border-inline-start: 2px solid var(--emerald);
             border-radius: 6px;
             padding: 10px 12px;
             display: flex;
@@ -1371,7 +1364,7 @@
             background: var(--border);
             padding: 0 4px;
             border-radius: 3px;
-            margin-right: 6px;
+            margin-inline-start: 6px;
         }
 
         /* ===== Welcome ===== */
@@ -1426,7 +1419,6 @@
             max-height: 86vh;
             display: flex;
             flex-direction: column;
-            direction: rtl;
             overflow: hidden;
         }
         .inj-header {
@@ -1576,7 +1568,7 @@
             content: "";
             position: absolute;
             top: 2px;
-            right: 2px;
+            inset-inline-start: 2px;
             width: 14px;
             height: 14px;
             border-radius: 50%;
@@ -1584,7 +1576,7 @@
             transition: all 0.2s;
         }
         .inj-switch.on { background: #0a3528; }
-        .inj-switch.on::after { background: var(--emerald); right: 20px; }
+        .inj-switch.on::after { background: var(--emerald); inset-inline-start: 20px; }
         .inj-switch.disabled { opacity: 0.5; cursor: not-allowed; }
         .inj-preview {
             background: var(--bg);
@@ -1674,7 +1666,7 @@
             padding: 2px 8px;
             border-radius: 4px;
             cursor: pointer;
-            margin-right: 6px;
+            margin-inline-start: 6px;
         }
 
         /* ===== Markdown renderer ===== */

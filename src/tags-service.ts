@@ -660,16 +660,28 @@ export async function applyRelease(tagEntry: TagEntry, data: DevLogData, project
 }
 
 // ── Plan-step sync for -(done) / -(dropped) ───────────────────────────────--
+/** Steps a bare-phase closure actually closed, for per-step expansion. */
+export interface PhaseExpansion { phase: string; steps: Array<{ num?: number; text: string }> }
+
 /**
  * Close steps in any plan for this project. Mode 1: exact (normalized) text
  * match closes a single step. Mode 2: a lone `Pn`/`Pn.m` phase code closes
  * every open step with that phase. `done` checks the box; `dropped` removes the
  * step. doc:plan steps round-trip to their .md; native ~/.claude/plans steps
  * are updated in memory only (no checkbox file).
+ *
+ * A BARE phase code (the content is nothing but `Pn`) returns the steps it
+ * closed so the caller stores one resolved closure per step instead of the
+ * literal — a stored «done P1» tells the log/recall nothing (SNIP audit,
+ * directive 2026-07-27: every stored closure reads by its item, like `#N`).
+ * Prose that merely mentions a phase keeps its own text; a non-phase closure
+ * returns null.
  */
-export async function syncPlanSteps(tag: string, content: string, data: DevLogData, project: string): Promise<void> {
+export async function syncPlanSteps(tag: string, content: string, data: DevLogData, project: string): Promise<PhaseExpansion | null> {
   const projectPath = data.projects[project]?.path;
-  if (!projectPath) return;
+  if (!projectPath) return null;
+  const barePhase = /^P\d+(?:\.\d+)?$/.test(content.trim());
+  const phaseClosed: PhaseExpansion["steps"] = [];
   const norm = (s: string) =>
     s.replace(/`[^`\n]*`/g, " ").replace(/`/g, "").replace(/\s+/g, " ").trim().toLowerCase();
 
@@ -680,6 +692,7 @@ export async function syncPlanSteps(tag: string, content: string, data: DevLogDa
       `\`-(${tag}) ${content.slice(0, 80)}\` — multiple phase tokens (${phaseMatches.join(", ")}). Use exactly one.`);
   }
 
+  let textMatched = false;
   for (const plan of data.plans) {
     if (plan.project !== project) continue;
     if (!plan.file_path) continue;
@@ -703,6 +716,7 @@ export async function syncPlanSteps(tag: string, content: string, data: DevLogDa
         console.error("[/api/tags plan-sync] error:", (e as Error)?.message);
       }
       plan.updatedAt = new Date().toISOString();
+      textMatched = true;
       break;
     }
 
@@ -735,6 +749,7 @@ export async function syncPlanSteps(tag: string, content: string, data: DevLogDa
           await applyTaskDrop(projectPath, project, plan.file_path, step.text);
         }
         touched++;
+        phaseClosed.push({ ...(typeof step.num === "number" ? { num: step.num } : {}), text: step.text });
       } catch (e) {
         console.error("[/api/tags doc-plan-sync phase] error:", (e as Error)?.message);
       }
@@ -745,4 +760,8 @@ export async function syncPlanSteps(tag: string, content: string, data: DevLogDa
       break;
     }
   }
+  // Expansion applies only to the documented bulk syntax (bare `Pn`). A step
+  // whose literal text is "P1" (mode 1 above) stays a normal text closure.
+  if (textMatched || !barePhase) return null;
+  return { phase: content.trim(), steps: phaseClosed };
 }

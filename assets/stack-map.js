@@ -1,3 +1,8 @@
+// ES module since the i18n extraction (#708): UI strings come from the shared
+// dictionary; stack-map.html loads this with type="module".
+import { t as tr, applyI18n } from './dashboard-i18n.js';
+applyI18n();
+
 const params = new URLSearchParams(location.search);
 const project = params.get('project');
 const canvas = document.getElementById('map');
@@ -672,7 +677,7 @@ function drawRail() {
   ctx.font = '11px Segoe UI, Tahoma, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
-  ctx.fillText('أدوات ومعزولات', railBox.x + railBox.w / 2, railBox.y + 10);
+  ctx.fillText(tr("stack.railLabel"), railBox.x + railBox.w / 2, railBox.y + 10);
 }
 
 function drawClusters() {
@@ -843,11 +848,11 @@ function render() {
     ctx.fillText(fitLabel(n.label, n.w - 12), n.x, n.y - 8);
     ctx.fillStyle = dim ? '#55555580' : '#888';
     ctx.font = `${n.sub}px Segoe UI, Tahoma, sans-serif`;
-    ctx.fillText(`${n.lines} سطر`, n.x, n.y + 10);
+    ctx.fillText(tr("stack.lines", { n: n.lines }), n.x, n.y + 10);
 
     if (showActivity && n.activity && !dim && activityGlow(n.activity.days) > 0) {
       const d = n.activity.days;
-      const txt = d === 0 ? 'اليوم' : d === 1 ? 'أمس' : `قبل ${d} يوم`;
+      const txt = d === 0 ? tr("days.today") : d === 1 ? tr("days.yesterday") : tr("days.before", { d });
       ctx.font = '10px Segoe UI, Tahoma, sans-serif';
       const tw = ctx.measureText(txt).width + 10;
       const bx = n.x - tw / 2;
@@ -993,10 +998,10 @@ canvas.addEventListener('mousemove', e => {
           `<div><strong>${esc(node.label)}</strong></div>` +
           `<div class="t-path">${esc(node.path)}</div>` +
           (node.description ? `<div class="t-desc">${esc(node.description)}</div>` : '') +
-          `<div class="t-path">${node.lines} سطر · أهمية ${node.importance}/3 · ${esc(node.group)}</div>` +
-          (node.rail ? `<div class="t-path">غير موصول من نقاط الدخول</div>` : '') +
-          (node.activity ? `<div class="t-desc" style="color:${ACT_HEX}">● ${esc(node.activity.tag)} — ${node.activity.days === 0 ? 'اليوم' : node.activity.days === 1 ? 'أمس' : `قبل ${node.activity.days} يوم`}</div>` : '') +
-          `<div class="t-path" style="opacity:.55;margin-top:4px">اضغط: عزل الجوار · اضغط مرتين: فتح في VS Code · اسحب: تثبيت المكان</div>`;
+          `<div class="t-path">${tr("stack.tipMeta", { lines: node.lines, imp: node.importance, group: esc(node.group) })}</div>` +
+          (node.rail ? `<div class="t-path">${tr("stack.unreached")}</div>` : '') +
+          (node.activity ? `<div class="t-desc" style="color:${ACT_HEX}">● ${esc(node.activity.tag)} — ${node.activity.days === 0 ? tr("days.today") : node.activity.days === 1 ? tr("days.yesterday") : tr("days.before", { d: node.activity.days })}</div>` : '') +
+          `<div class="t-path" style="opacity:.55;margin-top:4px">${tr("stack.hint")}</div>`;
       } else {
         tooltip.style.display = 'none';
       }
@@ -1158,7 +1163,7 @@ document.getElementById('searchBox').addEventListener('keydown', e => {
 
 document.getElementById('toggleActivity').onclick = () => {
   showActivity = !showActivity;
-  document.getElementById('toggleActivity').textContent = `نشاط: ${showActivity ? 'ON' : 'OFF'}`;
+  document.getElementById('toggleActivity').textContent = tr("stack.activity", { state: showActivity ? 'ON' : 'OFF' });
   render();
 };
 
@@ -1172,20 +1177,20 @@ function showStackAge(mtime) {
   btn.style.display = '';
   if (!mtime) { el.textContent = ''; return; }
   const days = Math.floor((Date.now() - mtime) / (1000 * 60 * 60 * 24));
-  el.textContent = days === 0 ? 'آخر مسح: اليوم' : days === 1 ? 'آخر مسح: أمس' : `آخر مسح: قبل ${days} يوم`;
+  el.textContent = tr("stack.lastScan", { when: days === 0 ? tr("days.today") : days === 1 ? tr("days.yesterday") : tr("days.before", { d: days }) });
   if (days > 30) el.style.color = '#c98500';
 }
 
 document.getElementById('regenStack').onclick = async () => {
   const btn = document.getElementById('regenStack');
   btn.disabled = true;
-  btn.textContent = 'يولّد…';
+  btn.textContent = tr("stack.generating");
   try {
     const r = await fetch(`/api/stack/${encodeURIComponent(project)}/regenerate`, { method: 'POST' });
     if (r.ok) { location.reload(); return; }
-    btn.textContent = 'فشل التحديث';
+    btn.textContent = tr("stack.regenFail");
   } catch {
-    btn.textContent = 'فشل التحديث';
+    btn.textContent = tr("stack.regenFail");
   }
   btn.disabled = false;
 };
@@ -1232,7 +1237,7 @@ function applySavedPositions() {
 async function load() {
   document.getElementById('layoutMode').value = layoutMode;
   if (!project) {
-    statusEl.textContent = 'لا يوجد مشروع محدد في ?project=';
+    statusEl.textContent = tr("stack.noProject");
     return;
   }
   try {
@@ -1251,7 +1256,7 @@ async function load() {
     if (!stackRes.ok) throw new Error(`HTTP ${stackRes.status}`);
     const data = await stackRes.json();
     if (!data.parsed?.files?.length) {
-      statusEl.textContent = 'STACK.md غير موجود — شغّل مسح المشروع أولاً';
+      statusEl.textContent = tr("stack.noStack");
       return;
     }
     projectPath = data.projectPath || null;
@@ -1273,7 +1278,7 @@ async function load() {
       loop();
     }
   } catch (e) {
-    statusEl.textContent = `خطأ: ${e.message}`;
+    statusEl.textContent = tr("core.errorMsg", { msg: e.message });
   }
 }
 

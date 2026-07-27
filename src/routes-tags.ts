@@ -19,7 +19,7 @@ import { closedItems } from "./closed-items";
 import {
   handleDocTag, enforceAtomicContent, resolveClosureNumber, diagnoseClosureMismatch,
   diagnoseClosureTextDivergence, confirmClosure, applyRelease, resolveReleaseIntent,
-  detectReleaseDowngrade, detectReleaseOpenItems, detectReleaseIntentConflict, syncPlanSteps, pairSameResponseClosure,
+  detectReleaseDowngrade, detectReleaseOpenItems, detectReleaseIntentConflict, syncPlanSteps, pairSameResponseClosure, pushRejection,
   type ClosureMismatch, type ClosureTextDivergence, type ClosureConfirm, type BatchOpener,
   type ReleaseDowngrade, type ReleaseBlocked, type ReleaseIntent, type ReleaseIntentConflict,
 } from "./tags-service";
@@ -34,8 +34,10 @@ import type { RollbackResult } from "./release-rollback";
 import type { TagEntry } from "./types";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { currentLang } from "./i18n";
 
 type ApiReq = Bun.BunRequest;
+const L = <T>(en: T, ar: T): T => (currentLang() === "ar" ? ar : en);
 
 // Shapes of the JSON bodies these routes accept. Loose (hooks send varied
 // payloads); the pipeline validates/normalizes each field. Typing them lets the
@@ -448,6 +450,46 @@ export function makeTagsRoutes(): Record<string, unknown> {
               }
             }
 
+            // -(done)/-(dropped) → close matching plan step(s). Runs BEFORE the
+            // store: a bare `Pn` bulk-close is expanded into one closure per
+            // closed step — each stored as the step's resolved text and echoed
+            // with its #N — so the log never records an opaque phase literal
+            // («done P1» ×4 in the SNIP audit read as nothing; directive
+            // 2026-07-27: every stored closure reads by its item, like `#N`).
+            if (tag === "done" || tag === "dropped") {
+              const expansion = await syncPlanSteps(tag, content, data, project);
+              if (expansion) {
+                if (!expansion.steps.length) {
+                  // Bare phase with nothing open: storing the literal would be
+                  // pure junk — skip it and tell Claude instead of staying silent.
+                  pushRejection(data, project, "empty-phase", L(
+                    `\`-(${tag}) ${expansion.phase}\` — no open steps in that phase (wrong code, or already closed). Nothing stored.`,
+                    `\`-(${tag}) ${expansion.phase}\` — لا خطوات مفتوحة في هذا الطور (رمز خاطئ أو أُغلق سابقاً). لم يُخزَّن شيء.`));
+                  continue;
+                }
+                for (const s of expansion.steps) {
+                  const stepEntry: TagEntry = {
+                    id: crypto.randomUUID(),
+                    project,
+                    tag,
+                    content: s.text,
+                    session_id: body.session_id,
+                    timestamp: new Date().toISOString(),
+                  };
+                  if (typeof entry.model === "string" && entry.model.trim()) stepEntry.model = entry.model.trim().slice(0, 80);
+                  if (typeof entry.context === "string" && entry.context.trim()) stepEntry.context = entry.context.trim().slice(0, 2000);
+                  if (touchedFiles.length) stepEntry.files = touchedFiles;
+                  data.tags.push(stepEntry);
+                  storedEntries.push({ tag, content: s.text });
+                  if (typeof s.num === "number") {
+                    closed.push({ num: s.num, text: s.text.slice(0, 100) });
+                    closedInBatch.add(s.num);
+                  }
+                }
+                continue;
+              }
+            }
+
             const tagEntry: TagEntry = {
               id: crypto.randomUUID(),
               project,
@@ -488,12 +530,6 @@ export function makeTagsRoutes(): Record<string, unknown> {
 
             if (tag === "release") {
               releaseResult = await applyRelease(tagEntry, data, project, effectiveCwd);
-            }
-
-            // -(done) / -(dropped) → close the matching step in any plan for this
-            // project (exact text, or a lone Pn phase code for bulk close).
-            if (tag === "done" || tag === "dropped") {
-              await syncPlanSteps(tag, content, data, project);
             }
           }
 

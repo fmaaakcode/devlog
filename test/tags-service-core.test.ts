@@ -242,6 +242,38 @@ describe("syncPlanSteps — native plans (no checkbox file I/O)", () => {
     await syncPlanSteps("done", "x", data, PROJ);
     expect(data.plans[0].steps[0].completed).toBe(false);
   });
+
+  // ── Bare-phase expansion (every stored closure reads by its item, like #N) ──
+  test("bare `P1` returns the closed steps with their nums for expansion", async () => {
+    const data = mkData({ projects: { [PROJ]: project() }, plans: [plan([
+      step("a", { phase: "P1", num: 5 }), step("b", { phase: "P1", num: 6 }), step("c", { phase: "P2", num: 7 }),
+    ], native)] });
+    const exp = await syncPlanSteps("done", "P1", data, PROJ);
+    expect(exp).toEqual({ phase: "P1", steps: [{ num: 5, text: "a" }, { num: 6, text: "b" }] });
+  });
+  test("bare phase with nothing open returns an empty expansion (caller rejects it)", async () => {
+    const data = mkData({ projects: { [PROJ]: project() }, plans: [plan([
+      step("a", { phase: "P1", num: 5, completed: true }),
+    ], native)] });
+    const exp = await syncPlanSteps("done", "P1", data, PROJ);
+    expect(exp).toEqual({ phase: "P1", steps: [] });
+  });
+  test("prose mentioning one phase token still phase-closes but is NOT expanded", async () => {
+    const data = mkData({ projects: { [PROJ]: project() }, plans: [plan([
+      step("a", { phase: "P2", num: 5 }),
+    ], native)] });
+    const exp = await syncPlanSteps("done", "أنجزت الطور P2 كاملاً", data, PROJ);
+    expect(exp).toBeNull();                                  // prose keeps its own text
+    expect(data.plans[0].steps[0].completed).toBe(true);     // …but the close still lands
+  });
+  test("a step whose literal text is a phase code stays a Mode-1 text closure", async () => {
+    const data = mkData({ projects: { [PROJ]: project() }, plans: [plan([
+      step("P1", { num: 5 }),
+    ], native)] });
+    const exp = await syncPlanSteps("done", "P1", data, PROJ);
+    expect(exp).toBeNull();
+    expect(data.plans[0].steps[0].completed).toBe(true);
+  });
 });
 
 describe("handleDocTag + applyRelease (temp project dir)", () => {

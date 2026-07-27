@@ -31,7 +31,7 @@
       {
         "matcher": "Read",
         "hooks": [
-          { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/inject?plugin=1\" -H \"Content-Type: application/json\" --data-binary @-", "timeout": 10 }
+          { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/inject?plugin=1\" -H \"Content-Type: application/json\" -H \"X-DevLog-Project-Dir: ${CLAUDE_PROJECT_DIR:-}\" --data-binary @-", "timeout": 10 }
         ]
       }
     ],
@@ -39,29 +39,29 @@
       {
         "matcher": "Write|Edit|Read|Bash|PowerShell|Agent|EnterPlanMode|ExitPlanMode",
         "hooks": [
-          { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/hook\" -H \"Content-Type: application/json\" --data-binary @-", "timeout": 10 }
+          { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/hook\" -H \"Content-Type: application/json\" -H \"X-DevLog-Project-Dir: ${CLAUDE_PROJECT_DIR:-}\" --data-binary @-", "timeout": 10 }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/hook\" -H \"Content-Type: application/json\" --data-binary @-", "timeout": 10 },
+          { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/hook\" -H \"Content-Type: application/json\" -H \"X-DevLog-Project-Dir: ${CLAUDE_PROJECT_DIR:-}\" --data-binary @-", "timeout": 10 },
           { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/parse-tags.sh\"", "timeout": 30 }
         ]
       }
     ],
     "SubagentStart": [
-      { "hooks": [ { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/hook\" -H \"Content-Type: application/json\" --data-binary @-", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/hook\" -H \"Content-Type: application/json\" -H \"X-DevLog-Project-Dir: ${CLAUDE_PROJECT_DIR:-}\" --data-binary @-", "timeout": 10 } ] }
     ],
     "SubagentStop": [
-      { "hooks": [ { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/hook\" -H \"Content-Type: application/json\" --data-binary @-", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/hook\" -H \"Content-Type: application/json\" -H \"X-DevLog-Project-Dir: ${CLAUDE_PROJECT_DIR:-}\" --data-binary @-", "timeout": 10 } ] }
     ],
     "TaskCreated": [
-      { "hooks": [ { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/hook\" -H \"Content-Type: application/json\" --data-binary @-", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/hook\" -H \"Content-Type: application/json\" -H \"X-DevLog-Project-Dir: ${CLAUDE_PROJECT_DIR:-}\" --data-binary @-", "timeout": 10 } ] }
     ],
     "TaskCompleted": [
-      { "hooks": [ { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/hook\" -H \"Content-Type: application/json\" --data-binary @-", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "curl -s -X POST \"http://127.0.0.1:${DEVLOG_PORT:-7777}/api/hook\" -H \"Content-Type: application/json\" -H \"X-DevLog-Project-Dir: ${CLAUDE_PROJECT_DIR:-}\" --data-binary @-", "timeout": 10 } ] }
     ]
   }
 }

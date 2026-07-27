@@ -60,7 +60,9 @@ const cmd = body.tool_input?.command || "";
 const pkgs = parseInstallCommands(cmd);
 if (!pkgs.length) process.exit(0);
 
-const cwd = body.cwd || process.cwd();
+// Attribution anchor (see attributionCwd in src/hooks.ts): the session's
+// project dir outranks the payload cwd, which follows the shell's `cd` drift.
+const cwd = process.env.CLAUDE_PROJECT_DIR || body.cwd || process.cwd();
 const sessionId = body.session_id || "";
 await mkdir(ACK_DIR, { recursive: true });
 await log(`fire: cmd=${cmd.slice(0, 120)} pkgs=${pkgs.map(p => p.name).join(",")}`);
