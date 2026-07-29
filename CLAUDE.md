@@ -66,6 +66,9 @@ next study's watermark.
 
 **Atomic** — one concept per tag; no questions or planning prose inside a tag.
 
+**Raw lines only** — tags/commands execute only as plain lines at line start; anything
+wrapped in backticks or a code fence is treated as an example and ignored.
+
 **Releasing is yours; git is not.** Only when the user asks to ship: close every open
 `#N`, then just emit `-(release) <reason>` — DevLog auto-detects the bump type and
 computes the version + changelog. (Force a type with `-(release:patch|minor|major)`, a

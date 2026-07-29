@@ -20,6 +20,7 @@ import { currentLang, type Lang } from "./i18n";
 
 const PRIMER_EN = `<devlog-protocol>
 DevLog is active. At the end of every response, emit \`-(tag) content\` markers (one tag per line) for the Stop hook to capture — don't hand-write tracking files. Write the content in the user's language.
+Emit tags and commands as RAW lines at line start. Anything wrapped in backticks or a code fence — like the examples throughout this primer — is treated as an EXAMPLE and ignored.
 
 Core tags:
 - \`-(desc)\` the project's STABLE one-line identity ("what is this project?") — never a session summary; it shows under the project name and as the client report's subtitle, so re-emit only when the project itself changes · \`-(about)\` the long description: plain-language "what it is / how it works" + the concrete stack (language, runtime, frameworks, key libraries, integration points) — a compact technical ID card, not marketing prose
@@ -47,6 +48,7 @@ For the full reference (trackable plans doc:plan, doc tags, the standards librar
 
 const PRIMER_AR = `<devlog-protocol>
 DevLog مفعّل. في نهاية كل رد أصدر تاقات \`-(tag) content\` (كل تاق سطر مستقل) ليلتقطها الـStop hook — لا تكتب ملفات تتبّع يدوياً. اكتب المحتوى بلغة المستخدم.
+أصدر التاقات والأوامر أسطراً خاماً في بداية السطر. ما يُوضع داخل باك-تيك أو سور كود — مثل الأمثلة في هذا الدليل نفسه — يُعامل كمثال ويُتجاهل.
 
 التاقات الأساسية:
 - \`-(desc)\` هوية المشروع الثابتة بسطر واحد («ما هذا المشروع؟») — ليس ملخص جلسة أبداً؛ يظهر تحت اسم المشروع وكعنوان فرعي في تقرير العميل، فلا تعِد إصداره إلا إذا تغيّر المشروع نفسه · \`-(about)\` الوصف المطوّل: «ما هو وكيف يعمل» بلغة بسيطة + الستاك الفعلي (اللغة، الـruntime، الأطر، المكتبات المهمة، نقاط التكامل) — بطاقة تعريف تقنية مضغوطة لا نصاً تسويقياً

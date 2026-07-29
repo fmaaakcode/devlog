@@ -3,7 +3,7 @@
 import { readdir, readFile, appendFile, mkdir, rm, stat, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { parseTags, nearMissTags } from "./src/tag-parser.ts";
+import { parseTags, nearMissTags, backtickedCommandLines } from "./src/tag-parser.ts";
 import { entryKey, loadLedger, saveLedger, sweepTurnState } from "./src/turn-ledger.ts";
 
 // Single source for the server base — follows DEVLOG_PORT like data.ts /
@@ -1555,6 +1555,41 @@ if (msg) {
     }
   } catch (e) {
     await log(`near-miss error: ${(e as Error).message}`);
+  }
+}
+
+// === Part 1.5h2: backtick-wrapped command lines ===
+// The docs render every tag/command as inline code, so a formatting-faithful
+// model emits `-(ask:deps)` — and the example policy (code spans never execute)
+// turns that into total silence: no answer, no storage, no error. Found live
+// 2026-07-28 (sitechecker): two backticked asks, twice, read by the user as
+// "the DevLog server is not responding". Same family as the near-miss hint:
+// say "not captured, and why" ONCE, instead of nothing. Never auto-executes —
+// quoting a command as an example must stay safe — and dedupes per line via
+// the turn ledger so the line still present in the grown transcript can't
+// re-block the continuation.
+if (msg) {
+  try {
+    const lines = backtickedCommandLines(msg);
+    const fresh: string[] = [];
+    for (const l of lines) if (await shouldServeAsk(`backtick:${l}`)) fresh.push(l);
+    if (fresh.length) {
+      for (const l of fresh) await markAskServed(`backtick:${l}`);
+      const out = [
+        "════════ DevLog Backtick ════════",
+        L(`⚠ ${fresh.length} line(s) hold a DevLog command wrapped in inline code — treated as an EXAMPLE, not executed:`,
+          `⚠ ${fresh.length} سطر يحمل أمر DevLog داخل باك-تيك — عومل كمثال ولم يُنفَّذ:`),
+        ...fresh.map(l => `· \`${l}\``),
+        "",
+        L("Nothing ran and nothing was stored. To execute, re-emit each as a RAW line at line start — no backticks, no code fence. If it really was just an example, ignore this note.",
+          "لم يُنفَّذ ولم يُخزَّن شيء. للتنفيذ أعد إصدار كل سطر خامًا في بداية السطر — بلا باك-تيك ولا سور كود. وإن كان مجرد مثال فتجاهل هذا التنبيه."),
+        "═════════════════════════════════",
+      ].join("\n");
+      await log(`backtick-nudge: served ${fresh.length} line(s)`);
+      blockContinue(`\n${out}\n`);
+    }
+  } catch (e) {
+    await log(`backtick-nudge error: ${(e as Error).message}`);
   }
 }
 

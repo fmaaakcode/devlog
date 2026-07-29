@@ -9,6 +9,8 @@ Place tags at the **end** of your response. The Stop hook captures them; the das
 
 Format: `-(tag) content` (case-sensitive). Append `!` after the tag for a breaking change: `-(built!) X`. Multi-line content allowed (up to 2000 chars; 5000 for `about`); the first line is the headline. Write content in the user's language.
 
+**Raw lines only.** Emit tags and commands as plain lines at line start. Anything wrapped in backticks or a code fence — like every example in this document — is treated as an EXAMPLE and ignored; the hook nudges you once if a whole line is a backticked command.
+
 ## Enforcement (automated)
 
 These hooks enforce the rules mechanically — you don't need to remember, the harness refuses to end the turn or run the command until you comply:

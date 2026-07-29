@@ -209,3 +209,31 @@ export function nearMissTags(msg: string): NearMiss[] {
   }
   return out;
 }
+
+/**
+ * Lines that are NOTHING BUT an inline-code-wrapped tag/command with a KNOWN
+ * head — `` `-(ask:deps)` `` alone on its line. The extractor and the hook's
+ * command scanners blank code spans on purpose (a quoted example must never
+ * execute); that policy is correct but SILENT, and a model that mimics the
+ * docs' inline-code formatting gets no answer, no storage, no error (found
+ * live 2026-07-28, project sitechecker: two backticked asks, twice, read as
+ * "the DevLog server is not responding"). This feeds the Stop hook's one-shot
+ * nudge. Scope is deliberately narrow: the WHOLE line is a single `…` span —
+ * a command quoted mid-sentence, a bulleted example, or anything inside a
+ * ``` fence (explicit example formatting) stays exempt.
+ */
+export function backtickedCommandLines(msg: string): string[] {
+  if (!msg) return [];
+  const noFences = msg.replace(/```[\s\S]*?```/g, m => " ".repeat(m.length));
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const m of noFences.matchAll(/^[ \t]*`(-\s*\(([^)\n]{2,40})\)[^`\n]*)`[ \t]*$/gm)) {
+    const head = m[2].trim().replace(/!$/, "").toLowerCase();
+    if (!(ALLOWED_TAGS as readonly string[]).includes(head) && !COMMAND_HEADS.has(head)) continue;
+    const line = m[1].trim();
+    if (seen.has(line)) continue;
+    seen.add(line);
+    out.push(line);
+  }
+  return out;
+}
