@@ -6,7 +6,7 @@
 // with in-memory fixtures; handleDocTag/applyRelease use a temp project dir.
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -60,6 +60,18 @@ describe("registerPlan", () => {
     expect(p.title).toBe("New Title");
     expect(p.steps[0]).toMatchObject({ text: "keep me", completed: true, num: 7 });
     expect(typeof p.steps[1].num).toBe("number");           // new step numbered
+  });
+
+  test("a spelling variant of the same file_path updates the owner, never mints a duplicate", () => {
+    // The two producers spell the key independently (doc-store: Windows
+    // backslashes; the FileChanged hook: the payload verbatim, often
+    // forward-slashed). A raw string match pushed a SECOND PlanEntry with
+    // fresh #N numbers for the same on-disk plan.
+    const existing = plan([step("keep me", { completed: true, num: 7 })], "D:\\proj\\.devlog\\docs\\p.md");
+    const data = mkData({ projects: { [PROJ]: project() }, plans: [existing] });
+    registerPlan(data, PROJ, "t", [step("keep me"), step("new one")], "D:/proj/.devlog/docs/p.md");
+    expect(data.plans).toHaveLength(1);
+    expect(data.plans[0].steps[0]).toMatchObject({ completed: true, num: 7 });
   });
 
   test("a file_path owned by another project is skipped", () => {
@@ -203,6 +215,26 @@ describe("detectReleaseOpenItems", () => {
   test("nothing open → null", () => {
     const data = mkData({ projects: { [PROJ]: project() } });
     expect(detectReleaseOpenItems(data, PROJ, [])).toBeNull();
+  });
+});
+
+describe("syncPlanSteps — doc-plan checkbox sync is path-spelling agnostic", () => {
+  test("a forward-slashed .devlog/docs file_path still ticks the on-disk box", async () => {
+    // isDocPlan matched on the platform `sep` alone, so a doc plan whose stored
+    // path arrived forward-slashed completed in the STORE but the .md checkbox
+    // stayed unticked — silent store/disk divergence.
+    const dir = mkdtempSync(join(tmpdir(), "docplan-"));
+    try {
+      const docsDir = join(dir, ".devlog", "docs");
+      mkdirSync(docsDir, { recursive: true });
+      const mdWin = join(docsDir, "p.md");
+      writeFileSync(mdWin, "# Plan\n\n- [ ] write the code\n");
+      const fwd = mdWin.replace(/\\/g, "/");   // the payload-producer spelling
+      const data = mkData({ projects: { [PROJ]: project(dir) }, plans: [plan([step("write the code")], fwd)] });
+      await syncPlanSteps("done", "write the code", data, PROJ);
+      expect(data.plans[0].steps[0].completed).toBe(true);
+      expect(readFileSync(mdWin, "utf-8")).toContain("- [x] write the code");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
 

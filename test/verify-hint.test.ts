@@ -116,6 +116,13 @@ describe("verifyHintFor", () => {
   test("no hint without a session id (evidence is unattributable — stay quiet)", () => {
     expect(verifyHintFor([{ tag: "done", content: "#5" }], noTests, "")).toBeNull();
   });
+
+  test("ZERO observed events for the session → silent (observation gap, #716 pattern)", () => {
+    // Events are fire-and-forget: a daemon-restart window loses the session's
+    // whole trail. An empty trail is "not observed", never "no test ran".
+    expect(verifyHintFor([{ tag: "done", content: "#5" }], [], "s1")).toBeNull();
+    expect(verifyHintFor([{ tag: "done", content: "#5" }], [ev("s2", "bun test")], "s1")).toBeNull();
+  });
 });
 
 // The two discovered slips (report `declaration-fragility`): a FAILING run and
@@ -248,8 +255,19 @@ describe("regressionHintFor", () => {
   });
 
   test("another session's test write does not satisfy it", () => {
-    const events = [mut("s2", "test/a.test.ts", "2026-06-01T10:01:00Z")];
+    const events = [
+      mut("s1", "src/a.ts", "2026-06-01T10:00:00Z"),
+      mut("s2", "test/a.test.ts", "2026-06-01T10:01:00Z"),
+    ];
     expect(regressionHintFor(fixClosers, events, "s1")?.closers.length).toBe(1);
+  });
+
+  test("ZERO observed writes for the session → silent (observation gap, not a missing test)", () => {
+    // #716 pattern: a fix closure implies edits happened; when the daemon saw
+    // none of them (fire-and-forget events lost in a restart window), "never
+    // touched a test file" would be an accusation built on lost evidence.
+    const events = [mut("s2", "test/a.test.ts", "2026-06-01T10:01:00Z")];
+    expect(regressionHintFor(fixClosers, events, "s1")).toBeNull();
   });
 
   test("silent without a session id", () => {

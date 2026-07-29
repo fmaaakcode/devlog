@@ -423,7 +423,7 @@
             security: ["security", "security fix", "security:dep", "security:own", "outdated"],
             tasks: ["plan", "todo", "done", "dropped"],
             knowledge: ["decision", "insight", "note"],
-            other: ["release"]
+            other: ["release", "feature", "feature update", "feature removed", "lib"]
         };
         // Filter labels resolve from the dictionary per render (filter.<key>)
         // so a language toggle re-labels the row without a reload.

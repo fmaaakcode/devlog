@@ -64,6 +64,13 @@ const FEEDBACK_MARKERS = ["[devlog ", "════════ DevLog"];
 const MIN_ASSISTANT = 1;
 const MIN_USER = 1;
 
+// At session open the file holds ONLY role-less bookkeeping lines (last-prompt,
+// mode, permission-mode, attachment, file-history-snapshot) — the first user entry
+// hasn't been flushed yet. A zero-role read on a short file is "not written yet",
+// not drift (#716). A file this long with zero roles cannot be an unfinished
+// preamble, though: the observed preamble is under 10 lines.
+const MIN_PARSED_FOR_NO_ROLES = 30;
+
 /**
  * Inspect raw transcript JSONL against the parse-tags assumptions. Pure — the
  * caller owns all I/O. Lines the parser itself ignores (attachments, mode
@@ -146,8 +153,10 @@ export function inspectTranscript(raw: string): CanaryReport {
     return { lines: lines.length, parsed, assistant, assistantWithText, user, userStrings, userToolResult, sufficient: false, findings };
   }
 
-  // (2) Role vocabulary reachable at message.role / role?
-  if (parsed > 0 && assistant === 0 && user === 0) {
+  // (2) Role vocabulary reachable at message.role / role? Only judgeable past the
+  // preamble length — a short zero-role file falls through to the `sufficient`
+  // gate below and reads as "nothing to judge yet", never as drift.
+  if (parsed >= MIN_PARSED_FOR_NO_ROLES && assistant === 0 && user === 0) {
     findings.push({
       code: "no-roles",
       severity: "break",

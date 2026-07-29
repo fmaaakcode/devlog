@@ -12,7 +12,7 @@
 import type { DevLogData } from "./types";
 import { closedItems } from "./closed-items";
 import { touchesTests } from "./retro";
-import { openBugs, openSecurity } from "./data";
+import { openBugs, openSecurity, SECURITY_OPEN_TAGS } from "./data";
 
 export interface ModelScore {
   /** Raw model id as stored (e.g. "claude-opus-4-8"); display strips the vendor prefix. */
@@ -42,7 +42,9 @@ export interface ModelStats {
   totalTags: number;
 }
 
-const isReport = (kind: string) => kind === "bug found" || kind.startsWith("security");
+// Openers only — `startsWith("security")` also matched the CLOSER `security fix`,
+// inflating reportsOpened by every security closure the model emitted.
+const isReport = (kind: string) => kind === "bug found" || SECURITY_OPEN_TAGS.has(kind);
 const DAY_MS = 86_400_000;
 
 export function modelScorecard(data: DevLogData, project: string): ModelStats {

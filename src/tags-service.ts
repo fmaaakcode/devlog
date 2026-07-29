@@ -7,7 +7,6 @@
 // PURE REFACTOR — no behavior change. The regression-qa-integration suite
 // (dedup / undo / closure) is the safety net and passes unmodified.
 
-import { sep } from "node:path";
 import { readFile } from "node:fs/promises";
 import { SINGLE_LINE_TAGS } from "./tag-parser";
 import type { DevLogData, PlanStep, TagEntry } from "./types";
@@ -47,7 +46,11 @@ export function registerPlan(
   steps: PlanStep[],
   filePath: string,
 ): RegisterPlanResult {
-  const ownerIdx = data.plans.findIndex(p => p.file_path === filePath);
+  // Spelling-insensitive: the two producers feed this key independently — the
+  // FileChanged hook passes the payload's path verbatim (may arrive
+  // forward-slashed or case-drifted) while doc-store builds a Windows-canonical
+  // one. A raw string match minted a DUPLICATE plan with fresh #N numbers.
+  const ownerIdx = data.plans.findIndex(p => pathsEqual(p.file_path, filePath));
   if (ownerIdx >= 0) {
     const owner = data.plans[ownerIdx];
     if (owner.project !== project) return { skipped: "different-owner", owner: owner.project };
@@ -696,7 +699,10 @@ export async function syncPlanSteps(tag: string, content: string, data: DevLogDa
   for (const plan of data.plans) {
     if (plan.project !== project) continue;
     if (!plan.file_path) continue;
-    const isDocPlan = plan.file_path.includes(`${sep}.devlog${sep}docs${sep}`);
+    // Separator-agnostic: the stored path's spelling follows whichever producer
+    // registered it (payload paths may be forward-slashed on Windows); matching
+    // on the platform `sep` alone silently skipped the on-disk checkbox sync.
+    const isDocPlan = /[\\/]\.devlog[\\/]docs[\\/]/.test(plan.file_path);
 
     // Mode 1: exact text match on an OPEN step (preferred — most precise). A
     // dropped step is now retained in plan.steps (#410), so exclude closed steps —

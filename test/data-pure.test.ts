@@ -91,6 +91,15 @@ describe("backfillNums", () => {
     expect(byContent["just a note"]).toBeUndefined();
   });
 
+  test("numbers pre-numbering feature tags (feature update/removed #N need a target)", () => {
+    // Ingest numbers features since the feature-numbering change, but the
+    // backfill's own NUMBERED_TAGS copy lagged without `feature` — so old
+    // feature history stayed permanently unnumbered and untargetable.
+    const data = baseData([tag("feature", "tag capture on Stop")]);
+    expect(backfillNums(data)).toBe(true);
+    expect(typeof data.tags[0].num).toBe("number");
+  });
+
   test("is idempotent — a second run changes nothing", () => {
     const data = baseData([tag("todo", "open one")]);
     expect(backfillNums(data)).toBe(true);

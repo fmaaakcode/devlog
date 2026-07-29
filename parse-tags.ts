@@ -985,7 +985,7 @@ async function unservedMatches(re: RegExp, toCmd: (m: RegExpMatchArray) => strin
 
 if (msg && cwd) {
   try {
-    const [hit] = await unservedMatches(/^[ \t]*-\(audit\)(?:[ \t]+([^\n]+))?[ \t]*$/gm,
+    const [hit] = await unservedMatches(/^[ \t]*-\s*\(audit\)(?:[ \t]+([^\n]+))?[ \t]*$/gm,
       mm => `audit${mm[1] ? ` ${mm[1].trim()}` : ""}`);
     if (hit) {
       const arg = (hit.m[1] || "").trim();
@@ -1019,7 +1019,7 @@ if (msg && cwd) {
 // Never a logged tag (not in ALLOWED_TAGS).
 if (msg && cwd) {
   try {
-    if (/^[ \t]*-\(ask:open\)[ \t]*$/m.test(strippedMsg) && await shouldServeAsk("ask:open")) {
+    if (/^[ \t]*-\s*\(ask:open\)[ \t]*$/m.test(strippedMsg) && await shouldServeAsk("ask:open")) {
       const r = await fetch(`${SERVER}/api/open-items?cwd=${encodeURIComponent(cwd)}`, { signal: AbortSignal.timeout(10000) });
       if (r.ok) {
         await markAskServed("ask:open");   // record only now the fetch succeeded (#398)
@@ -1068,7 +1068,7 @@ if (msg && cwd) {
 // storage). Re-runnable across turns via per-turn command dedup (shouldServeAsk).
 if (msg && cwd) {
   try {
-    const [hit] = await unservedMatches(/^[ \t]*-\(ask:closed\)(?:[ \t]+#(\d+))?[ \t]*$/gm,
+    const [hit] = await unservedMatches(/^[ \t]*-\s*\(ask:closed\)(?:[ \t]+#(\d+))?[ \t]*$/gm,
       mm => `ask:closed${mm[1] ? ` #${mm[1]}` : ""}`);
     if (hit) {
       const num = hit.m[1];
@@ -1137,7 +1137,7 @@ if (msg && cwd) {
 // this one does registry + OSV round-trips per name (server caches both).
 if (msg && cwd) {
   try {
-    const hits = await unservedMatches(/^[ \t]*-\(ask:lib\)[ \t]+(\S[^\n]*?)[ \t]*$/gm, mm => `ask:lib ${mm[1]}`);
+    const hits = await unservedMatches(/^[ \t]*-\s*\(ask:lib\)[ \t]+(\S[^\n]*?)[ \t]*$/gm, mm => `ask:lib ${mm[1]}`);
     if (hits.length) {
       // Several `-(ask:lib)` lines in one turn (or a corrected re-ask after a
       // refusal) merge into ONE query — the server caps at 8 names, and each
@@ -1210,7 +1210,7 @@ if (msg && cwd) {
 // project. Ephemeral like every ask: command — never a logged tag.
 if (msg && cwd) {
   try {
-    const [hit] = await unservedMatches(/^[ \t]*-\(ask:search\)[ \t]+(\S[^\n]*?)[ \t]*$/gm, mm => `ask:search ${mm[1]}`);
+    const [hit] = await unservedMatches(/^[ \t]*-\s*\(ask:search\)[ \t]+(\S[^\n]*?)[ \t]*$/gm, mm => `ask:search ${mm[1]}`);
     if (hit) {
       let q = hit.m[1];
       let all = false;
@@ -1250,7 +1250,7 @@ if (msg && cwd) {
 // Served like the other pull commands; never a logged tag.
 if (msg && cwd) {
   try {
-    if (/^[ \t]*-\(ask:features\)[ \t]*$/m.test(strippedMsg) && await shouldServeAsk("ask:features")) {
+    if (/^[ \t]*-\s*\(ask:features\)[ \t]*$/m.test(strippedMsg) && await shouldServeAsk("ask:features")) {
       const r = await fetch(`${SERVER}/api/features?cwd=${encodeURIComponent(cwd)}`, { signal: AbortSignal.timeout(10000) });
       if (r.ok) {
         await markAskServed("ask:features");   // record only now the fetch succeeded (#398)
@@ -1285,7 +1285,7 @@ if (msg && cwd) {
 // the other pull commands; never a logged tag.
 if (msg && cwd) {
   try {
-    if (/^[ \t]*-\(ask:deps\)[ \t]*$/m.test(strippedMsg) && await shouldServeAsk("ask:deps")) {
+    if (/^[ \t]*-\s*\(ask:deps\)[ \t]*$/m.test(strippedMsg) && await shouldServeAsk("ask:deps")) {
       const r = await fetch(`${SERVER}/api/deps?cwd=${encodeURIComponent(cwd)}`, { signal: AbortSignal.timeout(10000) });
       if (r.ok) {
         await markAskServed("ask:deps");   // record only now the fetch succeeded (#398)
@@ -1327,7 +1327,7 @@ if (msg && cwd) {
 // pull commands; never a logged tag.
 if (msg && cwd) {
   try {
-    if (/^[ \t]*-\(ask:retro\)[ \t]*$/m.test(strippedMsg) && await shouldServeAsk("ask:retro")) {
+    if (/^[ \t]*-\s*\(ask:retro\)[ \t]*$/m.test(strippedMsg) && await shouldServeAsk("ask:retro")) {
       const r = await fetch(`${SERVER}/api/retro?cwd=${encodeURIComponent(cwd)}`, { signal: AbortSignal.timeout(10000) });
       if (r.ok) {
         await markAskServed("ask:retro");   // record only now the fetch succeeded (#398)
@@ -1400,7 +1400,7 @@ if (msg && cwd) {
 // of the next one. Served like the other pull commands; never a logged tag.
 if (msg && cwd) {
   try {
-    if (/^[ \t]*-\(ask:backfill\)[ \t]*$/m.test(strippedMsg) && await shouldServeAsk("ask:backfill")) {
+    if (/^[ \t]*-\s*\(ask:backfill\)[ \t]*$/m.test(strippedMsg) && await shouldServeAsk("ask:backfill")) {
       const r = await fetch(`${SERVER}/api/features-backfill?cwd=${encodeURIComponent(cwd)}`, { signal: AbortSignal.timeout(10000) });
       if (r.ok) {
         await markAskServed("ask:backfill");   // record only now the fetch succeeded (#398)
@@ -1445,7 +1445,7 @@ if (msg && cwd) {
 // commands; never a logged tag.
 if (msg && cwd) {
   try {
-    if (/^[ \t]*-\(ask:study\)[ \t]*$/m.test(strippedMsg) && await shouldServeAsk("ask:study")) {
+    if (/^[ \t]*-\s*\(ask:study\)[ \t]*$/m.test(strippedMsg) && await shouldServeAsk("ask:study")) {
       const r = await fetch(`${SERVER}/api/study?cwd=${encodeURIComponent(cwd)}`, { signal: AbortSignal.timeout(15000) });
       if (r.ok) {
         await markAskServed("ask:study");   // record only now the fetch succeeded (#398)
@@ -1727,6 +1727,11 @@ if (cwd && sessionId && !stopHookActive && process.env.DEVLOG_UNTAGGED_CHECK !==
     // guard must also run on responses that carried no tags at all.
     const turnEntryCount = tagSegments.flatMap(s => parseTags(s.text)).length;
     if (turnEntryCount === 0) {
+      // Drain the disk queue BEFORE asking the server for tagCount: tags from a
+      // server-outage turn sit queued until the next tag-carrying response, so
+      // without this flush the daemon honestly answers "0" for a session that
+      // DID tag — and the guard blocks it wrongly ("unknown, not zero" again).
+      await flushTagQueue();
       const r = await fetch(`${SERVER}/api/changes/session?session_id=${encodeURIComponent(sessionId)}`, {
         signal: AbortSignal.timeout(3000),
       });

@@ -553,6 +553,7 @@ export function generateProjectIndex(data: DevLogData, projectName: string): str
   for (const t of projectTags) {
     const k = ({
       "built": "built", "bug fix": "fix", "security": "security", "security fix": "security",
+      "security:own": "security", "security:dep": "security",
       "refactor": "refactor", "update": "update", "decision": "decision", "insight": "insight", "note": "note",
     } as Record<string, string>)[t.tag];
     if (k) counts[k] = (counts[k] || 0) + 1;

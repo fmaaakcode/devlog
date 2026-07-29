@@ -928,6 +928,10 @@
         .tag-insight { background: #1a0f2a; color: #a78bfa; }
         .tag-securitydep { background: #2a1808; color: #ffd166; }
         .tag-securityown { background: #2a0a18; color: var(--pink); }
+        .tag-feature { background: #0a2a1a; color: #34d399; }
+        .tag-featureupdate { background: #0a2a1a; color: #34d399; }
+        .tag-featureremoved { background: var(--bg3); color: var(--text2); }
+        .tag-lib { background: #082030; color: var(--blue); }
         /* Breaking modifier — applied via .log-item.is-breaking and the bar */
         .log-item.is-breaking { box-shadow: inset 3px 0 0 var(--red); }
         .log-item.is-breaking .log-tag::after { content: " ⚠"; color: var(--red); font-weight: 700; }

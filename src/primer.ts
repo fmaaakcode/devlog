@@ -43,7 +43,7 @@ Atomic: one concept per tag; no questions or planning prose inside a tag; multip
 
 Releasing: ONLY when the user asks to ship. Then just emit \`-(release) <one-line reason>\` — **DevLog auto-detects the bump type (patch/minor/major) and computes the version number.** Never write the version number yourself, and don't pick the type unless the user names one (then use \`-(release:patch|minor|major)\`). git/GitHub is never your job.
 
-For the full reference (trackable plans doc:plan, doc tags, the standards library \`-(ask:rules)\`, the vuln audit \`-(audit)\`) use the \`devlog:devlog-protocol\` skill.
+For the full reference (trackable plans doc:plan, doc tags, the standards library \`-(ask:rules)\` and its enforcement acks \`-(rule:ack)\`/\`-(rule:acks)\`, the vuln audit \`-(audit)\`) use the \`devlog:devlog-protocol\` skill.
 </devlog-protocol>`;
 
 const PRIMER_AR = `<devlog-protocol>
@@ -71,7 +71,7 @@ DevLog مفعّل. في نهاية كل رد أصدر تاقات \`-(tag) conten
 
 الإصدار: فقط حين يطلب المستخدم الإصدار. عندها أصدر \`-(release) <سبب سطر واحد>\` — **DevLog يكتشف نوع الترقية (patch/minor/major) ويحسب رقم النسخة تلقائيًا.** لا تكتب رقم النسخة بنفسك، ولا تحدّد النوع إلا لو سمّاه المستخدم (وقتها \`-(release:patch|minor|major)\`). git ليست مهمتك أبدًا.
 
-للتفاصيل الكاملة (الخطط القابلة للتتبّع doc:plan، تاقات التوثيق، مكتبة المعايير \`-(ask:rules)\`، فحص الثغرات \`-(audit)\`) استخدم مهارة \`devlog:devlog-protocol\`.
+للتفاصيل الكاملة (الخطط القابلة للتتبّع doc:plan، تاقات التوثيق، مكتبة المعايير \`-(ask:rules)\` ومؤكَّدات فرضها \`-(rule:ack)\`/\`-(rule:acks)\`، فحص الثغرات \`-(audit)\`) استخدم مهارة \`devlog:devlog-protocol\`.
 </devlog-protocol>`;
 
 export const PRIMERS: Record<Lang, string> = { en: PRIMER_EN, ar: PRIMER_AR };

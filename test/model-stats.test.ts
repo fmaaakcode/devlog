@@ -67,6 +67,18 @@ describe("modelScorecard (unit)", () => {
     expect(fable?.avgCloseDays).toBe(1.3);
   });
 
+  test("a security fix CLOSURE never counts as an opened report", () => {
+    // isReport used startsWith("security"), so every `security fix` a model
+    // emitted inflated its reportsOpened — a closer scored as an opener.
+    const data = makeData([
+      t("security:own", "xss in dashboard", { num: 1, model: "claude-opus-4-8" }),
+      t("security fix", "#1 escaped it", { model: "claude-fable-5", files: ["src/a.ts"] }),
+    ]);
+    const { models } = modelScorecard(data, P);
+    expect(models.find(m => m.model === "claude-opus-4-8")?.reportsOpened).toBe(1);
+    expect(models.find(m => m.model === "claude-fable-5")?.reportsOpened).toBe(0);
+  });
+
   test("no attributed tags at all → empty board, everything unattributed", () => {
     const { models, unattributed } = modelScorecard(makeData([
       t("bug found", "old-world bug", { num: 1 }),

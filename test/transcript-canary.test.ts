@@ -90,11 +90,28 @@ describe("inspectTranscript — each broken assumption is named", () => {
   });
 
   test("(2) the role field moved or was renamed", () => {
-    const r = inspectTranscript(jsonl(
-      { type: "user", uuid: "u1", message: { author: "user", content: "hi" } },
-      { type: "assistant", uuid: "a1", message: { author: "assistant", content: [{ type: "text", text: "yo" }] } },
-    ));
+    // Long past any session-open preamble: a file this size with zero reachable
+    // roles can only mean the field itself is gone.
+    const renamed = Array.from({ length: 30 }, (_, i) => (i % 2 === 0
+      ? { type: "user", uuid: `u${i}`, message: { author: "user", content: "hi" } }
+      : { type: "assistant", uuid: `a${i}`, message: { author: "assistant", content: [{ type: "text", text: "yo" }] } }));
+    const r = inspectTranscript(jsonl(...renamed));
     expect(r.findings.map(f => f.code)).toEqual(["no-roles"]);
+  });
+
+  test("(2) a session-open preamble (bookkeeping lines only) is INSUFFICIENT, not drift", () => {
+    // #716: the first flush of a brand-new session's file — role-less bookkeeping
+    // lines only, the user entry not yet written. Judging this as "no-roles" fired
+    // a false alarm on every session open AND spent the once-per-session gate.
+    const r = inspectTranscript(jsonl(
+      { type: "last-prompt", sessionId: "s" },
+      { type: "mode", mode: "default", sessionId: "s" },
+      { type: "permission-mode", permissionMode: "default", sessionId: "s" },
+      { type: "attachment", uuid: "n1", timestamp: "2026-07-29T01:26:10Z" },
+      { type: "file-history-snapshot", messageId: "m1", snapshot: {} },
+    ));
+    expect(r.findings).toEqual([]);
+    expect(r.sufficient).toBe(false);
   });
 
   test("(3a) assistant text blocks reshaped — tag capture is dead", () => {
@@ -203,6 +220,26 @@ describe("canaryWarningOnce — the once-per-session gate", () => {
 
     writeFileSync(p, jsonl(userPrompt("hi"), hookFeedback("u3", {}), assistantText("ok")));
     expect(await canaryWarningOnce(p, "sess-3")).toContain("isMeta");
+  });
+
+  test("a session-open preamble neither warns nor spends the gate (#716)", async () => {
+    // The exact 2026-07-29 incident: SessionStart fires while the file holds only
+    // the role-less preamble; the false "no-roles" alarm both cried wolf and spent
+    // the session's one shot before a real check could ever run.
+    dir = mkdtempSync(join(tmpdir(), "canary-"));
+    const p = join(dir, "s.jsonl");
+    writeFileSync(p, jsonl(
+      { type: "last-prompt", sessionId: "s" },
+      { type: "mode", mode: "default", sessionId: "s" },
+      { type: "permission-mode", permissionMode: "default", sessionId: "s" },
+      { type: "attachment", uuid: "n1", timestamp: "2026-07-29T01:26:10Z" },
+      { type: "file-history-snapshot", messageId: "m1", snapshot: {} },
+    ));
+    expect(await canaryWarningOnce(p, "sess-9")).toBeNull();
+
+    // The session then speaks and turns out drifted — the surviving gate catches it.
+    writeFileSync(p, jsonl(userPrompt("hi"), hookFeedback("u3", {}), assistantText("ok")));
+    expect(await canaryWarningOnce(p, "sess-9")).toContain("isMeta");
   });
 
   test("a healthy transcript never warns", async () => {

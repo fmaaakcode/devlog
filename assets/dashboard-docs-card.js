@@ -13,7 +13,7 @@
         // Doc-type vocabulary of the docs section (inherited from the retired
         // studies header chip when it folded into this card). A study is a
         // doc:report whose name carries the study-/دراسة- watermark prefix.
-        const DOC_TYPES = new Set(['report', 'analysis', 'comparison', 'readme']);
+        const DOC_TYPES = new Set(['report', 'analysis', 'plan', 'comparison', 'readme']);
         const isStudyDoc = (name) => /^\s*(study|دراسة)([\s\-_:.]|$)/i.test(name || '');
         // Fixed-set lookup only: a hand-edited index.json with type
         // "constructor" must fall through to esc(), never a prototype hit.

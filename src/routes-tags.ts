@@ -8,7 +8,7 @@
 // the request body is typed (compile-time casts — zero runtime change) so the
 // module carries no `any`. Spread into server.ts's routeDefs.
 
-import { loadData, withData, normalizeTagContent, assignNum, openBugs, openSecurity, openTodos, openPlanSteps, CLOSER_KINDS } from "./data";
+import { loadData, withData, normalizeTagContent, assignNum, openBugs, openSecurity, openTodos, openPlanSteps, CLOSER_KINDS, NUMBERED_TAGS } from "./data";
 import { tsToMs } from "./maintenance";
 import { broadcast } from "./broadcast";
 import { resolveProjectFor } from "./project-resolve";
@@ -353,19 +353,6 @@ export function makeTagsRoutes(): Record<string, unknown> {
               continue;
             }
 
-            if (tag === "blueprint") {
-              if (data.projects[project]) {
-                const items = content.split(/[,،]/).map((s: string) => s.trim()).filter(Boolean);
-                const existing = data.projects[project].blueprint || [];
-                const set = new Set(existing.map(s => s.toLowerCase()));
-                for (const item of items) {
-                  if (!set.has(item.toLowerCase())) { existing.push(item); set.add(item.toLowerCase()); }
-                }
-                data.projects[project].blueprint = existing;
-              }
-              continue;
-            }
-
             if (tag === "undo") {
               const rb = await applyUndo(content, data, project);
               if (rb) rollback = rb;
@@ -508,7 +495,6 @@ export function makeTagsRoutes(): Record<string, unknown> {
             if (touchedFiles.length) tagEntry.files = touchedFiles;
             // Assign a per-project number to openable tags so Claude can close
             // them by `#N`. Skip closures, meta, and non-tracking tags.
-            const NUMBERED_TAGS = new Set(["todo", "bug found", "security", "security:own", "security:dep", "feature"]);
             if (NUMBERED_TAGS.has(tag) && data.projects[project]) {
               tagEntry.num = assignNum(data, project);
               // #633: work openers born in this batch are pairing candidates for a

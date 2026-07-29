@@ -190,6 +190,8 @@ A reusable rules library lives at `~/.claude/standards/`, organized by axis (`la
 | `-(rule:new) <axis>/<cat>` | Create a new category |
 | `-(rules:list)` | Show the full catalog |
 | `-(rule:rm) <cat> #N` | Remove rule #N from a category |
+| `-(rule:ack) <key>` | Confirm a blocked standards/dep violation as intentional for THIS project (e.g. `cargo-edition`, `cargo-edition:2021`, `dep:astro` — the exact key comes in the block message); the same write passes when re-issued |
+| `-(rule:acks)` | List this project's confirmed acks |
 
 Available category names are injected at SessionStart under "معايير متاحة (Standards)". For a rich reference standard (design tokens, tables), write the file directly at `~/.claude/standards/<axis>/<category>.md`.
 

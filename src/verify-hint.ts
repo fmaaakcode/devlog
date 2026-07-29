@@ -113,6 +113,11 @@ export function regressionHintFor(
 ): RegressionHint | null {
   const closers = entries.filter(e => FIX_CLOSERS.has(e.tag));
   if (!closers.length || !sessionId) return null;
+  // Sufficiency gate (#716 pattern): a fix closure implies edits happened, so
+  // ZERO observed write events for the session means the daemon missed them
+  // (events are fire-and-forget — a restart window loses them), not that the
+  // session wrote nothing. "Unknown" is not "no test file" — fail open.
+  if (!events.some(e => e.session_id === sessionId && (e.type === "change" || e.type === "create"))) return null;
   if (sessionWroteTests(events, sessionId)) return null;
   return { closers: closers.map(e => ({ tag: e.tag, content: e.content })) };
 }
@@ -130,6 +135,13 @@ export function verifyHintFor(
 ): VerifyHint | null {
   const closers = entries.filter(e => VERIFY_CLOSERS.has(e.tag));
   if (!closers.length || !sessionId) return null;
+  // Sufficiency gate (#716 pattern): events are fire-and-forget — a
+  // daemon-restart window loses them permanently, wiping the session's whole
+  // trail. When NOT ONE event was observed for this session, the honest reading
+  // is "not observed", never "didn't run" — fail open like the unknown-outcome
+  // rule below. (A session that IS observed but ran no test command still gets
+  // the nudge — edit-only sessions are its core audience.)
+  if (!events.some(e => e.session_id === sessionId)) return null;
   const runs = events.filter(e => e.session_id === sessionId && isTestCommand(e.command || ""));
   const shaped = { closers: closers.map(e => ({ tag: e.tag, content: e.content })) };
   if (!runs.length) return { ...shaped, reason: "no-tests" };

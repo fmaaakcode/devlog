@@ -26,11 +26,16 @@ export function normalizeSlashes(p: string | null | undefined): string {
 }
 
 // Normalize a filesystem path for case-insensitive equality checks:
-// backslashes → forward slashes, strip trailing slashes, lowercase.
-// Use only when comparing whole paths (not when preserving original casing
-// for display or for case-sensitive filesystems).
+// backslashes → forward slashes, MSYS drive prefix → Windows drive
+// (`/d/helper` → `d:/helper`, #634's lesson hoisted from freshness.ts — a
+// git-bash `pwd`-sourced value must equal its Windows spelling), strip
+// trailing slashes, lowercase. Use only when comparing whole paths (not when
+// preserving original casing for display or for case-sensitive filesystems).
 export function normalizePath(p: string): string {
-  return normalizeSlashes(p).replace(/\/+$/, "").toLowerCase();
+  return normalizeSlashes(p)
+    .replace(/^\/([a-zA-Z])(\/|$)/, "$1:$2")   // bare `/d` folds too, so a root and its children stay comparable
+    .replace(/\/+$/, "")
+    .toLowerCase();
 }
 
 export function pathsEqual(a: string, b: string): boolean {

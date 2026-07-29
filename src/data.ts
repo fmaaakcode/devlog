@@ -433,6 +433,13 @@ export const OPENER_TO_CLOSER: Record<string, string> =
 /** All numbered openable tags (keys of CLOSER_FOR). */
 export const NUMBERED_OPENABLE = new Set(Object.keys(CLOSER_FOR));
 
+/** Tags that receive a `#N` at ingest: every openable kind plus `feature`,
+ *  which is numbered not for closure but so `feature update/removed #N` can
+ *  target it. Ingest (routes-tags) and backfill (backfillNums) both import
+ *  this — they used to keep divergent local copies, and the backfill's lagged
+ *  one left pre-numbering features permanently unnumbered. */
+export const NUMBERED_TAGS = new Set([...NUMBERED_OPENABLE, "feature"]);
+
 /** Tags that close an open item (keys of CLOSER_KINDS). */
 export const CLOSURE_TAGS = new Set(Object.keys(CLOSER_KINDS));
 
@@ -670,7 +677,6 @@ export function cleanupMalformedOutdatedTags(data: DevLogData): number {
  * Returns true if anything changed (caller may want to persist).
  */
 export function backfillNums(data: DevLogData): boolean {
-  const NUMBERED_TAGS = new Set(["todo", "bug found", "security", "security:own", "security:dep"]);
   let changed = false;
   for (const [name, profile] of Object.entries(data.projects)) {
     let next = profile.nextItemNum ?? 0;

@@ -22,6 +22,13 @@ export function tsToMs(v: unknown): number {
  *  with a per-store count. projects-summary needs `.size`; orphan-projects lists them. */
 export function orphanCounts(data: DevLogData): Map<string, { tags: number; events: number; plans: number; worklog: number }> {
   const registered = new Set(Object.keys(data.projects));
+  // Plausibility gate (#716 pattern): an EMPTY registry beside non-empty stores
+  // is a wounded registry (projects.json quarantined at load, or stores restored
+  // before it), not a world where every project was deleted. Judging that state
+  // would report every live project as an orphan and offer a full-store sweep.
+  if (registered.size === 0 && (data.tags.length || data.events.length || data.plans.length || data.worklog.length)) {
+    return new Map();
+  }
   const counts = new Map<string, { tags: number; events: number; plans: number; worklog: number }>();
   const bump = (name: string, k: "tags" | "events" | "plans" | "worklog") => {
     if (!name || registered.has(name)) return;

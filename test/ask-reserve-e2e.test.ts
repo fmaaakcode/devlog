@@ -82,6 +82,20 @@ describe("on-demand pull re-serve semantics (E2E)", () => {
     expect(parsed.reason).toContain("task after the outage");
   });
 
+  test("`- (ask:open)` with a space after the dash is served like the tight form", async () => {
+    // The tag parser and the near-miss detector both accept `-\s*\(`, so the
+    // spaced form was recognized as a legitimate known command (no warning) —
+    // but the ask handlers' own regexes required a tight `-(`, so it was never
+    // answered either: a double silence, #605's shape inverted.
+    await post(projDir, sid, [{ tag: "todo", content: "spaced ask target" }]);
+    const tx = writeTranscript(projDir, "U-spaced", ["checking\n\n- (ask:open)"]);
+    const served = await runHookRaw(TEST_PORT, { cwd: projDir, session_id: sid, transcript_path: tx, stop_hook_active: false });
+    const parsed = JSON.parse(served.out.trim());
+    expect(parsed.decision).toBe("block");
+    expect(parsed.reason).toContain("[devlog open]");
+    expect(parsed.reason).toContain("spaced ask target");
+  });
+
   test("-(ask:rules) dedups per turn but re-serves in a NEW turn (#413)", async () => {
     // A throwaway standards library with one category, pointed at via env.
     const stdDir = mkdtempSync(join(tmpdir(), "reserve-e2e-std-"));
