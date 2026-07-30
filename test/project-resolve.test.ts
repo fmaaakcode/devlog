@@ -33,6 +33,29 @@ describe("resolveProjectFor — exact + fallback", () => {
   });
 });
 
+describe("POSIX absolute paths keep their leading slash (parentDir)", () => {
+  // split/filter/join once dropped the leading "/" ("/home/u/app" → "home/u"),
+  // making every parentDir comparison false on macOS/Linux: the convention
+  // fold (#529) was dead there, and the .devlog-no-encloser branch returned a
+  // RELATIVE cwd that downstream writes resolved against the daemon's cwd.
+  test("convention fold works for a POSIX absolute parent (src-tauri → app)", () => {
+    const p = projects({ app: "/home/u/app" });
+    expect(resolveProjectFor({ projects: p }, "/home/u/app/src-tauri", noGit, () => false))
+      .toEqual({ name: "app", cwd: "/home/u/app" });
+  });
+
+  test(".devlog with no encloser resolves to its ABSOLUTE parent directory", () => {
+    expect(resolveProjectFor({ projects: {} }, "/home/u/proj/.devlog", noGit))
+      .toEqual({ name: "proj", cwd: "/home/u/proj" });
+  });
+
+  test("a single-segment absolute path still reports no parent (root contract)", () => {
+    // "/x/.devlog" has parent "/x"; "/.devlog" has no usable parent → fallback.
+    expect(resolveProjectFor({ projects: {} }, "/.devlog", noGit))
+      .toEqual({ name: ".devlog", cwd: "/.devlog" });
+  });
+});
+
 describe("Layer A — container with sibling projects must not swallow", () => {
   const p = projects({
     "container": "D:\\container",            // the container, accidentally registered

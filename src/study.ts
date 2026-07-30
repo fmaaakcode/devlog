@@ -29,7 +29,7 @@ import {
 import { closedItems } from "./closed-items";
 import { retroCorpus, fragileFiles, regressionGap, type FragileFile, type RetroItem, type TestGap } from "./retro";
 import { backfillCorpus } from "./features";
-import { isRealVersion, parseVersion } from "./release-html";
+import { isRealVersion, parseVersion, parseVersionMarker } from "./release-html";
 
 // Caps keep the corpus in-context small on old projects (house pattern:
 // backfill's MATERIAL_CAP). Aggregates are exempt — they don't grow that way.
@@ -333,7 +333,10 @@ function buildAggregates(data: DevLogData, project: string, now: number): StudyA
   };
 
   const featureTags = tags.filter(t => t.tag === "feature");
-  const backfilled = featureTags.filter(t => /^\s*\[v?\d+\.\d+\.\d+\]/i.test(t.content)).length;
+  // The CANONICAL marker parser (#744) — the local 3-part-only regex here
+  // diverged from it: [v1.2] and [v1.2.3-rc1] counted as declared but never
+  // as backfilled, though every other consumer treats them as backfills.
+  const backfilled = featureTags.filter(t => parseVersionMarker(t.content)).length;
   const features = {
     declared: featureTags.length,
     backfilled,

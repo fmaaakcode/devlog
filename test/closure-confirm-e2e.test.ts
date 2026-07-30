@@ -6,7 +6,7 @@
 // slip is visible (something diagnoseClosureMismatch can't flag).
 
 import { describe, test, expect, beforeEach, afterEach, beforeAll } from "bun:test";
-import { asJson } from "./_helpers";
+import { asJson, stopServer } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,7 +16,7 @@ const TEST_PORT = 17803;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
 const PROJECT_ROOT = join(import.meta.dir, "..");
 
-async function waitForServer(maxMs = 8000): Promise<void> {
+async function waitForServer(maxMs = 15000): Promise<void> {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
     try {
@@ -51,7 +51,7 @@ async function post(cwd: string, entries: any[]): Promise<any> {
 // the `#N` the closure references) only fires for a known project.
 async function register(cwd: string): Promise<void> {
   await fetch(`${BASE}/api/inject?cwd=${encodeURIComponent(cwd)}&session_id=confirm-e2e&type=SessionStart`,
-    { signal: AbortSignal.timeout(4000) });
+    { signal: AbortSignal.timeout(10000) });
 }
 
 async function numFor(project: string, content: string): Promise<number> {
@@ -86,8 +86,7 @@ describe("closure confirmation E2E (#228)", () => {
   });
 
   afterEach(async () => {
-    try { server.kill(); } catch { /* dead */ }
-    await Promise.race([server.exited, Bun.sleep(2000)]);
+    await stopServer(server);
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(projDir, { recursive: true, force: true });
   });
@@ -199,6 +198,21 @@ describe("closure confirmation E2E (#228)", () => {
     expect(resp.repairedClosures).toEqual([]);
     expect(resp.closureHints.length).toBe(1);
     expect((await openItems()).length).toBe(1);                             // the todo survives
+  });
+
+  test("a bare SUB-phase closer (P2.1) never pairs with a same-batch opener", async () => {
+    // The bare-phase guard once matched /^p\d+$/ only, so `done P2.1` fell
+    // through textMatchesOpen and the same-response rescue hijacked whatever
+    // opener shared the batch. The guard must speak the full syncPlanSteps
+    // grammar (Pn and Pn.m).
+    const resp = await post(projDir, [
+      { tag: "todo", content: "unrelated work opened this response" },
+      { tag: "done", content: "P2.1" },              // plan machinery owns bare phase codes
+    ]);
+    expect(resp.repairedClosures).toEqual([]);       // no hijack
+    const open = await openItems();
+    expect(open.length).toBe(1);
+    expect(open[0].content).toBe("unrelated work opened this response");
   });
 
   test("a number-less closer whose text MATCHES an open item keeps the legacy text-closure path", async () => {

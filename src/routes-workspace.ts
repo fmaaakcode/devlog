@@ -5,7 +5,7 @@
 
 import { loadData, withData } from "./data";
 import { resolveProjectFor } from "./project-resolve";
-import { rescanPreserve } from "./scanner";
+import { scanFreshProfile, applyPreservedScan } from "./scanner";
 import { broadcast } from "./broadcast";
 import { normalizeSlashes } from "./path-utils";
 import { obj, str } from "./validators";
@@ -96,18 +96,23 @@ export function makeWorkspaceRoutes(): Record<string, unknown> {
             }
           }
 
-          // Re-scan project to update header stats
-          await withData(async (data) => {
-            const norm = normalizeSlashes(targetPath);
-            for (const [name, proj] of Object.entries(data.projects)) {
-              const projNorm = normalizeSlashes(proj.path);
-              if (norm.startsWith(projNorm)) {
-                await rescanPreserve(data, name, proj.path);
+          // Re-scan project to update header stats — two-phase like /api/hook
+          // (R9 sweep, same class as #730): the full disk walk stays OFF the
+          // mutation lock; only the cheap merge runs under it.
+          const snap = await loadData();
+          const norm = normalizeSlashes(targetPath);
+          const hit = Object.entries(snap.projects).find(([, p]) => norm.startsWith(normalizeSlashes(p.path)));
+          if (hit) {
+            const [name, proj] = hit;
+            const fresh = await scanFreshProfile(proj.path);
+            await withData(async (data) => {
+              // Skip the merge if the project changed path between the phases.
+              if (data.projects[name] && normalizeSlashes(data.projects[name].path) === normalizeSlashes(proj.path)) {
+                applyPreservedScan(data, name, fresh);
                 broadcast("scan", { project: name });
-                break;
               }
-            }
-          });
+            });
+          }
 
           return Response.json({ ok: true, ignored });
         } catch {

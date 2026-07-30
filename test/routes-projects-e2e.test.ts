@@ -13,7 +13,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const TEST_PORT = 17791;
+const TEST_PORT = 17802;   // unique — was 17791, shared with regression-qa-integration (#729)
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
 const PROJECT_ROOT = join(import.meta.dir, "..");
 const JSON_HEADERS = { "Content-Type": "application/json" };

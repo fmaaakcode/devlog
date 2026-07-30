@@ -426,6 +426,25 @@ describe("bumpManifests — Cargo workspace layouts (#624)", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  test("hybrid: [package] at target + NEWER [workspace.package] → VISIBLE downgrade reject (#741)", async () => {
+    // The primary ([package]) equals the target so the top guard passes and the
+    // block is excluded from the edits; the workspace block is a downgrade the
+    // loop skips — a bare null here left the manifest protected but UNREPORTED.
+    const dir = mkdtempSync(join(tmpdir(), "vw-hybrid-down-"));
+    const before =
+      `[package]\nname = "root"\nversion = "2.0.0"\n\n` +
+      `[workspace]\nmembers = []\n\n[workspace.package]\nversion = "3.0.0"\n`;
+    writeFileSync(join(dir, "Cargo.toml"), before, "utf8");
+    const rejected: VersionReject[] = [];
+
+    const updates = await bumpManifests(dir, "v2.0.0 — replay", rejected);
+
+    expect(updates).toEqual([]);
+    expect(readFileSync(join(dir, "Cargo.toml"), "utf8")).toBe(before);
+    expect(rejected[0]).toMatchObject({ current: "3.0.0", attempted: "2.0.0", reason: "downgrade" });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   test("Cargo.lock: every member inheriting the workspace version gets its entry synced", async () => {
     const dir = mkdtempSync(join(tmpdir(), "vw-ws-lock-"));
     writeFileSync(join(dir, "Cargo.toml"),

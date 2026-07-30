@@ -482,8 +482,9 @@ export async function generateStackMd(projectPath: string, project: ProjectProfi
   const stackFile = join(devlogDir, "DEVLOG_STACK.md");
 
   // Generate-once by default (may carry manual edits); force = explicit regen.
+  // R9 F2 exception: an EMPTY-analysis file is frozen residue of the old lib/ skip — regenerate it, or the fix reaches no one.
   const file = Bun.file(stackFile);
-  if (!force && await file.exists()) return;
+  if (!force && await file.exists() && !(await file.text().then(t => t.includes("| 0 سطر | 0 دالة")).catch(() => false))) return;
 
   try { await mkdir(devlogDir, { recursive: true }); } catch { /* best-effort: a real failure resurfaces at the write below */ }
 

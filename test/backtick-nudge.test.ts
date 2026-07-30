@@ -18,7 +18,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { backtickedCommandLines } from "../src/tag-parser";
-import { startServer, waitForServer, runHook, PROJECT_ROOT } from "./_helpers";
+import { startServer, stopServer, waitForServer, runHook, PROJECT_ROOT } from "./_helpers";
 
 describe("backtickedCommandLines (unit)", () => {
   test("whole-line backticked commands with known heads are detected — ask, stored tag, breaking marker", () => {
@@ -86,8 +86,7 @@ describe("backtick nudge (E2E through the real Stop hook)", () => {
     await fetch(`${BASE}/api/inject?cwd=${encodeURIComponent(projDir)}&session_id=${sid}&type=SessionStart`, { signal: AbortSignal.timeout(4000) });
   });
   afterEach(async () => {
-    try { server.kill(); } catch { /* already exited */ }
-    await Promise.race([server.exited, Bun.sleep(2000)]);
+    await stopServer(server);
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(projDir, { recursive: true, force: true });
     rmSync(join(TURN_STATE_DIR, `${sid}.json`), { force: true });

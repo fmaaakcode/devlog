@@ -142,6 +142,28 @@ describe("POST /api/install-override", () => {
     expect((await asJson<{ created: number }>(r)).created).toBe(0);
   });
 
+  test("a pin identical to a FIXED-and-closed claim mints a fresh OPEN item (#743)", async () => {
+    // Close the original claim the scanner way: a security fix carrying its text.
+    await fetch(`${BASE}/api/tags`, {
+      method: "POST", headers: JSON_HEADERS,
+      body: JSON.stringify({ cwd: projDir, session_id: "ov-e2e", entries: [{ tag: "security fix", content: PIN.text }] }),
+    });
+    const closed = await asJson<{ items: Array<{ tag: string; content: string }> }>(
+      await fetch(`${BASE}/api/open-items?cwd=${encodeURIComponent(projDir)}`));
+    expect(closed.items.filter(i => i.content === PIN.text)).toHaveLength(0);
+
+    // Reintroducing the SAME vulnerable pin is a NEW accepted risk, not an echo:
+    // it must leave an open record (the old dedup skipped it → zero trace).
+    const r = await fetch(`${BASE}/api/install-override`, {
+      method: "POST", headers: JSON_HEADERS,
+      body: JSON.stringify({ cwd: projDir, pins: [PIN] }),
+    });
+    expect((await asJson<{ created: number }>(r)).created).toBe(1);
+    const open = await asJson<{ items: Array<{ tag: string; content: string }> }>(
+      await fetch(`${BASE}/api/open-items?cwd=${encodeURIComponent(projDir)}`));
+    expect(open.items.filter(i => i.tag === "security" && i.content === PIN.text)).toHaveLength(1);
+  });
+
   test("unknown cwd → fail-open (no project to attach to), never a 500", async () => {
     const r = await fetch(`${BASE}/api/install-override`, {
       method: "POST", headers: JSON_HEADERS,

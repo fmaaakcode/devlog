@@ -1,11 +1,18 @@
 import { readdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { pageRankFiles, pageRankFunctions } from "./pagerank";
 import { join, extname, relative } from "node:path";
 import { extractSymbols, type Symbol as CodeSymbol } from "./symbols";
 import { normalizeSlashes } from "./path-utils";
 import { CONTENT_PATTERNS } from "./analyze-patterns";
 import { softFail } from "./soft-fail";
 
-const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "__pycache__", "target", "vendor", ".venv", "venv", "cache", "tmp", "temp", ".cache", ".tmp", "release", "debug", ".devlog", ".claude", "backup", "old", "doc", "docs", "documentation", "examples", "example", "samples", "fixtures", "test", "tests", "__tests__", "external", "third_party", "thirdparty", "3rdparty", "deps", "lib"]);
+// "test"/"tests" are skipped DELIBERATELY: the stack map charts production
+// code. "lib" is NOT in this set — it is build output only by JS convention,
+// while for Dart/Flutter and Ruby gems it is where ALL the source lives;
+// skipping it unconditionally analyzed those projects to zero files with no
+// signal (R9 F2). collectSourceFiles skips it only under a JS/TS root.
+const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "__pycache__", "target", "vendor", ".venv", "venv", "cache", "tmp", "temp", ".cache", ".tmp", "release", "debug", ".devlog", ".claude", "backup", "old", "doc", "docs", "documentation", "examples", "example", "samples", "fixtures", "test", "tests", "__tests__", "external", "third_party", "thirdparty", "3rdparty", "deps"]);
 const SOURCE_EXT = new Set(["ts", "tsx", "js", "jsx", "py", "rs", "go", "java", "kt", "cs", "cpp", "c", "cc", "cxx", "h", "hpp", "hxx", "rb", "php", "swift", "dart", "vue", "svelte", "css", "html", "htm", "cu", "cuh"]);
 
 export interface FunctionInfo {
@@ -73,7 +80,7 @@ export interface ProjectAnalysis {
   security: SecurityPattern[];
 }
 
-async function collectSourceFiles(dir: string, base: string, depth = 0): Promise<string[]> {
+async function collectSourceFiles(dir: string, base: string, skipLib: boolean, depth = 0): Promise<string[]> {
   if (depth > 5) return [];
   const files: string[] = [];
   try {
@@ -81,9 +88,11 @@ async function collectSourceFiles(dir: string, base: string, depth = 0): Promise
     for (const entry of entries) {
       if (entry.name.startsWith(".")) continue;
       if (SKIP_DIRS.has(entry.name)) continue;
+      // lib/ = build output under a JS/TS root, source everywhere else (R9 F2).
+      if (skipLib && entry.name === "lib") continue;
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
-        files.push(...await collectSourceFiles(full, base, depth + 1));
+        files.push(...await collectSourceFiles(full, base, skipLib, depth + 1));
       } else {
         // Skip minified, bundled, and map files
         if (/\.min\.\w+$|\.bundle\.\w+$|\.map$|\.d\.ts$/i.test(entry.name)) continue;
@@ -199,9 +208,14 @@ function detectContext(content: string, filePath: string): "server" | "client" |
   return "unknown";
 }
 
-// Detect if file is a third-party library (minified or very long single lines)
-function isLibraryFile(content: string, filePath: string): boolean {
-  if (/vendor\/|lib\/|third.?party/i.test(filePath)) return true;
+// Detect if file is a third-party library (minified or very long single lines).
+// The lib/ path test is gated like the collectSourceFiles skip (R9 F2): under a
+// JS/TS root it is vendored/compiled output, everywhere else (Dart/Flutter,
+// Ruby) it is the project's own source — this was the second filter silently
+// emptying those analyses after the SKIP_DIRS entry was fixed.
+function isLibraryFile(content: string, filePath: string, skipLib: boolean): boolean {
+  if (skipLib && /lib\//i.test(filePath)) return true;
+  if (/vendor\/|third.?party/i.test(filePath)) return true;
   const lines = content.split("\n");
   // Very long average line = probably minified/bundled
   if (lines.length < 10 && content.length > 5000) return true;
@@ -715,7 +729,14 @@ function extractSecurity(content: string, filePath: string): SecurityPattern[] {
 }
 
 export async function analyzeProject(projectPath: string): Promise<ProjectAnalysis> {
-  const sourceFiles = await collectSourceFiles(projectPath, projectPath);
+  const skipLib = existsSync(join(projectPath, "package.json"));
+  // The detector-file exclusion below exists so DevLog's OWN pattern-detection
+  // code doesn't pollute its own stack map. Anchor it to a DevLog fingerprint:
+  // matched by bare substring it also hit USER files named export/analyze/…
+  // (src/export.ts is a common name), silently dropping their patterns, routes
+  // and security detection in every scanned project (R9 F5).
+  const isSelfScan = existsSync(join(projectPath, "src", "tag-parser.ts"));
+  const sourceFiles = await collectSourceFiles(projectPath, projectPath, skipLib);
   const files: FileAnalysis[] = [];
   const allRoutes: { method: string; path: string; file: string }[] = [];
   const graph: Record<string, string[]> = {};
@@ -752,13 +773,11 @@ export async function analyzeProject(projectPath: string): Promise<ProjectAnalys
   }
 
   // Second pass: deep analysis using tokenizer symbols
-  const sourceLines: Record<string, string[]> = {};
   for (const { rel, ext, content, symbols, includes } of fileContents) {
     // Skip library/vendor files
-    if (isLibraryFile(content, rel)) continue;
+    if (isLibraryFile(content, rel, skipLib)) continue;
 
     const lines = content.split("\n");
-    sourceLines[rel] = lines;
     const lineCount = lines.length;
     totalLines += lineCount;
 
@@ -780,8 +799,9 @@ export async function analyzeProject(projectPath: string): Promise<ProjectAnalys
       }
     }
 
-    // Skip pattern detection for files that contain detection code (false positives)
-    const isDetector = rel.includes("analyze") || rel.includes("tokenizer") || rel.includes("symbols") || rel.includes("export");
+    // Skip pattern detection for files that contain detection code (false
+    // positives) — self-scan only (R9 F5, see isSelfScan above).
+    const isDetector = isSelfScan && (rel.includes("analyze") || rel.includes("tokenizer") || rel.includes("symbols") || rel.includes("export"));
     const patterns = isDetector ? [] : detectPatterns(content, ext, ctx);
     const routes = isDetector ? [] : extractRoutes(content);
 
@@ -908,144 +928,6 @@ export async function analyzeProject(projectPath: string): Promise<ProjectAnalys
     dataTypes: allDataTypes,
     security: allSecurity,
   };
-}
-
-// PageRank for files — based on import graph
-function pageRankFiles(files: FileAnalysis[], graph: Record<string, string[]>): Record<string, number> {
-  const nodes = files.map(f => f.path);
-  const N = nodes.length;
-  if (N === 0) return {};
-
-  const d = 0.85; // damping factor
-  const iterations = 20;
-
-  // Build adjacency: file → files it imports (resolved)
-  const outLinks: Record<string, string[]> = {};
-  const inLinks: Record<string, string[]> = {};
-  for (const node of nodes) { outLinks[node] = []; inLinks[node] = []; }
-
-  // Resolve imports to targets by BASENAME (no extension), not substring. The
-  // old `target.includes(normalized)` let a short import like `./data` link to
-  // `metadata.ts` and `path` match `path-utils.ts`, corrupting the rank graph —
-  // the same collision computeImportedBy was fixed for (R4 code-quality F2).
-  const baseName = (p: string) => (p.split("/").pop() ?? "").replace(/\.\w+$/, "");
-  const byBase = new Map<string, string[]>();
-  for (const node of nodes) {
-    const b = baseName(node);
-    const arr = byBase.get(b);
-    if (arr) arr.push(node); else byBase.set(b, [node]);
-  }
-
-  for (const [file, imports] of Object.entries(graph)) {
-    if (!outLinks[file]) continue;
-    for (const imp of imports) {
-      const impBase = baseName(imp.replace(/^\.+\//, ""));
-      for (const target of byBase.get(impBase) ?? []) {
-        if (target === file) continue;   // ignore self-import
-        outLinks[file].push(target);
-        inLinks[target].push(file);
-      }
-    }
-  }
-
-  // Initialize ranks
-  let ranks: Record<string, number> = {};
-  for (const node of nodes) ranks[node] = 1 / N;
-
-  // Iterate
-  for (let i = 0; i < iterations; i++) {
-    const newRanks: Record<string, number> = {};
-    for (const node of nodes) {
-      let sum = 0;
-      for (const src of inLinks[node]) {
-        const outCount = outLinks[src].length || 1;
-        sum += ranks[src] / outCount;
-      }
-      newRanks[node] = (1 - d) / N + d * sum;
-    }
-    ranks = newRanks;
-  }
-
-  // Boost: entry points, main files, files with routes
-  for (const f of files) {
-    const fname = f.path.split("/").pop()?.replace(/\.\w+$/, "").toLowerCase() || "";
-    // Main/index/app files are always important
-    if (["main", "index", "app", "server", "mod"].includes(fname)) ranks[f.path] = (ranks[f.path] || 0) * 2.0;
-    if (f.patterns.includes("HTTP Server") || f.imports.length > 3) ranks[f.path] = (ranks[f.path] || 0) * 1.3;
-    if (f.routes.length > 0) ranks[f.path] = (ranks[f.path] || 0) * 1.2;
-    if (f.exports.length > 3) ranks[f.path] = (ranks[f.path] || 0) * 1.1;
-  }
-
-  return ranks;
-}
-
-// PageRank for functions — based on call graph
-function pageRankFunctions(files: FileAnalysis[], callGraph: { caller: string; callee: string; file: string }[]): Record<string, number> {
-  // Collect all function nodes as "file:name"
-  const fnNodes = new Set<string>();
-  for (const f of files) {
-    for (const fn of f.functions) {
-      fnNodes.add(`${f.path}:${fn.name}`);
-    }
-  }
-  const nodes = [...fnNodes];
-  const N = nodes.length;
-  if (N === 0) return {};
-
-  const d = 0.85;
-  const iterations = 20;
-
-  // Build links from call graph
-  const inLinks: Record<string, string[]> = {};
-  const outLinks: Record<string, string[]> = {};
-  for (const node of nodes) { inLinks[node] = []; outLinks[node] = []; }
-
-  for (const edge of callGraph) {
-    // caller is already "file:name"
-    // callee is just a name — find it in any file
-    const callerKey = edge.caller;
-    if (!outLinks[callerKey]) continue;
-
-    for (const f of files) {
-      const targetKey = `${f.path}:${edge.callee}`;
-      if (fnNodes.has(targetKey)) {
-        outLinks[callerKey].push(targetKey);
-        inLinks[targetKey].push(callerKey);
-      }
-    }
-  }
-
-  // Initialize
-  let ranks: Record<string, number> = {};
-  for (const node of nodes) ranks[node] = 1 / N;
-
-  // Iterate
-  for (let i = 0; i < iterations; i++) {
-    const newRanks: Record<string, number> = {};
-    for (const node of nodes) {
-      let sum = 0;
-      for (const src of inLinks[node]) {
-        const outCount = outLinks[src].length || 1;
-        sum += ranks[src] / outCount;
-      }
-      newRanks[node] = (1 - d) / N + d * sum;
-    }
-    ranks = newRanks;
-  }
-
-  // Boost based on actual importance, not size
-  for (const f of files) {
-    for (const fn of f.functions) {
-      const key = `${f.path}:${fn.name}`;
-      if (fn.isExported) ranks[key] = (ranks[key] || 0) * 1.5;
-      // Penalize small utility functions (< 8 lines)
-      if (fn.lines <= 8 && !fn.isAsync) ranks[key] = (ranks[key] || 0) * 0.3;
-      // Don't boost just for being big — boost for being called by many
-      // (PageRank already handles this via inLinks)
-    }
-  }
-
-  return ranks;
 }
 
 // Count how many files import each file, used by entry-point detection. Matches

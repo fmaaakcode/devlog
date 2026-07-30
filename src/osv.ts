@@ -395,14 +395,23 @@ export async function scanPackages(
 ): Promise<Map<string, PkgVuln>> {
   const out = new Map<string, PkgVuln>();
   let next = 0;
+  // Circuit breaker (R9 F3): this many consecutive dead queries — each already
+  // 3 tries × 8s inside postJson — mean the service is down, not the query.
+  // Without it a 500-package fallback list pins a SCAN_GATE slot for ~an hour
+  // hammering a failing service. Unqueried packages surface as UNKNOWN below:
+  // indeterminate, never "safe".
+  const BREAK_AFTER = 8;
+  let consecutiveNulls = 0;
   async function worker(): Promise<void> {
     while (next < packages.length) {
+      if (consecutiveNulls >= BREAK_AFTER) return;
       const p = packages[next++];
       let verdict: PkgVuln;
       if (!/^\d/.test(p.version)) {
         verdict = { ...UNKNOWN, version: p.version };
       } else {
         const j = await postJson<OsvQueryResponse>(OSV_QUERY_URL, { version: p.version, package: { name: p.name, ecosystem: osvEco } }, fetchImpl);
+        if (j === null) consecutiveNulls++; else consecutiveNulls = 0;
         verdict = j === null
           ? { ...UNKNOWN, version: p.version }
           : summarizeVulns(Array.isArray(j.vulns) ? j.vulns : [], p.name, p.version, ignoreIds);
@@ -417,6 +426,11 @@ export async function scanPackages(
     }
   }
   await Promise.all(Array.from({ length: Math.min(concurrency, packages.length) }, worker));
+  if (consecutiveNulls >= BREAK_AFTER) {
+    const skipped = packages.filter(p => !out.has(p.name));
+    for (const p of skipped) out.set(p.name, { ...UNKNOWN, version: p.version });
+    console.error(`[osv] ${osvEco}: detail scan aborted after ${BREAK_AFTER} consecutive failed queries — OSV unreachable; ${skipped.length} package(s) indeterminate this cycle.`);
+  }
   return out;
 }
 
@@ -431,24 +445,34 @@ const BATCH_CHUNK = 500; // OSV caps a batch at 1000 queries; stay well under.
 
 /** Indices (into `packages`) that have at least one advisory. On a batch failure
  *  the whole chunk is marked suspicious so the caller full-queries it — never drop
- *  coverage silently (a missed vuln is worse than a few extra queries). */
+ *  coverage silently (a missed vuln is worse than a few extra queries).
+ *  EXCEPT when the service itself is down (R9 F3): two consecutive chunk
+ *  failures after postJson's own 3-try backoff mean every fallback query is
+ *  doomed too — ~500 requests and ~51 min per chunk (4 workers × 3 tries × 8s)
+ *  against a failing service, for the same end state (indeterminate). Signal
+ *  serviceDown so the caller defers the scan instead. A single chunk failure
+ *  keeps the old suspicious-chunk behavior. */
 async function batchVulnerable(
   osvEco: string, packages: { name: string; version: string }[], fetchImpl: typeof fetch,
-): Promise<Set<number>> {
+): Promise<{ hits: Set<number>; serviceDown: boolean }> {
   const hits = new Set<number>();
+  let consecutiveFailures = 0;
   for (let off = 0; off < packages.length; off += BATCH_CHUNK) {
     const slice = packages.slice(off, off + BATCH_CHUNK);
     const queries = slice.map(p => ({ package: { name: p.name, ecosystem: osvEco }, version: p.version }));
     const j = await postJson<OsvBatchResponse>(OSV_BATCH_URL, { queries }, fetchImpl);
     if (!j || !Array.isArray(j.results)) {
+      consecutiveFailures++;
+      if (consecutiveFailures >= 2) return { hits, serviceDown: true };
       for (let i = 0; i < slice.length; i++) hits.add(off + i);
       continue;
     }
+    consecutiveFailures = 0;
     j.results.forEach((res, i) => {
       if (res && Array.isArray(res.vulns) && res.vulns.length > 0) hits.add(off + i);
     });
   }
-  return hits;
+  return { hits, serviceDown: false };
 }
 
 /** Scan a whole dependency tree. Batch-filters to the vulnerable subset, then
@@ -463,7 +487,22 @@ export async function scanTree(
   // A package on the ignore list (whole-package suppression) is never queried — it
   // falls through to SAFE below, so it creates no tag and never appears in a report.
   const scannable = packages.filter(p => /^\d/.test(p.version) && !ignore?.packages.has(p.name));
-  const hits = await batchVulnerable(osvEco, scannable, fetchImpl);
+  const { hits, serviceDown } = await batchVulnerable(osvEco, scannable, fetchImpl);
+  if (serviceDown) {
+    // OSV outage: every queried package is indeterminate this cycle — the
+    // reconciliation loop touches no tags on UNKNOWN, and the periodic sweep
+    // retries later. One loud line instead of silence (R9 F3).
+    console.error(`[osv] ${osvEco}: querybatch unreachable — scan deferred; ${scannable.length} package(s) indeterminate this cycle.`);
+    for (const p of packages) {
+      const queried = /^\d/.test(p.version) && !ignore?.packages.has(p.name);
+      const verdict = queried || !/^\d/.test(p.version)
+        ? { ...UNKNOWN, version: p.version }
+        : { ...SAFE, version: p.version };   // ignored package: never queried, SAFE by design
+      const prev = out.get(p.name);
+      if (!prev) out.set(p.name, verdict);
+    }
+    return out;
+  }
   const toDetail = scannable.filter((_, i) => hits.has(i));
   const details = await scanPackages(osvEco, toDetail, fetchImpl, 4, ignore?.ids);
   for (const p of packages) {

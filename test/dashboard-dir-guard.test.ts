@@ -51,6 +51,29 @@ describe("direction guard — LTR/RTL parity at the source level (#712)", () => 
     expect(css).toMatch(/#maintRow \{[^}]*margin-inline-start: 16px/);
   });
 
+  test("JS templates: no numeric margin-right and no LTR-forced right alignment (#740)", async () => {
+    // margin-right:22px under a dynamic dir="${uiDir()}" indents the WRONG side
+    // in LTR — use margin-inline-start. direction:ltr;text-align:right hardcodes
+    // the RTL reading side — use text-align:${uiDir()===...} or a paired rule.
+    // A bare text-align:right WITHOUT direction:ltr on the same span (numeric
+    // gutters in the diff viewer) stays legal.
+    const hits: string[] = [];
+    for (const f of [...JS_FILES, "assets/deps.js"]) {
+      const src = await Bun.file(join(ROOT, f)).text();
+      src.split("\n").forEach((line, i) => {
+        if (/margin-right:\s*\d|direction:\s*ltr;\s*text-align:\s*right/.test(line)) hits.push(`${f}:${i + 1}: ${line.trim().slice(0, 120)}`);
+      });
+    }
+    expect(hits).toEqual([]);
+  });
+
+  test("deps.html: text-align: right only inside [dir=\"rtl\"]-paired rules (#740)", async () => {
+    const html = stripCssComments(await Bun.file(join(ROOT, "deps.html")).text());
+    for (const line of html.split("\n")) {
+      if (/text-align:\s*right/.test(line)) expect(line).toContain('[dir="rtl"]');
+    }
+  });
+
   test("JS templates: no hardcoded direction:rtl or margin-right:auto", async () => {
     // Inline styles in the JS templates had the same disease. direction:ltr
     // stays legal (code, paths, timestamps are LTR in both languages); a

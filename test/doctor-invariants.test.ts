@@ -85,6 +85,18 @@ describe("duplicateReleases", () => {
       tag("release", "v1.0.1 — emergency follow-up", at(3)),
     ])).toBeNull();
   });
+
+  test("an n-fold re-post is ONE ×n row, not C(n,2) pairs (#745)", () => {
+    const f = duplicateReleases([
+      tag("release", "v2.0.0 — quad post", at(0)),
+      tag("release", "v2.0.0 — quad post", at(1)),
+      tag("release", "v2.0.0 — quad post", at(2)),
+      tag("release", "v2.0.0 — quad post", at(3)),
+    ]);
+    expect(f?.items).toHaveLength(1);
+    expect(f?.items?.[0]).toContain("×4");
+    expect(f?.title).toContain("1 ");
+  });
 });
 
 describe("duplicateTags (the blind spot between the two re-post checks — #590)", () => {

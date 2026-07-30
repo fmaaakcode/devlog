@@ -5,9 +5,9 @@
 // also driven by the periodic sweep), so it's injected via deps. Spread into
 // server.ts's routeDefs.
 
-import { loadData, withData, normalizeTagContent, assignNum, SECURITY_OPEN_TAGS } from "./data";
+import { loadData, withData, normalizeTagContent, assignNum, openSecurity } from "./data";
 import { runVulnScan } from "./vuln-scan";
-import { rescanPreserve } from "./scanner";
+import { scanFreshProfile, applyPreservedScan } from "./scanner";
 import { generateStackMd, exportStatusMd } from "./export";
 import { broadcast } from "./broadcast";
 import { softFail } from "./soft-fail";
@@ -91,8 +91,12 @@ export function makeScanRoutes({ checkAndRescanIfStale }: ScanRouteDeps): Record
           if (!snapshot.projects[project]) return Response.json({ ok: false, reason: "unknown-project" });
           let created = 0;
           await withData(async (data) => {
+            // OPEN claims only (#743): a pin identical to a fixed-and-CLOSED
+            // security tag is a reintroduced risk, not an echo — it must mint
+            // a fresh open tag (order-aware openSecurity keeps it open even
+            // though an old fix shares its text).
             const existing = new Set(
-              data.tags.filter(t => t.project === project && SECURITY_OPEN_TAGS.has(t.tag)).map(t => normalizeTagContent(t.content)),
+              openSecurity(data.tags.filter(t => t.project === project)).map(t => normalizeTagContent(t.content)),
             );
             const now = new Date().toISOString();
             for (const p of pins.slice(0, 8)) {
@@ -116,19 +120,33 @@ export function makeScanRoutes({ checkAndRescanIfStale }: ScanRouteDeps): Record
       async POST(req: ApiReq) {
         try {
           const name = req.params.project;
+          // Phase 1 (no lock): resolve the path from a snapshot and do the full
+          // disk walk off the mutation lock — rescanPreserve inside withData
+          // froze every writer for the whole scan on each manual rescan (R9 F1).
+          // Only the cheap merge runs under the lock, same as /api/hook.
+          const snapshot = await loadData();
+          const path0 = snapshot.projects[name]?.path || "";
+          let fresh: ProjectProfile | null = null;
+          if (path0) {
+            try { fresh = await scanFreshProfile(path0); } catch (e) { softFail("scan.scanFreshProfile", e); }
+          }
           let projectPath = "";
           let scanned: ProjectProfile | null = null;
           await withData(async (data) => {
             const existing = data.projects[name];
-            if (existing?.path) {
-              await rescanPreserve(data, name, existing.path);
-              await generateStackMd(existing.path, data.projects[name]);
+            // Guard the rare concurrent path change between the two phases —
+            // a scan of the old folder must not be merged into the new one.
+            if (existing?.path && fresh && existing.path === path0) {
+              applyPreservedScan(data, name, fresh);
               projectPath = existing.path;
               scanned = data.projects[name];
               broadcast("scan", { project: name });
             }
           });
           if (!projectPath) return Response.json({ error: "Not found" }, { status: 404 });
+          // Deep analysis off the lock too; generate-once makes this a no-op
+          // when DEVLOG_STACK.md already exists.
+          if (scanned) generateStackMd(projectPath, scanned).catch(e => softFail("generateStackMd", e));
           // exportStatusMd reads via loadData internally — runs after lock release.
           try { const data = await loadData(); await exportStatusMd(projectPath, data, name); } catch (e) { softFail("exportStatusMd", e); }
           runVulnScan(name).catch(e => softFail("runVulnScan", e));

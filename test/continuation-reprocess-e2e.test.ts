@@ -17,7 +17,7 @@ import type { Subprocess } from "bun";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { asJson, startServer, waitForServer, runHook as runHookRaw } from "./_helpers";
+import { asJson, startServer, stopServer, waitForServer, runHook as runHookRaw } from "./_helpers";
 
 const TEST_PORT = 17823;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
@@ -76,8 +76,7 @@ describe("continuation trap E2E (linked P1/P2 fix)", () => {
     await register(projDir, sid);
   });
   afterEach(async () => {
-    try { server.kill(); } catch { /* dead */ }
-    await Promise.race([server.exited, Bun.sleep(2000)]);
+    await stopServer(server);
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(projDir, { recursive: true, force: true });
     rmSync(join(TURN_STATE_DIR, `${sid}.json`), { force: true });

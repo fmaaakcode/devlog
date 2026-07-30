@@ -65,7 +65,14 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
             try { fresh = await scanFreshProfile(effectiveCwd0); } catch (e) { softFail("hook.scanFreshProfile", e); }
           }
 
-          return await withData(async (data) => {
+          // Deep analysis stays OFF the lock like the scan above: awaiting
+          // generateStackMd inside withData froze every writer for the whole
+          // analysis of a new project — concurrent hook curls died at their 10s
+          // timeout (events have no disk queue, so they were lost for good) and
+          // Stop-hook closure checks failed silently (R9 F1). Capture the
+          // target under the lock, fire detached after it, like runVulnScan.
+          let stackJob: { cwd: string; profile: ProjectProfile } | null = null;
+          const res = await withData(async (data) => {
             const resolved = resolveProjectFor(data, cwd);
             const name = resolved.name;
             const effectiveCwd = resolved.cwd;
@@ -75,7 +82,7 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
             if (fresh && name === name0) {
               const isNew = !data.projects[name];
               applyPreservedScan(data, name, fresh);
-              if (isNew) await generateStackMd(effectiveCwd, data.projects[name]);
+              if (isNew) stackJob = { cwd: effectiveCwd, profile: data.projects[name] };
               runVulnScan(name).catch(e => softFail("runVulnScan", e));
             }
 
@@ -109,6 +116,11 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
             broadcast("hook", { project: name, event: entry.event, tool: entry.tool, file_path: entry.file_path, type: entry.type, description: entry.description, command: entry.command });
             return Response.json({ ok: true });
           });
+          if (stackJob) {
+            const { cwd: stackCwd, profile } = stackJob;
+            generateStackMd(stackCwd, profile).catch(e => softFail("generateStackMd", e));
+          }
+          return res;
         } catch (e) {
           softFail("api.hook", e);
           return Response.json({ error: "Invalid" }, { status: 400 });

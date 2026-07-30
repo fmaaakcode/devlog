@@ -485,7 +485,10 @@ export function detectReleaseIntentConflict(tag: string, content: string): Relea
   const declared: BumpType | null =
     tag === "release:major" ? "major" : tag === "release:minor" ? "minor" : tag === "release:patch" ? "patch" : null;
   if (!declared) return null;
-  const m = (content || "").trim().match(/^v?\d+(?:\.\d+)+/i);
+  // Token boundary after the number (#742): «2.5x faster parsing» is prose, not
+  // a version — only a dotted number that ENDS there (or before a separator)
+  // counts. Prerelease/build suffixes (v1.2.3-rc1) stay matched.
+  const m = (content || "").trim().match(/^v?\d+(?:\.\d+)+(?:-[\w.]+)?(?=$|[\s—–:|،,])/i);
   if (!m) return null;
   return { declared, version: /^v/i.test(m[0]) ? m[0] : `v${m[0]}` };
 }

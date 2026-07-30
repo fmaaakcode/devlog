@@ -11,14 +11,14 @@ import type { Subprocess } from "bun";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startServer, waitForServer, runHook, PROJECT_ROOT } from "./_helpers";
+import { startServer, stopServer, waitForServer, runHook, PROJECT_ROOT } from "./_helpers";
 
 const TEST_PORT = 17923;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
 const TURN_STATE_DIR = join(PROJECT_ROOT, ".devlog", "turn-state");
 
 async function register(cwd: string, sid: string): Promise<void> {
-  await fetch(`${BASE}/api/inject?cwd=${encodeURIComponent(cwd)}&session_id=${sid}&type=SessionStart`, { signal: AbortSignal.timeout(4000) });
+  await fetch(`${BASE}/api/inject?cwd=${encodeURIComponent(cwd)}&session_id=${sid}&type=SessionStart`, { signal: AbortSignal.timeout(10000) });
 }
 async function post(cwd: string, sid: string, entries: unknown[]): Promise<Record<string, unknown>> {
   const r = await fetch(`${BASE}/api/tags`, {
@@ -62,8 +62,7 @@ describe("deps explainer (E2E)", () => {
     await register(projDir, sid);
   });
   afterEach(async () => {
-    try { server.kill(); } catch { /* already exited */ }
-    await Promise.race([server.exited, Bun.sleep(2000)]);
+    await stopServer(server);
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(projDir, { recursive: true, force: true });
     rmSync(join(TURN_STATE_DIR, `${sid}.json`), { force: true });

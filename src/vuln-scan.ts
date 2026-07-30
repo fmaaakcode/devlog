@@ -12,7 +12,7 @@
 // A process-wide SCAN_GATE bounds total concurrent scans so a startup sweep of
 // many projects can't open a burst of HTTPS connections (rate-limit/ban risk).
 
-import { loadData, withData, normalizeTagContent, assignNum, SECURITY_OPEN_TAGS } from "./data";
+import { loadData, withData, normalizeTagContent, assignNum, latestCloserTs, SECURITY_OPEN_TAGS } from "./data";
 import { latestVersions, synthesizeStatus, type VersionInfo } from "./registry";
 import { osvEcosystem, scanTree, type PkgVuln } from "./osv";
 import { enumerateDepTree } from "./lockfile-tree";
@@ -110,6 +110,8 @@ export async function runVulnScan(name: string) {
     // Each ecosystem group is scanned against ITS OWN OSV ecosystem; a group with
     // no OSV mapping (vcpkg/C-C++) stays freshness-only, as before.
     const tree = VULN_CHECK_DISABLED ? [] : await enumerateDepTree(projectSnap.path);
+    // No silent caps: say when the tree exceeds the scan bound (R9 note).
+    if (tree.length > 2000) console.error(`[vuln-scan] ${name}: dep tree has ${tree.length} packages — scanning the first 2000, ${tree.length - 2000} skipped this cycle.`);
     const treePackages = (tree.length ? tree : packages).slice(0, 2000)
       .map(p => ({ name: p.name, version: p.version.replace(/[\^~>=<\s]/g, "") || "latest", eco: p.eco }));
     const vulnByPkg = new Map<string, PkgVuln>();
@@ -248,8 +250,17 @@ export async function runVulnScan(name: string) {
     // dup 2026-07-17). `security:own` tags are safe here structurally: every
     // close path below requires the content to start with `<pkg>@`.
     const existingSecTags = data.tags.filter(t => t.project === name && SECURITY_OPEN_TAGS.has(t.tag));
-    const existingSecTexts = new Set(existingSecTags.map(t => normalizeTagContent(t.content)));
-    const existingSecFixTexts = new Set(data.tags.filter(t => t.project === name && t.tag === "security fix").map(t => normalizeTagContent(t.content)));
+    // Order-aware closure state (#743): a fix only covers claims at or before
+    // its own timestamp. The old any-timestamp text sets made a REINTRODUCED
+    // vuln (same pkg@version pinned again after an upgrade closed it) both
+    // undetectable at creation (deduped against the closed twin) and — worse —
+    // unfixable forever (the ancient fix text starved the auto-close of ever
+    // pushing a NEW fix for the reopened claim).
+    const latestSecFixTs = latestCloserTs(data.tags.filter(t => t.project === name), ["security fix"]);
+    const secClosed = (low: string, ts: string) => (latestSecFixTs.get(low) ?? "") >= ts;
+    const openSecTexts = new Set(
+      existingSecTags.filter(t => !secClosed(normalizeTagContent(t.content), t.timestamp || "")).map(t => normalizeTagContent(t.content)),
+    );
     const existingOutdatedTexts = new Set(data.tags.filter(t => t.project === name && t.tag === "outdated").map(t => normalizeTagContent(t.content)));
 
     if (libResults?.results) {
@@ -291,8 +302,9 @@ export async function runVulnScan(name: string) {
           if (hasCve) {
             const text = `${pkg.name}@${pkg.vulnVersion || pkg.version} — ${pkg.message}`.slice(0, 100);
             const norm = normalizeTagContent(text);
-            if (!existingSecTexts.has(norm)) {
+            if (!openSecTexts.has(norm)) {
               data.tags.push({ id: crypto.randomUUID(), project: name, tag: "security", content: text, timestamp: now, num: assignNum(data, name) });
+              openSecTexts.add(norm);
             }
             // Supersede: one open claim per package. An older OPEN security tag
             // for the SAME package with a DIFFERENT text (message drift, or a
@@ -302,17 +314,17 @@ export async function runVulnScan(name: string) {
             for (const secTag of existingSecTags) {
               const low = normalizeTagContent(secTag.content);
               if (low === norm || !low.startsWith(`${pkg.name.toLowerCase()}@`)) continue;
-              if (existingSecFixTexts.has(low)) continue;
+              if (secClosed(low, secTag.timestamp || "")) continue;
               data.tags.push({ id: crypto.randomUUID(), project: name, tag: "security fix", content: secTag.content, timestamp: now });
-              existingSecFixTexts.add(low);
+              latestSecFixTs.set(low, now);
             }
           } else {
             // No CVE on this lib — auto-close any open security tags for it
             for (const secTag of existingSecTags) {
               const low = normalizeTagContent(secTag.content);
-              if (low.startsWith(`${pkg.name.toLowerCase()}@`) && !existingSecFixTexts.has(low)) {
+              if (low.startsWith(`${pkg.name.toLowerCase()}@`) && !secClosed(low, secTag.timestamp || "")) {
                 data.tags.push({ id: crypto.randomUUID(), project: name, tag: "security fix", content: secTag.content, timestamp: now });
-                existingSecFixTexts.add(low);
+                latestSecFixTs.set(low, now);
               }
             }
           }

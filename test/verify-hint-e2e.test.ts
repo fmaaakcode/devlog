@@ -9,7 +9,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import type { Subprocess } from "bun";
-import { asJson, startServer, waitForServer, runHook as runHookRaw } from "./_helpers";
+import { asJson, startServer, stopServer, waitForServer, runHook as runHookRaw } from "./_helpers";
 import { mkdtempSync, rmSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -64,8 +64,7 @@ describe("verify-nudge is once-per-session (loop fix)", () => {
     await register(projDir, sid);
   });
   afterEach(async () => {
-    try { server.kill(); } catch { /* dead */ }
-    await Promise.race([server.exited, Bun.sleep(2000)]);
+    await stopServer(server);
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(projDir, { recursive: true, force: true });
     // Scrub the per-session ledger file this test wrote into the repo's .devlog.

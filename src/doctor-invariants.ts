@@ -74,18 +74,29 @@ export function duplicateReleases(tags: TagEntry[]): Finding | null {
     .filter(t => t.tag === "release" || t.tag.startsWith("release:"))
     .sort((a, b) => ms(a.timestamp) - ms(b.timestamp));
 
+  // One row per duplicate GROUP, not per (i,j) pair (#745): an n-fold re-post
+  // used to report C(n,2) rows (4 copies → 6 «×2» rows), inflating the title.
   const dups: string[] = [];
+  const consumed = new Set<number>();
   for (let i = 0; i < releases.length; i++) {
+    if (consumed.has(i)) continue;
+    let textCopies = 0;
+    let lastDt = 0;
+    let reasonTwin: number | null = null;
     for (let j = i + 1; j < releases.length; j++) {
       const dt = ms(releases[j].timestamp) - ms(releases[i].timestamp);
       if (dt > NEAR_MS) break;                       // sorted → nothing further is near
+      if (consumed.has(j)) continue;
       const sameText = norm(releases[i].content) === norm(releases[j].content);
       const reason = norm(releaseReason(releases[i].content));
       const sameReason = !sameText && !!reason && reason === norm(releaseReason(releases[j].content));
-      if (!sameText && !sameReason) continue;
-      dups.push(sameText
-        ? `«${(releases[i].content || "").slice(0, 60)}» ×2 (${Math.round(dt / 1000)}s apart)`
-        : `«${(releases[i].content || "").slice(0, 40)}» و«${(releases[j].content || "").slice(0, 40)}» — نفس السبب بنسختين (${Math.round(dt / 1000)}s apart)`);
+      if (sameText) { textCopies++; consumed.add(j); lastDt = dt; }
+      else if (sameReason && reasonTwin === null) { reasonTwin = j; consumed.add(j); }
+    }
+    if (textCopies) dups.push(`«${(releases[i].content || "").slice(0, 60)}» ×${textCopies + 1} (${Math.round(lastDt / 1000)}s apart)`);
+    if (reasonTwin !== null) {
+      const dt = ms(releases[reasonTwin].timestamp) - ms(releases[i].timestamp);
+      dups.push(`«${(releases[i].content || "").slice(0, 40)}» و«${(releases[reasonTwin].content || "").slice(0, 40)}» — نفس السبب بنسختين (${Math.round(dt / 1000)}s apart)`);
     }
   }
   if (!dups.length) return null;
@@ -120,18 +131,26 @@ export function duplicateTags(tags: TagEntry[]): Finding | null {
     .filter(t => t.tag !== "release" && !t.tag.startsWith("release:"))
     .sort((a, b) => ms(a.timestamp) - ms(b.timestamp));
 
+  // Group rows like duplicateReleases (#745): n copies → one «×n» row.
   const dups: string[] = [];
+  const consumed = new Set<number>();
   for (let i = 0; i < sorted.length; i++) {
+    if (consumed.has(i)) continue;
     const a = sorted[i];
     const an = norm(a.content);
     if (!an) continue;
+    let copies = 0;
+    let lastDt = 0;
     for (let j = i + 1; j < sorted.length; j++) {
       const b = sorted[j];
       const dt = ms(b.timestamp) - ms(a.timestamp);
       if (dt > NEAR_MS) break;                       // sorted → nothing further is near
-      if (b.tag !== a.tag || norm(b.content) !== an) continue;
-      dups.push(`[${a.tag}] «${(a.content || "").slice(0, 50)}» ×2 (${Math.round(dt / 1000)}s apart)`);
+      if (consumed.has(j) || b.tag !== a.tag || norm(b.content) !== an) continue;
+      copies++;
+      consumed.add(j);
+      lastDt = dt;
     }
+    if (copies) dups.push(`[${a.tag}] «${(a.content || "").slice(0, 50)}» ×${copies + 1} (${Math.round(lastDt / 1000)}s apart)`);
   }
   if (!dups.length) return null;
   return {

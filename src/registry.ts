@@ -364,8 +364,16 @@ function parseVer(v: string): number[] | null {
   return [parseInt(m[1] || "0", 10), parseInt(m[2] || "0", 10), parseInt(m[3] || "0", 10)];
 }
 
+// A pre-release suffix right after the numeric core ("5.0.0-beta.1"), with the
+// same prefix tolerance as parseVer.
+const isPreRelease = (v: string) => /^\d[\d.]*-/.test(v.replace(/^[vV=^~><\s]+/, ""));
+
 // True when `latest` is strictly newer than `current` (major→minor→patch).
 // Unparseable inputs (git refs, "*", "latest") are treated as "not behind".
+// Numeric tie: a pre-release is OLDER than its matching stable (semver §11) —
+// without this, nearestFix rejected an available fix for a canary/beta install
+// and the security tag claimed "no complete fix" while one existed (R9 F4).
+// Comparing two pre-release suffixes to each other stays out of scope.
 export function isVersionBehind(current: string, latest: string): boolean {
   const a = parseVer(current);
   const b = parseVer(latest);
@@ -373,7 +381,7 @@ export function isVersionBehind(current: string, latest: string): boolean {
   for (let i = 0; i < 3; i++) {
     if (b[i] !== a[i]) return b[i] > a[i];
   }
-  return false;
+  return isPreRelease(current) && !isPreRelease(latest);
 }
 
 export type NativeScanStatus = "safe" | "outdated" | "indeterminate";

@@ -9,6 +9,7 @@
 // project, then spawns the hook itself with a `-(release)` response on stdin.
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { stopServer } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,7 +19,7 @@ const TEST_PORT = 17811;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
 const PROJECT_ROOT = join(import.meta.dir, "..");
 
-async function waitForServer(maxMs = 8000): Promise<void> {
+async function waitForServer(maxMs = 15000): Promise<void> {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
     try { if ((await fetch(`${BASE}/api/data`, { signal: AbortSignal.timeout(500) })).ok) return; } catch { /* not up yet */ }
@@ -35,7 +36,7 @@ function startServer(dataDir: string): Subprocess {
   });
 }
 async function register(cwd: string): Promise<void> {
-  await fetch(`${BASE}/api/inject?cwd=${encodeURIComponent(cwd)}&session_id=hook-json-e2e&type=SessionStart`, { signal: AbortSignal.timeout(4000) });
+  await fetch(`${BASE}/api/inject?cwd=${encodeURIComponent(cwd)}&session_id=hook-json-e2e&type=SessionStart`, { signal: AbortSignal.timeout(10000) });
 }
 
 // Run the real hook with `message` as the assistant's final turn text.
@@ -67,8 +68,7 @@ describe("Stop hook feedback via JSON stdout, not exit(2) (regression)", () => {
     await register(projDir);
   });
   afterEach(async () => {
-    try { server.kill(); } catch { /* already exited */ }
-    await Promise.race([server.exited, Bun.sleep(2000)]);
+    await stopServer(server);
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(projDir, { recursive: true, force: true });
   });

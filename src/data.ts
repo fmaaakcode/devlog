@@ -1,9 +1,10 @@
 import { existsSync, readdirSync } from "node:fs";
 import { mkdir, open, rename } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { DevLogData, InjectionConfig, PlanStep, ProjectProfile, TagEntry } from "./types";
 import { normalizeSlashes } from "./path-utils";
+import { assertTestDataDirIsolated } from "./data-guard";
 
 export const DEFAULT_INJECTION_CONFIG: InjectionConfig = {
   sessionStart: true,
@@ -41,6 +42,9 @@ export const DATA_FILE = `${DIR}/data.json`;            // legacy (kept for migr
 export const PLUGIN_MODE = !!process.env.CLAUDE_PLUGIN_ROOT;
 export const DATA_DIR = process.env.DEVLOG_DATA_DIR
   || (PLUGIN_MODE ? join(homedir(), ".devlog", "data") : `${DIR}/.devlog-data`);
+// Refuse a non-temporary DATA_DIR under bun test (#736) — see data-guard.ts.
+assertTestDataDirIsolated(process.env.NODE_ENV, DATA_DIR, tmpdir());
+
 const F = {
   projects: `${DATA_DIR}/projects.json`,
   tags:     `${DATA_DIR}/tags.json`,
@@ -496,36 +500,56 @@ function passesNum(t: { num?: number }, opts: OpenItemOpts): boolean {
   return !opts.numberedOnly || typeof t.num === "number";
 }
 
+// Text closures are ORDER-AWARE (#743): a closer only covers openers at or
+// before its own timestamp. Without this, a problem REINTRODUCED after its fix
+// (a vulnerable pin re-installed, a bug re-reported verbatim) was born closed —
+// the old closure's text shadowed the new report forever, so neither the
+// install-override endpoint nor the scan sweep could ever leave an open record.
+// `#N` closures need no such treatment: numbers are unique per item, so a
+// numbered closure can never swallow a future re-opener (it gets a fresh num).
+/** Latest closer timestamp per normalized text, for the given closer verbs. */
+export function latestCloserTs(tags: TagEntry[], closers: readonly string[]): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const t of tags) {
+    if (!closers.includes(t.tag)) continue;
+    const k = normalizeTagContent(t.content);
+    if ((m.get(k) ?? "") < (t.timestamp || "")) m.set(k, t.timestamp || "");
+  }
+  return m;
+}
+function textClosed(closedAt: Map<string, string>, t: TagEntry): boolean {
+  const ts = closedAt.get(normalizeTagContent(t.content));
+  return ts !== undefined && ts >= (t.timestamp || "");
+}
+
 /** Todos with no matching `-(done)`/`-(dropped)` closure (by text or by `#N`). */
 export function openTodos(tags: TagEntry[], opts: OpenItemOpts = {}): TagEntry[] {
-  const done = new Set(tags.filter(t => t.tag === "done").map(t => normalizeTagContent(t.content)));
-  const dropped = new Set(tags.filter(t => t.tag === "dropped").map(t => normalizeTagContent(t.content)));
+  const closedAt = latestCloserTs(tags, ["done", "dropped"]);
   const byNum = closedNums(tags, ["done", "dropped"]);
   return tags.filter(t => t.tag === "todo"
     && passesNum(t, opts)
-    && !done.has(normalizeTagContent(t.content))
-    && !dropped.has(normalizeTagContent(t.content))
+    && !textClosed(closedAt, t)
     && !(typeof t.num === "number" && byNum.has(t.num)));
 }
 
 /** Bugs with no matching `-(bug fix)` closure (by text or by `#N`). */
 export function openBugs(tags: TagEntry[], opts: OpenItemOpts = {}): TagEntry[] {
-  const fixed = new Set(tags.filter(t => t.tag === "bug fix").map(t => normalizeTagContent(t.content)));
+  const closedAt = latestCloserTs(tags, ["bug fix"]);
   const byNum = closedNums(tags, ["bug fix"]);
   return tags.filter(t => t.tag === "bug found"
     && passesNum(t, opts)
-    && !fixed.has(normalizeTagContent(t.content))
+    && !textClosed(closedAt, t)
     && !(typeof t.num === "number" && byNum.has(t.num)));
 }
 
 /** Security items (`security`/`security:own`/`security:dep`) with no matching
  *  `-(security fix)` closure (by text or by `#N`). */
 export function openSecurity(tags: TagEntry[], opts: OpenItemOpts = {}): TagEntry[] {
-  const fixed = new Set(tags.filter(t => t.tag === "security fix").map(t => normalizeTagContent(t.content)));
+  const closedAt = latestCloserTs(tags, ["security fix"]);
   const byNum = closedNums(tags, ["security fix"]);
   return tags.filter(t => SECURITY_OPEN_TAGS.has(t.tag)
     && passesNum(t, opts)
-    && !fixed.has(normalizeTagContent(t.content))
+    && !textClosed(closedAt, t)
     && !(typeof t.num === "number" && byNum.has(t.num)));
 }
 

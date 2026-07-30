@@ -7,7 +7,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { findOrphanClosures, cleanupOrphanClosures } from "../src/orphan-closures";
-import type { DevLogData, TagEntry } from "../src/types";
+import type { DevLogData, PlanEntry, TagEntry } from "../src/types";
 
 const PROJ = "orph-proj";
 let _id = 0;
@@ -15,6 +15,13 @@ function tag(tagName: string, content: string, extra: Partial<TagEntry> = {}): T
   return { id: `t${_id++}`, project: PROJ, tag: tagName, content, timestamp: "2026-06-01T00:00:00Z", ...extra };
 }
 const ids = (tags: TagEntry[]) => tags.map(t => t.id).sort();
+function plan(stepNums: number[], project = PROJ): PlanEntry {
+  return {
+    id: `p${_id++}`, project, title: "plan", file_path: "x.md",
+    timestamp: "2026-06-01T00:00:00Z", updatedAt: "2026-06-01T00:00:00Z",
+    steps: stepNums.map(n => ({ text: `step ${n}`, completed: false, num: n })),
+  } as PlanEntry;
+}
 
 describe("findOrphanClosures", () => {
   test("done '#999' with no opener #999 → orphan", () => {
@@ -63,6 +70,28 @@ describe("findOrphanClosures", () => {
   test("closer with trailing prose (not pure #N) → not an orphan (resolved-text path)", () => {
     const tags = [tag("done", "#5 — same root cause as bug 11")];
     expect(findOrphanClosures(tags)).toEqual([]);
+  });
+});
+
+describe("findOrphanClosures — plan steps share the #N space", () => {
+  test("done '#12' matching a plan STEP num → not an orphan (the closure IS the step's record)", () => {
+    const tags = [tag("done", "#12")];
+    expect(findOrphanClosures(tags, [plan([12])])).toEqual([]);
+  });
+
+  test("a plan step num in a DIFFERENT project does not shield the closer", () => {
+    const tags = [tag("done", "#12")];
+    expect(ids(findOrphanClosures(tags, [plan([12], "other-proj")]))).toEqual(ids(tags));
+  });
+
+  test("cleanup passes data.plans through — a step-closing done survives the GC", () => {
+    const d = {
+      tags: [tag("done", "#12"), tag("done", "#999")],
+      plans: [plan([12])],
+      migrations: {},
+    } as unknown as DevLogData;
+    expect(cleanupOrphanClosures(d)).toBe(1);            // only the true phantom goes
+    expect(d.tags.map(t => t.content)).toEqual(["#12"]);
   });
 });
 

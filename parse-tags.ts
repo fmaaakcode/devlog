@@ -293,7 +293,10 @@ if (msg) {
       if (process.env.DEVLOG_TAG_CONTEXT === "0") return "";
       let ctx = memo.get(segText);
       if (ctx === undefined) {
-        const prose = segText.split("\n").filter(l => !/^[ \t]*-\([^)\n]{1,40}\)/.test(l)).join("\n").trim();
+        // `-[ \t]*\(` mirrors the tag EXTRACTOR's tolerance (#748): a spaced
+        // `- (bug fix) #12` is captured as a tag, so it must be stripped from
+        // the prose too — or the tag line leaks into its own stored context.
+        const prose = segText.split("\n").filter(l => !/^[ \t]*-[ \t]*\([^)\n]{1,40}\)/.test(l)).join("\n").trim();
         ctx = prose.length <= CONTEXT_MAX ? prose : `…${prose.slice(-CONTEXT_MAX)}`;
         memo.set(segText, ctx);
       }
@@ -1140,14 +1143,25 @@ if (msg && cwd) {
     const hits = await unservedMatches(/^[ \t]*-\s*\(ask:lib\)[ \t]+(\S[^\n]*?)[ \t]*$/gm, mm => `ask:lib ${mm[1]}`);
     if (hits.length) {
       // Several `-(ask:lib)` lines in one turn (or a corrected re-ask after a
-      // refusal) merge into ONE query — the server caps at 8 names, and each
-      // line is marked served individually so a later continuation never
-      // re-serves a line that already rode this batch.
-      const names = hits.map(h => h.m[1]).join(" ");
+      // refusal) merge into ONE query — but the server caps at 8 names (#749):
+      // only the names actually sent ride this batch. A line whose names all
+      // made the cut is marked served; a line with names past the cap stays
+      // UNSERVED (a continuation re-serves it) and the output says so — the
+      // old mark-everything path starved those names of advice AND deduped
+      // away their re-ask within the turn.
+      const LIB_CAP = 8;
+      const flat = hits.flatMap(h => h.m[1].trim().split(/[ \t]+/).map(name => ({ h, name })));
+      const sent = flat.slice(0, LIB_CAP);
+      const starved = flat.slice(LIB_CAP);
+      const names = sent.map(x => x.name).join(" ");
       const r = await fetch(`${SERVER}/api/lib-advice?cwd=${encodeURIComponent(cwd)}&names=${encodeURIComponent(names)}`,
         { signal: AbortSignal.timeout(25000) });
       if (r.ok) {
-        for (const h of hits) await markAskServed(h.cmd);   // record only now the fetch succeeded (#398)
+        // Record only now the fetch succeeded (#398) — and only lines whose
+        // names ALL rode this batch (#749).
+        for (const h of hits) {
+          if (!starved.some(s => s.h === h)) await markAskServed(h.cmd);
+        }
         const { items = [] } = await r.json() as { items?: any[] };
         const age = (d: any) => (typeof d === "number") ? L(` (${d}d old)`, ` (عمرها ${d} يوم)`) : "";
         const lines = items.map((it: any) => {
@@ -1192,8 +1206,12 @@ if (msg && cwd) {
           ? L("\n  After installing, record WHY it's in this project: `-(lib) <name> — <one-line purpose>` (re-emit the name to update).",
               "\n  بعد التركيب سجّل سبب وجودها في المشروع: `-(lib) <الاسم> — <غرض من سطر واحد>` (أعد إصداره بنفس الاسم للتحديث).")
           : "";
-        await log(`ask:lib: served ${items.length} item(s)`);
-        blockContinue(`\n[devlog lib-advice]\n${out}${capture}\n`);
+        const capped = starved.length
+          ? L(`\n  ⚠ capped at ${LIB_CAP} names per ask — NOT advised here: ${starved.map(s => s.name).join(" ")}. Re-emit -(ask:lib) for them.`,
+              `\n  ⚠ السقف ${LIB_CAP} أسماء لكل سؤال — لم يُنصح هنا: ${starved.map(s => s.name).join(" ")}. أعد -(ask:lib) لها وحدها.`)
+          : "";
+        await log(`ask:lib: served ${items.length} item(s)${starved.length ? `, ${starved.length} past cap` : ""}`);
+        blockContinue(`\n[devlog lib-advice]\n${out}${capture}${capped}\n`);
       } else {
         await log(`ask:lib: server replied ${r.status}`);
       }
@@ -1210,31 +1228,41 @@ if (msg && cwd) {
 // project. Ephemeral like every ask: command — never a logged tag.
 if (msg && cwd) {
   try {
-    const [hit] = await unservedMatches(/^[ \t]*-\s*\(ask:search\)[ \t]+(\S[^\n]*?)[ \t]*$/gm, mm => `ask:search ${mm[1]}`);
-    if (hit) {
+    const hits = await unservedMatches(/^[ \t]*-\s*\(ask:search\)[ \t]+(\S[^\n]*?)[ \t]*$/gm, mm => `ask:search ${mm[1]}`);
+    for (const hit of hits) {
       let q = hit.m[1];
       let all = false;
       const am = q.match(/^all:[ \t]*(.*)$/);
       if (am) { all = true; q = am[1]; }
-      if (q.trim()) {
-        const r = await fetch(
-          `${SERVER}/api/recall?cwd=${encodeURIComponent(cwd)}&q=${encodeURIComponent(q)}${all ? "&all=1" : ""}`,
-          { signal: AbortSignal.timeout(10000) });
-        if (r.ok) {
-          await markAskServed(hit.cmd);
-          const { results = [] } = await r.json() as { results?: any[] };
-          const lines = results.map((res: any) => {
-            const num = typeof res.num === "number" ? ` #${res.num}` : "";
-            const proj = all ? ` @${res.project}` : "";
-            return `  [${res.tag}${num}]${proj} ${String(res.timestamp || "").slice(0, 10)} — ${res.snippet}`;
-          });
-          const out = lines.length ? lines.join("\n")
-            : L("no matches in the log.", "لا نتائج مطابقة في السجل.");
-          await log(`ask:search: served ${results.length} result(s)`);
-          blockContinue(`\n[devlog recall]\n${out}\n`);
-        } else {
-          await log(`ask:search: server replied ${r.status}`);
-        }
+      if (!q.trim()) {
+        // An empty query (`-(ask:search) all:` and nothing after) used to fall
+        // through with no serve, no mark, no feedback — and, staying first in
+        // document order and unserved, it shadowed every later valid
+        // ask:search for the rest of the turn (#750). Consume it with a
+        // visible correction and move to the next line.
+        await markAskServed(hit.cmd);
+        await log("ask:search: empty query — marked served, skipped");
+        feedback.push(`\n[devlog recall]\n${L("empty search query — write the question after ask:search (or after all:).", "سؤال بحث فارغ — اكتب السؤال بعد ask:search (أو بعد all:).")}\n`);
+        continue;
+      }
+      const r = await fetch(
+        `${SERVER}/api/recall?cwd=${encodeURIComponent(cwd)}&q=${encodeURIComponent(q)}${all ? "&all=1" : ""}`,
+        { signal: AbortSignal.timeout(10000) });
+      if (r.ok) {
+        await markAskServed(hit.cmd);
+        const { results = [] } = await r.json() as { results?: any[] };
+        const lines = results.map((res: any) => {
+          const num = typeof res.num === "number" ? ` #${res.num}` : "";
+          const proj = all ? ` @${res.project}` : "";
+          return `  [${res.tag}${num}]${proj} ${String(res.timestamp || "").slice(0, 10)} — ${res.snippet}`;
+        });
+        const out = lines.length ? lines.join("\n")
+          : L("no matches in the log.", "لا نتائج مطابقة في السجل.");
+        await log(`ask:search: served ${results.length} result(s)`);
+        blockContinue(`\n[devlog recall]\n${out}\n`);
+      } else {
+        await log(`ask:search: server replied ${r.status}`);
+        break;   // server trouble — retry next continuation, don't consume
       }
     }
   } catch (e) {

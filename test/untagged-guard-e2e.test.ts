@@ -11,7 +11,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import type { Subprocess } from "bun";
-import { startServer, waitForServer, runHook as runHookRaw } from "./_helpers";
+import { startServer, stopServer, waitForServer, runHook as runHookRaw } from "./_helpers";
 import { mkdtempSync, rmSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -73,8 +73,7 @@ describe("untagged-session guard (e2e, real hook)", () => {
     await waitForServer(BASE);
   });
   afterEach(async () => {
-    try { server.kill(); } catch { /* dead */ }
-    await Promise.race([server.exited, Bun.sleep(2000)]);
+    await stopServer(server);
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(projDir, { recursive: true, force: true });
     for (const sid of sids.splice(0)) {

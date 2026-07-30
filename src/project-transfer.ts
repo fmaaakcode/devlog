@@ -23,7 +23,7 @@
 //   project.
 
 import { DATA_DIR, normalizeTagContent } from "./data";
-import { listArchiveMonths, readArchiveMonth, readUndoneMonth, rewriteArchiveMonth } from "./event-archive";
+import { listArchiveMonths, mutateArchiveMonth, readArchiveMonth, readUndoneMonth } from "./event-archive";
 import type {
   DevLogData, EventEntry, InjectionConfig, PlanEntry, ProjectProfile,
   TagEntry, UndoneRecord, WorklogEntry,
@@ -263,14 +263,20 @@ export async function mergeArchiveBundle(
 ): Promise<{ added: number; months: number }> {
   const out = { added: 0, months: 0 };
   if (!archive) return out;
+  // Each month merges inside ONE write-chain link (mutateArchiveMonth, #747):
+  // dedup against a snapshot read OUTSIDE the chain raced concurrent eviction
+  // appends, which the rewrite then clobbered.
   for (const [month, rows] of Object.entries(archive.events || {})) {
     if (!Array.isArray(rows)) continue;
-    const local = await readArchiveMonth(month);
-    const seen = new Set(local.map(e => e.id));
-    const fresh = rows.filter(e => e && typeof e === "object" && e.id && e.project === project && !seen.has(e.id));
-    if (!fresh.length) continue;
-    const merged = [...local, ...fresh].sort((a, b) => (a.timestamp || "").localeCompare(b.timestamp || ""));
-    if (await rewriteArchiveMonth("events", month, merged)) { out.added += fresh.length; out.months++; }
+    let freshCount = 0;
+    const r = await mutateArchiveMonth<EventEntry>("events", month, local => {
+      const seen = new Set(local.map(e => e.id));
+      const fresh = rows.filter(e => e && typeof e === "object" && e.id && e.project === project && !seen.has(e.id));
+      if (!fresh.length) return null;
+      freshCount = fresh.length;
+      return [...local, ...fresh].sort((a, b) => (a.timestamp || "").localeCompare(b.timestamp || ""));
+    });
+    if (r && freshCount) { out.added += freshCount; out.months++; }
   }
   const undoneKey = (r: UndoneRecord) => {
     const entry = r.entry as { id?: string; text?: string };
@@ -278,12 +284,15 @@ export async function mergeArchiveBundle(
   };
   for (const [month, rows] of Object.entries(archive.undone || {})) {
     if (!Array.isArray(rows)) continue;
-    const local = await readUndoneMonth(month);
-    const seen = new Set(local.map(undoneKey));
-    const fresh = rows.filter(r => r && typeof r === "object" && r.undoneAt && r.entry && r.project === project && !seen.has(undoneKey(r)));
-    if (!fresh.length) continue;
-    const merged = [...local, ...fresh].sort((a, b) => (a.undoneAt || "").localeCompare(b.undoneAt || ""));
-    if (await rewriteArchiveMonth("undone", month, merged)) { out.added += fresh.length; out.months++; }
+    let freshCount = 0;
+    const r = await mutateArchiveMonth<UndoneRecord>("undone", month, local => {
+      const seen = new Set(local.map(undoneKey));
+      const fresh = rows.filter(x => x && typeof x === "object" && x.undoneAt && x.entry && x.project === project && !seen.has(undoneKey(x)));
+      if (!fresh.length) return null;
+      freshCount = fresh.length;
+      return [...local, ...fresh].sort((a, b) => (a.undoneAt || "").localeCompare(b.undoneAt || ""));
+    });
+    if (r && freshCount) { out.added += freshCount; out.months++; }
   }
   return out;
 }

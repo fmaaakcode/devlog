@@ -358,7 +358,7 @@
                 const dateLabel = kind === 'fix' ? tr("sec.fixReleased") : tr("sec.latestReleased");
                 const datePart = dateStr ? new Date(dateStr).toISOString().slice(0, 10) : '';
                 const caption = (typeof days === 'number' || datePart)
-                    ? `<div dir="${uiDir()}" style="margin-right:22px;color:${isFresh ? 'var(--gold)' : 'var(--text2)'};font-size:0.85em;padding-top:1px">
+                    ? `<div dir="${uiDir()}" style="margin-inline-start:22px;color:${isFresh ? 'var(--gold)' : 'var(--text2)'};font-size:0.85em;padding-top:1px">
                           ${isFresh ? '⏳ ' : ''}${esc(dateLabel)}${typeof days === 'number' ? tr("sec.daysAgoPart", { d: days }) : ''}${datePart ? ` · ${esc(datePart)}` : ''}
                        </div>` : '';
                 const verStyle = strike ? 'text-decoration:line-through;color:var(--text2)' : `color:${accent}`;

@@ -282,7 +282,11 @@ export function makeTagsRoutes(): Record<string, unknown> {
                 [...openTodos(projTags), ...openBugs(projTags), ...openSecurity(projTags)]
                   .some(t => compatible.includes(t.tag) && normalizeTagContent(t.content) === norm)
                 || ((tag === "done" || tag === "dropped") && (
-                  /^p\d+$/i.test(norm)
+                  // Full phase grammar incl. sub-phases (P2.1), mirroring
+                  // syncPlanSteps — a bare-phase closer must never fall through
+                  // to same-response pairing, which would hijack an unrelated
+                  // opener from the same batch.
+                  /^p\d+(?:\.\d+)?$/i.test(norm)
                   || openPlanSteps(data, project).some(s => normalizeTagContent(s.text) === norm)));
               if (!textMatchesOpen) {
                 const rescue = pairSameResponseClosure(tag, batchOpeners, closedInBatch);

@@ -16,7 +16,7 @@ import type { Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startServer, waitForServer, runHook, asJson, PROJECT_ROOT } from "./_helpers";
+import { startServer, stopServer, waitForServer, runHook, asJson, PROJECT_ROOT } from "./_helpers";
 import type { TagEntry } from "../src/types";
 
 const TEST_PORT = 17911;
@@ -49,8 +49,7 @@ describe("corruption joints (E2E)", () => {
     await register();
   });
   afterEach(async () => {
-    try { server.kill(); } catch { /* already exited */ }
-    await Promise.race([server.exited, Bun.sleep(2000)]);
+    await stopServer(server);
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(projDir, { recursive: true, force: true });
     rmSync(join(TURN_STATE_DIR, `${sid}.json`), { force: true });

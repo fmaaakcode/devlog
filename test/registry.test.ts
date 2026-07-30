@@ -35,6 +35,22 @@ describe("isVersionBehind (outdated gate)", () => {
     expect(isVersionBehind("1", "1.0.1")).toBe(true);
     expect(isVersionBehind("1.2", "1.2.0")).toBe(false);
   });
+
+  // R9 F4: parseVer drops the pre-release suffix, so 5.0.0-beta.1 used to tie
+  // with 5.0.0 and nearestFix rejected an available fix ("no complete fix").
+  test("pre-release is behind its matching stable (semver §11)", () => {
+    expect(isVersionBehind("5.0.0-beta.1", "5.0.0")).toBe(true);
+    expect(isVersionBehind("15.0.0-canary.28", "15.0.0")).toBe(true);
+    expect(isVersionBehind("v1.0.0-rc.1", "1.0.0")).toBe(true);
+  });
+  test("stable is never behind a numerically equal pre-release", () => {
+    expect(isVersionBehind("5.0.0", "5.0.0-beta.1")).toBe(false);
+    // Two pre-releases of the same core: out of scope, treated as equal.
+    expect(isVersionBehind("5.0.0-beta.1", "5.0.0-beta.2")).toBe(false);
+    // Different numeric cores keep the plain numeric verdict.
+    expect(isVersionBehind("5.0.0-beta.1", "5.0.1")).toBe(true);
+    expect(isVersionBehind("5.0.1", "5.0.0-beta.1")).toBe(false);
+  });
 });
 
 describe("encodePkgPath (untrusted package name → safe URL path) — R4 sec L1", () => {

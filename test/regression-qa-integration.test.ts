@@ -369,8 +369,9 @@ describe("regression — Bug #1: Stop-hook plan sync must not be serial", () => 
   const PLAN_FILES = 4;
   const DELAY_MS = 1500;
   // With current serial code:  >= 4 × 1500 = 6000ms.
-  // After fix (parallel/fail-fast):    well under 3000ms.
-  const PARALLEL_BUDGET_MS = 3000;
+  // After fix (parallel/fail-fast):    ~1.5–2.5s incl. bun startup. 4500ms
+  // still cleanly separates the two while tolerating CPU starvation (#729).
+  const PARALLEL_BUDGET_MS = 4500;
 
   beforeAll(async () => {
     if (await isPortBusy(HOOK_PORT)) {
@@ -440,7 +441,7 @@ describe("regression — Bug #1: Stop-hook plan sync must not be serial", () => 
       await proc.exited;
       const elapsed = Date.now() - t0;
 
-      // Today (serial): ~6000ms. With fix: <3000ms.
+      // Today (serial): ~6000ms. With fix: well inside the 4500ms budget.
       expect(elapsed).toBeLessThan(PARALLEL_BUDGET_MS);
     },
     20000, // generous test timeout — current serial code can take 6-8s

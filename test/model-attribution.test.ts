@@ -17,9 +17,9 @@ import { join } from "node:path";
 import type { DevLogData, TagEntry } from "../src/types";
 import { DEFAULT_INJECTION_CONFIG } from "../src/data";
 import { closedItems } from "../src/closed-items";
-import { asJson, startServer, waitForServer, runHook as runHookRaw } from "./_helpers";
+import { asJson, startServer, stopServer, waitForServer, runHook as runHookRaw } from "./_helpers";
 
-const TEST_PORT = 17941;
+const TEST_PORT = 17944;   // unique — was 17941, shared with project-transfer-e2e (#729)
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
 const PROJECT_ROOT = join(import.meta.dir, "..");
 const TURN_STATE_DIR = join(PROJECT_ROOT, ".devlog", "turn-state");
@@ -112,8 +112,7 @@ describe("model attribution E2E (transcript → stored tag → ask:closed)", () 
     await register(projDir, sid);
   });
   afterEach(async () => {
-    try { server.kill(); } catch { /* dead */ }
-    await Promise.race([server.exited, Bun.sleep(2000)]);
+    await stopServer(server);
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(projDir, { recursive: true, force: true });
     rmSync(join(TURN_STATE_DIR, `${sid}.json`), { force: true });

@@ -4,7 +4,7 @@
 // dir + a registered project so the release path runs end to end.
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { asJson } from "./_helpers";
+import { asJson, stopServer } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,7 +14,7 @@ const TEST_PORT = 17805;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
 const PROJECT_ROOT = join(import.meta.dir, "..");
 
-async function waitForServer(maxMs = 8000): Promise<void> {
+async function waitForServer(maxMs = 15000): Promise<void> {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
     try { if ((await fetch(`${BASE}/api/data`, { signal: AbortSignal.timeout(500) })).ok) return; } catch { /* server not up yet → keep polling */ }
@@ -37,7 +37,7 @@ async function post(cwd: string, entries: any[]): Promise<any> {
   })).json();
 }
 async function register(cwd: string): Promise<void> {
-  await fetch(`${BASE}/api/inject?cwd=${encodeURIComponent(cwd)}&session_id=dg-e2e&type=SessionStart`, { signal: AbortSignal.timeout(4000) });
+  await fetch(`${BASE}/api/inject?cwd=${encodeURIComponent(cwd)}&session_id=dg-e2e&type=SessionStart`, { signal: AbortSignal.timeout(10000) });
 }
 async function releaseTags(project: string): Promise<string[]> {
   const d: any = await asJson(await fetch(`${BASE}/api/data`));
@@ -57,8 +57,7 @@ describe("release downgrade rejected wholesale (E2E)", () => {
     await register(projDir);
   });
   afterEach(async () => {
-    try { server.kill(); } catch { /* already exited */ }
-    await Promise.race([server.exited, Bun.sleep(2000)]);
+    await stopServer(server);
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(projDir, { recursive: true, force: true });
   });

@@ -5,7 +5,7 @@ import { cleanupOrphanClosures } from "./orphan-closures";
 import { cleanupOldBackups, backupStores } from "./maintenance";
 import { acquireDaemonLock, releaseDaemonLock } from "./daemon-lock";
 import { wsClients, broadcast } from "./broadcast";
-import { rescanPreserve, scanFreshProfile, applyPreservedScan } from "./scanner";
+import { scanFreshProfile, applyPreservedScan, freshOrRelocatedProfile } from "./scanner";
 import { parseHookEvent, attributionCwd } from "./hooks";
 import { exportStatusMd, generateStackMd } from "./export";
 import { rebuildChangelogsMigration } from "./changelog-rebuild";
@@ -94,13 +94,21 @@ function scheduleRescan(cwd: string, name: string) {
   const timer = setTimeout(async () => {
     rescanTimers.delete(cwd);
     try {
+      // Two-phase like /api/hook (R9 sweep, same class as #730): the full disk
+      // walk ran inside withData on every debounced manifest change, freezing
+      // writers for its duration. Collision-check on a snapshot, scan off the
+      // lock, re-check + cheap merge under it.
+      const snap = await loadData();
+      const existing0 = snap.projects[name];
+      if (existing0 && !pathsEqual(existing0.path, cwd)) {
+        console.warn(`[scheduleRescan] folder-name collision: cwd=${cwd} differs from stored '${name}' at ${existing0.path}. Skipping.`);
+        return;
+      }
+      const fresh = await scanFreshProfile(cwd);
       await withData(async (data) => {
-        const existing = data.projects[name];
-        if (existing && !pathsEqual(existing.path, cwd)) {
-          console.warn(`[scheduleRescan] folder-name collision: cwd=${cwd} differs from stored '${name}' at ${existing.path}. Skipping.`);
-          return;
-        }
-        await rescanPreserve(data, name, cwd);
+        const stored = data.projects[name];
+        if (stored && !pathsEqual(stored.path, cwd)) return;   // collision appeared between phases
+        applyPreservedScan(data, name, fresh);
       });
       broadcast("scan", { project: name });
       runVulnScan(name).catch(e => softFail("runVulnScan", e));
@@ -178,36 +186,16 @@ async function doInject(body: Record<string, unknown>) {
   const resolved = resolveProjectFor(snapshot, cwd);
   const name = resolved.name;
   const effectiveCwd = resolved.cwd;
-  const existing0 = snapshot.projects[name];
-  const pathConflict = existing0 && effectiveCwd && !pathsEqual(existing0.path, effectiveCwd);
-  let fresh: ProjectProfile | null = null;
-  let relocateFromPath: string | null = null;   // set when an existing project's folder moved to this cwd
-  if (effectiveCwd && !pathConflict && (!existing0 || Date.now() - new Date(existing0.lastScan).getTime() > 3600000)) {
-    try { fresh = await scanFreshProfile(effectiveCwd); } catch (e) { softFail("doInject.scanFreshProfile", e); }
-  } else if (pathConflict) {
-    // The stored path differs from this cwd. Two cases:
-    //   (a) the old folder is GONE and this cwd is the SAME git repo → the folder
-    //       was moved or renamed; relocate the project here (path + memory follow).
-    //       Gated on a git-remote match so a brand-new unrelated folder that
-    //       merely reuses a deleted project's name can never hijack its history.
-    //   (b) old folder still exists, or git doesn't match → a genuine same-name
-    //       collision between two different folders; skip, exactly as before.
-    const oldGone = !existsSync(existing0.path);
-    let candidate: ProjectProfile | null = null;
-    if (oldGone) { try { candidate = await scanFreshProfile(effectiveCwd); } catch (e) { softFail("doInject.scanFreshProfile(relocate)", e); } }
-    if (candidate && existing0.gitRepoSlug && candidate.gitRepoSlug && existing0.gitRepoSlug === candidate.gitRepoSlug) {
-      fresh = candidate;
-      relocateFromPath = existing0.path;
-      console.warn(`[doInject] relocation: project '${name}' moved ${existing0.path} → ${effectiveCwd} (git ${candidate.gitRepoSlug}). Updating path + memory.`);
-    } else {
-      console.warn(`[doInject] folder-name collision: cwd=${cwd} differs from stored project '${name}' at ${existing0.path}. Skipping scan + injection.`);
-    }
-  }
+  // Fresh scan or relocation candidate — moved verbatim to scanner.ts
+  // (freshOrRelocatedProfile) under the R9 size ratchet.
+  const { fresh, relocateFromPath } = await freshOrRelocatedProfile(snapshot.projects[name], cwd, effectiveCwd, name);
 
   // Phase 2 (locked): apply the scan result, log the event, build the
   // injection, and persist — all inside `withData` so nothing half-applied
   // can be observed or overwritten by a concurrent handler.
   let additionalContext = "";
+  // R9 F1: deep analysis runs OFF the lock, same as /api/hook (see routes-events).
+  let stackJob: { cwd: string; profile: ProjectProfile } | null = null;
   await withData(async (data) => {
     if (fresh) {
       const isNew = !data.projects[name];
@@ -216,7 +204,7 @@ async function doInject(body: Record<string, unknown>) {
         try { await migrateMemoryDir(relocateFromPath, effectiveCwd); } catch (e) { softFail("doInject.migrateMemoryDir", e); }
       }
       applyPreservedScan(data, name, fresh);
-      if (isNew) await generateStackMd(effectiveCwd, data.projects[name]);
+      if (isNew) stackJob = { cwd: effectiveCwd, profile: data.projects[name] };
       runVulnScan(name).catch(e => softFail("runVulnScan", e));
     }
 
@@ -308,6 +296,10 @@ async function doInject(body: Record<string, unknown>) {
     // on the read hot-path for zero new information (no event was recorded).
     if (cwd && type !== "PreToolUse") await exportStatusMd(cwd, data, name);
   });
+  if (stackJob) {
+    const { cwd: stackCwd, profile } = stackJob;
+    generateStackMd(stackCwd, profile).catch(e => softFail("generateStackMd", e));
+  }
 
   // Everything the USER must be told about broken tooling (stale daemon #326,
   // transcript-shape drift #582) rides the one channel Claude Code shows for an

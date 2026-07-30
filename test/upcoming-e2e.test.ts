@@ -12,7 +12,7 @@ import type { Subprocess } from "bun";
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startServer, waitForServer, runHook as runHookRaw } from "./_helpers";
+import { startServer, stopServer, waitForServer, runHook as runHookRaw } from "./_helpers";
 
 const TEST_PORT = 17883;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
@@ -45,8 +45,7 @@ describe("upcoming tier (E2E)", () => {
     await register(projDir);
   });
   afterEach(async () => {
-    try { server.kill(); } catch { /* already exited */ }
-    await Promise.race([server.exited, Bun.sleep(2000)]);
+    await stopServer(server);
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(projDir, { recursive: true, force: true });
   });

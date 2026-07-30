@@ -1,9 +1,11 @@
 import { readdir, readFile, access } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join, extname, } from "node:path";
-import { claudeConfigDir, claudeProjectSlug, normalizeSlashes } from "./path-utils";
+import { claudeConfigDir, claudeProjectSlug, normalizeSlashes, pathsEqual } from "./path-utils";
 import { NESTED_MANIFEST_DIRS } from "./lockfile-tree";
 import { parseCargoDeps, resolveWorkspaceMemberDirs, type CargoDep } from "./cargo-workspace";
 import { bunSpawnSync } from "./spawn";
+import { softFail } from "./soft-fail";
 import type { ProjectProfile, MemoryFile, RuntimeInfo, DevLogData } from "./types";
 
 // Read the project's git remote URL (origin) without spawning git — we just
@@ -654,4 +656,35 @@ export async function rescanPreserve(
 ): Promise<ProjectProfile> {
   const fresh = await scanFreshProfile(path);
   return applyPreservedScan(data, name, fresh);
+}
+
+/** Phase-1 (no lock) profile refresh for /api/inject, moved verbatim from
+ *  server.ts doInject (R9 size ratchet): a fresh scan when the project is new
+ *  or stale, or a relocation candidate when the stored path is GONE and this
+ *  cwd is the SAME git repo (folder moved/renamed — `relocateFromPath` is set
+ *  only then, gated on the git-remote match so a brand-new unrelated folder
+ *  that merely reuses a deleted project's name can never hijack its history).
+ *  Old folder still present, or git mismatch → same-name collision: skip scan
+ *  and injection, exactly as before. */
+export async function freshOrRelocatedProfile(
+  existing0: ProjectProfile | undefined, cwd: string, effectiveCwd: string, name: string,
+): Promise<{ fresh: ProjectProfile | null; relocateFromPath: string | null }> {
+  const pathConflict = existing0 && effectiveCwd && !pathsEqual(existing0.path, effectiveCwd);
+  let fresh: ProjectProfile | null = null;
+  let relocateFromPath: string | null = null;
+  if (effectiveCwd && !pathConflict && (!existing0 || Date.now() - new Date(existing0.lastScan).getTime() > 3600000)) {
+    try { fresh = await scanFreshProfile(effectiveCwd); } catch (e) { softFail("doInject.scanFreshProfile", e); }
+  } else if (pathConflict) {
+    const oldGone = !existsSync(existing0.path);
+    let candidate: ProjectProfile | null = null;
+    if (oldGone) { try { candidate = await scanFreshProfile(effectiveCwd); } catch (e) { softFail("doInject.scanFreshProfile(relocate)", e); } }
+    if (candidate && existing0.gitRepoSlug && candidate.gitRepoSlug && existing0.gitRepoSlug === candidate.gitRepoSlug) {
+      fresh = candidate;
+      relocateFromPath = existing0.path;
+      console.warn(`[doInject] relocation: project '${name}' moved ${existing0.path} → ${effectiveCwd} (git ${candidate.gitRepoSlug}). Updating path + memory.`);
+    } else {
+      console.warn(`[doInject] folder-name collision: cwd=${cwd} differs from stored project '${name}' at ${existing0.path}. Skipping scan + injection.`);
+    }
+  }
+  return { fresh, relocateFromPath };
 }

@@ -109,6 +109,16 @@ describe("detectReleaseIntentConflict — type+number in one tag is rejected", (
   test("a lone major number is not a version (needs at least X.Y)", () => {
     expect(detectReleaseIntentConflict("release:minor", "8 fixes in one go")).toBeNull();
   });
+
+  test("a dotted number glued to prose (2.5x) is prose → null (#742)", () => {
+    expect(detectReleaseIntentConflict("release:minor", "2.5x faster parsing")).toBeNull();
+    expect(detectReleaseIntentConflict("release:patch", "3.14x-compatible output")).toBeNull();
+  });
+
+  test("a prerelease-suffixed version still conflicts (#742)", () => {
+    expect(detectReleaseIntentConflict("release:patch", "v1.2.3-rc1 — try it"))
+      .toEqual({ declared: "patch", version: "v1.2.3-rc1" });
+  });
 });
 
 describe("resolveReleaseIntent — advisory cross-check", () => {

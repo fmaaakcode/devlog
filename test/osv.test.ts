@@ -129,12 +129,30 @@ describe("nearestFix", () => {
       ranges: [{ type: "SEMVER", events: [{ fixed: "v4.12.21" }] }] }] });
     expect(nearestFix("4.12.18", v, "hono")).toBe("4.12.21");
   });
+
+  // R9 F4: the pre-release-blind tie made nearestFix reject the matching
+  // stable fix for a canary/beta install.
+  test("pre-release install accepts its numerically equal stable fix", () => {
+    const v = advisory({ affected: [{ package: { name: "hono", ecosystem: "npm" },
+      ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "5.0.0" }] }] }] });
+    expect(nearestFix("5.0.0-beta.1", v, "hono")).toBe("5.0.0");
+  });
 });
 
 describe("summarizeVulns", () => {
   test("no advisories → safe, zero count", () => {
     const r = summarizeVulns([], "hono", "4.12.18");
     expect(r).toMatchObject({ ok: true, vulns: 0, status: "safe", severity: "none" });
+  });
+
+  // R9 F4 end-to-end: the old verdict here was danger + "no complete fix"
+  // while the stable fix existed one upgrade away.
+  test("canary install with a stable fix → update, not danger (R9 F4)", () => {
+    const v = advisory({ affected: [{ package: { name: "hono", ecosystem: "npm" },
+      ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "15.0.0" }] }] }] });
+    const r = summarizeVulns([v], "hono", "15.0.0-canary.28");
+    expect(r.status).toBe("update");
+    expect(r.fixVersion).toBe("15.0.0");
   });
 
   test("fixable advisory → update, with the upgrade target", () => {
@@ -288,6 +306,73 @@ describe("scanPackages (injected fetch — offline)", () => {
       expect(out.get("hono")?.vulns).toBeGreaterThan(0);
       expect(out.get("hono")?.version).toBe("4.12.18");
     }
+  });
+});
+
+// R9 F3: an OSV outage used to amplify — every failed batch chunk fell back to
+// ~500 individual queries against the same dead service (~51 min per chunk),
+// pinning a SCAN_GATE slot for the same end state (indeterminate).
+describe("OSV outage does not amplify (R9 F3)", () => {
+  const deadFetch = (counts: { batch: number; detail: number }) => (async (url: any) => {
+    if (String(url).includes("querybatch")) counts.batch++;
+    else counts.detail++;
+    return { ok: false, status: 503, json: async () => ({}) } as Response;
+  }) as unknown as typeof fetch;
+
+  test("two consecutive chunk failures → scan deferred, ZERO individual queries", async () => {
+    const counts = { batch: 0, detail: 0 };
+    // 501 packages = two chunks, so the second failure proves the SERVICE is down.
+    const pkgs = Array.from({ length: 501 }, (_, i) => ({ name: `pkg${i}`, version: "1.0.0" }));
+    const out = await scanTree("npm", pkgs, deadFetch(counts));
+
+    expect(counts.detail).toBe(0);                       // no doomed fallback sweep
+    expect(counts.batch).toBe(6);                        // 2 chunks × postJson's 3 tries
+    expect(out.get("pkg0")?.status).toBe("indeterminate");
+    expect(out.get("pkg500")?.status).toBe("indeterminate");
+    // Indeterminate must never read as safe — the tag loop would close on it.
+    for (const v of out.values()) expect(v.status).not.toBe("safe");
+  });
+
+  test("a single-chunk failure keeps the suspicious-chunk fallback (partial failure)", async () => {
+    let batchCalls = 0;
+    let detailCalls = 0;
+    const fetchImpl = (async (url: any, init: any) => {
+      if (String(url).includes("querybatch")) {
+        batchCalls++;
+        return { ok: false, status: 503, json: async () => ({}) } as Response;
+      }
+      detailCalls++;
+      const body = JSON.parse(init.body);
+      const vulns = body.package.name === "cookie" ? [advisory({ affected: [{ package: { name: "cookie", ecosystem: "npm" }, ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "0.7.0" }] }] }] })] : [];
+      return { ok: true, status: 200, json: async () => ({ vulns }) } as Response;
+    }) as unknown as typeof fetch;
+
+    const out = await scanTree("npm", [
+      { name: "cookie", version: "0.6.0" },
+      { name: "react", version: "18.2.0" },
+    ], fetchImpl);
+
+    expect(batchCalls).toBe(3);                          // one chunk, 3 tries
+    expect(detailCalls).toBe(2);                          // fallback still covers the chunk
+    expect(out.get("cookie")?.vulns).toBeGreaterThan(0);  // a missed vuln stays worse than extra queries
+    expect(out.get("react")?.status).toBe("safe");
+  });
+
+  test("detail-scan circuit breaker: consecutive dead queries stop the sweep, rest go indeterminate", async () => {
+    let detailCalls = 0;
+    const fetchImpl = (async (url: any) => {
+      if (!String(url).includes("querybatch")) detailCalls++;
+      return { ok: false, status: 503, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch;
+
+    const pkgs = Array.from({ length: 40 }, (_, i) => ({ name: `dead${i}`, version: "1.0.0" }));
+    const out = await scanPackages("npm", pkgs, fetchImpl);
+
+    // Breaker trips after 8 consecutive nulls (× 3 fetch tries each, ± the 4
+    // in-flight workers) — far below the 40 × 3 = 120 of a full sweep.
+    expect(detailCalls).toBeLessThan(60);
+    expect(out.size).toBe(40);                            // nobody silently dropped
+    for (const v of out.values()) expect(v.status).toBe("indeterminate");
   });
 });
 

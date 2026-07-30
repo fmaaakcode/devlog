@@ -12,7 +12,7 @@ import type { Subprocess } from "bun";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { asJson, startServer, waitForServer } from "./_helpers";
+import { asJson, startServer, stopServer, waitForServer } from "./_helpers";
 
 const TEST_PORT = 17879;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
@@ -50,8 +50,7 @@ describe("/releases routes (E2E)", () => {
     await fetch(`${BASE}/api/inject?cwd=${encodeURIComponent(projDir)}&session_id=rel-e2e&type=SessionStart`, { signal: AbortSignal.timeout(4000) });
   });
   afterEach(async () => {
-    try { server.kill(); } catch { /* already exited */ }
-    await Promise.race([server.exited, Bun.sleep(2000)]);
+    await stopServer(server);
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(projDir, { recursive: true, force: true });
   });

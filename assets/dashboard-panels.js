@@ -35,7 +35,7 @@
             for (const f of list) {
                 h += `<div style="display:flex;align-items:center;gap:6px;padding:2px 0;font-size:0.7em" title="${tr("sec.fragileTitle", { n: f.count })}${f.open ? tr("sec.fragileOpen", { n: f.open }) : ''}">
                     <span style="color:var(--gold);flex-shrink:0">&#9888;</span>
-                    <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:ltr;text-align:right;font-family:'Cascadia Code',Consolas,monospace">${esc(f.file)}</span>
+                    <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:ltr;text-align:${uiDir() === 'rtl' ? 'right' : 'left'};font-family:'Cascadia Code',Consolas,monospace">${esc(f.file)}</span>
                     <span style="color:${f.open ? 'var(--pink)' : 'var(--text2)'};flex-shrink:0;font-family:'Cascadia Code',Consolas,monospace">×${f.count}</span>
                 </div>`;
             }

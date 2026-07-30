@@ -28,7 +28,7 @@ const DEFAULT_MAX = 800;
 // server.ts GRADUATED out: task 3.1 decomposed it 2015 → 729 across ~12
 // routes-*.ts groups, so it now holds under the normal ceiling like any module.
 const GRANDFATHERED: Record<string, number> = {
-  "analyze.ts": 1078,  // heuristics engine; content-pattern table split out (task 4.4) — ratchet as more tables move
+  "analyze.ts": 960,   // heuristics engine; content-pattern table split out (task 4.4), pageRank pair → pagerank.ts (R9) — ratchet as more tables move
   "export.ts": 841,    // status/stack generators — ratcheted down when the changelog rebuild moved to changelog-rebuild.ts
 };
 

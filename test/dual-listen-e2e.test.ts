@@ -17,7 +17,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const TEST_PORT = 17858;
+const TEST_PORT = 17859;   // unique — was 17858, shared with routes-scan-e2e (#729)
 const BASE_V4 = `http://127.0.0.1:${TEST_PORT}`;
 const BASE_V6 = `http://[::1]:${TEST_PORT}`;
 

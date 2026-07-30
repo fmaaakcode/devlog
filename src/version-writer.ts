@@ -196,15 +196,25 @@ async function bumpCargoToml(filePath: string, newVersion: string, allowDowngrad
   }
   const reportFrom = edits[0].from;
   let updated = raw;
+  let skippedDowngrade: BlockVersion | null = null;
   // Splice from the last block backwards so earlier offsets stay valid.
   for (const t of [...edits].sort((a, b) => b.start - a.start)) {
     if (!allowDowngrade && compareSemver(newVersion, t.from) < 0) {
       console.error(`[version-writer] skipping downgrade block in ${filePath}: ${t.from} → ${newVersion}`);
+      skippedDowngrade = t;
       continue;
     }
     updated = `${updated.slice(0, t.start)}${t.prefix}${newVersion}${t.suffix}${updated.slice(t.start + t.len)}`;
   }
-  if (updated === raw) return null;
+  if (updated === raw) {
+    // Nothing written. When the only edit candidate was a skipped downgrade
+    // block ([package] already at target, [workspace.package] newer — the
+    // primary check at the top can't see it), a bare null left the manifest
+    // protected but UNREPORTED (#741) — surface the rejection instead.
+    return skippedDowngrade
+      ? { file: filePath, current: skippedDowngrade.from, attempted: newVersion, reason: "downgrade" }
+      : null;
+  }
   await atomicWrite(filePath, updated);
   return { file: filePath, from: reportFrom, to: newVersion };
 }

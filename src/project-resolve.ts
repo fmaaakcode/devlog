@@ -51,11 +51,17 @@ function baseName(cwd: string): string {
   return normalizeSlashes(cwd).split("/").filter(Boolean).pop() || "unknown";
 }
 
-// Parent directory of cwd ("" at a root). Forward-slash normalized like baseName.
+// Parent directory of cwd ("" at a root). Forward-slash normalized like
+// baseName. split/filter/join would silently drop the leading "/" of an
+// absolute POSIX path ("/home/u/app" → "home/u"), which made every
+// pathsEqual(parentDir(cwd), …) comparison false on macOS/Linux and leaked a
+// RELATIVE cwd out of the .devlog-no-encloser branch — so re-prefix it.
 function parentDir(cwd: string): string {
-  const segs = normalizeSlashes(cwd).split("/").filter(Boolean);
+  const norm = normalizeSlashes(cwd);
+  const segs = norm.split("/").filter(Boolean);
   segs.pop();
-  return segs.join("/");
+  if (!segs.length) return "";
+  return (norm.startsWith("/") ? "/" : "") + segs.join("/");
 }
 
 // Default git-root resolver: `git -C <dir> rev-parse --show-toplevel`. Returns

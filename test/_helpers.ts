@@ -32,8 +32,25 @@ export function startServer(dataDir: string, port: number): Subprocess {
   });
 }
 
-/** Poll `${base}/api/ping` until it answers ok, or throw after `maxMs`. */
-export async function waitForServer(base: string, maxMs = 8000): Promise<void> {
+/** Kill a test server and wait until the process has ACTUALLY exited — not a
+ *  fixed-time race. Under CPU starvation a killed server can outlive a 2s grace
+ *  window while still owning its port; the next same-port boot then binds
+ *  nothing and waitForServer greets the dying process instead (#729). Escalates
+ *  to SIGKILL if the polite kill hasn't landed within `graceMs`. */
+export async function stopServer(server: Subprocess, graceMs = 10000): Promise<void> {
+  try { server.kill(); } catch { /* already exited */ }
+  const exited = await Promise.race([server.exited.then(() => true), Bun.sleep(graceMs).then(() => false)]);
+  if (!exited) {
+    try { server.kill(9); } catch { /* exited between the race and here */ }
+    await server.exited;
+  }
+}
+
+/** Poll `${base}/api/ping` until it answers ok, or throw after `maxMs`.
+ *  15s cap: a cold `bun src/server.ts` boot under CPU starvation has been seen
+ *  brushing past 8s (#729) — the poll returns the moment it answers, so the
+ *  headroom costs nothing on a healthy run. */
+export async function waitForServer(base: string, maxMs = 15000): Promise<void> {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
     try { if ((await fetch(`${base}/api/ping`, { signal: AbortSignal.timeout(500) })).ok) return; } catch { /* not up yet */ }

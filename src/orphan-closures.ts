@@ -10,20 +10,28 @@
 // is never touched). Extracted from data.ts under the file-size budget.
 
 import { CLOSURE_TAGS, SECURITY_OPEN_TAGS } from "./data";
-import type { DevLogData, TagEntry } from "./types";
+import type { DevLogData, PlanEntry, TagEntry } from "./types";
 
 const PURE_NUM_CLOSURE_RE = /^\s*(?:#\d+\s*)+$/;
 
-export function findOrphanClosures(tags: TagEntry[]): TagEntry[] {
-  // project → set of numbers owned by an opener tag (todo / bug found / security*).
+export function findOrphanClosures(tags: TagEntry[], plans: PlanEntry[] = []): TagEntry[] {
+  // project → set of numbers owned by an opener tag (todo / bug found /
+  // security*) OR a plan step. Steps share the same #N space (assignNum), and a
+  // historical `-(done) #N` closer may be the ONLY record that closed a step
+  // (closed-items matches closers to steps byNum) — treating those numbers as
+  // unknown would GC the closure and silently reopen the step.
   const openerNums = new Map<string, Set<number>>();
+  const add = (project: string, num: number) => {
+    let set = openerNums.get(project);
+    if (!set) { set = new Set(); openerNums.set(project, set); }
+    set.add(num);
+  };
   for (const t of tags) {
     const isOpener = t.tag === "todo" || t.tag === "bug found" || SECURITY_OPEN_TAGS.has(t.tag);
-    if (isOpener && typeof t.num === "number") {
-      let set = openerNums.get(t.project);
-      if (!set) { set = new Set(); openerNums.set(t.project, set); }
-      set.add(t.num);
-    }
+    if (isOpener && typeof t.num === "number") add(t.project, t.num);
+  }
+  for (const p of plans) {
+    for (const s of p.steps) if (typeof s.num === "number") add(p.project, s.num);
   }
   return tags.filter(t => {
     if (!CLOSURE_TAGS.has(t.tag)) return false;
@@ -40,7 +48,7 @@ export function findOrphanClosures(tags: TagEntry[]): TagEntry[] {
 export function cleanupOrphanClosures(data: DevLogData): number {
   if (!data.migrations) data.migrations = {};
   if (data.migrations.cleanup_orphan_closures_v1) return 0;
-  const orphanIds = new Set(findOrphanClosures(data.tags).map(t => t.id));
+  const orphanIds = new Set(findOrphanClosures(data.tags, data.plans ?? []).map(t => t.id));
   const before = data.tags.length;
   data.tags = data.tags.filter(t => !orphanIds.has(t.id));
   data.migrations.cleanup_orphan_closures_v1 = true;

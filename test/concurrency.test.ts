@@ -14,7 +14,7 @@
 // un-serialized write path.
 
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
-import { asJson } from "./_helpers";
+import { asJson, stopServer } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -39,7 +39,7 @@ function startServer(dataDir: string): Subprocess {
   });
 }
 
-async function waitForServer(maxMs = 8000): Promise<void> {
+async function waitForServer(maxMs = 15000): Promise<void> {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
     try {
@@ -69,8 +69,7 @@ describe("concurrency — hook + inject through withData lose no writes", () => 
   });
 
   afterEach(async () => {
-    try { server.kill(); } catch { /* already dead */ }
-    await Promise.race([server.exited, Bun.sleep(2000)]);
+    await stopServer(server);
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(projectDir, { recursive: true, force: true });
   });

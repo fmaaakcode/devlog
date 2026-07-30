@@ -3,7 +3,7 @@
 // per-project counter), and backfillNums (retro-numbering of open items).
 
 import { describe, test, expect } from "bun:test";
-import { normalizeTagContent, assignNum, backfillNums } from "../src/data";
+import { normalizeTagContent, assignNum, backfillNums, openTodos, openBugs, openSecurity } from "../src/data";
 import type { DevLogData, TagEntry, PlanEntry, ProjectProfile } from "../src/types";
 
 const PROJ = "fixture-proj";
@@ -26,6 +26,42 @@ function baseData(tags: TagEntry[], plans: PlanEntry[] = [], prof = profile()): 
     projectInjectionConfigs: {}, descendants: [], migrations: {},
   };
 }
+
+describe("order-aware text closure (#743)", () => {
+  const at = (ts: string) => ({ timestamp: ts });
+
+  test("a fix closes reports at or before its timestamp", () => {
+    const tags = [
+      tag("security", "lib@1 — vuln", { ...at("2026-01-01T00:00:00Z"), num: 1 }),
+      tag("security fix", "lib@1 — vuln", at("2026-01-02T00:00:00Z")),
+    ];
+    expect(openSecurity(tags)).toEqual([]);
+  });
+
+  test("a report REINTRODUCED after its fix is open again — not born closed", () => {
+    const tags = [
+      tag("security", "lib@1 — vuln", { ...at("2026-01-01T00:00:00Z"), num: 1 }),
+      tag("security fix", "lib@1 — vuln", at("2026-01-02T00:00:00Z")),
+      tag("security", "lib@1 — vuln", { ...at("2026-03-01T00:00:00Z"), num: 9 }),
+    ];
+    expect(openSecurity(tags).map(t => t.num)).toEqual([9]);
+  });
+
+  test("same-timestamp atomic open+fix pair stays closed", () => {
+    const ts = at("2026-01-01T00:00:00Z");
+    const tags = [tag("bug found", "x breaks", { ...ts, num: 2 }), tag("bug fix", "x breaks", ts)];
+    expect(openBugs(tags)).toEqual([]);
+  });
+
+  test("todos: a re-opened twin after done survives; the original stays closed", () => {
+    const tags = [
+      tag("todo", "polish intro", { ...at("2026-01-01T00:00:00Z"), num: 3 }),
+      tag("done", "polish intro", at("2026-01-02T00:00:00Z")),
+      tag("todo", "polish intro", { ...at("2026-02-01T00:00:00Z"), num: 7 }),
+    ];
+    expect(openTodos(tags).map(t => t.num)).toEqual([7]);
+  });
+});
 
 describe("normalizeTagContent", () => {
   test("collapses whitespace, lowercases, trims", () => {

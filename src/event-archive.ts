@@ -104,31 +104,97 @@ async function appendWithRetry(path: string, body: string, attempts = 6): Promis
   }
 }
 
+// Unlink where only "already gone" is acceptable: ENOENT returns quietly, the
+// transient Windows lock codes (the same set appendWithRetry retries — AV
+// scanners hold freshly touched files) are retried, and anything that survives
+// THROWS. The old bare `catch` here swallowed EBUSY/EPERM as if they were the
+// no-twin case — the stale plain .jsonl then shadowed the merged .gz on every
+// read and the next rollover re-compressed it OVER the merge (#746).
+async function unlinkWithRetry(path: string, attempts = 6): Promise<void> {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await unlink(path);
+      return;
+    } catch (e) {
+      const code = (e as { code?: string })?.code;
+      if (code === "ENOENT") return;
+      const transient = code === "EPERM" || code === "EBUSY" || code === "EACCES";
+      if (!transient || i === attempts - 1) throw e;
+      await new Promise(r => setTimeout(r, 120));
+    }
+  }
+}
+
+// The actual month write, NO chaining — callers already hold a chain link.
+// Plain .jsonl for the current month; .gz for a closed one, with any plain
+// leftover removed so a later rollover can't re-compress stale content over
+// the merged .gz.
+async function writeMonthUnchained(stream: ArchiveStream, month: string, records: unknown[], now: Date): Promise<void> {
+  const body = records.length ? `${records.map(e => JSON.stringify(e)).join("\n")}\n` : "";
+  await mkdir(ARCHIVE_DIR, { recursive: true });
+  const plain = `${ARCHIVE_DIR}/${stream}-${month}.jsonl`;
+  if (month === currentArchiveMonth(now)) {
+    await Bun.write(plain, body);
+  } else {
+    await Bun.write(`${plain}.gz`, gzipSync(Buffer.from(body)));
+    await unlinkWithRetry(plain);
+  }
+}
+
 /**
- * Rewrite one month's archive file wholesale — the project-import merge needs
- * to fold rows from another machine INTO a month, which append-only cannot do.
- * Plain .jsonl for the current month; .gz for a closed one, with any plain
- * leftover removed so a later rollover can't re-compress stale pre-merge
- * content over the merged .gz. Rides the same write chain as the eviction
- * appends so the two can never interleave on one file.
+ * Rewrite one month's archive file wholesale. Rides the same write chain as
+ * the eviction appends so the two can never interleave on one file. NOTE: a
+ * read-modify-write must NOT use this with an unchained read — the append that
+ * lands between the read and this rewrite is clobbered; use
+ * `mutateArchiveMonth`, which holds one chain link across the whole cycle.
  */
 export function rewriteArchiveMonth(stream: ArchiveStream, month: string, records: unknown[], now = new Date()): Promise<boolean> {
   if (!MONTH_RE.test(month)) return Promise.resolve(false);
-  const body = records.length ? `${records.map(e => JSON.stringify(e)).join("\n")}\n` : "";
   const result = writeChain.then(async () => {
     try {
-      await mkdir(ARCHIVE_DIR, { recursive: true });
-      const plain = `${ARCHIVE_DIR}/${stream}-${month}.jsonl`;
-      if (month === currentArchiveMonth(now)) {
-        await Bun.write(plain, body);
-      } else {
-        await Bun.write(`${plain}.gz`, gzipSync(Buffer.from(body)));
-        try { await unlink(plain); } catch { /* no plain twin — the normal case */ }
-      }
+      await writeMonthUnchained(stream, month, records, now);
       return true;
     } catch (e) {
       console.error(`[event-archive] ${stream}-${month} rewrite failed:`, (e as Error)?.message);
       return false;
+    }
+  });
+  writeChain = result;
+  return result;
+}
+
+/**
+ * Read one month, transform its rows, and persist the result — all inside ONE
+ * write-chain link, so an eviction append can neither land between the read
+ * and the rewrite (and be silently clobbered) nor interleave with the write
+ * (#747). `fn` returns the new row set, or null for "no change" (nothing is
+ * written). An empty result removes the month's files entirely — the purge
+ * semantics; an empty rewrite would keep the month listed forever. Returns
+ * before/after row counts, or null when the month failed to persist.
+ */
+export function mutateArchiveMonth<T>(
+  stream: ArchiveStream,
+  month: string,
+  fn: (rows: T[]) => T[] | null,
+  now = new Date(),
+): Promise<{ before: number; after: number } | null> {
+  if (!MONTH_RE.test(month)) return Promise.resolve(null);
+  const result = writeChain.then(async () => {
+    try {
+      const rows = await readStream<T>(stream, month);
+      const out = fn(rows);
+      if (out === null) return { before: rows.length, after: rows.length };
+      if (out.length) {
+        await writeMonthUnchained(stream, month, out, now);
+      } else {
+        const plain = `${ARCHIVE_DIR}/${stream}-${month}.jsonl`;
+        await unlinkWithRetry(plain);
+        await unlinkWithRetry(`${plain}.gz`);
+      }
+      return { before: rows.length, after: out.length };
+    } catch (e) {
+      console.error(`[event-archive] ${stream}-${month} mutate failed:`, (e as Error)?.message);
+      return null;
     }
   });
   writeChain = result;
@@ -148,22 +214,14 @@ export async function purgeProjectArchive(gone: Set<string>): Promise<number> {
   let removed = 0;
   for (const stream of ["events", "undone"] as const) {
     for (const month of await listArchiveMonths(stream)) {
-      const rows: Array<{ project: string }> =
-        stream === "events" ? await readArchiveMonth(month) : await readUndoneMonth(month);
-      const kept = rows.filter(r => !gone.has(r.project));
-      if (kept.length === rows.length) continue;
-      removed += rows.length - kept.length;
-      if (kept.length) {
-        await rewriteArchiveMonth(stream, month, kept);
-      } else {
-        const plain = `${ARCHIVE_DIR}/${stream}-${month}.jsonl`;
-        const result = writeChain.then(async () => {
-          try { await unlink(plain); } catch { /* plain twin absent — fine */ }
-          try { await unlink(`${plain}.gz`); } catch { /* gz twin absent — fine */ }
-        });
-        writeChain = result;
-        await result;
-      }
+      // Read + filter + rewrite in ONE chain link (#747): an eviction append
+      // enqueued while we filter would otherwise land first and be clobbered
+      // by a rewrite computed from the pre-append snapshot.
+      const r = await mutateArchiveMonth<{ project: string }>(stream, month, rows => {
+        const kept = rows.filter(x => !gone.has(x.project));
+        return kept.length === rows.length ? null : kept;
+      });
+      if (r) removed += r.before - r.after;
     }
   }
   return removed;
@@ -203,7 +261,12 @@ export async function listArchiveMonths(stream: ArchiveStream = "events"): Promi
  * mid-append can leave one truncated trailing line, and losing that line must not
  * block reading the rest of the month.
  */
-async function readStream<T>(stream: ArchiveStream, month: string, valid: (o: T) => boolean): Promise<T[]> {
+const STREAM_VALID: Record<ArchiveStream, (o: unknown) => boolean> = {
+  events: o => !!(o as EventEntry).id,
+  undone: o => !!(o as UndoneRecord).undoneAt && !!(o as UndoneRecord).entry,
+};
+
+async function readStream<T>(stream: ArchiveStream, month: string, valid: (o: T) => boolean = STREAM_VALID[stream]): Promise<T[]> {
   if (!MONTH_RE.test(month)) return []; // also guards the filename against traversal
   const plain = Bun.file(`${ARCHIVE_DIR}/${stream}-${month}.jsonl`);
   let text: string;
