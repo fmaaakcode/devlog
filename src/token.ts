@@ -24,19 +24,30 @@ export const TOKEN_REQUIRED = process.env.DEVLOG_REQUIRE_TOKEN === "1";
 // + folders, the tombstone sweep mass-deletes, data/clear empties the store)
 // and the process-killing ones. Note "/api/project/" (trailing slash) does NOT
 // match /api/projects-summary.
-const PROTECTED_PREFIXES = [
-  "/api/data/clear",
-  "/api/kill-pid/",
-  "/api/server/stop",
-  "/api/server/restart",
-  "/api/project/",
-  "/api/cleanup-tombstones",
-  "/api/cleanup-orphans",
+//
+// `methods` narrows an entry to specific verbs. Without it a prefix protects
+// every verb, which is right only when the prefix is DELETE-only — otherwise it
+// silently starts demanding a token for reads too. test/protected-routes.test.ts
+// enumerates the real DELETE handlers and fails when one lands here unclassified,
+// so this list can't quietly drift out of date the way it did before (#755).
+const PROTECTED_ROUTES: readonly { prefix: string; methods?: readonly string[] }[] = [
+  { prefix: "/api/data/clear" },
+  { prefix: "/api/kill-pid/" },
+  { prefix: "/api/server/stop" },
+  { prefix: "/api/server/restart" },
+  { prefix: "/api/project/" },
+  { prefix: "/api/cleanup-tombstones" },
+  { prefix: "/api/cleanup-orphans" },
   // #450: tag delete erases a bug/vuln record permanently; plan delete drops
   // the dashboard entry. Both are DELETE-only routes, so the prefix can't
   // catch a read. "/api/tag/" (trailing slash) does NOT match /api/tags.
-  "/api/tag/",
-  "/api/plan/",
+  { prefix: "/api/tag/" },
+  { prefix: "/api/plan/" },
+  // Swept in after #755, same reasoning as #450: both erase a captured record
+  // for good. /api/event/:id is DELETE-only; /api/injection/ has to be pinned to
+  // DELETE because it shares its prefix with the GET/POST config route.
+  { prefix: "/api/event/" },
+  { prefix: "/api/injection/", methods: ["DELETE"] },
 ];
 
 let cached: string | null = null;
@@ -60,9 +71,10 @@ export function readOrCreateToken(): string {
   return fresh;
 }
 
-/** True when `path` is one of the token-protected destructive routes. */
-export function isProtectedPath(path: string): boolean {
-  return PROTECTED_PREFIXES.some(p => path.startsWith(p));
+/** True when `method` on `path` is one of the token-protected destructive routes. */
+export function isProtectedPath(path: string, method: string): boolean {
+  return PROTECTED_ROUTES.some(r =>
+    path.startsWith(r.prefix) && (!r.methods || r.methods.includes(method.toUpperCase())));
 }
 
 /**
@@ -71,7 +83,7 @@ export function isProtectedPath(path: string): boolean {
  * is off, so there's zero cost / behavior change by default.
  */
 export function checkToken(req: Request, path: string): Response | null {
-  if (!TOKEN_REQUIRED || !isProtectedPath(path)) return null;
+  if (!TOKEN_REQUIRED || !isProtectedPath(path, req.method)) return null;
   const provided = req.headers.get("x-devlog-token") || "";
   // Constant-time comparison: a plain === leaks how many leading bytes match
   // through response timing, letting a local guesser recover the token byte by

@@ -9,7 +9,7 @@
 // project, then spawns the hook itself with a `-(release)` response on stdin.
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { stopServer } from "./_helpers";
+import { asJson, stopServer } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -96,5 +96,25 @@ describe("Stop hook feedback via JSON stdout, not exit(2) (regression)", () => {
     const { code, out } = await runHook(projDir, "just some prose, no tags here");
     expect(code).toBe(0);
     expect(out.trim()).toBe("");
+  });
+
+  test("#752: a BLOCKING stop still posts the session summary — upserted to one entry", async () => {
+    // Seed one event so the session has summary material.
+    await fetch(`${BASE}/api/hook`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cwd: projDir, session_id: "hook-json-e2e", hook_event_name: "PostToolUse", tool_name: "Edit", file_path: join(projDir, "a.ts"), new_string: "x" }),
+    });
+    // The release path blocks — pre-fix, flushBlock exited before Part 2 and the
+    // blocked turn lost its summary refresh.
+    const first = await runHook(projDir, "shipping\n\n-(release) v9.9.9 — blocked-turn summary");
+    expect(JSON.parse(first.out.trim()).decision).toBe("block");
+    const countSummaries = async () => {
+      const data = await asJson(await fetch(`${BASE}/api/data`));
+      return data.events.filter((e: { type: string; session_id?: string }) => e.type === "session-summary" && e.session_id === "hook-json-e2e").length;
+    };
+    expect(await countSummaries()).toBe(1);
+    // A second (non-blocking) run refreshes the SAME summary — no growth chain.
+    await runHook(projDir, "just prose, nothing to block on");
+    expect(await countSummaries()).toBe(1);
   });
 });

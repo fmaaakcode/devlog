@@ -62,8 +62,16 @@ async function resolveParam(req: ApiReq): Promise<string | null> {
   return name;
 }
 
+export interface FeatureRouteDeps {
+  // server.ts's HTML responder — carries the CSP + security headers server.ts
+  // declares for EVERY HTML response (#774): the two HTML routes here built
+  // Response by hand and bypassed them, so a rogue HTML file dropped into the
+  // writable docs dir ran inline script with the page's full API reach.
+  htmlResponse: (body: unknown) => Response;
+}
+
 /** Build the features/client-report route group. Spread into server.ts's routeDefs. */
-export function makeFeatureRoutes(): Record<string, unknown> {
+export function makeFeatureRoutes({ htmlResponse }: FeatureRouteDeps): Record<string, unknown> {
   return {
     // The CURRENT capability list (resolved: updates applied, removed dropped,
     // each attributed to the release that shipped it) + the since-last-release
@@ -210,7 +218,7 @@ export function makeFeatureRoutes(): Record<string, unknown> {
         if (!target.startsWith(docsDir + sep)) return Response.json({ error: "bad slug" }, { status: 400 });
         const f = Bun.file(target);
         if (!(await f.exists())) return Response.json({ error: "not found" }, { status: 404 });
-        return new Response(await f.text(), { headers: { "Content-Type": "text/html; charset=utf-8" } });
+        return htmlResponse(await f.text());
       },
     },
 
@@ -230,7 +238,7 @@ export function makeFeatureRoutes(): Record<string, unknown> {
             return Response.json({ ok: true, path });
           }
           const html = renderClientReportHtml(collectClientReport(data, project));
-          return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+          return htmlResponse(html);
         } catch (e) {
           console.error("[/api/client-report] error:", (e as Error)?.message);
           return Response.json({ error: (e as Error)?.message || "failed" }, { status: 500 });

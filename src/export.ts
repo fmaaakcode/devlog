@@ -4,6 +4,9 @@ import type { DevLogData, ProjectProfile, TagEntry } from "./types";
 import { projectName, normalizeTagContent, openTodos, openBugs, openSecurity, SECURITY_OPEN_TAGS } from "./data";
 import { changelogLine } from "./changelog-rebuild";
 import { analyzeProject } from "./analyze";
+import { suggestBumpSince } from "./tags-service";
+import { computeNextVersion } from "./version-writer";
+import { parseVersionMarker } from "./release-html";
 
 // True when two strings share a long common prefix that covers most of both
 // (≥25 chars AND ≥80% of the longer). Guards against treating items that merely
@@ -191,18 +194,6 @@ export async function exportStatusMd(projectPath: string, data: DevLogData, proj
   }
 }
 
-// Bump the third-segment, second-segment, or first-segment of "vX.Y.Z" while
-// resetting lower segments to 0. Used to suggest the next release version.
-function bumpVersion(current: string, kind: "MAJOR" | "MINOR" | "PATCH"): string {
-  const m = current.match(/^v?(\d+)\.(\d+)\.(\d+)/);
-  if (!m) return "v0.1.0";
-  let [, maj, min, pat] = m.map(Number) as unknown as [unknown, number, number, number];
-  if (kind === "MAJOR") { maj = (maj as number) + 1; min = 0; pat = 0; }
-  else if (kind === "MINOR") { min = min + 1; pat = 0; }
-  else { pat = pat + 1; }
-  return `v${maj}.${min}.${pat}`;
-}
-
 // Generate DEVLOG_GITHUB.md — a single overwriting snapshot of "what's
 // ready to release since last -(release) tag" tailored for the GitHub-
 // specialist Claude. Reads same data as exportStatusMd, presents it
@@ -224,26 +215,32 @@ export async function exportGithubMd(projectPath: string, data: DevLogData, proj
   const since = tags.filter(t => new Date(t.timestamp).getTime() > lastReleaseTime);
 
   const features = dedupTags(since.filter(t => t.tag === "built" && !t.breaking));
-  const breakingBuilt = dedupTags(since.filter(t => t.tag === "built" && t.breaking));
-  const fixes = dedupTags(since.filter(t => t.tag === "bug fix"));
+  const fixes = dedupTags(since.filter(t => t.tag === "bug fix" && !t.breaking));
   const securityFixes = dedupTags(since.filter(t => t.tag === "security fix"));
-  const updates = dedupTags(since.filter(t => t.tag === "update"));
-  const breakingUpdates = dedupTags(since.filter(t => t.tag === "update" && t.breaking));
-  const refactors = dedupTags(since.filter(t => t.tag === "refactor"));
-  const breakingRefactors = dedupTags(since.filter(t => t.tag === "refactor" && t.breaking));
-
-  const allBreaking = [...breakingBuilt, ...breakingUpdates, ...breakingRefactors];
-
-  // Decide bump
-  let bump: "MAJOR" | "MINOR" | "PATCH" | null = null;
-  if (allBreaking.length > 0) bump = "MAJOR";
-  else if (features.length > 0) bump = "MINOR";
-  else if (fixes.length > 0 || securityFixes.length > 0 || updates.length > 0) bump = "PATCH";
-
-  const suggestedVersion = bump ? bumpVersion(lastVersion, bump) : lastVersion;
+  const updates = dedupTags(since.filter(t => t.tag === "update" && !t.breaking));
+  const refactors = dedupTags(since.filter(t => t.tag === "refactor" && !t.breaking));
+  // ANY tag can carry the breaking flag — the old built/update/refactor-only
+  // union missed a breaking `bug fix` and under-promised the bump (#772).
+  const allBreaking = dedupTags(since.filter(t => t.breaking && t.tag !== "release"));
+  // `-(feature)` declarations count as minor evidence exactly like the release
+  // path; backfilled `[vX.Y.Z]` ones are past history, never evidence (#772).
+  const featureDecls = dedupTags(since.filter(t => t.tag === "feature" && !parseVersionMarker(t.content)));
 
   const totalUserVisible = features.length + fixes.length + securityFixes.length +
                            updates.length + allBreaking.length;
+
+  // The bump TYPE comes from the SAME evidence function the actual release
+  // path runs (suggestBumpSince → computeNextVersion) so this file can never
+  // promise a version other than the one `-(release)` will mint — local rules
+  // had drifted on update-only, breaking bug fix, and feature tags (#772). The
+  // local lists only gate WHETHER a suggestion shows (refactor-only stays
+  // "internal, don't release").
+  const suggested = suggestBumpSince(data, name, lastReleaseTime);
+  const bump: "MAJOR" | "MINOR" | "PATCH" | null =
+    totalUserVisible > 0 || featureDecls.length > 0
+      ? (suggested.toUpperCase() as "MAJOR" | "MINOR" | "PATCH") : null;
+
+  const suggestedVersion = bump ? `v${computeNextVersion(lastVersion, suggested)}` : lastVersion;
 
   // Render
   const lines: string[] = [];
@@ -263,7 +260,7 @@ export async function exportGithubMd(projectPath: string, data: DevLogData, proj
   }
   lines.push("");
 
-  if (totalUserVisible === 0 && refactors.length === 0) {
+  if (totalUserVisible === 0 && refactors.length === 0 && featureDecls.length === 0) {
     lines.push("## ✅ لا تغييرات منذ آخر إصدار");
     lines.push("");
     lines.push("لا شيء جديد للإصدار حالياً.");
@@ -279,14 +276,12 @@ export async function exportGithubMd(projectPath: string, data: DevLogData, proj
         const ts = new Date(t.timestamp).getTime();
         return ts > lastWindowStart && ts <= lastReleaseTime;
       });
-      const lastBreakingBuilt = dedupTags(inLast.filter(t => t.tag === "built" && t.breaking));
       const lastFeatures = dedupTags(inLast.filter(t => t.tag === "built" && !t.breaking));
-      const lastFixes = dedupTags(inLast.filter(t => t.tag === "bug fix"));
+      const lastFixes = dedupTags(inLast.filter(t => t.tag === "bug fix" && !t.breaking));
       const lastSecFixes = dedupTags(inLast.filter(t => t.tag === "security fix"));
-      const lastUpdates = dedupTags(inLast.filter(t => t.tag === "update"));
-      const lastBreakingUpd = dedupTags(inLast.filter(t => t.tag === "update" && t.breaking));
-      const lastBreakingRef = dedupTags(inLast.filter(t => t.tag === "refactor" && t.breaking));
-      const lastAllBreaking = [...lastBreakingBuilt, ...lastBreakingUpd, ...lastBreakingRef];
+      const lastUpdates = dedupTags(inLast.filter(t => t.tag === "update" && !t.breaking));
+      // Same breaking definition as the live window above (#772).
+      const lastAllBreaking = dedupTags(inLast.filter(t => t.breaking && t.tag !== "release"));
       const lastTotal = lastFeatures.length + lastFixes.length + lastSecFixes.length + lastUpdates.length + lastAllBreaking.length;
       if (lastTotal > 0) {
         lines.push(`## 📦 آخر إصدار: ${lastVersion}`);
@@ -329,7 +324,7 @@ export async function exportGithubMd(projectPath: string, data: DevLogData, proj
     return;
   }
 
-  if (totalUserVisible === 0 && refactors.length > 0) {
+  if (totalUserVisible === 0 && featureDecls.length === 0 && refactors.length > 0) {
     lines.push("## ⏸️ تغييرات داخلية فقط — لا تستحق إصداراً منفرداً");
     lines.push("");
     lines.push(`${refactors.length} refactor دون أي ميزة أو إصلاح ظاهر للمستخدم.`);
@@ -341,9 +336,14 @@ export async function exportGithubMd(projectPath: string, data: DevLogData, proj
     lines.push(`**Bump:** ${bump}`);
     lines.push("");
     const reasons: string[] = [];
-    if (allBreaking.length > 0) reasons.push(`${allBreaking.length} breaking change → MAJOR`);
-    else if (features.length > 0) reasons.push(`${features.length} feature${features.length > 1 ? "s" : ""} → MINOR`);
-    else reasons.push(`fixes/security/updates only → PATCH`);
+    if (bump === "MAJOR") reasons.push(`${allBreaking.length} breaking change → MAJOR`);
+    else if (bump === "MINOR") {
+      const parts: string[] = [];
+      if (features.length) parts.push(`${features.length} built`);
+      if (updates.length) parts.push(`${updates.length} update`);
+      if (featureDecls.length) parts.push(`${featureDecls.length} feature`);
+      reasons.push(`${parts.join(" + ")} → MINOR`);
+    } else reasons.push(`fixes/security only → PATCH`);
     if (securityFixes.length > 0) reasons.push("⚠️ يحتوي security fix — اقترح الإصدار فوراً");
     lines.push(`**السبب:** ${reasons.join("; ")}`);
     lines.push("");

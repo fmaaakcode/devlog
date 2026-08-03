@@ -29,9 +29,9 @@ attacks against a localhost service:
 - **Cross-site defense** — `Sec-Fetch-Site` (rejects cross-site) and `Origin`
   (allow-list) are enforced; mutating methods additionally require
   `Content-Type: application/json`, which blocks simple-form CSRF.
-- **Content Security Policy** — `frame-ancestors 'none'`, `base-uri 'none'`,
-  `form-action 'none'`, and `connect-src 'self'` (breaks the exfiltration step of
-  any hypothetical XSS). See the known limitation on `'unsafe-inline'` below.
+- **Content Security Policy** — `script-src 'self'`, `frame-ancestors 'none'`,
+  `base-uri 'none'`, `form-action 'none'`, and `connect-src 'self'` (breaks the
+  exfiltration step of any hypothetical XSS). See the `style-src` note below.
 - **Symlink-escape defense** — file reads re-resolve the path with `realpath` and
   re-verify it stays inside a registered project, so a symlink pointing outside a
   tracked project can't be used to read arbitrary files.
@@ -41,23 +41,31 @@ attacks against a localhost service:
   lookups (package names + versions → npm/crates.io/PyPI/Go/Packagist and
   [OSV.dev](https://osv.dev)) and an update check to the GitHub Releases API. They
   send **metadata only — never your code, diffs, or activity history**. Disable
-  with `DEVLOG_VULN_CHECK_DISABLED=1` and `DEVLOG_VERSION_CHECK_DISABLED=1`.
+  with `DEVLOG_VULN_CHECK_DISABLED=1` (OSV queries) and
+  `DEVLOG_VERSION_CHECK_DISABLED=1` (update check);
+  `DEVLOG_REGISTRY_CHECK_DISABLED=1` switches off the package-registry sweep
+  entirely (latest-version + outdated-libs lookups).
 
 ## Known & accepted limitations
 
 These are deliberate trade-offs for a local dev tool, documented here so they are
 *decisions*, not surprises:
 
-- **No auth token on the API.** Any process running as your local user can reach
-  `127.0.0.1:7777` — read your activity history via `/api/data` and, notably, call
-  `POST /api/kill-pid/:pid`. This is acceptable because an attacker already running
-  code as your user has far greater capabilities than DevLog grants; adding a token
-  would not meaningfully raise that bar for a single-user local tool. If you share a
-  machine with untrusted users, set `DEVLOG_PORT` and firewall accordingly, or don't
-  run DevLog there.
-- **CSP keeps `'unsafe-inline'`** for now, because `dashboard.html` still has inline
-  handlers. The risk is contained by `connect-src 'self'` (no external exfil). This
-  will tighten to `script-src 'self'` once the inline handlers move to external files.
+- **API token is opt-in, off by default.** Any process running as your local user
+  can reach `127.0.0.1:7777` and read your activity history via `/api/data`. This is
+  acceptable because an attacker already running code as your user has far greater
+  capabilities than DevLog grants. For the *destructive* routes (data wipe, project
+  delete/rename, tombstone/orphan sweeps, `POST /api/kill-pid/:pid`, server
+  stop/restart) you can raise the bar: set `DEVLOG_REQUIRE_TOKEN=1` and those routes
+  additionally demand an `X-DevLog-Token` header matching a secret minted in the
+  data dir on first run (`src/token.ts`; the dashboard fetches it from the
+  localhost-only `/api/token`). It stays opt-in so upgrades can't break existing
+  automation. If you share a machine with untrusted users, set `DEVLOG_PORT` and
+  firewall accordingly, or don't run DevLog there.
+- **CSP: `script-src 'self'`** — every inline handler and inline `<script>` has
+  moved to external files, so injected markup can no longer execute script. Only
+  `style-src` still carries `'unsafe-inline'` (the dashboard sets many element
+  styles); the risk is contained by `connect-src 'self'` (no external exfil).
 - **Your history is sensitive.** `~/.devlog/` holds code diffs, commands, and project
   paths across every project DevLog touched. It stays local and is git-ignored — keep
   it that way; don't commit `.devlog-data/` or `~/.devlog/`.

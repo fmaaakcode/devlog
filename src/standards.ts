@@ -50,7 +50,7 @@ export interface RuleCommand {
   cmd: RuleCommandName;
   argLine: string; // trimmed remainder of the command line
   body: string;    // trimmed lines after the command line (rule:add text)
-  /** Stable key for loop-guard dedup across exit(2) continuations. */
+  /** Stable key for loop-guard dedup across block continuations. */
   key: string;
 }
 
@@ -165,7 +165,12 @@ export function parseRuleCommands(msg: string): RuleCommand[] {
     const cmd = m[1] as RuleCommandName;
     const argLine = (m[2] || "").trim();
     const body = (m[3] || "").trim();
-    out.push({ cmd, argLine, body, key: `${cmd}|${argLine}|${body}` });
+    // Ledger key from the FIRST body line only (#760): keying the full body let
+    // a body that GREW between two reads of the same turn (a continuation's
+    // prose gluing onto it) mint a fresh key and re-execute the command — the
+    // duplicated-rule incident. The command line + first body line identify the
+    // instance; growth beyond them must not create a new identity.
+    out.push({ cmd, argLine, body, key: `${cmd}|${argLine}|${body.split("\n")[0] || ""}` });
   }
   return out;
 }
@@ -313,8 +318,19 @@ export async function addRule(cat: string, text: string): Promise<AddResult> {
     if (lines.length && lines[lines.length - 1].trim() !== "") lines.push("");
     lines.push(RULES_HEADING, ...bulletBlock);
   } else {
-    // Insert right after the last existing bullet (append-only, preserves order).
-    const insertAt = bullets.length ? bullets[bullets.length - 1].lineIdx + 1 : headingIdx + 1;
+    // Insert after the last existing bullet's WHOLE block (append-only,
+    // preserves order). #769: a multi-line rule's continuation lines sit under
+    // its bullet without matching BULLET_RE, so inserting right after the
+    // bullet LINE split the old rule and glued its body onto the new one —
+    // skip past the continuation lines (stop at blank / heading / EOF; a
+    // bullet can't follow, the anchor is the LAST one).
+    let insertAt = headingIdx + 1;
+    if (bullets.length) {
+      insertAt = bullets[bullets.length - 1].lineIdx + 1;
+      while (insertAt < lines.length
+        && lines[insertAt].trim() !== ""
+        && !/^#{1,6}[ \t]/.test(lines[insertAt])) insertAt++;
+    }
     lines.splice(insertAt, 0, ...bulletBlock);
   }
   await writeFile(entry.path, lines.join("\n"), "utf-8");
@@ -756,7 +772,7 @@ export async function runRuleCommands(cmds: RuleCommand[], cwd?: string): Promis
       const ruleText = [inlineRest, c.body].filter(Boolean).join("\n").trim();
       if (!cat) { parts.push("⚠ -(rule:add) بلا تصنيف."); continue; }
       const r = await addRule(cat, ruleText);
-      parts.push(`✓ rule:add ${cat}: ${r.message}`);
+      parts.push(`${r.ok ? "✓" : "✗"} rule:add ${cat}: ${r.message}`);
     } else if (c.cmd === "rule:new") {
       const m = c.argLine.match(/^([^/\s]+)\s*[/\s]\s*([^/\s]+)/);
       if (!m) { parts.push("⚠ الصيغة: -(rule:new) <محور>/<تصنيف>"); continue; }

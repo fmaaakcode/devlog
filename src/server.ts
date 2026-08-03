@@ -20,6 +20,7 @@ import { startVersionCheckLoop } from "./version-check";
 import { pruneEvents, pushEvent } from "./retention";
 import { archiveEvents } from "./event-archive";
 import { pathsEqual, isPathInside, normalizeSlashes } from "./path-utils";
+import { withLockRetry } from "./fs-retry";
 import { str } from "./validators";
 import { checkToken, readOrCreateToken, TOKEN_REQUIRED } from "./token";
 import { scanCatalog, formatCatalogNames } from "./standards";
@@ -43,6 +44,7 @@ import { makeWorkspaceRoutes } from "./routes-workspace";
 import { isMutatingRequest, noteMutation, startAutoRestart } from "./freshness";
 import { injectSystemMessages } from "./inject-warnings";
 import { makeLifecycleRoutes } from "./routes-lifecycle";
+import { wrapRoutes } from "./route-guard";
 
 // Wall-clock boot time (evaluated once at module load = server start). Exposed on
 // /api/boot so the SessionStart hook can warn when the running daemon is older
@@ -69,20 +71,7 @@ const RESCAN_DEBOUNCE_MS = 500;
 // clear that. A lock that survives all retries is external (terminal/editor)
 // and is surfaced to the caller.
 async function renameWithRetry(from: string, to: string, attempts = 6): Promise<void> {
-  for (let i = 0; i < attempts; i++) {
-    try {
-      await fsRename(from, to);
-      return;
-    } catch (e) {
-      const code = (e as { code?: string })?.code;
-      const transient = code === "EPERM" || code === "EBUSY" || code === "EACCES";
-      if (transient && i < attempts - 1) {
-        await new Promise(r => setTimeout(r, 120));
-        continue;
-      }
-      throw e;
-    }
-  }
+  await withLockRetry(() => fsRename(from, to), attempts);
 }
 
 const rescanTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -358,32 +347,13 @@ function guard(req: Request): Response | null {
   return checkToken(req, new URL(req.url).pathname);
 }
 
-const GUARDED_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
-
-function wrapRoutes<T extends Record<string, unknown>>(routes: T): T {
-  const out: Record<string, unknown> = {};
-  for (const [path, def] of Object.entries(routes)) {
-    if (typeof def === "function" || def instanceof Response) { out[path] = def; continue; }
-    const wrapped: Record<string, unknown> = {};
-    for (const [method, handler] of Object.entries(def as Record<string, unknown>)) {
-      if (GUARDED_METHODS.has(method) && typeof handler === "function") {
-        wrapped[method] = async (req: Request, ...rest: unknown[]) => {
-          const blocked = guard(req);
-          if (blocked) return blocked;
-          // Holds the freshness watchdog. GET must NOT count (#619) — the
-          // full story lives on isMutatingRequest in freshness.ts.
-          if (isMutatingRequest(req.method)) noteMutation();
-          // Bun route handler — variadic shape differs per route, not statically expressible.
-          return (handler as (req: Request, ...rest: unknown[]) => unknown)(req, ...rest);
-        };
-      } else {
-        wrapped[method] = handler;
-      }
-    }
-    out[path] = wrapped;
-  }
-  return out as T;
-}
+// How the guard is attached to every route shape lives in ./route-guard; the
+// deps below are what it needs from this module. Holds the freshness watchdog:
+// GET must NOT count (#619) — the full story is on isMutatingRequest.
+const ROUTE_GUARD_DEPS = {
+  guard,
+  onRequest: (method: string) => { if (isMutatingRequest(method)) noteMutation(); },
+};
 
 // Security headers applied to every HTML response. `script-src 'self'` (no
 // 'unsafe-inline'): every inline on*= handler and inline <script> has been moved
@@ -473,7 +443,7 @@ const routeDefs = {
 
     // Feature-inventory + client-report routes (features, client-report) live
     // in ./routes-features; spread here.
-    ...makeFeatureRoutes(),
+    ...makeFeatureRoutes({ htmlResponse }),
 
     // Project delete/rename routes live in ./routes-projects (plan 3.1). The three
     // fs.watch helpers own the server's live watcher map, so they're injected.
@@ -535,7 +505,7 @@ try {
   process.on("exit", () => releaseDaemonLock(DATA_DIR));
 }
 
-const routes = wrapRoutes(routeDefs);
+const routes = wrapRoutes(routeDefs, ROUTE_GUARD_DEPS);
 const websocket = {
   perMessageDeflate: true,
   open(ws: Bun.ServerWebSocket) { wsClients.add(ws); },

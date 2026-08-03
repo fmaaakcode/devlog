@@ -48,8 +48,9 @@ const log = (s) => {
 if (process.env.DEVLOG_INSTALL_GATE === "0") process.exit(0);
 const STRICT = (process.env.DEVLOG_INSTALL_GATE || "").trim().toLowerCase() === "strict";
 
-let raw = "";
-for await (const chunk of Bun.stdin.stream()) raw += new TextDecoder().decode(chunk);
+// #767: stream-decode stdin in one shot — the old per-chunk `new TextDecoder()
+// .decode(chunk)` corrupted a multi-byte (Arabic) char split across chunks into U+FFFD.
+const raw = await new Response(Bun.stdin.stream()).text();
 let body;
 try { body = JSON.parse(raw); } catch { process.exit(0); }
 

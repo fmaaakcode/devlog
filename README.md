@@ -128,7 +128,7 @@ A quick sanity check after wiring the hook:
    ```
 3. Refresh the dashboard within a couple of seconds — the note should appear under that project's recent activity.
 
-If nothing shows up, look at `parse-tags.debug.log` (created next to `parse-tags.js`). Common causes: server not running on port 7777, hook path is wrong in `settings.json`, or `bun` isn't on PATH inside the bash environment Claude Code uses.
+If nothing shows up, set `DEVLOG_DEBUG=1` and retry, then look at `.devlog/parse-tags.debug.log` next to `parse-tags.ts` (debug logging is off by default and the log is only written while the flag is set). Common causes: server not running on port 7777, hook path is wrong in `settings.json`, or `bun` isn't on PATH inside the bash environment Claude Code uses.
 
 ## Teach Claude the tag vocabulary
 
@@ -209,7 +209,7 @@ For the full tag/closure rules, see the [`devlog-protocol` skill](./skills/devlo
 | `src/plans.ts` | Parses Claude Code's `~/.claude/plans/*.md` (Exit Plan Mode output, `### N.` style) — **not** for `-(doc:plan)` |
 | `src/release-html.ts` | Per-release static HTML report |
 | `src/data.ts` | JSON file storage with mutation lock |
-| `parse-tags.js` | Stop hook entry — parses stdin, posts to `/api/tags`, runs closure-check + release-guard |
+| `parse-tags.ts` | Stop hook entry — parses stdin, posts to `/api/tags`, runs closure-check + release-guard |
 | `parse-tags.sh` | Shell wrapper for the Stop hook |
 | `pre-release-hook.js` | PreToolUse hook — intercepts release-ish Bash commands, runs doctor + changelog briefing |
 | `pre-release-hook.sh` | Shell wrapper for the PreToolUse hook |
@@ -247,12 +247,12 @@ Beyond tag capture and the dashboard basics, DevLog ships a set of deeper capabi
 
 | Feature | What it does | Entry point |
 |---|---|---|
-| **Static code analysis** | A multi-language tokenizer + symbol extractor (`tokenizer.ts`, `symbols.ts`) feeds a project analyzer that maps HTTP routes, a function **call graph**, a module **dependency graph**, threads, IPC messages, data types, and security-sensitive patterns. | `GET /api/analyze`, `src/analyze.ts` |
+| **Static code analysis** | A multi-language tokenizer + symbol extractor (`tokenizer.ts`, `symbols.ts`) feeds a project analyzer that maps HTTP routes, a function **call graph**, a module **dependency graph**, threads, IPC messages, data types, and security-sensitive patterns. It has no endpoint of its own — it runs inside `DEVLOG_STACK.md` generation. | `src/analyze.ts`, via `POST /api/stack/:project/regenerate` |
 | **Live process monitoring** | Lists active Claude Code sessions and builds the descendant **process tree** (Windows), so you can see — and kill — runaway PIDs from the dashboard. | `GET /api/processes`, `POST /api/kill-pid/:pid`, `src/sessions.ts` |
 | **File-change tracking with diffs** | Records `old_string`/`new_string` for every edit Claude makes and renders an **inline diff** per change, per file, or per session. | `GET /api/changes`, `/api/changes/by-id/:id`, `/api/changes/session` |
 | **Cross-project stack map** | A bird's-eye view of every project's languages, frameworks, and libraries, with a saveable layout. | `stack-map.html`, `GET /api/stack/:project`, `/api/stack/:project/layout` |
 | **File-tree browser** | Walks a project tree to a given depth for in-dashboard browsing. | `GET /api/tree/:project`, `src/tree.ts` |
-| **Export** | Dumps a single project (or all projects) to a portable JSON snapshot. | `GET /api/export/:project`, `/api/export-all` |
+| **Export** | Regenerates one project's `.devlog/DEVLOG_STATUS.md` (or every project's) on demand. The portable **JSON bundle** that moves a project's history between machines is the separate project-export/import pair. | `POST /api/export/:project`, `POST /api/export-all`; bundle: `GET /api/project-export/:project`, `POST /api/project-import` |
 | **Injection preview & history** | Preview the exact SessionStart context block before it's injected, and inspect past injections. | `GET /api/inject/preview`, `/api/injections` |
 | **Event retention** | Prunes old events under a retention policy while protecting closure-relevant items. | `src/retention.ts` |
 | **Live updates** | The dashboard subscribes over WebSocket, so tags, builds, and process changes appear without a refresh. | `src/broadcast.ts` |
@@ -261,7 +261,7 @@ A visual tour of these lives in [`features.html`](./features.html) — open it i
 
 ## Privacy
 
-All your data stays local — the server only listens on `127.0.0.1`, and **no telemetry** is ever sent. The only outbound requests are **opt-out** dependency/vulnerability lookups (package names + versions → npm/crates.io/PyPI/Go/Packagist and [OSV.dev](https://osv.dev)) and an update check to GitHub Releases — metadata only, never your code or history. Turn them off with `DEVLOG_VULN_CHECK_DISABLED=1` and `DEVLOG_VERSION_CHECK_DISABLED=1`. Your activity history in `.devlog-data/` / `.devlog/` is git-ignored by the bundled `.gitignore` — keep it that way. See [SECURITY.md](./SECURITY.md) for the full threat model.
+All your data stays local — the server only listens on `127.0.0.1`, and **no telemetry** is ever sent. The only outbound requests are **opt-out** dependency/vulnerability lookups (package names + versions → npm/crates.io/PyPI/Go/Packagist and [OSV.dev](https://osv.dev)) and an update check to GitHub Releases — metadata only, never your code or history. Turn them off with `DEVLOG_VULN_CHECK_DISABLED=1` (OSV queries) and `DEVLOG_VERSION_CHECK_DISABLED=1` (update check); `DEVLOG_REGISTRY_CHECK_DISABLED=1` switches off the package-registry sweep entirely (latest-version + outdated-libs lookups). Your activity history in `.devlog-data/` / `.devlog/` is git-ignored by the bundled `.gitignore` — keep it that way. See [SECURITY.md](./SECURITY.md) for the full threat model.
 
 ## Development
 

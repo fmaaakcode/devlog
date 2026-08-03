@@ -117,14 +117,31 @@ describe("upcoming tier (E2E)", () => {
     expect(data.tags.some((t: any) => t.project === projName && t.tag === "release" && t.content.startsWith("v0.1.0"))).toBe(true);
   });
 
-  test("a duplicate -(upcoming) echo does not burn a #N — the sequence stays contiguous", async () => {
+  test("a duplicate -(upcoming) echo does not burn a #N — and says so instead of silence (#754)", async () => {
     const first = await post(projDir, [{ tag: "upcoming", content: "same deferred idea" }]);
     const n1 = first.upcomingChanges[0].num;
-    // Echo of the same content → rejected by dedup, and the counter must NOT move.
+    // Echo of the same content → rejected by dedup WITH a feedback record
+    // (the old path returned [] and the hook never told anyone), and the
+    // counter must NOT move.
     const echo = await post(projDir, [{ tag: "upcoming", content: "same deferred idea" }]);
-    expect(echo.upcomingChanges).toHaveLength(0);
+    expect(echo.upcomingChanges?.[0]).toMatchObject({ kind: "duplicate", num: n1 });
     const next = await post(projDir, [{ tag: "upcoming", content: "a different idea" }]);
     expect(next.upcomingChanges[0].num).toBe(n1 + 1);
+  });
+
+  test("a text identical to a CLOSED todo is accepted — dedup scans open items only (#754)", async () => {
+    // Open and close a todo, then defer the very same text. The old dedup
+    // compared against ALL todo tags — months-closed ones included — so this
+    // creation was silently refused.
+    await post(projDir, [{ tag: "todo", content: "revisit the export layout" }]);
+    const num = (await openItems(projDir)).items[0].num;
+    await post(projDir, [{ tag: "done", content: `#${num}` }]);
+
+    const resp = await post(projDir, [{ tag: "upcoming", content: "revisit the export layout" }]);
+    expect(resp.upcomingChanges?.[0]?.kind).toBe("created");
+    expect(resp.upcomingChanges[0].num).toBe(num + 1);
+    const item = (await openItems(projDir)).items.find((it: any) => it.num === num + 1);
+    expect(item.upcoming).toBe(true);
   });
 
   test("security items are refused deferral (blocking hook feedback)", async () => {

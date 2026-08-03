@@ -15,7 +15,7 @@ import {
   CLOSER_KINDS, OPENER_TO_CLOSER, NUMBERED_OPENABLE, singleHashNum, leadingNums, isStepClosed,
 } from "./data";
 import { appendDoc, writeDoc, applyTaskCompletion, applyTaskDrop, extractCheckboxes } from "./doc-store";
-import { writeReleaseHtml, parseVersion, parseVersionMarker } from "./release-html";
+import { writeReleaseHtml, parseVersion, parseVersionMarker, isRealVersion } from "./release-html";
 import { compareSemver, computeNextVersion, readManifestVersion, type VersionReject, type BumpType } from "./version-writer";
 import { pathsEqual } from "./path-utils";
 
@@ -429,13 +429,24 @@ export interface ReleaseDowngrade { version: string; latest: string; }
  * the first release or a forward bump. Pure.
  */
 export function detectReleaseDowngrade(content: string, data: DevLogData, project: string): ReleaseDowngrade | null {
-  const version = parseVersion(content).version;
-  if (!/\d/.test(version)) return null;
+  // Same token boundary as the intent resolver (#742/#773 pattern sweep):
+  // parseVersion's first-word fallback swallowed a prose-leading number — a
+  // version-less `-(release) 2.5x faster parsing` compared "2.5x" against the
+  // latest release and rejected a legitimate release as a phantom downgrade.
+  // No explicit version in the content ⇒ nothing to downgrade-check; the auto
+  // path computes a forward bump by construction.
+  const m = (content || "").trim().match(EXPLICIT_VERSION_RE);
+  if (!m) return null;
+  const version = m[0];
   let latest: string | null = null;
   for (const t of data.tags) {
     if (t.project !== project || t.tag !== "release") continue;
+    // Stored side of the same boundary (#782 sweep): a historical free-prose
+    // release tag («2026-07-06 notes») parses to a junk "version" that would
+    // poison `latest` — compareSemver reads its 2026 as a major — and reject
+    // every real release after it forever. Only whole-token versions count.
+    if (!isRealVersion(t.content)) continue;
     const v = parseVersion(t.content).version;
-    if (!/\d/.test(v)) continue;
     if (latest === null || compareSemver(v, latest) > 0) latest = v;
   }
   if (latest === null) return null;
@@ -455,7 +466,7 @@ const BUMP_RANK: Record<BumpType, number> = { patch: 0, minor: 1, major: 2 };
  * (`[vX.Y.Z]` marker) are PAST releases' history, never bump evidence — the
  * same exclusion the release nudge applies.
  */
-function suggestBumpSince(data: DevLogData, project: string, sinceMs: number): BumpType {
+export function suggestBumpSince(data: DevLogData, project: string, sinceMs: number): BumpType {
   let hasFeature = false;
   for (const t of data.tags) {
     if (t.project !== project || t.tag === "release") continue;
@@ -481,14 +492,19 @@ export interface ReleaseIntentConflict { declared: BumpType; version: string; }
  * — nothing stored, no bump, no HTML — and the Stop hook shows the two valid
  * forms to re-emit. Pure.
  */
+// Token boundary after the number (#742): «2.5x faster parsing» is prose, not
+// a version — only a dotted number that ENDS there (or before a separator)
+// counts. Prerelease/build suffixes (v1.2.3-rc1) stay matched. ONE shared
+// pattern for both the conflict detector and resolveReleaseIntent (#773): the
+// intent resolver carried its own boundary-less copy, so «-(release) 2.5x
+// faster» slipped past it as an explicit version and minted a phantom 2.5.
+const EXPLICIT_VERSION_RE = /^v?\d+(?:\.\d+)+(?:-[\w.]+)?(?=$|[\s—–:|،,])/i;
+
 export function detectReleaseIntentConflict(tag: string, content: string): ReleaseIntentConflict | null {
   const declared: BumpType | null =
     tag === "release:major" ? "major" : tag === "release:minor" ? "minor" : tag === "release:patch" ? "patch" : null;
   if (!declared) return null;
-  // Token boundary after the number (#742): «2.5x faster parsing» is prose, not
-  // a version — only a dotted number that ENDS there (or before a separator)
-  // counts. Prerelease/build suffixes (v1.2.3-rc1) stay matched.
-  const m = (content || "").trim().match(/^v?\d+(?:\.\d+)+(?:-[\w.]+)?(?=$|[\s—–:|،,])/i);
+  const m = (content || "").trim().match(EXPLICIT_VERSION_RE);
   if (!m) return null;
   return { declared, version: /^v/i.test(m[0]) ? m[0] : `v${m[0]}` };
 }
@@ -518,8 +534,9 @@ export async function resolveReleaseIntent(
     // Explicit `-(release) vX.Y.Z ...` keeps its number. A bare version-less
     // `-(release) reason` leaves `declared` null → DevLog AUTO-detects the type
     // from the accrued evidence. This is the easy path: the user need not pick a
-    // type or a number — just "release".
-    if (/^v?\d+(?:\.\d+)+/.test((entry.content || "").trim())) return null;
+    // type or a number — just "release". Same boundary as the conflict detector
+    // (#773): a reason that merely STARTS with a number is not a version.
+    if (EXPLICIT_VERSION_RE.test((entry.content || "").trim())) return null;
   } else {
     return null;
   }
@@ -535,7 +552,9 @@ export async function resolveReleaseIntent(
   if (projectPath) consider(await readManifestVersion(projectPath));
   for (const t of data.tags) {
     if (t.project !== project || t.tag !== "release") continue;
-    consider(parseVersion(t.content).version);
+    // Same stored-side boundary as detectReleaseDowngrade (#782 sweep): junk
+    // historical content must never become `current` and inflate the next bump.
+    if (isRealVersion(t.content)) consider(parseVersion(t.content).version);
     const ts = +new Date(t.timestamp || 0);
     if (ts > lastReleaseTime) lastReleaseTime = ts;
   }

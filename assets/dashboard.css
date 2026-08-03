@@ -247,7 +247,9 @@
             font-family: 'Cascadia Code', Consolas, monospace;
         }
         .deps-row + .deps-row { border-top: 1px solid var(--border); }
-        .deps-row .lib-name { flex: 1; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-decoration: none; }
+        /* font-size lived on a global `.lib-name` rule in the dead Project Tab
+           block — pinned here so deleting that block doesn't resize the popup (#776) */
+        .deps-row .lib-name { flex: 1; color: var(--text); font-size: 0.82em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-decoration: none; }
         a.lib-name:hover { text-decoration: underline; cursor: pointer; }
         .deps-row .lib-ver { color: var(--text2); font-size: 0.95em; }
         .deps-row .lib-arrow { color: var(--text2); }
@@ -366,16 +368,6 @@
             flex-shrink: 0;
             overflow: hidden;
         }
-        .sidebar-header {
-            padding: 16px;
-        }
-        .sidebar-header h1 {
-            font-size: 1.1em;
-            color: var(--gold);
-            margin-bottom: 2px;
-        }
-        .sidebar-header small { font-size: 0.7em; color: var(--text2); }
-
         .project-list {
             padding: 8px;
             min-height: 0;
@@ -650,28 +642,8 @@
         .vuln-summary { display: flex; gap: 12px; padding: 6px 0; font-size: 0.75em; font-weight: 600; margin-bottom: 6px; }
         .vuln-runtime-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 0.78em; border-top: 1px solid var(--border); margin-top: 4px; }
 
-        /* ===== Tabs ===== */
-        .tabs {
-            display: flex;
-            padding: 0 24px;
-            background: var(--bg);
-            gap: 0;
-        }
-        .tab {
-            padding: 10px 16px;
-            font-size: 0.82em;
-            color: var(--text2);
-            cursor: pointer;
-            border-bottom: 2px solid transparent;
-            transition: all 0.15s;
-            font-family: inherit;
-            background: none;
-            border-top: none;
-            border-right: none;
-            border-left: none;
-        }
-        .tab:hover { color: var(--text); }
-        .tab.active { color: var(--gold); border-bottom-color: var(--gold); }
+        /* ===== Shared pills: count badge inside .log-filter buttons (survivor
+           of the removed tab strip — the filter buttons still emit it) ===== */
         .tab-badge {
             font-size: 0.78em;
             padding: 0 5px;
@@ -679,87 +651,13 @@
             margin-inline-start: 4px;
         }
         .tab-badge-default { background: var(--border); color: var(--text2); }
-        .tab-badge-warn { background: #3a1525; color: var(--pink); }
-        .tab-badge-ok { background: #0a2a1f; color: var(--emerald); }
 
-        /* ===== Tab Content ===== */
-        .tab-content {
-            flex: 1;
-            overflow-y: auto;
-            padding: 16px 24px;
-            background: var(--bg);
-        }
-        .tab-panel { display: none; }
-        .tab-panel.active { display: flex; flex-direction: column; height: 100%; }
-
-        /* ===== Summary Cards ===== */
-        .summary-grid {
-            display: flex;
-            gap: 12px;
-            height: 100%;
-            overflow: hidden;
-        }
-        .summary-column {
-            flex: 1;
-            min-width: 0;
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-            overflow: hidden;
-        }
-        .card {
-            background: var(--bg3);
-            border-radius: 8px;
-            padding: 14px;
-            color: var(--text);
-        }
-        .card-title {
-            font-size: 0.72em;
-            color: var(--text2);
-            margin-bottom: 10px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .summary-version {
-            font-size: 1.4em;
-            font-weight: 700;
-            color: var(--gold);
-            text-align: start;
-        }
-        .summary-version small {
-            font-size: 0.5em;
-            color: var(--text2);
-            font-weight: 400;
-            display: block;
-            margin-top: 2px;
-        }
-        .summary-stat {
-            font-size: 1.8em;
-            font-weight: 700;
-            text-align: start;
-        }
-        .summary-stat small {
-            font-size: 0.4em;
-            color: var(--text2);
-            font-weight: 400;
-            margin-inline-start: 6px;
-        }
-        .stat-emerald { color: var(--emerald); }
-        .stat-pink { color: var(--pink); }
-        .stat-gold { color: var(--gold); }
-        .stat-blue { color: var(--blue); }
-
-        /* Progress bars */
+        /* ===== Progress bars (stats popup + tree panel) ===== */
         .progress-row {
             display: flex;
             align-items: center;
             gap: 8px;
             margin-bottom: 6px;
-        }
-        .progress-label {
-            font-size: 0.72em;
-            color: var(--text2);
-            min-width: 55px;
         }
         .progress-track {
             flex: 1;
@@ -780,60 +678,6 @@
             text-align: left;
             direction: ltr;
         }
-
-        /* Recent activity */
-        .recent-list { display: flex; flex-direction: column; gap: 6px; }
-        .recent-item {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 0.82em;
-            padding: 4px 0;
-        }
-        .recent-dot {
-            width: 6px; height: 6px;
-            border-radius: 50%;
-            flex-shrink: 0;
-        }
-        .recent-text {
-            flex: 1;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-        .recent-time {
-            font-size: 0.8em;
-            color: var(--text2);
-            direction: ltr;
-            flex-shrink: 0;
-        }
-
-        /* Todo items */
-        .todo-item {
-            display: flex;
-            align-items: center;
-            justify-content: flex-end;
-            gap: 8px;
-            padding: 6px 0;
-            font-size: 0.82em;
-        }
-        .todo-check {
-            width: 14px; height: 14px;
-            border-radius: 3px;
-            border: 2px solid var(--border);
-            flex-shrink: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 0.6em;
-        }
-        .todo-check.done {
-            background: var(--emerald);
-            border-color: var(--emerald);
-            color: var(--bg);
-        }
-        .todo-text { flex: 1; }
-        .todo-text.done { text-decoration: line-through; color: var(--text2); }
 
         /* ===== Log Timeline ===== */
         .log-filters {
@@ -932,9 +776,11 @@
         .tag-featureupdate { background: #0a2a1a; color: #34d399; }
         .tag-featureremoved { background: var(--bg3); color: var(--text2); }
         .tag-lib { background: #082030; color: var(--blue); }
-        /* Breaking modifier — applied via .log-item.is-breaking and the bar */
-        .log-item.is-breaking { box-shadow: inset 3px 0 0 var(--red); }
-        .log-item.is-breaking .log-tag::after { content: " ⚠"; color: var(--red); font-weight: 700; }
+        /* Breaking modifier — applied via .log-item.is-breaking and the bar.
+           var(--pink) is the palette's danger color; var(--red) was never
+           defined anywhere, so the bar and ⚠ silently didn't render (#765). */
+        .log-item.is-breaking { box-shadow: inset 3px 0 0 var(--pink); }
+        .log-item.is-breaking .log-tag::after { content: " ⚠"; color: var(--pink); font-weight: 700; }
 
         .bar-plan { background: var(--blue); }
         .bar-built { background: var(--emerald); }
@@ -954,109 +800,6 @@
         .bar-insight { background: #a78bfa; }
         .bar-securitydep { background: #ffd166; }
         .bar-securityown { background: var(--pink); }
-
-        /* ===== Architecture Tab ===== */
-        .section-title {
-            font-size: 0.85em;
-            color: var(--text2);
-            margin-bottom: 10px;
-            padding-bottom: 6px;
-            border-bottom: 1px solid var(--border);
-        }
-        .section-title:not(:first-child) { margin-top: 20px; }
-
-        .blueprint-item {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 8px 12px;
-            font-size: 0.85em;
-            border-bottom: 1px solid var(--bg);
-        }
-        .blueprint-item:last-child { border: none; }
-        .bp-check {
-            width: 16px; height: 16px;
-            border-radius: 4px;
-            border: 2px solid var(--border);
-            flex-shrink: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 0.7em;
-        }
-        .bp-check.done { background: var(--emerald); border-color: var(--emerald); color: var(--bg); }
-        .bp-text { flex: 1; }
-        .bp-text.done { text-decoration: line-through; color: var(--text2); }
-
-        .plan-card {
-            background: var(--bg3);
-            border-radius: 8px;
-            padding: 14px;
-            margin-bottom: 10px;
-        }
-        .plan-title {
-            font-size: 0.9em;
-            font-weight: 600;
-            color: var(--gold);
-            margin-bottom: 10px;
-        }
-        .plan-step {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 6px 0;
-            font-size: 0.82em;
-            border-bottom: 1px solid var(--bg);
-        }
-        .plan-step:last-child { border: none; }
-        .step-check {
-            width: 16px; height: 16px;
-            border-radius: 4px;
-            border: 2px solid var(--border);
-            flex-shrink: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 0.7em;
-        }
-        .step-check.done { background: var(--emerald); border-color: var(--emerald); color: var(--bg); }
-        .step-text { color: var(--text); }
-        .step-text.done { text-decoration: line-through; color: var(--text2); }
-
-        .dir-grid {
-            display: flex;
-            gap: 6px;
-            flex-wrap: wrap;
-        }
-        .dir-chip {
-            background: var(--bg3);
-            border-radius: 6px;
-            padding: 6px 14px;
-            font-size: 0.8em;
-            font-family: 'Cascadia Code', Consolas, monospace;
-            color: var(--blue);
-            direction: ltr;
-        }
-
-        .files-grid {
-            display: flex;
-            gap: 6px;
-            flex-wrap: wrap;
-        }
-        .file-chip {
-            background: var(--bg3);
-            border-radius: 4px;
-            padding: 4px 10px;
-            font-size: 0.78em;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-        .file-chip .ext {
-            font-family: 'Cascadia Code', Consolas, monospace;
-            color: var(--emerald);
-        }
-        .file-chip .num { color: var(--pink); }
 
         /* ===== File Tree ===== */
         .tree { direction: ltr; text-align: left; font-family: 'Cascadia Code', Consolas, monospace; font-size: 0.75em; line-height: 1.2; }
@@ -1279,96 +1022,6 @@
             white-space: pre;
             direction: ltr;
             text-align: left;
-        }
-
-        /* ===== Security Tab ===== */
-        .sec-stats {
-            display: flex;
-            gap: 12px;
-            margin-bottom: 16px;
-        }
-        .sec-stat-card {
-            flex: 1;
-            background: var(--bg3);
-            border-radius: 8px;
-            padding: 14px;
-            text-align: center;
-        }
-        .sec-stat-num {
-            font-size: 2em;
-            font-weight: 700;
-        }
-        .sec-stat-label {
-            font-size: 0.72em;
-            color: var(--text2);
-            margin-top: 4px;
-        }
-
-        .sec-item {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 10px 12px;
-            background: var(--bg3);
-            border-radius: 6px;
-            margin-bottom: 6px;
-            font-size: 0.85em;
-        }
-        .sec-icon {
-            width: 28px; height: 28px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 0.8em;
-            flex-shrink: 0;
-        }
-        .sec-icon-open { background: #3a1525; color: var(--pink); }
-        .sec-icon-fixed { background: #0a2a1f; color: var(--emerald); }
-        .sec-item-text { flex: 1; }
-        .sec-item-time {
-            font-size: 0.72em;
-            color: var(--text2);
-            direction: ltr;
-        }
-        .sec-item-badge {
-            font-size:0.7em;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-weight: 600;
-        }
-
-        /* ===== Project Tab ===== */
-        .lib-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-            gap: 8px;
-        }
-        .lib-card {
-            background: var(--bg3);
-            border-inline-start: 2px solid var(--emerald);
-            border-radius: 6px;
-            padding: 10px 12px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .lib-name {
-            font-family: 'Cascadia Code', Consolas, monospace;
-            font-size: 0.82em;
-        }
-        .lib-ver {
-            font-size: 0.75em;
-            color: var(--gold);
-            font-family: 'Cascadia Code', Consolas, monospace;
-        }
-        .lib-dev {
-            font-size: 0.6em;
-            color: var(--text2);
-            background: var(--border);
-            padding: 0 4px;
-            border-radius: 3px;
-            margin-inline-start: 6px;
         }
 
         /* ===== Welcome ===== */

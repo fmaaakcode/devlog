@@ -6,7 +6,7 @@
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import { asJson } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -85,5 +85,27 @@ describe("routes-misc (extracted group) still mounts + behaves", () => {
   test("guard still wraps the group: non-JSON POST /api/updates → 415", async () => {
     const r = await fetch(`${BASE}/api/updates`, { method: "POST", headers: { "Content-Type": "text/plain" }, body: "x" });
     expect(r.status).toBe(415);
+  });
+
+  // LAST on purpose: it empties the store the earlier tests read.
+  test("DELETE /api/data/clear with X-Confirm wipes — after writing pre-clear .bak twins", async () => {
+    const post = await fetch(`${BASE}/api/tags`, {
+      method: "POST", headers: JSON_HEADERS,
+      body: JSON.stringify({ cwd: "", entries: [{ tag: "note", content: "survives only in the bak twin" }] }),
+    });
+    expect(post.status).toBe(200);
+
+    const r = await fetch(`${BASE}/api/data/clear`, { method: "DELETE", headers: { "X-Confirm": "yes" } });
+    expect(r.status).toBe(200);
+
+    const data = await asJson(await fetch(`${BASE}/api/data`));
+    expect(data.tags).toHaveLength(0);
+
+    // The wipe's safety net (#757 pattern): dated .bak copies of the stores,
+    // written BEFORE the arrays were emptied.
+    const baks = readdirSync(dataDir).filter(f => f.includes("pre-clear") && f.endsWith(".bak"));
+    expect(baks.some(f => f.startsWith("tags."))).toBe(true);
+    const bakTags = JSON.parse(await Bun.file(join(dataDir, baks.find(f => f.startsWith("tags."))!)).text());
+    expect(JSON.stringify(bakTags)).toContain("survives only in the bak twin");
   });
 });

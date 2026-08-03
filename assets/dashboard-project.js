@@ -330,7 +330,6 @@
             `;
             setHeaderBuilt(true);
             patchLibraries(p);
-            patchFileExts(p);
             patchSessions(p.name);
             patchStatsButton(p, tags);
         }
@@ -402,46 +401,12 @@
             }
         }
 
+        // #777: the old inline `#hdr-libraries` badge strip died when the header
+        // template dropped that element — the deps button/popup is the libraries
+        // surface now, so this just feeds it.
         export function patchLibraries(p) {
             // Use saved vulnResults from server if no fresh scan in cache
-            const vulns = vulnCache[p.name] || p.vulnResults || {};
-            patchDepsButton(p, vulns);
-            const el = document.getElementById('hdr-libraries');
-            if (!el) return;
-            el.innerHTML = p.libraries.map(l => {
-                const v = vulns[l.name];
-                // Prefer status (Vuln API v0.2+); fall back to icon for older cached results.
-                const isCveUpdate = v && (v.status === "update" || (!v.status && v.icon === "warning"));
-                const isCveDanger = v && (v.status === "danger" || (!v.status && v.icon === "x"));
-                const isBad = isCveUpdate || isCveDanger;
-                const isDanger = isCveDanger || isCveUpdate;
-                const isUpdate = isCveUpdate;
-                const borderColor = isDanger ? 'var(--pink)' : isUpdate ? '#c53030' : v ? '#1a4a1a' : 'var(--border)';
-                const bgColor = isDanger ? '#2a0a0a' : isUpdate ? '#1a0808' : v?.icon === "check" ? '#0a1a0a' : 'var(--bg3)';
-                const nameColor = isBad ? 'var(--pink)' : v ? 'var(--emerald)' : 'var(--text)';
-                // Prefer the API's detailsUrl (CVE page); otherwise fall back to
-                // the package's registry page so every library stays clickable.
-                let href = safeHref(v?.detailsUrl);
-                if (href === '#') href = registryUrl(p.language, l.name) || '#';
-                const nameTag = href !== '#'
-                    ? `<a href="${esc(href)}" target="_blank" rel="noopener" title="${tr("lib.openPage")}" style="color:${nameColor};text-decoration:none;font-weight:${isBad ? '700' : '400'}">${esc(l.name)}</a>`
-                    : `<span style="color:${nameColor}">${esc(l.name)}</span>`;
-                const verColor = isBad ? 'var(--pink)' : 'var(--emerald)';
-                const updateTarget = v?.fixVersion || v?.latestVersion || '';
-                const fixVer = isBad && updateTarget ? `<span style="color:var(--emerald);margin-left:2px">→ ${esc(updateTarget)}</span>` : (!isBad && v && !v.isLatest && v.latestVersion && l.version !== 'latest') ? `<span style="color:var(--gold);margin-left:2px">→ ${esc(v.latestVersion)}</span>` : '';
-                const sevColors = { critical: '#ff1744', high: '#ff5252', moderate: '#ff9800', low: '#ffd93d', none: 'var(--pink)' };
-                const sev = (v?.severity || '').toLowerCase();
-                const vulnColor = sevColors[sev] || 'var(--pink)';
-                const vulnTitle = v && v.vulns > 0 ? `${tr("lib.vulnCount", { n: v.vulns })}${v.topVuln ? ` — ${v.topVuln.id} (${v.topVuln.severity}${v.topVuln.score ? ` ${v.topVuln.score}` : ''})` : ''}${sev && sev !== 'none' ? tr("lib.sevPart", { sev }) : ''}` : '';
-                const vulnCount = v && v.vulns > 0 ? `<span data-action="show-vulns" data-project="${esc(p.name)}" data-lib="${esc(l.name)}" style="color:${vulnColor};margin-left:4px;font-size:0.85em;cursor:pointer" title="${esc(vulnTitle)}${tr("lib.clickSuffix")}">⚠${v.vulns}${(sev === 'critical' || sev === 'high') ? '!' : ''}</span>` : '';
-                const isOutdated = !isBad && v && v.isLatest === false && l.version !== 'latest';
-                const outdatedBorder = isOutdated ? '#4a3a00' : '';
-                const outdatedBg = isOutdated ? '#1a1500' : '';
-                const finalBorder = isBad ? borderColor : (isOutdated ? outdatedBorder : borderColor);
-                const finalBg = isBad ? bgColor : (isOutdated ? outdatedBg : bgColor);
-                const outdatedBadge = isOutdated ? `<span style="color:var(--gold);margin-left:4px;font-size:0.8em" title="${tr("lib.outdated")}">&#8635;</span>` : '';
-                return `<span style="font-size:0.7em;padding:2px 8px;border-radius:4px;background:${finalBg};border:1px solid ${finalBorder};font-family:'Cascadia Code',Consolas,monospace;transition:all 0.3s">${l.dev ? '<span style="font-size:0.85em;color:var(--text2);background:var(--border);padding:0 4px;border-radius:3px;margin-left:4px">dev</span>' : ''}${nameTag}<span style="color:${verColor};margin-left:4px">${esc(l.version)}</span>${fixVer}${vulnCount}${outdatedBadge}</span>`;
-            }).join("");
+            patchDepsButton(p, vulnCache[p.name] || p.vulnResults || {});
         }
 
         function patchDepsButton(p, vulns) {
@@ -529,48 +494,6 @@
             }).join('');
         }
 
-        function patchFileExts(p) {
-            const container = document.getElementById('hdr-exts');
-            if (!container) return;
-            const newExts = Object.entries(p.files || {}).sort((a,b) => b[1]-a[1]);
-            const existing = {};
-            container.querySelectorAll('[data-ext]').forEach(el => { existing[el.dataset.ext] = el; });
-
-            const newExtKeys = new Set(newExts.map(([ext]) => ext));
-
-            // Remove gone extensions
-            for (const ext in existing) {
-                if (!newExtKeys.has(ext)) {
-                    existing[ext].style.transition = 'opacity 0.3s, transform 0.3s';
-                    existing[ext].style.opacity = '0';
-                    existing[ext].style.transform = 'scale(0.7)';
-                    setTimeout(() => existing[ext].remove(), 300);
-                }
-            }
-
-            // Add or update
-            for (const [ext, n] of newExts) {
-                if (existing[ext]) {
-                    // Update count if changed
-                    const numEl = existing[ext].querySelector('.ext-num');
-                    if (numEl && numEl.textContent !== String(n)) {
-                        numEl.textContent = n;
-                        numEl.classList.remove('val-flash');
-                        void numEl.offsetWidth;
-                        numEl.classList.add('val-flash');
-                    }
-                } else {
-                    // New extension badge
-                    const span = document.createElement('span');
-                    span.dataset.ext = ext;
-                    span.className = 'badge-new';
-                    span.style.cssText = "font-size:0.7em;padding:1px 6px;border-radius:3px;background:var(--bg3);font-family:'Cascadia Code',Consolas,monospace;color:var(--text2)";
-                    span.innerHTML = `<span style="color:var(--emerald)">.${esc(ext)}</span> <span class="ext-num" style="color:var(--pink)">${n}</span>`;
-                    container.appendChild(span);
-                }
-            }
-        }
-
         export function patchHeader() {
             const p = data.projects[activeProject];
             if (!p || !headerBuilt) return;
@@ -599,12 +522,6 @@
                 }
                 descWrap.style.display = (newDesc || hasAbout) ? '' : 'none';
             }
-
-            // Stats
-            patch(document.getElementById('hdr-files'), p.totalFiles);
-            patch(document.getElementById('hdr-libs'), p.libraries.length);
-            patch(document.getElementById('hdr-dirs'), (p.directories || []).length);
-            patch(document.getElementById('hdr-tags'), tags.length);
 
             // Version
             const lastRelease = tags.find(t => t.tag === "release");
@@ -650,9 +567,6 @@
 
             // Libraries
             patchLibraries(p);
-
-            // File extensions — surgical per-badge
-            patchFileExts(p);
 
             // Active Claude sessions + background processes
             patchSessions(p.name);

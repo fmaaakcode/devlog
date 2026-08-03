@@ -16,7 +16,7 @@ import { parseHookEvent, attributionCwd } from "./hooks";
 import { listArchiveMonths, readArchiveMonth } from "./event-archive";
 import { softFail } from "./soft-fail";
 import { broadcast } from "./broadcast";
-import { normalizeSlashes } from "./path-utils";
+import { normalizeSlashes, pathsEqual } from "./path-utils";
 import { currentLang } from "./i18n";
 import type { ProjectProfile, EventEntry } from "./types";
 
@@ -60,8 +60,18 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
           const resolved0 = resolveProjectFor(snapshot, cwd);
           const name0 = resolved0.name;
           const effectiveCwd0 = resolved0.cwd;
+          // Folder-name collision guard (#763), mirroring doInject/scheduleRescan:
+          // a same-name folder at a DIFFERENT path reaches here via the basename
+          // fallback of resolveProjectFor — scanning it would let the merge below
+          // overwrite the registered project's profile (path included) and see-saw
+          // `path` between the two folders on alternating hooks.
+          const stored0 = snapshot.projects[name0];
+          const collision = !!(stored0?.path && effectiveCwd0 && !pathsEqual(stored0.path, effectiveCwd0));
+          if (collision) {
+            console.warn(`[/api/hook] folder-name collision: cwd=${effectiveCwd0} differs from stored '${name0}' at ${stored0.path}. Skipping scan.`);
+          }
           let fresh: ProjectProfile | null = null;
-          if (effectiveCwd0 && (!snapshot.projects[name0] || Date.now() - new Date(snapshot.projects[name0].lastScan).getTime() > 3600000)) {
+          if (!collision && effectiveCwd0 && (!stored0 || Date.now() - new Date(stored0.lastScan).getTime() > 3600000)) {
             try { fresh = await scanFreshProfile(effectiveCwd0); } catch (e) { softFail("hook.scanFreshProfile", e); }
           }
 
@@ -79,8 +89,12 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
             // Apply the phase-1 scan if resolution still points at the same
             // project (guards the rare case where a concurrent writer changed
             // what `cwd` resolves to between the two phases).
-            if (fresh && name === name0) {
-              const isNew = !data.projects[name];
+            // Re-check the collision under the lock (a concurrent writer may
+            // have re-registered the name between the two phases) — same
+            // two-phase re-check scheduleRescan does.
+            const stored = data.projects[name];
+            if (fresh && name === name0 && (!stored || pathsEqual(stored.path, effectiveCwd))) {
+              const isNew = !stored;
               applyPreservedScan(data, name, fresh);
               if (isNew) stackJob = { cwd: effectiveCwd, profile: data.projects[name] };
               runVulnScan(name).catch(e => softFail("runVulnScan", e));
@@ -192,6 +206,12 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
               ),
               note: JSON.stringify({ durationMinutes, filesChanged: files.size, added, removed, tagsByKind, eventsCount: events.length }),
             };
+            // Upsert — ONE summary event per session: every Stop posts a fresh
+            // roll-up (and blocking stops post too since #752), so replacing the
+            // previous entry keeps the log at one summary per session instead of
+            // a superset growth chain (the doctor's bloatedTwins class).
+            const prevIdx = data.events.findIndex(e => e.type === "session-summary" && e.session_id === sessionId);
+            if (prevIdx >= 0) data.events.splice(prevIdx, 1);
             pushEvent(data.events, summary);   // honor MAX_EVENTS_LOG cap (R3 P3 #4)
             broadcast("session-summary", { project, session_id: sessionId, summary });
             return Response.json({ ok: true, summary });

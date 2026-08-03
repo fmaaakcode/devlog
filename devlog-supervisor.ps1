@@ -30,13 +30,29 @@ try {
 if (-not $alive) {
   $log = Join-Path $dir '.devlog\server.log'
   New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null
-  # Rotate if the log grew past ~5MB (keep one generation) — bounds it across
-  # restarts (#devops-F2).
-  if ((Test-Path $log) -and ((Get-Item $log).Length -gt 5000000)) {
-    Move-Item -Force $log "$log.1"
+  # Start-Process -RedirectStandardOutput TRUNCATES its target on every boot —
+  # the crash trace this supervisor exists to preserve died with each restart it
+  # performed, and the .err channel was never rotated at all (#770). Preserve
+  # BOTH channels' previous contents into the `.1` generation BEFORE the
+  # truncating start; the archive is capped at ~20MB (oldest dropped wholesale).
+  foreach ($f in @($log, "$log.err")) {
+    if ((Test-Path "$f.1") -and ((Get-Item "$f.1").Length -gt 20000000)) {
+      Remove-Item -Force "$f.1"
+    }
+    if ((Test-Path $f) -and ((Get-Item $f).Length -gt 0)) {
+      Add-Content -Path "$f.1" -Value (Get-Content -Raw $f)
+    }
   }
-  # `>>` semantics: append so crash traces survive a restart.
-  Start-Process -FilePath 'bun' -ArgumentList 'src/server.ts' `
-    -WorkingDirectory $dir -WindowStyle Hidden `
-    -RedirectStandardOutput $log -RedirectStandardError "$log.err"
+  # bun may be off PATH in a Scheduled Task context — same ~/.bun/bin fallback
+  # as the bash twin (ensure-server.sh).
+  $bun = (Get-Command bun -ErrorAction SilentlyContinue).Source
+  if (-not $bun) { $bun = Join-Path $HOME '.bun\bin\bun.exe' }
+  try {
+    Start-Process -FilePath $bun -ArgumentList 'src/server.ts' `
+      -WorkingDirectory $dir -WindowStyle Hidden `
+      -RedirectStandardOutput $log -RedirectStandardError "$log.err" -ErrorAction Stop
+  } catch {
+    # A supervisor that can't start the daemon must say so, not vanish (#770).
+    Add-Content -Path "$log.err" -Value "$(Get-Date -Format o) supervisor: failed to start daemon: $($_.Exception.Message)"
+  }
 }

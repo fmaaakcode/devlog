@@ -129,15 +129,31 @@ const SELF_NAMES = new Set(["powershell.exe", "conhost.exe", "WmiPrvSE.exe", "cm
 
 const MAX_DESCENDANTS = 500;
 
+// Pure core of the no-sessions branch (#775): prune entries whose pid is dead,
+// KEEP the living ones marked orphaned. Exported for unit tests.
+export function pruneDescendantsAgainst(
+  descendants: DevLogData["descendants"], living: Set<number>, now: string,
+): DevLogData["descendants"] {
+  const kept = descendants.filter(d => living.has(d.pid));
+  for (const d of kept) { d.orphaned = true; d.lastSeen = now; }
+  return kept;
+}
+
 export async function refreshDescendants(data: DevLogData): Promise<void> {
   const sessions = await readActiveSessions();
   const aliveSessions = sessions.filter(s => s.alive);
-  // Short-circuit: no active Claude sessions means nothing can be a descendant
-  // and any stored entry whose pid is not alive anymore should be pruned. Skip
-  // the expensive PowerShell snapshot when we only need to prune.
+  // No active Claude sessions: prune the DEAD descendants, keep live ones as
+  // orphans. #775: this used to wipe data.descendants wholesale with no pid
+  // check — killing live-orphan tracking — and a transiently-empty WMI snapshot
+  // (which also zeroes aliveSessions) was enough to trigger the wipe, against
+  // the module's own "transient failure must not read as mass death" promise.
   if (aliveSessions.length === 0) {
     if (data.descendants.length === 0) return;
-    data.descendants = [];
+    const snapshot = await snapshotAllProcesses();
+    if (snapshot.length === 0) return;   // transient WMI failure — change nothing
+    data.descendants = pruneDescendantsAgainst(
+      data.descendants, new Set(snapshot.map(p => p.pid)), new Date().toISOString(),
+    );
     return;
   }
   const allProcs = await snapshotAllProcesses();

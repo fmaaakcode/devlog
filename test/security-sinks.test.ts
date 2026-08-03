@@ -26,5 +26,7 @@ test("dashboard.js allowlists link schemes via safeHref (D3)", async () => {
   const js = parts.join("\n");
   expect(js).toMatch(/function safeHref\(/);
   expect(js).toContain("safeHref(p.gitRemote)");
-  expect(js).toContain("safeHref(v?.detailsUrl)");
+  // The live detailsUrl sink is the vuln modal in dashboard-core.js (#777
+  // removed the dead `#hdr-libraries` twin that used `v?.detailsUrl`).
+  expect(js).toContain("safeHref(v.detailsUrl)");
 });

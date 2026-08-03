@@ -28,6 +28,7 @@
 import { appendFile, mkdir, readdir, unlink } from "node:fs/promises";
 import { gzipSync, gunzipSync } from "node:zlib";
 import { DATA_DIR } from "./data";
+import { withLockRetry } from "./fs-retry";
 import type { EventEntry, UndoneRecord } from "./types";
 
 export const ARCHIVE_DIR = `${DATA_DIR}/archive`;
@@ -87,42 +88,23 @@ function appendStream(stream: ArchiveStream, records: unknown[], label: string):
   return result;
 }
 
-// Retry a few times on transient Windows lock codes, mirroring
-// renameWithRetry in server.ts. A lock that survives all attempts is external
-// and propagates to archiveEvents' catch.
-async function appendWithRetry(path: string, body: string, attempts = 6): Promise<void> {
-  for (let i = 0; i < attempts; i++) {
-    try {
-      await appendFile(path, body, "utf-8");
-      return;
-    } catch (e) {
-      const code = (e as { code?: string })?.code;
-      const transient = code === "EPERM" || code === "EBUSY" || code === "EACCES";
-      if (!transient || i === attempts - 1) throw e;
-      await new Promise(r => setTimeout(r, 120));
-    }
-  }
+// Retry a few times on transient Windows lock codes (withLockRetry). A lock
+// that survives all attempts is external and propagates to archiveEvents' catch.
+async function appendWithRetry(path: string, body: string): Promise<void> {
+  await withLockRetry(() => appendFile(path, body, "utf-8"));
 }
 
 // Unlink where only "already gone" is acceptable: ENOENT returns quietly, the
-// transient Windows lock codes (the same set appendWithRetry retries — AV
-// scanners hold freshly touched files) are retried, and anything that survives
-// THROWS. The old bare `catch` here swallowed EBUSY/EPERM as if they were the
-// no-twin case — the stale plain .jsonl then shadowed the merged .gz on every
-// read and the next rollover re-compressed it OVER the merge (#746).
-async function unlinkWithRetry(path: string, attempts = 6): Promise<void> {
-  for (let i = 0; i < attempts; i++) {
-    try {
-      await unlink(path);
-      return;
-    } catch (e) {
-      const code = (e as { code?: string })?.code;
-      if (code === "ENOENT") return;
-      const transient = code === "EPERM" || code === "EBUSY" || code === "EACCES";
-      if (!transient || i === attempts - 1) throw e;
-      await new Promise(r => setTimeout(r, 120));
-    }
-  }
+// transient Windows lock codes are retried via withLockRetry (AV scanners hold
+// freshly touched files), and anything that survives THROWS. The old bare
+// `catch` here swallowed EBUSY/EPERM as if they were the no-twin case — the
+// stale plain .jsonl then shadowed the merged .gz on every read and the next
+// rollover re-compressed it OVER the merge (#746).
+async function unlinkWithRetry(path: string): Promise<void> {
+  await withLockRetry(async () => {
+    try { await unlink(path); }
+    catch (e) { if ((e as { code?: string })?.code !== "ENOENT") throw e; }
+  });
 }
 
 // The actual month write, NO chaining — callers already hold a chain link.

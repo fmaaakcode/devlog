@@ -29,7 +29,7 @@ import { diagnoseFeatureRef, type FeatureRefProblem } from "./features";
 import { detectReopen, PROBLEM_TAGS, type ReopenHint } from "./reopen";
 import { applyUndo } from "./undo";
 import { searchTags, patternSiblings, type SimilarBug } from "./recall";
-import { listArchiveMonths, readUndoneMonth } from "./event-archive";
+import { archiveUndone, listArchiveMonths, readUndoneMonth } from "./event-archive";
 import type { RollbackResult } from "./release-rollback";
 import type { TagEntry } from "./types";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -45,6 +45,9 @@ const L = <T>(en: T, ar: T): T => (currentLang() === "ar" ? ar : en);
 interface TagInput { tag?: string; content?: string; breaking?: boolean; model?: string; context?: string }
 interface TagsBody { entries?: TagInput[]; cwd?: string; session_id?: string; batch_id?: string }
 interface ClassifyBody { cwd?: string; count?: number; type?: string; note?: string }
+// The event types the hook mapper emits (hooks.ts) — the only values
+// /api/classify may write back into event.type.
+const EVENT_TYPES = new Set(["change", "create", "read", "command", "agent", "plan", "session", "task"]);
 // Entries handed to helpers that require concrete tag/content strings — the guard
 // preceding each call proves they're present, so this cast is a compile-time only.
 type Concrete = { tag: string; content: string };
@@ -575,14 +578,26 @@ export function makeTagsRoutes(): Record<string, unknown> {
       },
     },
 
-    // Delete a tag
+    // Delete a tag — through the archive-before-delete contract (#584): the row
+    // goes to the `undone` archive stream FIRST, and a failed archive write
+    // refuses the deletion. This was the last raw removal left after undo.ts
+    // closed the others; the dashboard surfaces the 500 as deleteFailed.
     "/api/tag/:id": {
       async DELETE(req: ApiReq) {
         return await withData(async (data) => {
-          const before = data.tags.length;
-          data.tags = data.tags.filter(t => t.id !== req.params.id);
-          if (data.tags.length < before) { broadcast("tags", {}); return Response.json({ ok: true }); }
-          return Response.json({ error: "Not found" }, { status: 404 });
+          const idx = data.tags.findIndex(t => t.id === req.params.id);
+          if (idx < 0) return Response.json({ error: "Not found" }, { status: 404 });
+          const target = data.tags[idx];
+          if (!(await archiveUndone([{ undoneAt: new Date().toISOString(), project: target.project, kind: "tag", entry: target }]))) {
+            console.error(`[/api/tag DELETE] archive failed — REFUSING to remove [${target.tag}] ${(target.content || "").slice(0, 60)}`);
+            return Response.json({ error: L(
+              "Archive failed — DevLog never deletes a row it can't keep a copy of. Check the archive folder's permissions and retry.",
+              "تعذّرت الأرشفة — DevLog لا يحذف صفًّا لا يستطيع الاحتفاظ بنسخة منه. افحص صلاحيات مجلد الأرشيف وأعد المحاولة.",
+            ) }, { status: 500 });
+          }
+          data.tags.splice(idx, 1);
+          broadcast("tags", {});
+          return Response.json({ ok: true });
         });
       },
     },
@@ -592,6 +607,12 @@ export function makeTagsRoutes(): Record<string, unknown> {
       async POST(req: ApiReq) {
         try {
           const body = await req.json() as ClassifyBody;
+          // Allowlist (L15): event.type is a filter key everywhere downstream
+          // (file-story, retention, verify-hint…) — an unknown value would make
+          // rows invisible to every consumer, so refuse it at the door.
+          if (body.type !== undefined && !EVENT_TYPES.has(body.type)) {
+            return Response.json({ error: `Unknown type '${body.type}'` }, { status: 400 });
+          }
           return await withData(async (data) => {
             const { name: project } = resolveProjectFor(data, body.cwd || "");
             let tagged = 0;

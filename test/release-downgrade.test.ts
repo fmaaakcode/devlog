@@ -52,4 +52,32 @@ describe("detectReleaseDowngrade", () => {
     const d = data([rel("v2.8.0 — current")]);
     expect(detectReleaseDowngrade("just some notes", d, PROJ)).toBeNull();
   });
+
+  // #742/#773 pattern sweep: parseVersion's first-word fallback swallowed a
+  // prose-leading number, so a version-less reason starting with a small
+  // number was rejected as a phantom downgrade.
+  test("prose reason starting with a number ('2.5x faster parsing') → NOT a downgrade", () => {
+    const d = data([rel("v2.8.0 — current")]);
+    expect(detectReleaseDowngrade("2.5x faster parsing", d, PROJ)).toBeNull();
+  });
+
+  test("prose number followed by a separator ('2.5 — ...') still counts as explicit", () => {
+    const d = data([rel("v2.8.0 — current")]);
+    expect(detectReleaseDowngrade("2.5 — half-baked", d, PROJ)).toEqual({ version: "2.5", latest: "v2.8.0" });
+  });
+
+  test("prerelease suffix stays matched (v1.2.3-rc1 below latest → rejected)", () => {
+    const d = data([rel("v2.8.0 — current")]);
+    expect(detectReleaseDowngrade("v1.2.3-rc1 — candidate", d, PROJ)).toEqual({ version: "v1.2.3-rc1", latest: "v2.8.0" });
+  });
+
+  // #782 sweep, stored side: junk historical release content must never become
+  // `latest` — «2026-07-06» reads as major 2026 in compareSemver and would
+  // reject every real release after it forever.
+  test("stored junk release tags never poison latest", () => {
+    const d = data([rel("2026-07-06 imported notes"), rel("2.5x faster parsing"), rel("v2.8.0 — current")]);
+    expect(detectReleaseDowngrade("v2.9.0 — next", d, PROJ)).toBeNull();
+    // ...and a genuine downgrade is still caught against the real latest.
+    expect(detectReleaseDowngrade("v2.7.0 — oops", d, PROJ)).toEqual({ version: "v2.7.0", latest: "v2.8.0" });
+  });
 });

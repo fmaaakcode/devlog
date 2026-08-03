@@ -1,18 +1,9 @@
 import type { EventEntry } from "./types";
 import { projectName } from "./data";
 import { isTestCommand } from "./verify-hint";
+import { isSensitivePath } from "./sensitive-paths";
 
 const MAX_DIFF_FIELD_BYTES = 10000;
-
-// Files whose old_string/new_string/content shouldn't be persisted at all —
-// they routinely carry secrets that would leak via /api/changes/by-id/:id.
-// Path-based only (no regex secret detection — false positives + hides the
-// user's own data from themselves).
-const SENSITIVE_PATH_RE = /(?:^|[/\\])(?:\.env(?:\.|$)|\.npmrc$|\.pgpass$|id_rsa(?:\.pub)?$|id_ed25519(?:\.pub)?$|.+\.(?:pem|key|p12|pfx|asc)$|.*credentials.*|.*\.secret(?:s)?$)/i;
-
-function isSensitivePath(p: string | undefined): boolean {
-  return typeof p === "string" && SENSITIVE_PATH_RE.test(p);
-}
 
 function capContent(s: unknown): string | undefined {
   if (typeof s !== "string" || s.length === 0) return undefined;

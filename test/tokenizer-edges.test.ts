@@ -53,3 +53,36 @@ describe("tokenizer strings & templates", () => {
     expect(() => tokenize('const s = "no closing quote', "ts")).not.toThrow();
   });
 });
+
+describe("tokenizer python triple quotes (#753)", () => {
+  test('a """docstring""" is one String token, not empty strings + identifiers', () => {
+    const toks = tokenize('def f():\n    """docstring with def and class words"""\n    pass', "py");
+    const strs = toks.filter(t => t.type === TokenType.String);
+    expect(strs.length).toBe(1);
+    expect(strs[0].value).toBe('"""docstring with def and class words"""');
+    // the docstring content must NOT leak keyword tokens
+    const kws = toks.filter(t => t.type === TokenType.Keyword).map(t => t.value);
+    expect(kws).toEqual(["def", "pass"]);
+  });
+
+  test("''' variant is also captured as a single multi-line String", () => {
+    const toks = tokenize("x = '''line1\nline2\nline3'''\ny = 1", "py");
+    const strs = toks.filter(t => t.type === TokenType.String);
+    expect(strs.length).toBe(1);
+    expect(strs[0].value).toContain("line2");
+    // line counting continued through the string: y sits on line 4
+    const y = toks.find(t => t.type === TokenType.Identifier && t.value === "y");
+    expect(y?.line).toBe(4);
+  });
+
+  test('an empty "" in python still tokenizes as one empty string', () => {
+    const toks = tokenize('x = ""', "py");
+    const strs = toks.filter(t => t.type === TokenType.String);
+    expect(strs.length).toBe(1);
+    expect(strs[0].value).toBe('""');
+  });
+
+  test("an unterminated triple quote does not hang or throw", () => {
+    expect(() => tokenize('"""no closing', "py")).not.toThrow();
+  });
+});

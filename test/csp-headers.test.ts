@@ -6,7 +6,7 @@
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import { spawn, type Subprocess } from "bun";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -71,4 +71,27 @@ describe("regression — security R2 D1: CSP on HTML responses", () => {
       expect(scriptSrc).toBe("script-src 'self'");
     });
   }
+
+  // #774: the two hand-built HTML routes in routes-features bypassed
+  // HTML_SECURITY_HEADERS entirely — a rogue HTML file dropped into the
+  // writable docs dir ran inline script with the page's full API reach.
+  test("doc-page and client-report carry the same CSP as every other HTML response", async () => {
+    const projDir = mkdtempSync(join(tmpdir(), "devlog-csp-proj-"));
+    try {
+      await fetch(`${BASE}/api/inject?cwd=${encodeURIComponent(projDir)}&session_id=csp-774&type=SessionStart`, { signal: AbortSignal.timeout(10000) });
+      const name = projDir.split(/[\\/]/).pop()!;
+      mkdirSync(join(projDir, ".devlog", "docs"), { recursive: true });
+      writeFileSync(join(projDir, ".devlog", "docs", "guard774.html"), "<h1>doc</h1><script>alert(1)</script>");
+      for (const path of [`/api/doc-page?project=${encodeURIComponent(name)}&slug=guard774`, `/api/client-report?project=${encodeURIComponent(name)}`]) {
+        const r = await fetch(`${BASE}${path}`);
+        expect(r.status).toBe(200);
+        const csp = r.headers.get("content-security-policy") || "";
+        const scriptSrc = csp.split(";").map(s => s.trim()).find(s => s.startsWith("script-src"));
+        expect(scriptSrc).toBe("script-src 'self'");            // inline script won't run
+        expect(r.headers.get("x-content-type-options")).toBe("nosniff");
+      }
+    } finally {
+      rmSync(projDir, { recursive: true, force: true });
+    }
+  });
 });

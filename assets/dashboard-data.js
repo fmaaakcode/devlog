@@ -14,22 +14,19 @@
         // The sidebar's single source in BOTH modes (#379): counts, recency and
         // the vuln verdict all come from /api/projects-summary — the client no
         // longer re-derives any of them from raw tags.
+        // #777: the orphan/untagged/partial mirror maps were exported here but
+        // read by NOTHING since their dashboard surface was pulled (2026-07-12);
+        // the server summary still carries the fields, so a redesigned surface
+        // re-adds its mirrors then.
         export let summaryLastActivity = {};     // { project → epoch ms }
         export let summaryTagCounts = {};        // { project → tag count }
         export let summaryVulnClass = {};        // { project → '' | vuln-safe | vuln-warn | vuln-danger }
-        export let summaryOrphans = 0;           // store names with no registry entry (#375)
         export let summaryTombstones = 0;        // projects gone from disk 30+ days (#380)
-        export let summaryUntagged = 0;          // quiet sessions that wrote code but stored no tags (#434)
-        export let summaryUntaggedBy = {};       // { project → its untagged-session count } — feeds the tooltip (#447)
-        export let summaryPartial = 0;           // sessions that tagged but recorded no work — granularity twin (#558)
-        export let summaryPartialBy = {};        // { project → its partially-tagged count } — feeds the tooltip
 
         function applySummary(j) {
             summaryLastActivity = {};
             summaryTagCounts = {};
             summaryVulnClass = {};
-            summaryUntaggedBy = {};
-            summaryPartialBy = {};
             const projects = {};
             for (const p of (j.projects || [])) {
                 projects[p.name] = {
@@ -39,14 +36,9 @@
                 summaryLastActivity[p.name] = p.lastActivity || 0;
                 summaryTagCounts[p.name] = p.tags || 0;
                 summaryVulnClass[p.name] = p.vulnClass || '';
-                if (p.untagged > 0) summaryUntaggedBy[p.name] = p.untagged;
-                if (p.partial > 0) summaryPartialBy[p.name] = p.partial;
             }
-            // Coerced: these land inside renderMaintRow's innerHTML.
-            summaryOrphans = Number(j.orphans) || 0;
+            // Coerced: this lands inside renderMaintRow's innerHTML.
             summaryTombstones = Number(j.tombstones) || 0;
-            summaryUntagged = Number(j.untagged) || 0;
-            summaryPartial = Number(j.partial) || 0;
             return projects;
         }
 
@@ -430,28 +422,24 @@
                 const p = data.projects[name];
                 if (p) patchLibraries(p);
 
-                // Show runtime + summary in panel
+                // Summary is computed CLIENT-side from the results array (#766):
+                // the server sends { libraries: { results } } only — the old block
+                // read runtime + summary fields from a retired response shape, so
+                // every successful scan blanked the panel. Severity mapping fixed
+                // with it: danger (vulnerable) = ❌/pink, update (outdated) = ⚠️/gold.
                 let h = '';
-                if (d.runtime) {
-                    const r = d.runtime;
-                    const icon = r.icon === "check" ? "✅" : r.icon === "x" ? "❌" : "⚠️";
-                    const color = r.icon === "check" ? "var(--emerald)" : "var(--pink)";
-                    h += `<div style="display:flex;align-items:center;gap:8px;font-size:0.78em">
-                        <span>${icon}</span>
-                        <span style="color:${color};font-weight:600">${esc(r.name)} ${esc(r.version || '')}</span>
-                        <span style="color:var(--text2)">${esc(r.message)}</span>
-                        ${r.eol ? '<span style="color:var(--pink);font-weight:600;font-size:0.85em">⛔ EOL</span>' : ''}
+                const results = d.libraries?.results || [];
+                if (results.length) {
+                    const count = (s) => results.filter(p => p.status === s).length;
+                    const safe = count("safe"), danger = count("danger"), update = count("update");
+                    const unknown = results.length - safe - danger - update;
+                    h = `<div style="display:flex;gap:12px;font-size:0.75em;font-weight:600">
+                        <span style="color:var(--emerald)">✅ ${tr("vuln.safeCount", { n: safe })}</span>
+                        ${danger > 0 ? `<span style="color:var(--pink)">❌ ${tr("vuln.dangerCount", { n: danger })}</span>` : ''}
+                        ${update > 0 ? `<span style="color:var(--gold)">⚠️ ${tr("vuln.updateCount", { n: update })}</span>` : ''}
+                        ${unknown > 0 ? `<span style="color:var(--text2)">${tr("vuln.unknownCount", { n: unknown })}</span>` : ''}
                     </div>`;
-                }
-                if (d.libraries?.summary) {
-                    const s = d.libraries.summary;
-                    h += `<div style="display:flex;gap:12px;font-size:0.75em;font-weight:600;${d.runtime ? 'margin-top:6px' : ''}">
-                        <span style="color:var(--emerald)">✅ ${tr("vuln.safeCount", { n: s.safe })}</span>
-                        ${s.update > 0 ? `<span style="color:var(--pink)">❌ ${tr("vuln.updateCount", { n: s.update })}</span>` : ''}
-                        ${s.danger > 0 ? `<span style="color:var(--gold)">⚠️ ${tr("vuln.dangerCount", { n: s.danger })}</span>` : ''}
-                    </div>`;
-                }
-                if (!d.libraries?.results?.length && !d.runtime) {
+                } else {
                     h = `<div style="color:var(--text2);font-size:0.8em">${tr("vuln.nothing")}</div>`;
                 }
                 if (h) { panel.innerHTML = h; panel.style.display = "flex"; }

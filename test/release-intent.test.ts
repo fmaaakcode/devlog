@@ -62,6 +62,25 @@ describe("resolveReleaseIntent — computes version from intent", () => {
     expect(entry.content).toBe("v5.0.0 — big one");
   });
 
+  test("a reason merely STARTING with a number is intent, not an explicit version (#773)", async () => {
+    // Pre-fix the boundary-less copy of the version regex read «2.5» as an
+    // explicit version, returned null, and downstream minted a phantom v2.5.
+    const entry = { tag: "release", content: "2.5x faster parsing" };
+    const intent = await resolveReleaseIntent(entry, dataWith(), "p", mkProj("2.11.2"));
+    expect(intent).not.toBeNull();                       // resolved as intent...
+    expect(intent?.version).toBe("2.11.3");              // ...from the real current
+    expect(entry.content).toBe("v2.11.3 — 2.5x faster parsing");
+  });
+
+  // #782 sweep, stored side: a junk historical release tag («2026-07-06 notes»)
+  // must never become `current` — the next auto version would be minted from 2026.
+  test("stored junk release tags never poison current", async () => {
+    const entry = { tag: "release:minor", content: "x" };
+    const intent = await resolveReleaseIntent(entry, dataWith(["2026-07-06 imported notes", "v2.15.0 — prior"]), "p", mkProj("2.11.2"));
+    expect(intent?.from).toBe("2.15.0");
+    expect(intent?.version).toBe("2.16.0");
+  });
+
   test("current = highest of manifest AND last release tag (never regresses)", async () => {
     const entry = { tag: "release:minor", content: "x" };
     // manifest is 2.11.2 but a later release tag reached 2.15.0

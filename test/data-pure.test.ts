@@ -4,6 +4,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { normalizeTagContent, assignNum, backfillNums, openTodos, openBugs, openSecurity } from "../src/data";
+import { withLockRetry } from "../src/fs-retry";
 import type { DevLogData, TagEntry, PlanEntry, ProjectProfile } from "../src/types";
 
 const PROJ = "fixture-proj";
@@ -153,5 +154,48 @@ describe("backfillNums", () => {
     const steps = data.plans[0].steps;
     expect(steps[0].num).toBeUndefined();      // completed → not numbered
     expect(typeof steps[1].num).toBe("number");
+  });
+});
+
+describe("withLockRetry — transient Windows lock retry (#781)", () => {
+  const errWith = (code: string) => Object.assign(new Error(code), { code });
+  const failNTimes = (n: number, code: string, result = "ok") => {
+    let calls = 0;
+    const op = async () => {
+      calls++;
+      if (calls <= n) throw errWith(code);
+      return result;
+    };
+    return { op, calls: () => calls };
+  };
+
+  test("succeeds after transient EPERM failures clear", async () => {
+    const { op, calls } = failNTimes(2, "EPERM");
+    expect(await withLockRetry(op, 6, 1)).toBe("ok");
+    expect(calls()).toBe(3);
+  });
+
+  test.each(["EPERM", "EBUSY", "EACCES"])("retries %s", async (code) => {
+    const { op } = failNTimes(1, code);
+    expect(await withLockRetry(op, 6, 1)).toBe("ok");
+  });
+
+  test("a non-transient code propagates immediately — no retry", async () => {
+    const { op, calls } = failNTimes(99, "ENOENT");
+    await expect(withLockRetry(op, 6, 1)).rejects.toThrow("ENOENT");
+    expect(calls()).toBe(1);
+  });
+
+  test("a lock that survives every attempt propagates", async () => {
+    const { op, calls } = failNTimes(99, "EBUSY");
+    await expect(withLockRetry(op, 3, 1)).rejects.toThrow("EBUSY");
+    expect(calls()).toBe(3);
+  });
+
+  test("an error without a code is not treated as transient", async () => {
+    let bare = 0;
+    const bareOp = async () => { bare++; throw new Error("plain failure"); };
+    await expect(withLockRetry(bareOp, 6, 1)).rejects.toThrow("plain failure");
+    expect(bare).toBe(1);
   });
 });

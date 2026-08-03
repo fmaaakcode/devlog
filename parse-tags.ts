@@ -44,31 +44,31 @@ if (DEBUG) {
 const log = DEBUG ? (line: string) => appendFile(LOG_PATH, `${line}\n`, "utf-8") : () => { /* debug logging disabled */ };
 
 // Stop-hook feedback channel. We speak to Claude via JSON on stdout + exit(0)
-// (`{decision:"block", reason}`), NOT stderr + exit(2). Exit 2 is a "blocking
-// error": Claude Code renders it to the user as a red hook *error*, even though
-// every message this hook emits is normal protocol feedback (a release banner,
-// an open-items list, a closure nudge). JSON-on-exit-0 gives the identical
-// "block the stop, feed the text back, continue the turn" semantics with no
-// error label.
+// (`{decision:"block", reason}`), NOT stderr + exit(2): exit 2 renders as a red
+// hook *error* to the user, though every message here is normal protocol
+// feedback. JSON-on-exit-0 gives identical "block the stop, feed the text back,
+// continue the turn" semantics with no error label.
 //
-// Messages accrue in `feedback` so the informational notes written earlier in a
-// run (rollback / closure-confirm / verify-hint) still ride out together with
-// the blocking message — exactly as the old single exit(2) flushed all prior
-// stderr at once. On the no-block path they surface via stderr at the natural
-// exit(0) (unchanged: exit 0 + stderr is never labelled an error, never fed to
-// Claude as one).
+// Messages accrue in `feedback` so informational notes written earlier in a run
+// (rollback / closure-confirm / verify-hint) ride out with the blocking
+// message. On the no-block path they surface at the natural exit(0) instead.
 const feedback: string[] = [];
-function flushBlock(): never {
+// #752: every exit path awaits finalizeTurn() (Parts 2+3, hoisted from the file
+// end) — a blocking stop used to exit before them. `finalized` must live here,
+// above the first flushBlock call: at the file end its `let` sits in TDZ.
+let finalized = false;
+async function flushBlock(): Promise<never> {
+  await finalizeTurn();
   process.stdout.write(JSON.stringify({ decision: "block", reason: feedback.join("\n") }));
   process.exit(0);
 }
-function blockContinue(text: string): never {
-  feedback.push(text);
-  flushBlock();
+async function blockContinue(text: string): Promise<never> {
+  feedback.push(text); return flushBlock();
 }
 
-// Disk queue for /api/tags when the server is unreachable. Without it,
-// every Stop hook during a server outage loses tags forever.
+// Disk queue for /api/tags during server outages — without it those tags are lost.
+// #768: a definitive 4xx is poison — every replay re-rejects it, damming the queue behind it. Quarantine aside + keep draining; 408/429/5xx/network stay retryable.
+const isPermanentReject = (s: number) => s >= 400 && s < 500 && s !== 408 && s !== 429;
 async function flushTagQueue() {
   let files: string[];
   try { files = (await readdir(QUEUE_DIR)).filter(f => f.endsWith(".json")).sort(); }
@@ -84,6 +84,7 @@ async function flushTagQueue() {
         signal: AbortSignal.timeout(5000),
       });
       if (r.ok) { await rm(fp); await log(`queue-flush: drained ${name}`); }
+      else if (isPermanentReject(r.status)) { await rename(fp, `${fp}.rejected`); await log(`queue-flush: ${name} rejected ${r.status} — quarantined, continuing`); }
       else { await log(`queue-flush: server replied ${r.status}, stopping`); return; }
     } catch (e) { await log(`queue-flush: ${(e as Error).message}, stopping`); return; }
   }
@@ -97,8 +98,8 @@ async function enqueueTags(body: any) {
 
 await log(`=== ${new Date().toISOString()} ===`);
 
-let raw = "";
-for await (const chunk of Bun.stdin.stream()) raw += new TextDecoder().decode(chunk);
+// #767: stream-decode stdin in ONE shot — per-chunk `new TextDecoder().decode(chunk)` corrupted multi-byte (Arabic) chars split across chunk boundaries into U+FFFD.
+const raw = await new Response(Bun.stdin.stream()).text();
 await log(raw.slice(0, 500));
 
 let data: any;
@@ -184,7 +185,8 @@ async function readTurnFromTranscript(transcriptPath: string): Promise<{ text: s
       }
       if (seg.trim()) segments.push({ text: seg.trim(), model: String(obj.message?.model || "") });
     }
-    return { text: segments.map(s => s.text).join("\n").trim(), turnId, segments };
+    // #760: BLANK-line join — command bodies capture until a blank line, so a \n join glued continuation prose onto a prior segment's trailing body (grown ledger key → duplicate rule:add).
+    return { text: segments.map(s => s.text).join("\n\n").trim(), turnId, segments };
   } catch (e) {
     await log(`transcript read error: ${(e as Error).message}`);
     return { text: "", turnId: "", segments: [] };
@@ -203,7 +205,7 @@ const tagSegments = transcriptMsg && segments.length ? segments : [{ text: msg, 
 // subfolder projects. Fallback keeps manual/test invocations working.
 const cwd = process.env.CLAUDE_PROJECT_DIR || data.cwd || "";
 const sessionId = data.session_id || "";
-// True when this Stop was itself triggered by a previous hook exit(2)
+// True when this Stop was itself triggered by a previous hook block
 // continuation — used to avoid an infinite enforcement loop.
 const stopHookActive = data.stop_hook_active === true;
 await log(`cwd=${JSON.stringify(cwd)} session_id=${JSON.stringify(sessionId)} msg_len=${msg.length} source=${transcriptMsg ? "transcript" : "last_assistant_message"}`);
@@ -420,7 +422,7 @@ if (msg) {
           out.push(L("✗ The release tag was NOT recorded.", "✗ الـrelease tag لم يُسجَّل."));
           out.push("══════════════════════════════════════");
           await log(`release-guard BLOCKED: open_items=${items.length}`);
-          blockContinue(out.join("\n"));
+          await blockContinue(out.join("\n"));
         }
       } catch (e) {
         await log(`release-guard error: ${(e as Error).message}`);
@@ -464,7 +466,7 @@ if (msg) {
               "══════════════════════════════════════",
             ].join("\n");
             await log(`feature-nudge BLOCKED once: built=${sinceLastRelease.built}, features=0`);
-            blockContinue(`\n${out}\n`);
+            await blockContinue(`\n${out}\n`);
           }
         }
       } catch (e) {
@@ -497,20 +499,22 @@ if (msg) {
       });
       const respBody = await r.text();
       await log(`POST result: ${r.status} ${respBody.slice(0, 200)}`);
-      if (!r.ok) { await enqueueTags(body); await recordPosted(); }
+      // #768: a definitive 4xx must not enter the queue — that's how poison got in.
+      if (!r.ok && isPermanentReject(r.status)) { await log(`batch rejected ${r.status} — dropped, not queued`); await recordPosted(); }
+      else if (!r.ok) { await enqueueTags(body); await recordPosted(); }
       else {
         await recordPosted();
         // Release response: feed the outcome back so Claude knows DevLog
         // processed the release (version bumped, HTML/changelog written) and
         // can continue post-release steps (e.g. build) WITHOUT stopping to ask
         // the user. The server only returns a result for a newly-stored release
-        // tag — a re-emit dedups to null, so this exit(2) fires once (no loop).
+        // tag — a re-emit dedups to null, so this block fires once (no loop).
         try {
           const resp = JSON.parse(respBody);
           // Release downgrade rejected wholesale: the release was NOT NEWER than
           // the latest one (older = typo, equal = duplicate tag that splits the
           // range material, #567), so the server stored nothing (no
-          // tag/HTML/index/bump). Tell Claude with exit(2) so it re-issues a
+          // tag/HTML/index/bump). Tell Claude with a block so it re-issues a
           // correct version.
           if (resp.releaseDowngrade) {
             const dg = resp.releaseDowngrade;
@@ -526,13 +530,13 @@ if (msg) {
               "═════════════════════════════════════════",
             ].join("\n");
             await log(`release-downgrade rejected: ${dg.version} <= ${dg.latest}`);
-            blockContinue(`\n${out}\n`);
+            await blockContinue(`\n${out}\n`);
           }
           // Type+number conflict: -(release:minor) v1.102.0 — the intent tag
           // treats the whole reason as prose, so the number would be silently
           // swallowed and a DIFFERENT version recorded (field incident: user
           // wrote v1.102.0, DevLog recorded v1.104.0, rollback needed). The
-          // server stored nothing; exit(2) so Claude re-emits ONE valid form.
+          // server stored nothing; block so Claude re-emits ONE valid form.
           if (resp.releaseIntentConflict) {
             const c = resp.releaseIntentConflict;
             const out = [
@@ -546,7 +550,7 @@ if (msg) {
               "═════════════════════════════════════════",
             ].join("\n");
             await log(`release-intent-conflict rejected: ${c.declared} + ${c.version}`);
-            blockContinue(`\n${out}\n`);
+            await blockContinue(`\n${out}\n`);
           }
           // Open-items guard fired on the SERVER (defense in depth). Reached when
           // the pre-send guard above was bypassed — server unreachable at pre-check
@@ -577,11 +581,11 @@ if (msg) {
                 "ثم أعد إصدار -(release). أو تجاوز بـ DEVLOG_RELEASE_GUARD=0."),
               "═════════════════════════════════════════");
             await log(`release-blocked (server): open_items=${items.length}`);
-            blockContinue(`\n${out.join("\n")}\n`);
+            await blockContinue(`\n${out.join("\n")}\n`);
           }
           // Release rollback outcome (QA #2): undoing a release reverses its
           // effects; report them so the manifest state is never silently out of
-          // sync. Informational — NO exit(2).
+          // sync. Informational — no block.
           if (resp.rollback) {
             const rb = resp.rollback;
             const manifest = rb.restoredTo
@@ -594,7 +598,7 @@ if (msg) {
             await log(`rollback: ${rb.version} restoredTo=${rb.restoredTo}`);
           }
           // Positive closure confirmation (#228): echo what each `#N` closure
-          // actually closed, text included. Informational only — NO exit(2), so
+          // actually closed, text included. Informational only — no block, so
           // it never forces an extra turn; it just surfaces alongside any other
           // feedback. The text lets Claude catch a wrong-but-compatible number
           // (closed #229 when #228 was meant — a slip the mismatch check can't
@@ -606,7 +610,7 @@ if (msg) {
           }
           // Same-response pairing echo (#633): a closer that resolved to nothing
           // was paired with the single work item opened in this same response.
-          // Informational, NO exit(2) — the closure already applied; the echo just
+          // Informational, no block — the closure already applied; the echo just
           // keeps the wrong guess (or the number-less form) visible.
           if (Array.isArray(resp.repairedClosures) && resp.repairedClosures.length) {
             const lines = resp.repairedClosures.map((r: any) =>
@@ -619,7 +623,7 @@ if (msg) {
             await log(`closure-pair: ${resp.repairedClosures.map((r: any) => r.num).join(", ")}`);
           }
           // Reopen linkage (#556): a stored problem report matched a CLOSED one
-          // — the fix didn't hold. Informational only, NO exit(2): the relation
+          // — the fix didn't hold. Informational only, no block: the relation
           // is already stored; Claude just learns the history exists.
           if (Array.isArray(resp.reopenHints) && resp.reopenHints.length) {
             const day = (s: string) => String(s).slice(0, 10);
@@ -648,16 +652,17 @@ if (msg) {
                 case "plan-deferred":    return L(`☾ whole plan «${c.text}» moved to upcoming (via #${c.num})`, `☾ خطة «${c.text}» كاملة صارت قادمة (عبر #${c.num})`);
                 case "plan-promoted":    return L(`⬆ plan «${c.text}» is current again (via #${c.num})`, `⬆ خطة «${c.text}» عادت حالية (عبر #${c.num})`);
                 case "security-refused": return L(`✗ #${c.num} is a security item — security is never deferred; close it with -(security fix)${t}`, `✗ #${c.num} عنصر أمني — الأمن لا يؤجَّل؛ أغلقه بـ-(security fix)${t}`);
+                case "duplicate":        return L(`· identical to OPEN item ${c.num != null ? `#${c.num}` : "(unnumbered)"} — nothing new stored; to defer that one use -(upcoming) ${c.num != null ? `#${c.num}` : "#N"}`, `· مطابق للعنصر المفتوح ${c.num != null ? `#${c.num}` : "(بلا رقم)"} — لم يُخزَّن جديد؛ لتأجيله استخدم -(upcoming) ${c.num != null ? `#${c.num}` : "#N"}`);
                 default:                 return L(`✗ #${c.num} matches no open item — nothing was deferred; check the number`, `✗ #${c.num} لا يطابق أي عنصر مفتوح — لم يُؤجَّل شيء؛ تحقّق من الرقم`);
               }
             };
             const bad = resp.upcomingChanges.some((c: any) => c.kind === "no-match" || c.kind === "security-refused");
             feedback.push(`\n[devlog upcoming]\n${resp.upcomingChanges.map(fmt).join("\n")}\n`);
             await log(`upcoming: ${resp.upcomingChanges.map((c: any) => `${c.kind}#${c.num ?? "?"}`).join(", ")}${bad ? " (blocking)" : ""}`);
-            if (bad) flushBlock();
+            if (bad) await flushBlock();
           }
           // Optional verify nudge (#232): closed something without running tests
-          // this session. Informational only — NO exit(2), never blocks. Mute
+          // this session. Informational only — never blocks. Mute
           // with DEVLOG_VERIFY_HINT=0.
           if (resp.verifyHint && Array.isArray(resp.verifyHint.closers) && resp.verifyHint.closers.length
               && process.env.DEVLOG_VERIFY_HINT !== "0") {
@@ -751,7 +756,7 @@ if (msg) {
             await log(`closure-text-divergence: ${resp.closureTextWarnings.map((w: any) => w.num).join(", ")}`);
             // Only self-flush when there's no harder closure mismatch below (that
             // one blocks too, flushing this along with it); avoid double handling.
-            if (!(Array.isArray(resp.closureHints) && resp.closureHints.length)) flushBlock();
+            if (!(Array.isArray(resp.closureHints) && resp.closureHints.length)) await flushBlock();
           }
           // Closure mismatch: Claude closed an item that won't actually close —
           // wrong verb for an open item (`-(done)` on a bug), or a #N matching no
@@ -795,7 +800,7 @@ if (msg) {
               "═════════════════════════════════════════",
             ].join("\n");
             await log(`closure-mismatch: served ${resp.closureHints.length}`);
-            blockContinue(`\n${out}\n`);
+            await blockContinue(`\n${out}\n`);
           }
           // Feature-reference problems: a -(feature update)/-(feature removed)
           // whose #N points at no recorded feature (or lost its ref/text). The
@@ -825,7 +830,7 @@ if (msg) {
               "══════════════════════════════════════════",
             ].join("\n");
             await log(`feature-hints: served ${resp.featureHints.length}`);
-            blockContinue(`\n${out}\n`);
+            await blockContinue(`\n${out}\n`);
           }
           if (resp.release) {
             const rel = resp.release;
@@ -857,7 +862,7 @@ if (msg) {
               "════════════════════════════════",
             ].join("\n");
             await log(`release-response: served ${rel.version}`);
-            blockContinue(`\n${out}\n`);
+            await blockContinue(`\n${out}\n`);
           }
         } catch (e) { await log(`release-response parse error: ${(e as Error).message}`); }
       }
@@ -889,7 +894,7 @@ if (msg) {
             feedback.push(`\n[devlog closure-check]\n${msg}\n`);
             if (result.unclosed.length) {
               // Block: Claude sees the feedback and must respond again.
-              flushBlock();
+              await flushBlock();
             }
           }
         }
@@ -901,18 +906,15 @@ if (msg) {
 }
 
 // === Part 1.5: Standards rule commands (ask:rules / rule:add / rule:new / rules:list / rule:rm) ===
-// Served in-turn via stderr + exit(2) — the same continuation mechanism the
-// closure-check uses. The standards library lives on local disk
+// Served in-turn via a JSON block (blockContinue) — the same continuation
+// mechanism the closure-check uses. The standards library lives on local disk
 // (~/.claude/standards), so this works even when the server is down. Deduped
-// PER-TURN via the turn ledger (like ask:open/ask:closed/audit), so
-// re-requesting a category in a LATER turn serves again — the old RULES_STATE_DIR
-// session dedup muted it for the whole session (#400).
+// PER-TURN via the turn ledger (like ask:open/ask:closed/audit) — the old
+// session-wide dedup muted re-requests for the whole session (#400).
 //
-// ORDER MATTERS (#231): this runs AFTER Part 1 has POSTed the tags. It used to
-// run first (Part 0) and exit(2) on the first ask:rules — so a response that
-// emitted both `-(ask:rules)` and a closure (e.g. `-(security fix) #N`) lost the
-// closure silently: the early exit fired before persistence, and no closure-
-// mismatch feedback was produced either. Persist first, serve rules second.
+// ORDER MATTERS (#231): this runs AFTER Part 1 has POSTed the tags — blocking
+// before persistence silently lost any closure sharing the response. Persist
+// first, serve rules second.
 if (msg) {
   try {
     const { parseRuleCommands, runRuleCommands } = await import("./src/standards.ts");
@@ -936,7 +938,7 @@ if (msg) {
         if (output.trim()) {
           // block: Claude sees the feedback and continues this turn with the
           // rules/confirmation in context.
-          blockContinue(`\n[devlog standards]\n${output}\n`);
+          await blockContinue(`\n[devlog standards]\n${output}\n`);
         }
       }
     }
@@ -947,19 +949,16 @@ if (msg) {
 
 // === Part 1.5b: -(audit) — on-demand vuln report, served like -(ask:rules) ===
 // Claude writes `-(audit)` (or `-(audit) <pkg>`) and gets a full vuln report for the
-// current project back THIS turn via stderr+exit(2). Not a logged tag. Heavy lifting
+// current project back THIS turn via a JSON block. Not a logged tag. Heavy lifting
 // (tree scan + OSV) lives in the server's /api/audit; here we just relay.
 //
-// Re-runnable across turns (an audit tool MUST be — you scan, fix, scan again).
-// The loop guard is per-turn command dedup (shouldServeAsk), NOT the turn-level
-// `stopHookActive`: the old flag also swallowed a fresh `-(audit)` emitted inside
-// a continuation caused by a DIFFERENT block. Now we serve each distinct audit
-// command once per turn; a new user turn re-serves it.
+// Re-runnable across turns (an audit tool MUST be — scan, fix, scan again). Loop
+// guard is per-turn command dedup (shouldServeAsk), NOT `stopHookActive`, whose
+// old use swallowed a fresh -(audit) inside a continuation from a DIFFERENT block.
 
-// Fenced + inline code stripped ONCE for all three on-demand pull commands below
-// (audit / ask:open / ask:closed), so a command shown as an EXAMPLE inside ``` ```
-// never triggers a real scan. Was recomputed in each block — three passes over the
-// whole assistant turn per Stop hook (#407).
+// Fenced + inline code stripped ONCE for every on-demand pull-command scanner
+// below (audit / ask:open / ask:closed / …), so a command shown as an EXAMPLE
+// inside code never triggers a real scan. Was recomputed per scanner (#407).
 const strippedMsg = msg
   .replace(/```[\s\S]*?```/g, (s: string) => " ".repeat(s.length))
   .replace(/`[^`\n]*`/g, (s: string) => " ".repeat(s.length));
@@ -999,7 +998,7 @@ if (msg && cwd) {
         const report = await r.text();
         await log(`audit: served (${arg || "all"})`);
         if (report.trim()) {
-          blockContinue(`\n[devlog audit]\n${report}\n`);
+          await blockContinue(`\n[devlog audit]\n${report}\n`);
         }
       } else {
         await log(`audit: server replied ${r.status}`);
@@ -1015,7 +1014,7 @@ if (msg && cwd) {
 // time, but had no way to pull its OWN open bugs/todos/security/plan-steps mid-
 // session without the user typing `?open` — so it closed items off a stale
 // SessionStart snapshot (the #310/#311 slip). This serves the LIVE open list THIS
-// turn via stderr+exit(2), authoritative from /api/open-items (same resolver as
+// turn via a JSON block, authoritative from /api/open-items (same resolver as
 // the SessionStart summary). Re-runnable across turns via per-turn command dedup
 // (shouldServeAsk) — a fresh `-(ask:open)` inside a continuation caused by ANY
 // other block still serves; only re-emitting it in the same turn is suppressed.
@@ -1052,7 +1051,7 @@ if (msg && cwd) {
         ].filter(Boolean).join("\n");
         const out = body || L("No open items.", "لا عناصر مفتوحة.");
         await log(`ask:open: served ${items.length} item(s)`);
-        blockContinue(`\n[devlog open]\n${out}\n`);
+        await blockContinue(`\n[devlog open]\n${out}\n`);
       } else {
         await log(`ask:open: server replied ${r.status}`);
       }
@@ -1118,7 +1117,7 @@ if (msg && cwd) {
             : L("No closed items yet.", "لا عناصر مغلقة بعد.");
         }
         await log(`ask:closed: served ${items.length} item(s)${num ? ` for #${num}` : ""}`);
-        blockContinue(`\n[devlog closed]\n${out}\n`);
+        await blockContinue(`\n[devlog closed]\n${out}\n`);
       } else {
         await log(`ask:closed: server replied ${r.status}`);
       }
@@ -1211,7 +1210,7 @@ if (msg && cwd) {
               `\n  ⚠ السقف ${LIB_CAP} أسماء لكل سؤال — لم يُنصح هنا: ${starved.map(s => s.name).join(" ")}. أعد -(ask:lib) لها وحدها.`)
           : "";
         await log(`ask:lib: served ${items.length} item(s)${starved.length ? `, ${starved.length} past cap` : ""}`);
-        blockContinue(`\n[devlog lib-advice]\n${out}${capture}${capped}\n`);
+        await blockContinue(`\n[devlog lib-advice]\n${out}${capture}${capped}\n`);
       } else {
         await log(`ask:lib: server replied ${r.status}`);
       }
@@ -1259,7 +1258,7 @@ if (msg && cwd) {
         const out = lines.length ? lines.join("\n")
           : L("no matches in the log.", "لا نتائج مطابقة في السجل.");
         await log(`ask:search: served ${results.length} result(s)`);
-        blockContinue(`\n[devlog recall]\n${out}\n`);
+        await blockContinue(`\n[devlog recall]\n${out}\n`);
       } else {
         await log(`ask:search: server replied ${r.status}`);
         break;   // server trouble — retry next continuation, don't consume
@@ -1295,7 +1294,7 @@ if (msg && cwd) {
           : L("No capabilities recorded yet — declare one with -(feature) <client-language line>.",
               "لا قدرات مسجّلة بعد — أعلن واحدة بـ-(feature) <سطر بلغة العميل>.");
         await log(`ask:features: served ${features.length} item(s)`);
-        blockContinue(`\n[devlog features]\n${out}\n`);
+        await blockContinue(`\n[devlog features]\n${out}\n`);
       } else {
         await log(`ask:features: server replied ${r.status}`);
       }
@@ -1335,7 +1334,7 @@ if (msg && cwd) {
           : L("No libraries known for this project yet (they appear after the first scan).",
               "لا مكتبات معروفة للمشروع بعد (تظهر بعد أول فحص).");
         await log(`ask:deps: served ${libraries.length} item(s)`);
-        blockContinue(`\n[devlog deps]\n${out}\n`);
+        await blockContinue(`\n[devlog deps]\n${out}\n`);
       } else {
         await log(`ask:deps: server replied ${r.status}`);
       }
@@ -1408,7 +1407,7 @@ if (msg && cwd) {
               `سجل المشاكل (${items.length} بلاغًا، الأقدم أولًا) — اعنقد المتكرر؛ ثبّت النمط المؤكد بـ-(rule:add) أو -(insight):`)}\n${items.map(line).join("\n")}`
           : L("No problem reports recorded for this project yet.", "لا بلاغات مسجّلة لهذا المشروع بعد.");
         await log(`ask:retro: served ${items.length} item(s)`);
-        blockContinue(`\n[devlog retro]\n${out}\n`);
+        await blockContinue(`\n[devlog retro]\n${out}\n`);
       } else {
         await log(`ask:retro: server replied ${r.status}`);
       }
@@ -1455,7 +1454,7 @@ if (msg && cwd) {
           : L("Every release is already covered by a declared capability — nothing to backfill.",
               "كل الإصدارات مغطاة بقدرات معلنة — لا شيء للتعبئة.");
         await log(`ask:backfill: served ${uncovered.length}/${totalReleases} release(s)`);
-        blockContinue(`\n[devlog backfill]\n${out}\n`);
+        await blockContinue(`\n[devlog backfill]\n${out}\n`);
       } else {
         await log(`ask:backfill: server replied ${r.status}`);
       }
@@ -1543,7 +1542,7 @@ if (msg && cwd) {
                    `اكتب الدراسة الآن كتقرير مخزن: -(doc:report) study-YYYY-MM-DD <عنوان>\\n<markdown>. حلّل الانضباط والمشاكل المتكررة ومسار المشروع وأسلوب العمل من المادة أعلاه — المجاميع على كامل التاريخ والسرد على هذا النطاق فقط. اختم التقرير بقسم «الخلاصة»: هو الموجز الذي تبني عليه الدراسة التالية. بادئة study- في الاسم هي ما يجعل هذا التقرير علامة المياه القادمة.`));
 
         await log(`ask:study: served ${w.foundational ? "foundational" : "incremental"} corpus`);
-        blockContinue(`\n[devlog study]\n${out.join("\n")}\n`);
+        await blockContinue(`\n[devlog study]\n${out.join("\n")}\n`);
       } else {
         await log(`ask:study: server replied ${r.status}`);
       }
@@ -1579,7 +1578,7 @@ if (msg) {
         "══════════════════════════════════",
       ].join("\n");
       await log(`near-miss: served ${fresh.length} head(s)`);
-      blockContinue(`\n${out}\n`);
+      await blockContinue(`\n${out}\n`);
     }
   } catch (e) {
     await log(`near-miss error: ${(e as Error).message}`);
@@ -1614,7 +1613,7 @@ if (msg) {
         "═════════════════════════════════",
       ].join("\n");
       await log(`backtick-nudge: served ${fresh.length} line(s)`);
-      blockContinue(`\n${out}\n`);
+      await blockContinue(`\n${out}\n`);
     }
   } catch (e) {
     await log(`backtick-nudge error: ${(e as Error).message}`);
@@ -1683,7 +1682,7 @@ if (STANDARDS_PULL_ENFORCEMENT && cwd && sessionId && process.env.DEVLOG_STANDAR
         "════════════════════════════════════════",
       ].join("\n");
       await log(`standards-check BLOCKED: code_writes=${codeWrites.length}, relevantUncovered=${[...relevant].join(",")}`);
-      blockContinue(`\n${out}\n`);
+      await blockContinue(`\n${out}\n`);
     }
   } catch (e) {
     await log(`standards-check error: ${(e as Error).message}`);
@@ -1693,7 +1692,7 @@ if (STANDARDS_PULL_ENFORCEMENT && cwd && sessionId && process.env.DEVLOG_STANDAR
 // === Part 1.7: Dependency freshness (enforces the `dependencies` standard) ===
 // Claude can't reach crates.io/npm to verify the ">7 days old" rule (it said so
 // in the wild). The server can — so when a manifest changed this session, ask it
-// and feed any violations back via exit(2) so Claude fixes the pin before ending.
+// and feed any violations back via a block so Claude fixes the pin before ending.
 if (cwd && sessionId && !stopHookActive && process.env.DEVLOG_STANDARDS_CHECK !== "0") {
   try {
     const { isEnforcementDisabled, isAcked } = await import("./src/standards.ts");
@@ -1731,7 +1730,7 @@ if (cwd && sessionId && !stopHookActive && process.env.DEVLOG_STANDARDS_CHECK !=
             "═════════════════════════════════════════",
           ].join("\n");
           await log(`dep-freshness BLOCKED: ${violations.length} violations`);
-          blockContinue(`\n${out}\n`);
+          await blockContinue(`\n${out}\n`);
         }
       }
     }
@@ -1807,7 +1806,7 @@ if (cwd && sessionId && !stopHookActive && process.env.DEVLOG_UNTAGGED_CHECK !==
               "═════════════════════════════════════════",
             ].join("\n");
             await log(`untagged-guard BLOCKED: code_files=${codeFiles.size}, tracking_files=${trackingFiles.size}, session_tags=${tagCount}`);
-            blockContinue(`\n${out}\n`);
+            await blockContinue(`\n${out}\n`);
           }
         }
       }
@@ -1831,40 +1830,42 @@ if (feedback.length) {
   }));
 }
 
-// === Part 2: Session summary (best-effort, fire-and-forget) ===
-// Lets the dashboard surface "this session: 3 files, +120/-30, 4 tags, 25 min"
-// without each project having to compute it from raw events.
-if (sessionId && cwd) {
-  try {
-    await fetch(`${SERVER}/api/session-summary`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cwd, session_id: sessionId }),
-      signal: AbortSignal.timeout(3000),
-    });
-  } catch (e) {
-    await log(`session-summary POST error: ${(e as Error).message}`);
-  }
-}
-
-// === Part 3: Sync plan files ===
-// Parallel POSTs with a short timeout. Sequential awaits + 5s timeout each
-// caused N×5s freezes in the Stop hook when the server was down (Bug QA #1).
-const plansDir = join(homedir(), ".claude", "plans");
-try {
-  const files = await readdir(plansDir);
-  const mdFiles = files.filter(f => f.endsWith(".md"));
-  await Promise.allSettled(mdFiles.map(async (name) => {
-    const fp = join(plansDir, name);
+// === Parts 2+3: session summary + plan sync — EVERY exit path (#752) ===
+// flushBlock awaits this first (the server upserts the summary — no duplicates).
+async function finalizeTurn(): Promise<void> {
+  if (finalized) return;
+  finalized = true;
+  // Part 2: session summary — "3 files, +120/-30, 4 tags, 25 min".
+  if (sessionId && cwd) {
     try {
-      const content = await readFile(fp, "utf-8");
-      if (!content.trim()) return;
-      await fetch(`${SERVER}/api/plan`, {
+      await fetch(`${SERVER}/api/session-summary`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cwd, content, file_path: fp }),
-        signal: AbortSignal.timeout(2000),
+        body: JSON.stringify({ cwd, session_id: sessionId }),
+        signal: AbortSignal.timeout(3000),
       });
-    } catch { /* best-effort plan sync — server may be down */ }
-  }));
-} catch { /* unreadable plans dir — nothing to sync */ }
+    } catch (e) {
+      await log(`session-summary POST error: ${(e as Error).message}`);
+    }
+  }
+  // Part 3: plan-file sync — parallel POSTs, short timeout (N×5s freeze, QA #1).
+  const plansDir = join(homedir(), ".claude", "plans");
+  try {
+    const files = await readdir(plansDir);
+    const mdFiles = files.filter(f => f.endsWith(".md"));
+    await Promise.allSettled(mdFiles.map(async (name) => {
+      const fp = join(plansDir, name);
+      try {
+        const content = await readFile(fp, "utf-8");
+        if (!content.trim()) return;
+        await fetch(`${SERVER}/api/plan`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cwd, content, file_path: fp }),
+          signal: AbortSignal.timeout(2000),
+        });
+      } catch { /* best-effort plan sync — server may be down */ }
+    }));
+  } catch { /* unreadable plans dir — nothing to sync */ }
+}
+await finalizeTurn();

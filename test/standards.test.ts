@@ -81,6 +81,14 @@ describe("parseRuleCommands", () => {
     const cmds = std.parseRuleCommands("-(ask:rules) rust\n-(ask:rules) c");
     expect(cmds[0].key).not.toBe(cmds[1].key);
   });
+
+  test("a body that GREW between reads keeps the same key (#760)", () => {
+    // The block→continue re-read glues continuation prose onto the last body —
+    // keying the full body minted a fresh key and re-executed the command.
+    const first = std.parseRuleCommands("-(rule:add) rust\nقاعدة أصلية")[0];
+    const grown = std.parseRuleCommands("-(rule:add) rust\nقاعدة أصلية\nنثر استكمال التصق لاحقاً")[0];
+    expect(grown.key).toBe(first.key);
+  });
 });
 
 describe("scanCatalog", () => {
@@ -224,6 +232,21 @@ describe("addRule", () => {
     const file = await readFile(join(TMP, "languages", "rust.md"), "utf-8");
     const count = (file.match(/لا unwrap في كود الإنتاج/g) || []).length;
     expect(count).toBe(1);
+  });
+
+  test("a rule added AFTER a multi-line rule lands below its whole block (#769)", async () => {
+    // Pre-fix, insertAt sat right after the last bullet's FIRST line — the new
+    // rule split the old multi-line rule and glued its body onto itself.
+    await writeFile(
+      join(TMP, "languages", "zig.md"),
+      "# zig\n\n## القواعد\n- قاعدة متعددة الأسطر\n  سطر امتداد أول\n  سطر امتداد ثانٍ\n",
+      "utf-8",
+    );
+    const r = await std.addRule("zig", "قاعدة جديدة");
+    expect(r.ok).toBe(true);
+    const file = await readFile(join(TMP, "languages", "zig.md"), "utf-8");
+    // The old rule's block survives contiguous, and the new rule follows it.
+    expect(file).toContain("- قاعدة متعددة الأسطر\n  سطر امتداد أول\n  سطر امتداد ثانٍ\n- قاعدة جديدة");
   });
 
   test("creates a ## القواعد section if missing", async () => {

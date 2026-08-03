@@ -35,6 +35,39 @@ describe("backupStores", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // #759: the labeled mode absorbed project-transfer.ts's duplicate export —
+  // all five stores (events included), unique stamp per call, no daily skip.
+  test("labeled mode copies all five stores with the label in the name, every call", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "devlog-bak-lbl-"));
+    try {
+      for (const n of ["projects", "tags", "events", "plans", "meta"]) {
+        writeFileSync(join(dir, `${n}.json`), `{"store":"${n}"}`);
+      }
+      expect((await backupStores(dir, "pre-clear")).sort())
+        .toEqual(["events", "meta", "plans", "projects", "tags"]);
+      const baks = readdirSync(dir).filter(f => f.endsWith(".bak"));
+      expect(baks.length).toBe(5);
+      for (const f of baks) expect(f).toContain("-pre-clear.bak");
+
+      // A second labeled call gets its own stamp — copies again, never skips.
+      await Bun.sleep(2);   // stamp has ms precision; guarantee a distinct name
+      expect((await backupStores(dir, "pre-clear")).length).toBe(5);
+      expect(readdirSync(dir).filter(f => f.endsWith(".bak")).length).toBe(10);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("daily mode still excludes events.json", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "devlog-bak-ev-"));
+    try {
+      writeFileSync(join(dir, "events.json"), "[]");
+      expect(await backupStores(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("parseHookEvent cwd capture", () => {

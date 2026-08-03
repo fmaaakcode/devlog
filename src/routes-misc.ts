@@ -7,7 +7,8 @@
 // server state. Spread into server.ts's routeDefs.
 
 import { loadData, withData, cleanupMissingProjects, DATA_DIR, PORT, PLUGIN_MODE, DEFAULT_INJECTION_CONFIG } from "./data";
-import { buildExportBundle, validateBundle, applyImportBundle, mergeArchiveBundle, backupStores, type TransferBundle } from "./project-transfer";
+import { buildExportBundle, validateBundle, applyImportBundle, mergeArchiveBundle, type TransferBundle } from "./project-transfer";
+import { backupStores } from "./maintenance";
 import { broadcast } from "./broadcast";
 import { appendAudit } from "./audit";
 import { exportStatusMd } from "./export";
@@ -82,6 +83,11 @@ export function makeMiscRoutes(): Record<string, unknown> {
           return Response.json({ error: "Add X-Confirm: yes header" }, { status: 400 });
         }
         await appendAudit("data.clear", req);
+        // #757 pattern sweep: the wipe was the last removal path with NO copy
+        // behind it. Dated .bak twins (they age out with the existing backup
+        // pruning) make a fat-fingered confirm survivable without defeating the
+        // wipe — unlike project purge, which deliberately never archives.
+        await backupStores(DATA_DIR, "pre-clear");
         // Mutate the shared object under the withData lock — a direct
         // saveData() here raced any in-flight handler holding the lock, which
         // then resumed and wrote its stale snapshot BACK over the wipe (the
@@ -135,7 +141,7 @@ export function makeMiscRoutes(): Record<string, unknown> {
         const bundle = raw as TransferBundle;
         try {
           await appendAudit("project.import", req);
-          await backupStores("pre-import");
+          await backupStores(DATA_DIR, "pre-import");
           const summary = await withData(async (data) => applyImportBundle(data, bundle));
           summary.archive = await mergeArchiveBundle(bundle.archive, bundle.project);
           broadcast("hook", {});

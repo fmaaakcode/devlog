@@ -28,6 +28,14 @@ describe("parseInstallCommands", () => {
     expect(parseInstallCommands("cd site && bun add zod")).toEqual([{ name: "zod", version: "", eco: "npm" }]);
   });
 
+  test("multi-line commands: an install line that is NOT the last line still gates (#762)", () => {
+    // Pre-fix, MANAGERS anchors on `$` with no `m` flag and the splitter had no
+    // \n — so any innocent trailing line hid the install from the strict gate.
+    expect(parseInstallCommands("bun add hono\necho done")).toEqual([{ name: "hono", version: "", eco: "npm" }]);
+    expect(parseInstallCommands("git checkout -b x\r\nnpm i express@5.1.0\r\ngit commit -m wip"))
+      .toEqual([{ name: "express", version: "5.1.0", eco: "npm" }]);
+  });
+
   test("cargo add — value flags don't masquerade as packages", () => {
     expect(parseInstallCommands("cargo add serde --features derive")).toEqual([{ name: "serde", version: "", eco: "crates" }]);
   });

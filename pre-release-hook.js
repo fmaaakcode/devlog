@@ -43,8 +43,9 @@ const log = (s) => {
 
 if (process.env.DEVLOG_RELEASE_GUARD === "0") process.exit(0);
 
-let raw = "";
-for await (const chunk of Bun.stdin.stream()) raw += new TextDecoder().decode(chunk);
+// #767: stream-decode stdin in one shot — the old per-chunk `new TextDecoder()
+// .decode(chunk)` corrupted a multi-byte (Arabic) char split across chunks into U+FFFD.
+const raw = await new Response(Bun.stdin.stream()).text();
 let body;
 try { body = JSON.parse(raw); } catch { process.exit(0); }
 
@@ -82,32 +83,37 @@ if (existsSync(ackFile)) {
   } catch { /* unreadable ack file — treat as no ack */ }
 }
 
-// Strict policy: any open item blocks. Fetch open-items first.
+// Strict policy: any open item blocks.
+// #771: the three fetches run in PARALLEL (each keeps its own 3s cap) and
+// doctor is capped at 8s, so the internal worst case is ~11s — sequentially
+// they summed to ~19s against the hook's 15s timeout in hooks.json, and a hung
+// daemon meant the harness killed this guard and the release command passed
+// completely UNGUARDED.
 let openItems = [];
-try {
-  const r = await fetch(`http://127.0.0.1:${PORT}/api/open-items?cwd=${encodeURIComponent(cwd)}`, { signal: AbortSignal.timeout(3000) });
-  if (r.ok) openItems = (await r.json()).items || [];
-} catch (e) {
-  await log(`open-items fetch error: ${e.message}`);
-}
-
-// Fetch changelog markdown.
 let changelogMd = "";
 let changelogCount = 0;
-try {
-  const r = await fetch(`http://127.0.0.1:${PORT}/api/changelog/since-last-release?cwd=${encodeURIComponent(cwd)}&format=md`, { signal: AbortSignal.timeout(3000) });
-  if (r.ok) changelogMd = await r.text();
-  const j = await fetch(`http://127.0.0.1:${PORT}/api/changelog/since-last-release?cwd=${encodeURIComponent(cwd)}`, { signal: AbortSignal.timeout(3000) });
-  if (j.ok) changelogCount = (await j.json()).count || 0;
-} catch (e) {
-  await log(`changelog fetch error: ${e.message}`);
+{
+  const base = `http://127.0.0.1:${PORT}`;
+  const q = encodeURIComponent(cwd);
+  const grab = (url) => fetch(url, { signal: AbortSignal.timeout(3000) });
+  const [oi, md, cnt] = await Promise.allSettled([
+    grab(`${base}/api/open-items?cwd=${q}`).then(r => (r.ok ? r.json() : null)),
+    grab(`${base}/api/changelog/since-last-release?cwd=${q}&format=md`).then(r => (r.ok ? r.text() : "")),
+    grab(`${base}/api/changelog/since-last-release?cwd=${q}`).then(r => (r.ok ? r.json() : null)),
+  ]);
+  if (oi.status === "fulfilled") openItems = oi.value?.items || [];
+  else await log(`open-items fetch error: ${oi.reason?.message}`);
+  if (md.status === "fulfilled") changelogMd = md.value || "";
+  else await log(`changelog fetch error: ${md.reason?.message}`);
+  if (cnt.status === "fulfilled") changelogCount = cnt.value?.count || 0;
+  else await log(`changelog count fetch error: ${cnt.reason?.message}`);
 }
 
-// Run doctor in JSON mode.
+// Run doctor in JSON mode (8s cap — see the #771 budget above).
 let doctorReport = null;
 try {
   const scriptPath = join(import.meta.dir, "src", "doctor.ts");
-  const r = spawnSync("bun", [scriptPath, "--json", cwd], { encoding: "utf8", timeout: 10000 });
+  const r = spawnSync("bun", [scriptPath, "--json", cwd], { encoding: "utf8", timeout: 8000 });
   if (r.stdout) doctorReport = JSON.parse(r.stdout);
 } catch (e) {
   await log(`doctor error: ${e.message}`);

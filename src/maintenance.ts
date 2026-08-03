@@ -132,30 +132,42 @@ export async function cleanupOldBackups(dataDir: string, maxAgeDays = 30): Promi
 }
 
 /**
- * Daily safety copy of the irreplaceable stores. projects.json (the registry —
- * the 2026-07-04 clobber incident proved recovery needs a disk crawl) plus
- * tags.json and plans.json: they ARE the devlog history, reconstructible from
- * nowhere (#432). meta.json too: migration flags, worklog, rejections, and the
- * per-project injection/standards configs — losing it silently re-enables
- * standards enforcement on every project that opted out. events.json is the
- * ONLY deliberate exclusion — high-churn and already retention-pruned, so a
- * daily copy would be large and mostly stale. One dated copy per file per day,
- * `.bak` suffix so the existing cleanupOldBackups 30-day pruning applies.
- * Returns the store names copied. Best-effort — never throws.
+ * Safety copies of the irreplaceable stores — ONE routine for both callers
+ * (#759: this and project-transfer.ts each exported a `backupStores` with
+ * different semantics, and importing the wrong one produced no compile error).
+ * - Daily (no label): projects.json (the registry — the 2026-07-04 clobber
+ *   incident proved recovery needs a disk crawl), tags/plans (they ARE the
+ *   history, #432), meta (migration flags, worklog, rejections, per-project
+ *   opt-outs). events.json is the deliberate exclusion — high-churn and
+ *   retention-pruned, a daily copy would be large and mostly stale. One dated
+ *   copy per file per day; best-effort per file, never throws.
+ * - Labeled (pre-clear / pre-import): ALL five stores including events — a
+ *   destructive mutation follows immediately, so the copy must be complete and
+ *   a write failure PROPAGATES so the caller aborts instead of wiping unbacked.
+ * `.bak` suffix either way, so cleanupOldBackups' 30-day pruning applies.
+ * Returns the store names copied.
  */
-const BACKED_UP_STORES = ["projects", "tags", "plans", "meta"] as const;
-export async function backupStores(dataDir: string): Promise<string[]> {
-  const stamp = new Date().toISOString().slice(0, 10);
+const DAILY_STORES = ["projects", "tags", "plans", "meta"] as const;
+const ALL_STORES = ["projects", "tags", "events", "plans", "meta"] as const;
+export async function backupStores(dataDir: string, label?: string): Promise<string[]> {
+  const stamp = label
+    ? `${new Date().toISOString().replace(/[:.]/g, "-")}-${label}`
+    : new Date().toISOString().slice(0, 10);
   const written: string[] = [];
-  for (const name of BACKED_UP_STORES) {
+  for (const name of label ? ALL_STORES : DAILY_STORES) {
     const src = Bun.file(`${dataDir}/${name}.json`);
     if (!(await src.exists())) continue;
     const dest = `${dataDir}/${name}.${stamp}.bak`;
-    if (await Bun.file(dest).exists()) continue;
+    // One copy per day is the point of the date stamp; the labeled stamp is
+    // unique per call, so the skip never applies there.
+    if (!label && (await Bun.file(dest).exists())) continue;
     try {
       await Bun.write(dest, src);
       written.push(name);
-    } catch { /* unwritable data dir — still valid for this run */ }
+    } catch (e) {
+      if (label) throw e;   // pre-destructive copy must be complete
+      /* daily: unwritable data dir — still valid for this run */
+    }
   }
   return written;
 }

@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { DevLogData, InjectionConfig, PlanStep, ProjectProfile, TagEntry } from "./types";
 import { normalizeSlashes } from "./path-utils";
+import { withLockRetry } from "./fs-retry";
 import { assertTestDataDirIsolated } from "./data-guard";
 
 export const DEFAULT_INJECTION_CONFIG: InjectionConfig = {
@@ -113,8 +114,11 @@ async function readJsonOr<T>(path: string, fallback: T): Promise<T> {
 }
 
 async function readFromDisk(): Promise<DevLogData> {
-  // Prefer split layout if projects.json exists.
-  if (existsSync(F.projects)) {
+  // Split layout wins when ANY of its five stores exists — not projects.json
+  // alone (#761): a missing projects.json with intact tags/events fell through
+  // to legacy/empty, and the first save overwrote the survivors with [].
+  if (Object.values(F).some(p => existsSync(p))) {
+    if (!existsSync(F.projects)) console.error("[store] projects.json missing while sibling split stores exist — booting an empty registry; tags/events/plans load intact and projects re-register on their next hook event.");
     const projects = await readJsonOr<DevLogData["projects"]>(F.projects, {});
     const tags = await readJsonOr<DevLogData["tags"]>(F.tags, []);
     const events = await readJsonOr<DevLogData["events"]>(F.events, []);
@@ -194,7 +198,8 @@ async function atomicWrite(path: string, body: string): Promise<void> {
   } finally {
     await fh.close();
   }
-  await rename(tmp, path);
+  // #781: the rename is where a transient AV lock lands; canonical stays intact.
+  await withLockRetry(() => rename(tmp, path));
 }
 
 // Hash of the last body written to each section file, so an append that only

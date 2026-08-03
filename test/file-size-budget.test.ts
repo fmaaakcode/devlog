@@ -19,8 +19,9 @@ import { test, expect, describe } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const SRC = join(import.meta.dir, "..", "src");
-const ASSETS = join(import.meta.dir, "..", "assets");
+const ROOT = join(import.meta.dir, "..");
+const SRC = join(ROOT, "src");
+const ASSETS = join(ROOT, "assets");
 const DEFAULT_MAX = 800;
 
 // Files still above DEFAULT_MAX, capped at their current size so they can only
@@ -38,13 +39,21 @@ const GRANDFATHERED: Record<string, number> = {
 const GRANDFATHERED_ASSETS: Record<string, number> = {
   "dashboard-tree-ws.js": 984,   // process tree + WS client — ratcheted down when buildTodosHtml moved to panels (upcoming feature)
   "stack-map.js": 1290,          // the whole stack-map page
+  "dashboard.css": 1372,         // the whole dashboard stylesheet — was outside the budget (H4): the .js filter hid it; ratcheted 1719 → 1372 when the dead tab-era blocks left (#776)
+};
+
+// H4: the repo's biggest file lived at the ROOT, outside every suite — the
+// scope was src/ + assets/ only. Root .ts/.js (the hook entrypoints) now
+// ratchet like everything else.
+const GRANDFATHERED_ROOT: Record<string, number> = {
+  "parse-tags.ts": 1872,         // the Stop-hook pipeline — 2.3× the ceiling; decompose before it grows
 };
 
 const lineCount = (dir: string, file: string) => readFileSync(join(dir, file), "utf8").split("\n").length;
 
-function budgetSuite(label: string, dir: string, ext: string, grandfathered: Record<string, number>) {
+function budgetSuite(label: string, dir: string, exts: string[], grandfathered: Record<string, number>) {
   describe(`${label} file-size budget (anti-bloat ratchet)`, () => {
-    const files = readdirSync(dir).filter(f => f.endsWith(ext));
+    const files = readdirSync(dir).filter(f => exts.some(e => f.endsWith(e)));
 
     for (const file of files) {
       const budget = grandfathered[file] ?? DEFAULT_MAX;
@@ -70,5 +79,6 @@ function budgetSuite(label: string, dir: string, ext: string, grandfathered: Rec
   });
 }
 
-budgetSuite("src/", SRC, ".ts", GRANDFATHERED);
-budgetSuite("assets/", ASSETS, ".js", GRANDFATHERED_ASSETS);
+budgetSuite("src/", SRC, [".ts"], GRANDFATHERED);
+budgetSuite("assets/", ASSETS, [".js", ".css"], GRANDFATHERED_ASSETS);
+budgetSuite("root", ROOT, [".ts", ".js"], GRANDFATHERED_ROOT);

@@ -21,6 +21,14 @@ describe("isRealVersion", () => {
     expect(isRealVersion("`")).toBe(false);
     expect(isRealVersion("")).toBe(false);
   });
+
+  // #782 pattern sweep: the whole first token must be a version — a dotted
+  // number with prose glued on is exactly the noise this filter rejects.
+  test("rejects prose that merely starts with a dotted number", () => {
+    expect(isRealVersion("2.5x faster parsing")).toBe(false);
+    expect(isRealVersion("v2.5x")).toBe(false);
+    expect(isRealVersion("2.0.0+build.7 — tagged")).toBe(true);   // build suffix stays real
+  });
 });
 
 describe("generateManifest", () => {

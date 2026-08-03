@@ -11,6 +11,7 @@ import { pathsEqual, isPathInside, normalizeSlashes } from "./path-utils";
 import { realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { currentLang } from "./i18n";
+import { isSensitivePath } from "./sensitive-paths";
 
 const L = <T>(en: T, ar: T): T => (currentLang() === "ar" ? ar : en);
 // These handlers only read params/url (never a JSON body), so Bun's routed
@@ -73,6 +74,11 @@ export function makeStaticRoutes({ htmlResponse, DEV_ASSETS, ASSET_ROOT }: Stati
       const url = new URL(req.url);
       const raw = normalizeSlashes(url.searchParams.get("path"));
       if (!raw || raw.includes("..")) return new Response("Bad request", { status: 400 });
+      // #755: a secret-bearing file is never previewed, even for a legitimate
+      // same-origin reader. Checked before containment so the refusal reason is
+      // unambiguous, and re-checked on the resolved path below — a symlink named
+      // notes.txt pointing at .env would sail past a raw-path-only test.
+      if (isSensitivePath(raw)) return new Response(L("Refused — sensitive file", "مرفوض — ملف حسّاس"), { status: 403 });
       const data = await loadData();
       const dir = raw.slice(0, raw.lastIndexOf("/"));
       const inside = Object.values(data.projects).some(p => {
@@ -88,6 +94,7 @@ export function makeStaticRoutes({ htmlResponse, DEV_ASSETS, ASSET_ROOT }: Stati
       let real: string;
       try { real = normalizeSlashes(await realpath(raw)); }
       catch { return new Response("Not found", { status: 404 }); }
+      if (isSensitivePath(real)) return new Response(L("Refused — sensitive file", "مرفوض — ملف حسّاس"), { status: 403 });
       const realInside = Object.values(data.projects).some(p => {
         const pp = normalizeSlashes(p.path);
         return !!pp && (pathsEqual(real, pp) || isPathInside(pp, real));

@@ -141,6 +141,23 @@ export function tokenize(source: string, ext: string): Token[] {
       }
     }
 
+    // Python triple quotes: """ or ''' — must be checked BEFORE the generic
+    // string branch, which would otherwise consume `""` as an empty string
+    // and leave this branch unreachable (#753)
+    if (ext === "py" && (ch === '"' || ch === "'") && i + 2 < len && source[i + 1] === ch && source[i + 2] === ch) {
+      const triple = ch + ch + ch;
+      const start = i;
+      const startLine = line;
+      i += 3;
+      while (i < len) {
+        if (source[i] === "\n") line++;
+        if (i + 2 < len && source.slice(i, i + 3) === triple) { i += 3; break; }
+        i++;
+      }
+      tokens.push({ type: TokenType.String, value: source.slice(start, i), line: startLine });
+      continue;
+    }
+
     // Strings: "..." '...' `...` (with escape handling)
     if (ch === '"' || ch === "'" || ch === "`") {
       const quote = ch;
@@ -173,21 +190,6 @@ export function tokenize(source: string, ext: string): Token[] {
         }
       }
       tokens.push({ type: TokenType.String, value: source.slice(start, i), line });
-      continue;
-    }
-
-    // Python triple quotes: """ or '''
-    if (ext === "py" && (ch === '"' || ch === "'") && i + 2 < len && source[i + 1] === ch && source[i + 2] === ch) {
-      const triple = ch + ch + ch;
-      const start = i;
-      const startLine = line;
-      i += 3;
-      while (i < len) {
-        if (source[i] === "\n") line++;
-        if (i + 2 < len && source.slice(i, i + 3) === triple) { i += 3; break; }
-        i++;
-      }
-      tokens.push({ type: TokenType.String, value: source.slice(start, i), line: startLine });
       continue;
     }
 

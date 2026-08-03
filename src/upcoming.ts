@@ -14,7 +14,7 @@ import {
 
 export interface UpcomingChange {
   kind: "created" | "deferred" | "promoted" | "plan-deferred" | "plan-promoted"
-      | "no-match" | "security-refused";
+      | "no-match" | "security-refused" | "duplicate";
   num?: number;
   text?: string;      // item text / plan title
 }
@@ -31,12 +31,16 @@ export function applyUpcoming(content: string, data: DevLogData, project: string
   if (!nums.length) {
     // Creation path: a brand-new deferred todo. Stored as a `todo` tag with the
     // upcoming flag so every existing #N/closure/dedup path applies untouched.
-    // Same exact-content dedup rule as the normal store path — checked BEFORE
-    // assignNum, which mutates the project's number counter: a rejected echo
-    // used to burn a #N and leave a gap in the sequence.
+    // Dedup against OPEN todos only, checked BEFORE assignNum (which mutates the
+    // project's number counter: a rejected echo used to burn a #N and leave a
+    // gap). #754 fixed two things here: the match used to scan ALL todos — a
+    // text identical to one closed months ago was refused — and the refusal
+    // returned [] with no record, so the hook never told anyone.
     const norm = normalizeTagContent(content);
-    if (data.tags.some(t => t.project === project && t.tag === "todo" && normalizeTagContent(t.content) === norm)) {
-      return [];
+    const projTags = data.tags.filter(t => t.project === project);
+    const openTwin = openTodos(projTags).find(t => normalizeTagContent(t.content) === norm);
+    if (openTwin) {
+      return [{ kind: "duplicate", num: openTwin.num, text: content }];
     }
     const entry: TagEntry = {
       id: crypto.randomUUID(), project, tag: "todo", content,

@@ -22,7 +22,7 @@
 //   deliberately stays out of the bundle — it describes the machine, not the
 //   project.
 
-import { DATA_DIR, normalizeTagContent } from "./data";
+import { normalizeTagContent } from "./data";
 import { listArchiveMonths, mutateArchiveMonth, readArchiveMonth, readUndoneMonth } from "./event-archive";
 import type {
   DevLogData, EventEntry, InjectionConfig, PlanEntry, ProjectProfile,
@@ -295,15 +295,4 @@ export async function mergeArchiveBundle(
     if (r && freshCount) { out.added += freshCount; out.months++; }
   }
   return out;
-}
-
-/** Copy the five split stores to dated `.bak` twins before an import mutates
- *  them — same suffix the existing backup pruning already manages, so the
- *  copies age out on their own. */
-export async function backupStores(label: string): Promise<void> {
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  for (const n of ["projects", "tags", "events", "plans", "meta"]) {
-    const src = Bun.file(`${DATA_DIR}/${n}.json`);
-    if (await src.exists()) await Bun.write(`${DATA_DIR}/${n}.${stamp}-${label}.bak`, src);
-  }
 }

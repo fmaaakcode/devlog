@@ -44,8 +44,10 @@ async function readProjectDeps(startDir) {
   return { deps: [], runtime: null };
 }
 
-let raw = "";
-for await (const chunk of Bun.stdin.stream()) raw += new TextDecoder().decode(chunk);
+// #767: stream-decode stdin in one shot — the old per-chunk `new TextDecoder()
+// .decode(chunk)` corrupted a multi-byte (Arabic) char split across chunks into
+// U+FFFD; worst here, where mangled content feeds the write-checkers.
+const raw = await new Response(Bun.stdin.stream()).text();
 let data;
 try { data = JSON.parse(raw); } catch { process.exit(0); }
 

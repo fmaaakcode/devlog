@@ -51,7 +51,7 @@ afterAll(async () => {
 });
 
 describe("routes-tags — siblings + guards", () => {
-  test("POST /api/tags stores a tag, then DELETE /api/tag/:id removes it", async () => {
+  test("POST /api/tags stores a tag, then DELETE /api/tag/:id archives it before removing it", async () => {
     const post = await fetch(`${BASE}/api/tags`, {
       method: "POST", headers: JSON_HEADERS,
       body: JSON.stringify({ cwd: "", entries: [{ tag: "note", content: "a note for deletion" }] }),
@@ -67,6 +67,16 @@ describe("routes-tags — siblings + guards", () => {
 
     const after = await asJson(await fetch(`${BASE}/api/data`));
     expect(after.tags.some((t: { id: string }) => t.id === noteTag.id)).toBe(false);
+
+    // Archive-before-delete contract: the row must be readable back from the
+    // undone stream — a dashboard delete is no longer a hard delete.
+    const { months } = await asJson(await fetch(`${BASE}/api/undone`));
+    expect(months.length).toBeGreaterThan(0);
+    const { records } = await asJson(await fetch(`${BASE}/api/undone?month=${months[0]}`));
+    const archived = records.find((r: { entry: { id: string } }) => r.entry?.id === noteTag.id);
+    expect(archived).toBeTruthy();
+    expect(archived.kind).toBe("tag");
+    expect(archived.entry.content).toBe("a note for deletion");
   });
 
   test("DELETE /api/tag/:id → 404 for an unknown id", async () => {
@@ -80,6 +90,22 @@ describe("routes-tags — siblings + guards", () => {
     });
     expect(r.status).toBe(200);
     expect(typeof (await asJson(r)).tagged).toBe("number");
+  });
+
+  test("POST /api/classify with an unknown type → 400 (allowlist)", async () => {
+    const r = await fetch(`${BASE}/api/classify`, {
+      method: "POST", headers: JSON_HEADERS,
+      body: JSON.stringify({ cwd: "", count: 1, type: "totally-made-up" }),
+    });
+    expect(r.status).toBe(400);
+  });
+
+  test("POST /api/classify with a known type → 200", async () => {
+    const r = await fetch(`${BASE}/api/classify`, {
+      method: "POST", headers: JSON_HEADERS,
+      body: JSON.stringify({ cwd: "", count: 1, type: "create" }),
+    });
+    expect(r.status).toBe(200);
   });
 
   test("POST /api/tags with >500 entries → 413 (fail-closed cap)", async () => {

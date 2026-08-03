@@ -14,7 +14,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import type { Subprocess } from "bun";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { asJson, startServer, stopServer, waitForServer, runHook as runHookRaw } from "./_helpers";
@@ -149,6 +149,37 @@ describe("continuation trap E2E (linked P1/P2 fix)", () => {
     const txB = writeTranscript(projDir, "U5", ["second look\n\n-(ask:open)"]);
     const second = await runHook(projDir, sid, txB, false);
     expect(JSON.parse(second.out.trim()).reason).toContain("[devlog open]");
+  });
+
+  // ── #760: rule:add across a block→continue re-read must not duplicate ───────
+  test("a continuation's prose does not grow a rule:add body into a duplicate rule", async () => {
+    const stdDir = mkdtempSync(join(tmpdir(), "cont-e2e-std-"));
+    mkdirSync(join(stdDir, "cross-cutting"), { recursive: true });
+    const catFile = join(stdDir, "cross-cutting", "data-integrity.md");
+    writeFileSync(catFile, "# data-integrity — معايير\n\n## القواعد\n- قاعدة قائمة\n");
+    const env = { DEVLOG_STANDARDS_DIR: stdDir };
+    try {
+      // Pass 1: the turn ends with a rule:add → executed once, hook blocks with
+      // the standards confirmation.
+      const turn1 = "سأضيف قاعدة.\n\n-(rule:add) data-integrity\nكل حذف يسبقه أرشفة إلزامية";
+      const tx1 = writeTranscript(projDir, "U760", [turn1]);
+      const first = await runHookRaw(TEST_PORT, { cwd: projDir, session_id: sid, transcript_path: tx1, stop_hook_active: false }, env);
+      expect(first.out).toContain("rule:add data-integrity");
+
+      // Pass 2 (continuation): the re-read now joins BOTH segments. Pre-fix the
+      // glued prose grew the body → fresh ledger key → the rule re-executed
+      // with the grown text (the live data-integrity.md incident: a duplicate
+      // rule carrying the next reply's prose as its tail).
+      const tx2 = writeTranscript(projDir, "U760", [turn1, "أضفتها. الآن أشرح الخطوة التالية بنثر عادي."]);
+      const second = await runHookRaw(TEST_PORT, { cwd: projDir, session_id: sid, transcript_path: tx2, stop_hook_active: true }, env);
+      expect(second.code).toBe(0);
+
+      const file = readFileSync(catFile, "utf8");
+      expect(file.match(/كل حذف يسبقه أرشفة إلزامية/g)).toHaveLength(1);  // once, not twice
+      expect(file).not.toContain("أشرح الخطوة");                            // no leaked tail
+    } finally {
+      rmSync(stdDir, { recursive: true, force: true });
+    }
   });
 
   test("a body tag ending a take does NOT swallow the next take's prose — no grown twin is stored", async () => {

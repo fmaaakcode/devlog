@@ -37,6 +37,34 @@ type Id = string;`, "ts");
   });
 });
 
+describe("extractSymbols — endLine spans the whole body (#764)", () => {
+  // A function ENDING in a nested block far from its opener: the old
+  // groupLines recursion returned a line COUNT and compared it against an
+  // absolute line number, so the tail block was discarded and the body
+  // truncated to the few lines before it.
+  const src = [
+    "export function tail() {",       // line 1
+    "  const a = 1;",
+    "  if (a) {",
+    "    for (const x of [a]) {",
+    "      console.log(x);",
+    "",
+    "",
+    "",
+    "      console.log(x + a);",       // line 9 — deepest content
+    "    }",
+    "  }",
+    "}",                               // line 12
+  ].join("\n");
+
+  test("a body ending in a deep nested block is not truncated", () => {
+    const { symbols } = extractSymbols(src, "ts");
+    const fn = by(symbols, "tail");
+    expect(fn?.line).toBe(1);
+    expect(fn?.endLine).toBeGreaterThanOrEqual(9);   // pre-fix: truncated to ~4
+  });
+});
+
 describe("extractSymbols — Rust", () => {
   const { symbols } = extractSymbols(
     `pub fn add(a: i32, b: i32) -> i32 { a + b }

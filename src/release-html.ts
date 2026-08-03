@@ -39,10 +39,13 @@ export function parseVersion(content: string): { version: string; summary: strin
 
 // A "real" release version must look like v?N.M[.P]... — rejects template
 // placeholders (vX.Y.Z) and free-form strings that landed in release tags by
-// mistake. Used by the regen pipeline to skip noise.
+// mistake. Used by the regen pipeline to skip noise. The WHOLE first token must
+// be a version (#782 pattern sweep): a bare prefix test read «2.5x faster
+// parsing» as real — the exact noise this filter exists to reject. Prerelease/
+// build suffixes (v1.2.3-rc1, 2.0.0+build.7) stay accepted.
 export function isRealVersion(content: string): boolean {
   const v = content.trim().split(/\s/)[0];
-  return /^v?\d+(\.\d+)+/.test(v);
+  return /^v?\d+(\.\d+)+([-+][\w.\-+]*)?$/i.test(v);
 }
 
 /** Loose version equality — `v1.2.0` and `1.2.0` name the same release. */

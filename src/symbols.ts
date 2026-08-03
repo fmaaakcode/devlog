@@ -50,18 +50,27 @@ export function extractSymbols(source: string, ext: string): { symbols: Symbol[]
   return { symbols, includes };
 }
 
-// Count lines in a group token (brace body)
-function groupLines(group: Token): number {
-  if (!group.children) return 1;
+// Deepest ABSOLUTE line reached inside a group (recursion propagates absolute
+// lines only — #764: the old recursion returned a line COUNT and compared it
+// against `maxLine`, an absolute number, so any function ending in a nested
+// block far from its opener was truncated to a few lines, corrupting fn.lines,
+// the analysis body window, and pagerank's small-function penalty).
+function groupEndLine(group: Token): number {
   let maxLine = group.line;
-  for (const c of group.children) {
+  for (const c of group.children ?? []) {
     if (c.line > maxLine) maxLine = c.line;
     if (c.children) {
-      const inner = groupLines(c);
+      const inner = groupEndLine(c);
       if (inner > maxLine) maxLine = inner;
     }
   }
-  return maxLine - group.line + 1;
+  return maxLine;
+}
+
+// Count lines in a group token (brace body)
+function groupLines(group: Token): number {
+  if (!group.children) return 1;
+  return groupEndLine(group) - group.line + 1;
 }
 
 // Get text content of a group (for params)

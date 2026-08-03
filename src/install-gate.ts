@@ -117,7 +117,11 @@ function isNonRegistryToken(tok: string): boolean {
 export function parseInstallCommands(cmd: string): InstallPkg[] {
   const out: InstallPkg[] = [];
   const seen = new Set<string>();
-  for (const segment of String(cmd || "").split(/&&|\|\||;|\|/)) {
+  // Newlines are segment separators too (#762): MANAGERS anchors on `$` with no
+  // `m` flag, so a `bun add x` line that isn't the LAST line of a multi-line
+  // command was never captured — a strict-gate bypass via a plain heredoc-style
+  // compound. `\r?` keeps CRLF payloads from leaking a `\r` into the last token.
+  for (const segment of String(cmd || "").split(/&&|\|\||;|\||\r?\n/)) {
     for (const { re, eco } of MANAGERS) {
       const m = segment.match(re);
       if (!m) continue;
