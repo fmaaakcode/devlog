@@ -3,6 +3,7 @@
         import { summaryTagCounts, summaryVulnClass, summaryLastActivity, summaryTombstones, ACTIVE_WINDOW_MS, fetchProjectView, refreshActiveView } from "./dashboard-data.js";
         import { patchSessions } from "./dashboard-panels.js";
         import { t as tr, uiDir } from "./dashboard-i18n.js";
+        import { trendsSvg, TREND_SERIES } from "./dashboard-trends.js";
 
         function renderProjectItem(name) {
             const p = data.projects[name];
@@ -334,25 +335,53 @@
             patchStatsButton(p, tags);
         }
 
-        function patchStatsButton(p, tags) {
-            const popup = document.getElementById('hdr-stats-popup');
-            const countEl = document.getElementById('hdr-stats-count');
-            if (!popup) return;
+        // Trends tab (#788): /api/trends rows cached per project so hovering
+        // the tab doesn't refetch on every popup patch cycle.
+        const trendsCache = {}; // { projectName: { at: ms, monthly } }
+        const TRENDS_TTL_MS = 60_000;
+        const TREND_LABELS = { opened: "statsPop.trendOpened", closed: "statsPop.trendClosed", released: "statsPop.trendReleased" };
 
+        function setStatsTab(popup, tab) {
+            for (const el of popup.querySelectorAll('[data-stats-tab]')) {
+                const on = el.dataset.statsTab === tab;
+                el.style.color = on ? 'var(--text)' : 'var(--text2)';
+                el.style.borderBottom = on ? '2px solid var(--gold)' : '2px solid transparent';
+            }
+            for (const pane of popup.querySelectorAll('[data-stats-pane]')) {
+                pane.style.display = pane.dataset.statsPane === tab ? '' : 'none';
+            }
+        }
+
+        async function loadTrendsPane(popup, projectName) {
+            const pane = popup.querySelector('[data-stats-pane="trends"]');
+            if (!pane) return;
+            const c = trendsCache[projectName];
+            if (!c || Date.now() - c.at > TRENDS_TTL_MS) {
+                const res = await fetch(`/api/trends?project=${encodeURIComponent(projectName)}`).then(r => r.json()).catch(() => null);
+                trendsCache[projectName] = { at: Date.now(), monthly: res?.monthly || [] };
+            }
+            const svg = trendsSvg(trendsCache[projectName].monthly);
+            if (!svg) {
+                pane.innerHTML = `<div style="color:var(--text2);font-size:0.85em;padding:8px 0">${tr("statsPop.trendsEmpty")}</div>`;
+                return;
+            }
+            const legend = TREND_SERIES.map(s =>
+                `<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:2px;background:${s.color}"></span>${tr(TREND_LABELS[s.key])}</span>`
+            ).join('');
+            pane.innerHTML = `${svg}<div style="display:flex;gap:12px;justify-content:center;margin-top:6px;font-size:0.75em;color:var(--text2)">${legend}</div>`;
+        }
+
+        function statsNumbersHtml(p, tags) {
             const filesN = p.totalFiles || 0;
             const libsN = (p.libraries || []).length;
             const dirsN = (p.directories || []).length;
-            const tagsN = tags.length;
-            if (countEl) countEl.textContent = filesN;
-
             const exts = Object.entries(p.files || {}).sort((a, b) => b[1] - a[1]);
 
-            let html = `<div class="stats-section-title">${tr("statsPop.title")}</div>`;
-            html += '<div class="stats-grid">';
+            let html = '<div class="stats-grid">';
             html += `<div class="stats-row"><span class="stats-key">${tr("statsPop.files")}</span><span class="stats-value">${filesN}</span></div>`;
             html += `<div class="stats-row"><span class="stats-key">${tr("statsPop.libs")}</span><span class="stats-value">${libsN}</span></div>`;
             html += `<div class="stats-row"><span class="stats-key">${tr("statsPop.dirs")}</span><span class="stats-value">${dirsN}</span></div>`;
-            html += `<div class="stats-row"><span class="stats-key">${tr("statsPop.tags")}</span><span class="stats-value">${tagsN}</span></div>`;
+            html += `<div class="stats-row"><span class="stats-key">${tr("statsPop.tags")}</span><span class="stats-value">${tags.length}</span></div>`;
             html += '</div>';
 
             if (exts.length > 0) {
@@ -363,8 +392,43 @@
                 }
                 html += '</div>';
             }
+            return html;
+        }
 
-            popup.innerHTML = html;
+        function patchStatsButton(p, tags) {
+            const popup = document.getElementById('hdr-stats-popup');
+            const countEl = document.getElementById('hdr-stats-count');
+            if (!popup) return;
+            if (countEl) countEl.textContent = p.totalFiles || 0;
+
+            // Skeleton (tab bar + panes) is built once per project; refresh
+            // cycles rewrite only the numbers pane so an open trends tab (and
+            // its fetched chart) survives live patches.
+            if (popup.dataset.project !== p.name) {
+                popup.dataset.project = p.name;
+                const tabStyle = "cursor:pointer;padding:0 2px 5px;font-size:0.85em;border-bottom:2px solid transparent";
+                popup.innerHTML = `
+                    <div style="display:flex;gap:12px;margin-bottom:8px;border-bottom:1px solid var(--border)">
+                        <span data-stats-tab="numbers" style="${tabStyle}">${tr("statsPop.title")}</span>
+                        <span data-stats-tab="trends" style="${tabStyle}">${tr("statsPop.tabTrends")}</span>
+                    </div>
+                    <div data-stats-pane="numbers"></div>
+                    <div data-stats-pane="trends" style="display:none"></div>`;
+                popup.onclick = (e) => {
+                    const t = e.target.closest('[data-stats-tab]');
+                    if (!t) return;
+                    setStatsTab(popup, t.dataset.statsTab);
+                    if (t.dataset.statsTab === 'trends') loadTrendsPane(popup, p.name);
+                };
+                setStatsTab(popup, 'numbers');
+            }
+
+            const numPane = popup.querySelector('[data-stats-pane="numbers"]');
+            const html = statsNumbersHtml(p, tags);
+            if (numPane && numPane.dataset.hash !== html) {
+                numPane.dataset.hash = html;
+                numPane.innerHTML = html;
+            }
 
             const btn = document.getElementById('hdr-stats');
             if (btn) {

@@ -366,6 +366,11 @@ export const DICT = {
   "statsPop.tags": { en: "tags", ar: "تاق" },
   "statsPop.exts": { en: "File types", ar: "أنواع الملفات" },
   "statsPop.open": { en: "Click to open the project map", ar: "اضغط لفتح خريطة المشروع" },
+  "statsPop.tabTrends": { en: "Trends", ar: "الاتجاهات" },
+  "statsPop.trendOpened": { en: "opened", ar: "فُتح" },
+  "statsPop.trendClosed": { en: "closed", ar: "أُغلق" },
+  "statsPop.trendReleased": { en: "releases", ar: "إصدارات" },
+  "statsPop.trendsEmpty": { en: "Not enough history to chart yet", ar: "لا يوجد تاريخ كافٍ للرسم بعد" },
 
   // ===== libraries =====
   "lib.openPage": { en: "Open the library's page", ar: "فتح صفحة المكتبة" },

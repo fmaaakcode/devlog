@@ -17,8 +17,8 @@
 // The server only reads the catalog NAMES for SessionStart awareness injection.
 
 import { readdir, readFile, writeFile, mkdir } from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { addAck, findDevlogDir, listAcks } from "./standards-ack";
+import { join } from "node:path";
 import { normalizeSlashes } from "./path-utils";
 import { homedir } from "node:os";
 import { isUiFile } from "./design-check";
@@ -439,93 +439,13 @@ export function shouldEnforceStandards(g: GateInput): boolean {
   return g.relevantUncovered > 0;         // a relevant standard exists but wasn't engaged
 }
 
-// ── Per-project enforcement exemption ───────────────────────────────────────
-// Some existing projects already follow the standards — forcing a pull there is
-// pure friction. The DevLog dashboard (injection window) writes a marker file at
-// the project's `.devlog/standards-off` to exempt it. Both enforcement hooks read
-// this marker LOCALLY (no server round-trip on the write hot-path). Manual
-// -(ask:rules) still works in an exempt project — only the FORCING is lifted.
-export const ENFORCE_MARKER = "standards-off";
-
-export function enforceMarkerPath(projectDir: string): string {
-  return join(projectDir, ".devlog", ENFORCE_MARKER);
-}
-
-/**
- * Walk up from `cwd` to the nearest project root (the dir holding `.devlog`) and
- * report whether enforcement is disabled there (marker present). Walking up makes
- * it work when Claude's cwd is a subfolder. Errors → not disabled (enforce).
- */
-export function isEnforcementDisabled(cwd: string): boolean {
-  const dl = findDevlogDir(cwd);
-  if (!dl) return false;
-  try { return existsSync(join(dl, ENFORCE_MARKER)); } catch { return false; }
-}
-
-// ── Intentional-acknowledgement ("I'm intentional, be quiet") (P5) ───────────
-// A check that blocks a DELIBERATE choice is friction. An ack lets the developer
-// (via Claude) record that a violation is on purpose, so the gate stops blocking
-// it — the anti-annoyance core. Stored per-project in `.devlog/standards-ack`
-// (one key per line), consistent with the standards-off marker. Two granularities
-// in ONE mechanism:
-//   `cargo-edition`        → the whole check is SOFT/off for this project (P5 step 2)
-//   `cargo-edition:2021`   → only this specific value is acknowledged (P5 step 1)
-export const ACK_MARKER = "standards-ack";
-
-/** Nearest `.devlog` dir walking up from cwd (where the markers live). */
-function findDevlogDir(cwd: string): string | null {
-  let dir = cwd;
-  for (let i = 0; i < 40 && dir; i++) {
-    try { if (existsSync(join(dir, ".devlog"))) return join(dir, ".devlog"); } catch { /* keep walking */ }
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
-}
-
-/** Acknowledged check keys for the project at `cwd` (empty when none). Sync so the
- *  PreToolUse hook can call it inline on the write hot-path. */
-export function readAcks(cwd: string): string[] {
-  const dl = findDevlogDir(cwd);
-  if (!dl) return [];
-  try {
-    return readFileSync(join(dl, ACK_MARKER), "utf-8").split("\n").map(s => s.trim()).filter(Boolean);
-  } catch { return []; }
-}
-
-/** Is this check (optionally this specific value) acknowledged as intentional?
- *  A bare `checkKey` ack silences the whole check; `checkKey:value` silences one. */
-export function isAcked(cwd: string, checkKey: string, value?: string | null): boolean {
-  const acks = new Set(readAcks(cwd).map(a => a.toLowerCase()));
-  if (acks.has(checkKey.toLowerCase())) return true;
-  if (value != null && acks.has(`${checkKey}:${value}`.toLowerCase())) return true;
-  return false;
-}
-
-export interface AckResult { ok: boolean; message: string; }
-
-/** Record an intentional-violation ack for the project at `cwd` (append-only,
- *  dedup). Creates `.devlog` at cwd when no project root is found yet. */
-export async function addAck(cwd: string, key: string): Promise<AckResult> {
-  const k = (key || "").trim();
-  if (!k) return { ok: false, message: "مفتاح ack فارغ." };
-  const dl = findDevlogDir(cwd) ?? join(cwd, ".devlog");
-  await mkdir(dl, { recursive: true });
-  const file = join(dl, ACK_MARKER);
-  let lines: string[] = [];
-  try { lines = (await readFile(file, "utf-8")).split("\n").map(s => s.trim()).filter(Boolean); } catch { /* new file */ }
-  if (lines.some(l => l.toLowerCase() === k.toLowerCase())) return { ok: true, message: `موجود مسبقاً: ${k}` };
-  lines.push(k);
-  await writeFile(file, `${lines.join("\n")}\n`, "utf-8");
-  return { ok: true, message: `أُكّد كمتعمّد (لن يُحجب بعد الآن في هذا المشروع): ${k}` };
-}
-
-/** Human-readable list of the project's acks (for -(rule:acks)). */
-export function listAcks(cwd: string): string {
-  const acks = readAcks(cwd);
-  return acks.length ? `مؤكَّدات هذا المشروع:\n${acks.map(a => `· ${a}`).join("\n")}` : "لا مؤكَّدات في هذا المشروع.";
-}
+// ── Per-project markers (exemption + acks) — extracted to standards-ack.ts ───
+// Re-exported so the many existing importers (write-checks, hooks, routes,
+// tests) keep their single `./standards` entry point.
+export {
+  ENFORCE_MARKER, enforceMarkerPath, isEnforcementDisabled,
+  ACK_MARKER, readAcks, isAcked, type AckResult, addAck, listAcks,
+} from "./standards-ack";
 
 // PROACTIVE gate (PreToolUse on Write/Edit): instead of blocking a code write and
 // telling Claude to go pull standards (the old shouldGateWrite), the gate now
@@ -612,6 +532,13 @@ const EXT_LANG: Record<string, string> = {
   php: "php",
   zig: "zig",
 };
+
+// The set of category slugs EXT_LANG can produce — "is this catalog category a
+// LANGUAGE?" for consumers that scope analysis by file extension (rule-effect).
+const LANG_CATEGORIES = new Set(Object.values(EXT_LANG));
+export function isLanguageCategory(cat: string): boolean {
+  return LANG_CATEGORIES.has(cat.toLowerCase());
+}
 
 /** The language category for a file path, by extension. null when unknown. */
 export function langForFile(filePath: string): string | null {
@@ -757,7 +684,12 @@ export async function resolveContentTemplates(content: string, resolve: Toolchai
 // ── Orchestrator: run a batch of commands, return text for the Stop hook ──────
 export interface RunResult { output: string; }
 
-export async function runRuleCommands(cmds: RuleCommand[], cwd?: string): Promise<RunResult> {
+/** Lifecycle event for rule telemetry (#787): pushed into the caller-supplied
+ *  collector only when the command SUCCEEDED — the Stop hook forwards them to
+ *  /api/rule-telemetry. Optional so existing callers/tests are untouched. */
+export interface RuleLifecycleEvent { action: "ack" | "adopt" | "remove"; rule: string; detail?: string }
+
+export async function runRuleCommands(cmds: RuleCommand[], cwd?: string, events?: RuleLifecycleEvent[]): Promise<RunResult> {
   const parts: string[] = [];
   for (const c of cmds) {
     if (c.cmd === "ask:rules") {
@@ -772,6 +704,7 @@ export async function runRuleCommands(cmds: RuleCommand[], cwd?: string): Promis
       const ruleText = [inlineRest, c.body].filter(Boolean).join("\n").trim();
       if (!cat) { parts.push("⚠ -(rule:add) بلا تصنيف."); continue; }
       const r = await addRule(cat, ruleText);
+      if (r.ok) events?.push({ action: "adopt", rule: cat, detail: ruleText.split("\n")[0].slice(0, 200) });
       parts.push(`${r.ok ? "✓" : "✗"} rule:add ${cat}: ${r.message}`);
     } else if (c.cmd === "rule:new") {
       const m = c.argLine.match(/^([^/\s]+)\s*[/\s]\s*([^/\s]+)/);
@@ -785,6 +718,7 @@ export async function runRuleCommands(cmds: RuleCommand[], cwd?: string): Promis
       const key = c.argLine.trim();
       if (!key) { parts.push("⚠ الصيغة: -(rule:ack) <مفتاح> — مثل cargo-edition أو cargo-edition:2021 أو dep:astro"); continue; }
       const r = await addAck(cwd, key);
+      if (r.ok) events?.push({ action: "ack", rule: key });
       parts.push(`${r.ok ? "✓" : "✗"} rule:ack: ${r.message}`);
     } else if (c.cmd === "rule:acks") {
       parts.push(listAcks(cwd || ""));
@@ -792,6 +726,7 @@ export async function runRuleCommands(cmds: RuleCommand[], cwd?: string): Promis
       const m = c.argLine.match(/^(\S+)\s+#?(\d+)/);
       if (!m) { parts.push("⚠ الصيغة: -(rule:rm) <تصنيف> #N"); continue; }
       const r = await removeRule(m[1], parseInt(m[2], 10));
+      if (r.ok) events?.push({ action: "remove", rule: `${m[1]} #${m[2]}` });
       parts.push(`${r.ok ? "✓" : "✗"} rule:rm: ${r.message}`);
     }
   }

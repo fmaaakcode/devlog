@@ -49,7 +49,7 @@ export const SINGLE_LINE_TAGS = new Set([
 // by a command line swallowed it into its content (live artifact: a `built`
 // stored with a trailing "\n\n-(ask:features)").
 export const COMMAND_TAGS = [
-  "ask:open", "ask:closed", "ask:features", "ask:retro", "ask:backfill",
+  "ask:open", "ask:closed", "ask:features", "ask:retro", "ask:backfill", "ask:map",
   "ask:study", "ask:rules", "ask:lib", "ask:deps", "ask:search", "rules:list", "rule:add", "rule:new", "rule:rm",
   "rule:ack", "rule:acks", "audit",
 ] as const;

@@ -46,6 +46,11 @@ Write the tag content in the user's language.
   widens to every tracked project. Prefer it over re-deriving a past decision.
   Ephemeral, never stored. New open bugs also get an automatic one-shot recall hint
   when a similar closed bug exists.
+- `-(ask:map) [محور]` the project's code map — files ranked by how much the rest
+  of the code depends on them, each with the purpose its own header states. Use it
+  BEFORE grepping an unfamiliar area; the argument narrows to one subsystem
+  (matched on paths, purposes, exports). Computed live, never from the stale
+  generated file. Ephemeral, never stored.
 - `-(note)` · `-(decision)` — name the rejected alternative and why it lost (wider trade-off study → `-(doc:comparison)`) · `-(insight)`
 - `-(doc:report|analysis|plan|comparison|readme)` name\n<markdown>
 

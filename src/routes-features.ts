@@ -16,7 +16,9 @@ import { buildDepsPayload } from "./deps-explain";
 import { collectClientReport, renderClientReportHtml, writeClientReport } from "./client-report";
 import { retroCorpus, fragileFiles, regressionGap } from "./retro";
 import { modelScorecard } from "./model-stats";
-import { studyCorpus, STUDY_NAME_RE, type PrevStudyDoc } from "./study";
+import { studyCorpus, monthlyTrend, STUDY_NAME_RE, type PrevStudyDoc } from "./study";
+import { loadRuleTelemetry } from "./rule-telemetry";
+import { ruleStats, ruleEffect } from "./rule-effect";
 
 type ApiReq = Bun.BunRequest;
 
@@ -124,9 +126,18 @@ export function makeFeatureRoutes({ htmlResponse }: FeatureRouteDeps): Record<st
         const project = await resolveParam(req);
         if (!project) return Response.json({ project: null, items: [] });
         const data = await loadData();
+        const items = retroCorpus(data, project);
+        // #787: rule-effectiveness rides the same reflection surface — counters
+        // are project-scoped, adoption rows (global catalog) are measured
+        // against this project's reports.
+        const telemetry = await loadRuleTelemetry();
         return Response.json({
           project,
-          items: retroCorpus(data, project),
+          items,
+          rules: {
+            stats: ruleStats(telemetry.filter(r => !r.project || r.project === project)),
+            effects: ruleEffect(telemetry, items),
+          },
           fragile: fragileFiles(data, project),
           // #585: fixes that closed without their session touching a test. One
           // quiet ratio in the header — "what keeps breaking?" and "what did we
@@ -152,6 +163,19 @@ export function makeFeatureRoutes({ htmlResponse }: FeatureRouteDeps): Record<st
       },
     },
 
+    // The monthly-trend rows behind the stats-popup trends tab (#788): opened
+    // work items / closed items / releases per month over the whole history —
+    // the same computation the study aggregates embed, served alone so the
+    // dashboard chart doesn't pay for the full study corpus on every hover.
+    "/api/trends": {
+      async GET(req: ApiReq) {
+        const project = await resolveParam(req);
+        if (!project) return Response.json({ project: null, monthly: [] });
+        const data = await loadData();
+        return Response.json({ project, monthly: monthlyTrend(data, project) });
+      },
+    },
+
     // The deep-study corpus behind `-(ask:study)`: whole-history aggregates
     // (compact regardless of project age) + narrative delta since the previous
     // stored study + that study's conclusions digest. The report itself is
@@ -162,7 +186,7 @@ export function makeFeatureRoutes({ htmlResponse }: FeatureRouteDeps): Record<st
         if (!project) return Response.json({ project: null }, { status: 404 });
         const data = await loadData();
         const prevDoc = await newestStudyDoc(data.projects[project]?.path);
-        return Response.json({ project, ...studyCorpus(data, project, Date.now(), prevDoc) });
+        return Response.json({ project, ...studyCorpus(data, project, Date.now(), prevDoc, await loadRuleTelemetry()) });
       },
     },
 

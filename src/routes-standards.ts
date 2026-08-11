@@ -13,6 +13,7 @@ import { closedItems } from "./closed-items";
 import { resolveProjectFor } from "./project-resolve";
 import { pathsEqual } from "./path-utils";
 import { scanCatalog, parseRules, readAcks } from "./standards";
+import { sanitizeRuleRecord, appendRuleTelemetry } from "./rule-telemetry";
 import { ENFORCED_CATEGORIES } from "./write-checks";
 import { findDepVerdicts } from "./dep-check";
 import { versionHistories, type VersionEntry } from "./registry";
@@ -236,6 +237,25 @@ export function makeStandardsRoutes(): Record<string, unknown> {
           acks: cwd ? readAcks(cwd) : [],
           counts: { categories: entries.length, rules: ruleCount, enforced },
         });
+      },
+    },
+
+    // Rule-effectiveness telemetry sink (#787): the gate hooks POST their
+    // decisions here so the JSONL trail has ONE writer (this process). Body:
+    // { cwd?, records: [{gate, action, rule, file?, detail?}] } — each record
+    // validated, ts stamped server-side, 50 per call max. Always 200 with
+    // per-record accounting: telemetry must never fail the gate it describes.
+    "/api/rule-telemetry": {
+      async POST(req: ApiReq) {
+        let body: Record<string, unknown> = {};
+        try { body = await req.json() as Record<string, unknown>; } catch { /* malformed → stored: 0 */ }
+        const raw = Array.isArray(body.records) ? body.records.slice(0, 50) : [];
+        const clean = raw.map(sanitizeRuleRecord).filter(r => r !== null);
+        if (!clean.length) return Response.json({ ok: true, stored: 0, rejected: raw.length });
+        const cwd = typeof body.cwd === "string" ? body.cwd : "";
+        const project = cwd ? resolveProjectFor(await loadData(), cwd).name : "";
+        await appendRuleTelemetry(clean.map(r => (project ? { ...r, project } : r)));
+        return Response.json({ ok: true, stored: clean.length, rejected: raw.length - clean.length });
       },
     },
 

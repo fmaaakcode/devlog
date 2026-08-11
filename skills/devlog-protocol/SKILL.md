@@ -242,6 +242,19 @@ The log answers back: lexical search (BM25, Arabic+English normalization) over e
 
 Matching is lexical, not semantic — use the vocabulary the log was written in (an English query won't match an Arabic-only tag). Auto-recall rides on it: when a fresh `-(bug found)` resembles a historically closed bug (enough shared terms), the next prompt's injection carries a one-shot `🧠` hint with the old fix's `#N`, close date and files — check it with `-(ask:closed) #N` before solving from scratch.
 
+## Code map (`ask:map`)
+
+Where the recall command answers *"what did we decide?"*, this answers *"where does this live, and what is each file for?"* — before you grep. Files are ranked by PageRank over the import graph (how much the rest of the code depends on them), and each line carries the purpose written at the top of that file, falling back to a heuristic only for files that document nothing. Same turn, never logged as a tag.
+
+| Command | Use |
+|---|---|
+| `-(ask:map)` | Top files of the project, most-depended-on first, with purpose + size |
+| `-(ask:map) release` | Only the files answering that subsystem — matched on path, purpose and exports |
+
+Computed from a **live** analysis, not from `.devlog/DEVLOG_STACK.md` (which is generated once and can sit far behind the code). A query matching nothing returns the unfiltered top with a "nothing matched" note rather than an empty answer. Multi-word queries are AND — `-(ask:map) tag closure` means both.
+
+The corollary is on you: a file with no purpose header gets a guessed description. Write the header when you create a module — three lines at the top (what it does, why it is separate, which trap it holds) is what makes this command worth asking.
+
 ## Releases & GitHub — split roles
 
 **Releasing (the DevLog tag) is the developer's job; git/GitHub is the specialist's.**

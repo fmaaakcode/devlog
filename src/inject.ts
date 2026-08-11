@@ -1,3 +1,20 @@
+// Everything DevLog says TO Claude. buildContext() renders the text block that
+// `/api/inject` returns to the hooks: the SessionStart project card (identity,
+// standards, recent work, open items, last release), the conditional
+// UserPromptSubmit reminders, and the PreToolUse per-file story. If Claude
+// "knows" something at the start of a session, it was assembled here.
+//
+// Two rules shape the whole file. (1) Cost: SessionStart runs on every session,
+// so each section is gated — by the effective injection config (global defaults
+// < project overrides, see getEffectiveConfig) and by "is there anything worth
+// saying?". A section with nothing to report must render nothing, not an empty
+// heading. (2) Language: the output is read by Claude AND shown to the user,
+// and it steers the language Claude replies in — hence the L(en, ar) helper and
+// the English default with DEVLOG_LANG=ar opt-in.
+//
+// Pure: no I/O, no globals. The caller (server.ts doInject) loads the data,
+// applies the once-per-session/once-per-file gating, and logs the injection.
+
 import type { DevLogData, InjectionConfig, ProjectProfile, TagEntry } from "./types";
 import {
   DEFAULT_INJECTION_CONFIG, CLOSURE_TAGS,

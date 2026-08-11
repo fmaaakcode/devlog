@@ -65,6 +65,16 @@ if (!pkgs.length) process.exit(0);
 // project dir outranks the payload cwd, which follows the shell's `cd` drift.
 const cwd = process.env.CLAUDE_PROJECT_DIR || body.cwd || process.cwd();
 const sessionId = body.session_id || "";
+
+// Rule telemetry (#787): report this gate's decision — never changes the outcome.
+const sendTelemetry = async (action, detail) => {
+  try {
+    const { postRuleTelemetry } = await import("./src/telemetry-client.ts");
+    await postRuleTelemetry(`http://127.0.0.1:${PORT}`, cwd,
+      pkgs.map(p => ({ gate: "install", action, rule: `${p.eco}:${p.name}`, ...(detail ? { detail } : {}) })));
+  } catch { /* best-effort */ }
+};
+
 await mkdir(ACK_DIR, { recursive: true });
 await log(`fire: cmd=${cmd.slice(0, 120)} pkgs=${pkgs.map(p => p.name).join(",")}`);
 
@@ -93,6 +103,7 @@ if (existsSync(ackFile)) {
       } else {
         await log("ack-pass");
       }
+      await sendTelemetry("ack");
       process.exit(0);
     }
   } catch { /* unreadable ack — treat as no ack */ }
@@ -144,7 +155,7 @@ try {
 }
 
 const { blocks, warns, vulnPins } = decideGate(pkgs, items, LANG, STRICT);
-if (!blocks.length && !warns.length) { await log("clean — pass"); process.exit(0); }
+if (!blocks.length && !warns.length) { await log("clean — pass"); await sendTelemetry("pass"); process.exit(0); }
 
 // Write the ack BEFORE blocking so the very next identical issue passes. It
 // carries the vulnerable pins so the pass-through above can record them.
@@ -169,5 +180,9 @@ out.push(L(
 out.push("══════════════════════════════════════");
 
 await log(`gate: ${blocks.length} block(s), ${warns.length} warn(s)`);
+// Command-level classification (decideGate returns rendered lines, not per-pkg
+// verdicts): every package in a gated command records one fire; the detail
+// carries the block/warn split.
+await sendTelemetry("fire", `${blocks.length} block(s), ${warns.length} warn(s)`);
 console.error(out.join("\n"));
 process.exit(2);

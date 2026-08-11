@@ -34,6 +34,7 @@ const JS_FILES = [
   "assets/dashboard-panels.js",
   "assets/dashboard-tree-ws.js",
   "assets/dashboard-docs-card.js",
+  "assets/dashboard-trends.js",
   "assets/deps.js",
   "assets/stack-map.js",
   "assets/page-i18n.js",

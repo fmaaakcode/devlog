@@ -39,6 +39,8 @@ Before ADDING a new dependency, emit \`-(ask:lib) <name…>\` (up to 8) — DevL
 
 To recall recorded history ("why did we choose X?", "have we hit this before?"), emit \`-(ask:search) <query>\` — DevLog answers with the best-matching stored tags (decisions, insights, closed bugs with their fixes). \`-(ask:search) all: <query>\` widens the search to every tracked project. Prefer it over re-deriving a past decision or re-investigating a solved problem.
 
+Before searching an unfamiliar part of the CODE, emit \`-(ask:map)\` — the project's files ranked by how much the rest depends on them, each with what it is for. \`-(ask:map) <subsystem>\` narrows it. Prefer it over grepping your way to the entry point.
+
 Atomic: one concept per tag; no questions or planning prose inside a tag; multiple items → multiple tags.
 
 Releasing: ONLY when the user asks to ship. Then just emit \`-(release) <one-line reason>\` — **DevLog auto-detects the bump type (patch/minor/major) and computes the version number.** Never write the version number yourself, and don't pick the type unless the user names one (then use \`-(release:patch|minor|major)\`). git/GitHub is never your job.
@@ -66,6 +68,8 @@ DevLog مفعّل. في نهاية كل رد أصدر تاقات \`-(tag) conten
 قبل إضافة تبعية جديدة أصدر \`-(ask:lib) <اسم…>\` (حتى 8) — يجيبك DevLog بالنسخة الدقيقة للتركيب: أحدث مستقرة عمرها ≥7 أيام يشهد OSV بنظافتها. لا تبحث عن النسخ بنفسك ولا تركّب \`@latest\` أعمى. بادئة \`npm:\`/\`pypi:\`/\`crates:\` على الاسم تتجاوز نظام المشروع. بعد التركيب سجّل سبب وجود المكتبة في المشروع: \`-(lib) <الاسم> — <غرض من سطر واحد>\` (أعد إصداره بنفس الاسم للتحديث؛ \`-(ask:deps)\` يسحب الجرد ويسرد ما بقي بلا غرض).
 
 لاسترجاع التاريخ المسجَّل («لماذا اخترنا X؟»، «هل مررنا بهذا قبل؟») أصدر \`-(ask:search) <سؤال>\` — يجيبك DevLog بأفضل التاقات المطابقة (قرارات، insights، بلاغات مغلقة مع إصلاحاتها). \`-(ask:search) all: <سؤال>\` يوسّع البحث لكل المشاريع المتتبَّعة. فضّله على إعادة اشتقاق قرار ماضٍ أو إعادة التحقيق في مشكلة محلولة.
+
+قبل التنقيب في جزء غير مألوف من الكود أصدر \`-(ask:map)\` — ملفات المشروع مرتبة بمقدار اعتماد بقيته عليها، مع غرض كل ملف. و\`-(ask:map) <المحور>\` يضيّق النطاق. فضّله على التنقيب بـgrep بحثًا عن نقطة الدخول.
 
 محتوى ذرّي: مفهوم واحد لكل تاق، بلا أسئلة أو تخطيط داخل التاق؛ عدّة عناصر → عدّة تاقات.
 

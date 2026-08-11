@@ -10,6 +10,8 @@ import { loadData, withData } from "./data";
 import { broadcast } from "./broadcast";
 import { resolveProjectFor } from "./project-resolve";
 import { getEffectiveConfig, buildContext } from "./inject";
+import { ENFORCE_MARKER } from "./standards";
+import { appendRuleTelemetry } from "./rule-telemetry";
 import { obj } from "./validators";
 import { join } from "node:path";
 import { mkdir, writeFile, rm } from "node:fs/promises";
@@ -156,6 +158,12 @@ export function makeInjectRoutes({ doInject, MAX_INJECTIONS_LOG }: InjectRouteDe
                 } catch (e) {
                   console.error("[/api/injection/config standards-marker] error:", e instanceof Error ? e.message : e);
                 }
+                // Rule telemetry (#787): a project-wide exemption toggle is a
+                // gate decision too — in-process append (same single writer).
+                await appendRuleTelemetry([{
+                  gate: "lifecycle", action: "exempt", rule: ENFORCE_MARKER, project,
+                  detail: clean.standardsEnforce === false ? "disabled" : "enabled",
+                }]);
               }
             }
             broadcast("inject", { config: true });

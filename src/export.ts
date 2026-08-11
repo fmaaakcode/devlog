@@ -1,3 +1,22 @@
+// The files DevLog writes INTO the user's repository, under `.devlog/`:
+// DEVLOG_STATUS.md (open work — todos, bugs, security, plan steps),
+// DEVLOG_GITHUB.md (the release-facing summary) and DEVLOG_STACK.md (the
+// generated stack + file map). Everything else surfaces DevLog's state over
+// HTTP; this is the surface that survives with the repo — readable in a diff,
+// on GitHub, and by a future session that has no server running.
+//
+// Because these files are committed, two rules follow. (1) Truth: an item
+// closed by `#N` must disappear from DEVLOG_STATUS.md, which is why closure
+// resolution goes through the shared open-item resolvers instead of a local
+// re-implementation — a divergent copy here once left `-(done) #N` items open
+// in the status file forever. (2) Ownership: generateStackMd is generate-once
+// by default (`force` to regenerate) because a user may hand-edit the stack
+// map; regenerating on every scan would silently eat their edits.
+//
+// Section headings in DEVLOG_STACK.md are the contract that stack-parser.ts
+// reads back for the dashboard's stack map — rename one here and the
+// corresponding section there goes silently empty.
+
 import { mkdir, appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { DevLogData, ProjectProfile, TagEntry } from "./types";
@@ -539,20 +558,18 @@ export async function generateStackMd(projectPath: string, project: ProjectProfi
 
   const langStr = langs.join(" / ") + (qualifiers.length > 0 ? ` (${[...new Set(qualifiers)].join(", ")})` : "");
 
-  // Auto-generate project description from patterns
-  const descParts: string[] = [];
-  if (analysis.patterns.includes("DXGI/DirectX") || analysis.patterns.includes("NVENC/NVDEC")) descParts.push("مشاركة شاشة");
-  if (analysis.patterns.includes("WASAPI") || analysis.patterns.includes("Opus")) descParts.push("محادثة صوتية");
-  if (analysis.patterns.includes("E2E Encryption")) descParts.push("تشفير E2E");
-  if (analysis.patterns.includes("UDP/Networking") || analysis.patterns.includes("STUN/NAT")) descParts.push("P2P");
-  if (analysis.patterns.includes("Qt")) descParts.push("واجهة Qt");
-  if (analysis.patterns.includes("HTTP Server")) descParts.push("سيرفر HTTP");
-  if (analysis.patterns.includes("WebSocket")) descParts.push("WebSocket");
+  // The project description is the DECLARED one (`-(desc)`), never a guess.
+  // It used to be assembled from detected patterns, which states things nobody
+  // claimed: a Bun/TypeScript project came out as "P2P + واجهة Qt" because two
+  // text signatures matched (#791). Patterns are still listed below under
+  // «الأنماط», where they read as evidence rather than as an identity. No
+  // `-(desc)` yet → no line at all; the describe-nudge already asks for one.
+  const declaredDesc = (project.description || "").trim();
 
   // Stack
   lines.push("## Stack");
   lines.push(`- **اللغة**: ${langStr}`);
-  if (descParts.length > 0) lines.push(`- **الوصف**: ${descParts.join(" + ")}`);
+  if (declaredDesc) lines.push(`- **الوصف**: ${declaredDesc}`);
   if (project.framework) lines.push(`- **الإطار**: ${project.framework}`);
   if (analysis.patterns.length > 0) lines.push(`- **الأنماط**: ${analysis.patterns.join("، ")}`);
   lines.push(`- **الملفات**: ${project.totalFiles} ملف | ${analysis.totalLines} سطر | ${analysis.totalFunctions} دالة`);

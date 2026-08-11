@@ -1,3 +1,17 @@
+// Translation layer between Claude Code's hook payloads and DevLog's event
+// store: one raw hook POST body in, one normalized EventEntry out. Every hook
+// event DevLog understands (SessionStart, PostToolUse Write/Edit/Bash, Stop, …)
+// is classified here into the small `type` vocabulary the dashboard, retention
+// and recall all read — so the shape of Claude's payload is known in exactly
+// one file.
+//
+// Pure and I/O-free on purpose: the routes own loading/saving, this owns
+// interpretation, which makes every classification decision unit-testable.
+// Two guards live here because they belong to interpretation, not storage:
+// content fields are capped (MAX_DIFF_FIELD_BYTES) so a huge paste can't bloat
+// the store, and sensitive paths (.env and friends) are redacted before the
+// content ever reaches disk.
+
 import type { EventEntry } from "./types";
 import { projectName } from "./data";
 import { isTestCommand } from "./verify-hint";

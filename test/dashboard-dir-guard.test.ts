@@ -22,6 +22,7 @@ const JS_FILES = [
   "assets/dashboard-panels.js",
   "assets/dashboard-tree-ws.js",
   "assets/dashboard-docs-card.js",
+  "assets/dashboard-trends.js",
 ];
 
 const stripCssComments = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));

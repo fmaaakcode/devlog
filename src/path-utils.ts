@@ -1,3 +1,17 @@
+// The single home for path handling. DevLog is fed Windows paths by the hooks,
+// stores them as strings, and compares them against paths from git, from
+// Claude's config dir, and from the user's own typing — so "is this the same
+// path?" has to mean exactly one thing everywhere. Each transform used to be
+// copy-pasted across ~10 modules and drifted; they live here now.
+//
+// Pick the right one deliberately: normalizeSlashes only swaps `\` → `/` (for
+// display and storage, casing preserved), while normalizePath additionally
+// folds case and trailing slashes and is for EQUALITY only — storing its output
+// would corrupt the path on a case-sensitive filesystem.
+//
+// Zero dependencies beyond node:os/node:path, so the leaf modules (project
+// resolution, rename, file-story) can import it without pulling in the store.
+
 import { homedir } from "node:os";
 import { join } from "node:path";
 

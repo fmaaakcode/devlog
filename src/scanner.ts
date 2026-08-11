@@ -1,3 +1,27 @@
+// Everything DevLog learns about a project from DISK, as opposed to from tags.
+// scanProject() walks a project directory and produces the ProjectProfile the
+// dashboard, the injected context and the deps/vuln surfaces all read: file
+// counts by extension, dominant language, framework + libraries (from whichever
+// manifest ecosystem is present), runtime, top-level directories, git remote,
+// Claude memory cards, and .devlog docs.
+//
+// The critical rule is that a scan must never destroy what a scan cannot
+// regenerate. Tag-authored fields (description, about, blueprint), vuln state
+// and system counters (nextItemNum) are user/protocol data; scanProject resets
+// them by construction, so callers MUST go through rescanPreserve /
+// applyPreservedScan instead of assigning the fresh profile — forgetting that
+// is what silently wiped `about` once.
+//
+// Split in two phases for the lock: scanFreshProfile() is the expensive disk
+// walk and takes no shared state, applyPreservedScan() is the cheap merge — so
+// a rescan never freezes concurrent writers. freshOrRelocatedProfile() sits on
+// top and decides whether a cwd that disagrees with the stored path is the same
+// project moved (git remote matches, old path gone) or a same-name collision.
+//
+// Git is read by parsing .git/config directly rather than spawning git: the
+// dashboard must work on machines without git on PATH, and a per-scan
+// subprocess is not free.
+
 import { readdir, readFile, access } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, extname, } from "node:path";

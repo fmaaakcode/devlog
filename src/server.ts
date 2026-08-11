@@ -1,3 +1,22 @@
+// The daemon: process entry point, HTTP + WebSocket server, and owner of
+// everything that has to happen once per process rather than once per request.
+// One daemon serves ALL tracked projects on a single port (7777 by default),
+// started by whichever SessionStart hook fires first.
+//
+// Routes are NOT written here. This file composes the routes-*.ts groups and
+// wraps every one of them in guard() via ./route-guard — the DNS-rebinding /
+// cross-origin check that a hand-attached guard kept being forgotten on. Adding
+// an endpoint means adding it to a routes-*.ts group, not to this file (the
+// file-size ratchet exists to keep that true: server.ts was once 2015 lines).
+//
+// What genuinely belongs here: boot sequence (data migrations, backfills,
+// cleanups, daemon lock), doInject — the SessionStart/UserPromptSubmit/
+// PreToolUse endpoint, which owns the per-session and per-file gating that
+// buildContext deliberately does not — the debounced fs.watch rescans,
+// background loops (retention, vuln staleness, version check), the security
+// headers/CSP, and the process-level error net that keeps a background-loop
+// failure from silently killing history capture mid-session.
+
 import { join, isAbsolute } from "node:path";
 import { existsSync, watch } from "node:fs";
 import { loadData, withData, PORT, DATA_DIR, backfillNums, cleanupMalformedSecurityTags, cleanupMalformedOutdatedTags } from "./data";

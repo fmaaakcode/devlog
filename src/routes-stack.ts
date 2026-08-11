@@ -7,12 +7,34 @@
 import { loadData } from "./data";
 import { parseStack } from "./stack-parser";
 import { buildTree } from "./tree";
+import { analyzeProject, type ProjectAnalysis } from "./analyze";
+import { buildMap } from "./project-map";
+import { resolveProjectFor } from "./project-resolve";
+import { ttlCached } from "./ttl-cache";
 import { obj } from "./validators";
 import { generateStackMd } from "./export";
 import { appendAudit } from "./audit";
 import { join } from "node:path";
 
 type ApiReq = Bun.BunRequest;
+
+// One analysis per project per window, coalesced. The walk costs seconds on a
+// large repo and `-(ask:map)` is typically asked two or three times in a row
+// (broad map, then a narrowed one) — those must not each re-walk the tree.
+// Five minutes is short enough that the map can't go stale within a session's
+// own edits in any way that matters, and long enough to cover a burst.
+const MAP_TTL_MS = 5 * 60 * 1000;
+const analysisCaches = new Map<string, () => Promise<ProjectAnalysis>>();
+function cachedAnalysis(path: string): Promise<ProjectAnalysis> {
+  let get = analysisCaches.get(path);
+  if (!get) {
+    // Never cache an empty walk: an unreadable/half-mounted project would
+    // otherwise serve "this project has no files" for the whole window.
+    get = ttlCached(MAP_TTL_MS, () => analyzeProject(path), a => a.files.length > 0);
+    analysisCaches.set(path, get);
+  }
+  return get();
+}
 
 /** Build the stack-map / tree route group. Spread into server.ts's routeDefs. */
 export function makeStackRoutes(): Record<string, unknown> {
@@ -105,6 +127,30 @@ export function makeStackRoutes(): Record<string, unknown> {
           await rm(path, { force: true });
         } catch { /* cosmetic layout file — absent or unremovable is harmless */ }
         return Response.json({ ok: true });
+      },
+    },
+
+    // Project map — the corpus behind `-(ask:map)`: the most important files
+    // with what each one is FOR, filterable by subsystem.
+    //
+    // Computed live (analyzeProject) rather than read from DEVLOG_STACK.md:
+    // that file is generate-once and can sit far behind the code, and a map
+    // that lies sends the reader to the wrong file with confidence. The cost
+    // (a full source walk) is paid at most once per TTL window per project, so
+    // repeat asks inside a session are free while a new session gets fresh
+    // material.
+    "/api/map": {
+      async GET(req: ApiReq) {
+        const url = new URL(req.url);
+        const data = await loadData();
+        const cwd = url.searchParams.get("cwd") || "";
+        const named = url.searchParams.get("project") || "";
+        const name = named || (cwd ? resolveProjectFor(data, cwd).name : "");
+        const project = name ? data.projects[name] : undefined;
+        if (!project?.path) return Response.json({ project: null, entries: [], total: 0 });
+        const analysis = await cachedAnalysis(project.path);
+        const map = buildMap(analysis, url.searchParams.get("q") || "");
+        return Response.json({ project: name, ...map });
       },
     },
 

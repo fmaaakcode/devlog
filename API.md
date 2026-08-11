@@ -66,6 +66,7 @@
 - `/api/verdicts/:project` — per-item open/closed verdicts (todos/bugs/security) the dashboard cards render from; same resolvers as open-items (GET)
 - `/api/closed-items` — closed items with when/how (GET; `?num=N` for one, else 10 most recent) — powers `-(ask:closed)`
 - `/api/standards` — the standards catalog (GET)
+- `/api/rule-telemetry` — rule-effectiveness telemetry sink: gate hooks POST fire/ack/pass/adopt decisions, server stamps + appends JSONL (POST)
 - `/api/dep-freshness` — dependency-freshness verdicts (GET)
 - `/api/audit` — on-demand OSV audit report, plain text (GET)
 
@@ -75,6 +76,7 @@
 - `/api/deps` — the deps-explainer payload: every manifest library annotated with its recorded purpose (`lib` tags, latest per name wins), cached registry description and vuln/outdated status, uncovered-first (GET; `?project=` or `?cwd=`) — powers `-(ask:deps)` and `/deps.html`
 - `/api/retro` — the full problem corpus: every bug/security report, open and closed, with open/close dates, age in days and project-relative touched files, oldest first, plus `fragile` (files recurring across reports), `testGap` (fixes closed without their session touching a test — #585) and `modelStats` (the per-model scorecard) (GET; `?project=` or `?cwd=`) — powers `-(ask:retro)`
 - `/api/model-stats` — the model scorecard (#695 follow-up): per-model aggregates from attributed tags — reports opened, closures/fixes, reopened fixes (⟲ charged to the closer), test-gap ratio and mean close age — plus the unattributed pre-#695 count (GET; `?project=` or `?cwd=`) — powers the dashboard's «أداء النماذج» modal
+- `/api/trends` — the monthly-trend rows (opened work items / closed items / releases per month, whole history) behind the dashboard stats-popup trends tab (#788) — the same computation the study aggregates embed, served alone (GET; `?project=` or `?cwd=`)
 - `/api/study` — the deep-study corpus: whole-history aggregates (monthly trend, time-to-close medians, release hygiene, fragile files, the regression-test gap, capability coverage, work-rhythm behavior profile from tag timestamps) + narrative delta since the previous stored study + that study's conclusions digest (GET; `?project=` or `?cwd=`) — powers `-(ask:study)`
 - `/api/docs` — the project's stored-docs index (doc:report/analysis/…; plans excluded) from `.devlog/docs/index.json` (GET; `?project=` or `?cwd=`) — powers the dashboard's «دراسات» chip
 - `/api/doc-page` — one rendered doc page as HTML from `<project>/.devlog/docs/<slug>.html`; slug validated and path-checked against the docs dir (GET; `?project=`/`?cwd=` + `&slug=`)
@@ -105,6 +107,7 @@
 - `/api/stack/:project/regenerate` — explicit regeneration; the only path that overwrites an existing stack file (POST, audited)
 - `/api/stack/:project/layout` — saved node positions (GET/POST/DELETE)
 - `/api/tree/:project` — project file tree (GET)
+- `/api/map` — the code map behind `-(ask:map)`: files ranked by PageRank over the import graph, each with the purpose stated in its own header (heuristic only for files that document nothing), size, weight and top exports. `?q=` filters to one subsystem (matched on path, purpose and exports; multi-word = AND; no match → unfiltered top with `fellBack: true`). Computed from a LIVE analysis — never the possibly-stale DEVLOG_STACK.md — and cached per project for 5 minutes (GET; `?project=` or `?cwd=`)
 
 ## Workspace (`routes-workspace.ts`)
 - `/api/worklog` — append a worklog note (POST)

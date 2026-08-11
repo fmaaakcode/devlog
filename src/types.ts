@@ -1,3 +1,18 @@
+// The shape of everything DevLog persists — the contract shared by the store
+// (data.ts), the routes, the exporters and the dashboard. Types only: this file
+// deliberately contains no logic and imports nothing, so any module can depend
+// on it without pulling in the store or creating a cycle.
+//
+// DevLogData is the whole on-disk state; the split store files (tags.json,
+// events.json, plans.json, projects.json, meta.json) are slices of it, so a
+// field added here must be given a home in data.ts's write phases or it will be
+// dropped on the next save.
+//
+// Optional fields are almost always BACKWARD COMPATIBILITY, not "sometimes
+// interesting": stores written by older versions simply lack them, and readers
+// must handle the absent case rather than assume a default. Anything marked as
+// such stays optional forever.
+
 export interface MemoryFile {
   file: string;
   name: string;

@@ -1,3 +1,15 @@
+// The file tree the dashboard renders for a project: a plain nested
+// name/type/ext structure, nothing else. Kept apart from scanner.ts on purpose
+// — the scanner answers "what IS this project" (languages, libraries, runtime)
+// and its result is stored; this answers "what files are in it right now" and
+// is rebuilt per request, so the two have different cost and lifetime.
+//
+// Everything here is a display cutoff, not an analysis decision: depth is capped
+// at 4, build output and VCS dirs are skipped (SKIP_DIRS), binaries and archives
+// are skipped (SKIP_EXT), and a project can hide its own noise with a .devignore
+// file. Failures are soft — an unreadable directory yields fewer nodes, never a
+// broken tree.
+
 import { readdir } from "node:fs/promises";
 import { join, extname } from "node:path";
 import { softFail } from "./soft-fail";

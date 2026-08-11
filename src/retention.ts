@@ -1,3 +1,24 @@
+// Keeping the hot event log bounded without losing history. Events are the
+// highest-volume thing DevLog stores (one per tool call), so the in-memory /
+// on-disk hot store is capped — but a cap that silently drops work would defeat
+// the whole point of a dev log. So eviction here always means "move to the
+// monthly archive" (event-archive.ts), never "delete".
+//
+// Two caps, deliberately ordered: the PER-PROJECT cap runs first so the project
+// Claude is hammering right now can't evict a quiet project's whole history
+// from a shared global ring; MAX_EVENTS_LOG is only a global memory safety net
+// behind it.
+//
+// Age-based pruning is three-tiered — hot (0-7d) keeps full diffs, warm (7-30d)
+// strips content down to path + line counts, cold (30d+) leaves the hot store
+// entirely and is handed back to the caller to archive first. The one exception
+// is the release window: events between a project's two most recent releases
+// keep full content while they stay in that window, because the current release
+// page renders its diffs from them.
+//
+// Pure functions over arrays (the caller owns loading/saving/archiving), which
+// is what makes the cap arithmetic testable without a store.
+
 import { archiveEvents } from "./event-archive";
 import type { DevLogData, EventEntry } from "./types";
 

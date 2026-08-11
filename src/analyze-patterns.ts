@@ -44,13 +44,46 @@ export const CONTENT_PATTERNS: PatternRule[] = [
   { label: "WASAPI", re: /WASAPI|IAudioClient|IAudioCaptureClient|IAudioRenderClient/i },
   { label: "Opus", re: /opus_encode|opus_decode|OpusEncoder|OpusDecoder/i },
   { label: "E2E Encryption", re: /libsodium|crypto_box|crypto_secretbox|sodium_init|crypto_aead/i },
-  { label: "UDP/Networking", re: /\bSOCKET\b|WSAStartup|sendto\s*\(|recvfrom\s*\(|SOCK_DGRAM|\bUDP\b(?!\/)|(?<!web|Web)socket\s*\(/i },
-  { label: "STUN/NAT", re: /STUN|stun_|hole_punch|nat_traversal/i },
-  { label: "FEC", re: /FEC|fec_encode|fec_decode|forward_error/i },
+  // Case-SENSITIVE on purpose (#794): `SOCKET`/`UDP` are C macros, while the
+  // lowercase words are ordinary English that shows up in any comment about
+  // WebSockets — `/i` here labelled a Bun/TS project as UDP networking.
+  { label: "UDP/Networking", re: /\bSOCKET\b|WSAStartup|sendto\s*\(|recvfrom\s*\(|SOCK_DGRAM|\bUDP\b(?!\/)|(?<!web|Web)socket\s*\(/ },
+  { label: "STUN/NAT", re: /\bSTUN\b|stun_|hole_punch|nat_traversal/i },
+  // `\bFEC\b`, case-sensitive: the old `/FEC/i` matched the middle of "affect",
+  // "effect", "perfect" — 35 files in this repo alone (#794).
+  { label: "FEC", re: /\bFEC\b|fec_encode|fec_decode|forward_error/ },
   { label: "IOCP", re: /IOCP|CreateIoCompletionPort|GetQueuedCompletionStatus/i },
   { label: "CUDA", re: /cuda|__global__|cudaMalloc|cudaMemcpy|cublas|cusparse/i },
-  { label: "Qt", re: /Qt\w+|QApplication|QWidget|QMainWindow|Q_OBJECT/i },
-  { label: "CMake", re: /CMakeLists|cmake_minimum_required|find_package|target_link/i },
+  // Qt class names are CamelCase and case-sensitive; `/Qt\w+/i` matched any
+  // identifier containing "qt" (`qTokens` → "Qt" project, #794).
+  { label: "Qt", re: /\bQt[A-Z]\w*|\bQApplication\b|\bQWidget\b|\bQMainWindow\b|\bQ_OBJECT\b/ },
+  // Call forms, not bare tokens: `find_package` / `target_link` as plain words
+  // appear in any code that merely KNOWS about CMake.
+  { label: "CMake", re: /cmake_minimum_required\s*\(|find_package\s*\(|target_link_libraries\s*\(|CMakeLists\.txt["'`\s)]/i },
   { label: "OpenGL", re: /OpenGL|glfw|GLEW|glBindBuffer|glDraw/i },
   { label: "Vulkan", re: /Vulkan|vkCreate|VkInstance|VkDevice/i },
 ];
+
+/**
+ * Which per-file patterns may be claimed for the PROJECT as a whole (#794).
+ *
+ * A single match is a coincidence as often as a fact — one identifier, one
+ * comment, one string literal naming a technology the project doesn't use. So
+ * a project-level claim needs corroboration from a second file. The evidence
+ * still exists at file level (the stack map's file rows keep it); this only
+ * governs the headline list, where a wrong label reads as an identity.
+ *
+ * Small projects are exempt: at three files or fewer there IS no second file
+ * to corroborate with, and demanding one would hide every real pattern.
+ *
+ * @param perFile  each analyzed file's detected labels
+ * @param fileCount total analyzed files
+ */
+export function corroboratedPatterns(perFile: string[][], fileCount: number): string[] {
+  const seen = new Map<string, number>();
+  for (const labels of perFile) {
+    for (const label of new Set(labels)) seen.set(label, (seen.get(label) ?? 0) + 1);
+  }
+  const min = fileCount <= 3 ? 1 : 2;
+  return [...seen.entries()].filter(([, n]) => n >= min).map(([label]) => label);
+}

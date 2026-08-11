@@ -1,3 +1,20 @@
+// The read side of DEVLOG_STACK.md. export.ts WRITES that file (markdown tables:
+// file map, functions, relations, entry points, APIs, data types); this parses it
+// back into typed objects for the dashboard's interactive stack-map page, which
+// needs structure rather than prose.
+//
+// Why re-parse instead of serving the analysis directly: the .md is the artifact
+// that lives in the user's repo and may carry MANUAL edits (generateStackMd is
+// generate-once by default), so it — not a fresh analysis run — is the source of
+// truth for what the map shows.
+//
+// Consequence to respect: the section headings are matched by their Arabic
+// titles, so renaming a heading in export.ts silently empties the corresponding
+// section here. The two files must change together.
+//
+// Runnable standalone for debugging: `bun src/stack-parser.ts [path]` prints the
+// parsed JSON.
+
 export interface StackFile {
   path: string;
   importance: number;

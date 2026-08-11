@@ -28,6 +28,8 @@ import {
 } from "./data";
 import { closedItems } from "./closed-items";
 import { retroCorpus, fragileFiles, regressionGap, type FragileFile, type RetroItem, type TestGap } from "./retro";
+import { ruleStats, ruleEffect, type RuleStat, type RuleEffectRow } from "./rule-effect";
+import type { RuleTelemetryRecord } from "./rule-telemetry";
 import { backfillCorpus } from "./features";
 import { isRealVersion, parseVersion, parseVersionMarker } from "./release-html";
 
@@ -147,6 +149,9 @@ export interface StudyAggregates {
   plans: { total: number; steps: number; closedSteps: number };
   problems: { reports: number; reopens: number; fragile: FragileFile[]; testGap: TestGap };
   features: { declared: number; backfilled: number; uncoveredReleases: number };
+  /** #787: gate fire/ack/pass counters + adoption-vs-report-rate correlation.
+   *  Empty arrays until telemetry accumulates — absence of data, not health. */
+  rules: { stats: RuleStat[]; effects: RuleEffectRow[] };
 }
 
 export interface StudyDelta {
@@ -224,7 +229,26 @@ function buildBehavior(tags: TagEntry[]): BehaviorProfile {
 const closureKind = (kind: string): string | null =>
   kind === "todo" || kind === "bug found" ? kind : kind.startsWith("security") ? "security" : null;
 
-function buildAggregates(data: DevLogData, project: string, now: number): StudyAggregates {
+/** Monthly trend: opened work items / closed items / releases per month, over
+ *  the whole history. Compact regardless of project age (3 years = 36 rows) —
+ *  the one aggregate two audiences share: the study corpus embeds it and
+ *  GET /api/trends serves it alone for the stats-popup chart (#788). */
+export function monthlyTrend(data: DevLogData, project: string): MonthRow[] {
+  const tags = data.tags.filter(t => t.project === project);
+  const openerTags = new Set(Object.keys(CLOSER_FOR));
+  const monthMap = new Map<string, MonthRow>();
+  const row = (m: string) => {
+    let r = monthMap.get(m);
+    if (!r) { r = { month: m, opened: 0, closed: 0, released: 0 }; monthMap.set(m, r); }
+    return r;
+  };
+  for (const t of tags) if (openerTags.has(t.tag)) row(t.timestamp.slice(0, 7)).opened++;
+  for (const c of closedItems(data, project)) if (c.closedAt) row(c.closedAt.slice(0, 7)).closed++;
+  for (const t of tags) if (t.tag === "release" && isRealVersion(t.content)) row(t.timestamp.slice(0, 7)).released++;
+  return [...monthMap.values()].sort((a, b) => a.month.localeCompare(b.month));
+}
+
+function buildAggregates(data: DevLogData, project: string, now: number, telemetry: RuleTelemetryRecord[]): StudyAggregates {
   const tags = data.tags.filter(t => t.project === project);
   const closed = closedItems(data, project);
   const openerTags = new Set(Object.keys(CLOSER_FOR));
@@ -241,20 +265,10 @@ function buildAggregates(data: DevLogData, project: string, now: number): StudyA
     if (!lastTagAt || t.timestamp > lastTagAt) lastTagAt = t.timestamp;
   }
 
-  // Monthly trend: opened work items / closed items / releases per month.
-  const monthMap = new Map<string, MonthRow>();
-  const row = (m: string) => {
-    let r = monthMap.get(m);
-    if (!r) { r = { month: m, opened: 0, closed: 0, released: 0 }; monthMap.set(m, r); }
-    return r;
-  };
-  for (const t of openers) row(t.timestamp.slice(0, 7)).opened++;
-  for (const c of closed) if (c.closedAt) row(c.closedAt.slice(0, 7)).closed++;
+  const monthly = monthlyTrend(data, project);
   const releaseTags = tags
     .filter(t => t.tag === "release" && isRealVersion(t.content))
     .sort((a, b) => +new Date(a.timestamp) - +new Date(b.timestamp));
-  for (const r of releaseTags) row(r.timestamp.slice(0, 7)).released++;
-  const monthly = [...monthMap.values()].sort((a, b) => a.month.localeCompare(b.month));
 
   // Time-to-close per kind (closed items with both endpoints).
   const byKind = new Map<string, number[]>();
@@ -343,10 +357,17 @@ function buildAggregates(data: DevLogData, project: string, now: number): StudyA
     uncoveredReleases: backfillCorpus(data, project).uncovered.length,
   };
 
+  // #787: counters are project-scoped (a fire happened HERE); adoption rows are
+  // global-catalog events, each measured against THIS project's reports.
+  const rules = {
+    stats: ruleStats(telemetry.filter(r => !r.project || r.project === project)),
+    effects: ruleEffect(telemetry, retro, now),
+  };
+
   return {
     ...(firstTagAt ? { firstTagAt } : {}), ...(lastTagAt ? { lastTagAt } : {}),
     totalTags: tags.length, taggedSessions: sessions.size,
-    byType, monthly, closure, openNow, behavior: buildBehavior(tags), releases, plans, problems, features,
+    byType, monthly, closure, openNow, behavior: buildBehavior(tags), releases, plans, problems, features, rules,
   };
 }
 
@@ -399,8 +420,10 @@ function buildDelta(data: DevLogData, project: string, fromMs: number): StudyDel
 
 // ── Entry point ──────────────────────────────────────────────────────────────
 
-/** The full study corpus for `project`. Pure; `now` injectable for tests. */
-export function studyCorpus(data: DevLogData, project: string, now = Date.now(), prevDoc: PrevStudyDoc | null = null): StudyCorpus {
+/** The full study corpus for `project`. Pure; `now` injectable for tests.
+ *  `telemetry` (#787) is loaded by the route — kept a parameter so this stays
+ *  filesystem-free. */
+export function studyCorpus(data: DevLogData, project: string, now = Date.now(), prevDoc: PrevStudyDoc | null = null, telemetry: RuleTelemetryRecord[] = []): StudyCorpus {
   const tags = data.tags.filter(t => t.project === project);
   // Watermark: newest of the two sources. Tag rows cover the pre-change era
   // (studies that WERE stored as doc:report tags); the doc-store entry covers
@@ -424,7 +447,7 @@ export function studyCorpus(data: DevLogData, project: string, now = Date.now(),
   };
   return {
     window,
-    aggregates: buildAggregates(data, project, now),
+    aggregates: buildAggregates(data, project, now, telemetry),
     delta: buildDelta(data, project, prev ? +new Date(prev.at) : 0),
   };
 }

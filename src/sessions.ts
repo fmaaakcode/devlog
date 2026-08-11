@@ -1,3 +1,22 @@
+// Who is running RIGHT NOW: the live-process side of DevLog, as opposed to the
+// recorded history everything else deals with. It reads Claude Code's own
+// session files (~/.claude/sessions/*.json), checks which pids are actually
+// alive, and maps each session to the process subtree it spawned — that is what
+// the dashboard's process panel renders and what killProcess() acts on.
+//
+// Windows-only by necessity: the process snapshot comes from a PowerShell/WMI
+// query, so results are ttlCached (a snapshot per request would be far too
+// expensive), the shell's own helper processes are filtered out (SELF_NAMES) so
+// DevLog never lists — or kills — the machinery it used to look, and on
+// macOS/Linux it returns empty instead of spawning a `powershell` that isn't
+// there on every poll.
+//
+// The tree math (buildDescendantTree, pruneDescendantsAgainst) is pure and
+// exported for tests, separate from the I/O around it. Note the deliberate
+// asymmetry in pruning: a descendant whose SESSION disappeared but whose pid is
+// still alive is KEPT and marked `orphaned` rather than forgotten — a leaked
+// process is exactly what the user needs to see.
+
 import { readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";

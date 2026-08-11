@@ -1,10 +1,35 @@
+// Reading a codebase the way a newcomer would: analyzeProject() walks a
+// project's source files and returns a structural picture — files with their
+// exports and imports, functions with what they call, entry points, HTTP
+// routes, data types, threads/IPC, security-relevant spots — plus an IMPORTANCE
+// score per file and per function from PageRank over the import/call graph.
+// That ranking is the point: it turns "300 files" into "these ten matter", and
+// it is what makes DEVLOG_STACK.md (export.ts) and the dashboard's stack map
+// readable instead of exhaustive.
+//
+// Language-agnostic by construction: nothing here parses a specific language.
+// Tokenization + symbol extraction live in tokenizer.ts / symbols.ts, the
+// content signatures live in analyze-patterns.ts, and the ranking in
+// pagerank.ts — this file is the pipeline that composes them.
+//
+// It is a HEURISTICS engine, not a compiler, and the output must be read that
+// way: pattern detection matches text signatures, so a match is evidence, not
+// proof (a hit on a networking or UI signature can misdescribe a project that
+// merely mentions it). Prefer widening the evidence over trusting one match.
+//
+// SKIP_DIRS deliberately excludes tests, build output and vendored code — the
+// map charts PRODUCTION code — with one calibrated exception documented at the
+// set itself: `lib` is build output only under a JS/TS root, while for
+// Dart/Flutter and Ruby it holds all the source.
+
 import { readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { pageRankFiles, pageRankFunctions } from "./pagerank";
 import { join, extname, relative } from "node:path";
 import { extractSymbols, type Symbol as CodeSymbol } from "./symbols";
 import { normalizeSlashes } from "./path-utils";
-import { CONTENT_PATTERNS } from "./analyze-patterns";
+import { CONTENT_PATTERNS, corroboratedPatterns } from "./analyze-patterns";
+import { describeFile, filePurposeFromHeader } from "./file-purpose";
 import { softFail } from "./soft-fail";
 
 // "test"/"tests" are skipped DELIBERATELY: the stack map charts production
@@ -365,58 +390,6 @@ function extractRoutes(content: string): { method: string; path: string }[] {
   return routes;
 }
 
-// Smart file description
-function describeFile(fa: FileAnalysis): string {
-  const fullName = fa.path.split("/").pop() || "";
-  const ext = fullName.split(".").pop()?.toLowerCase() || "";
-  const name = fullName.replace(/\.\w+$/, "");
-
-  // Non-code files
-  if (ext === "css") return `أنماط CSS${fa.lines > 500 ? ` (${fa.lines} سطر)` : ""}`;
-  if (ext === "html" || ext === "htm") return `صفحة HTML${fa.lines > 100 ? " (تطبيق)" : ""}`;
-  const nameHints: Record<string, string> = {
-    server: "الراوتر الرئيسي", router: "الراوتر", data: "إدارة البيانات (تحميل/حفظ)",
-    broadcast: "بث WebSocket للعملاء", scanner: "مسح المشروع وكشف اللغة والمكتبات",
-    hooks: "تحليل أحداث Claude Code hooks", export: "تصدير التقارير (status, changelog, stack)",
-    tree: "بناء شجرة الملفات مع .devignore", plans: "تحليل خطط Markdown",
-    types: "تعريف الأنواع (interfaces)", analyze: "تحليل عميق للكود (imports, exports, routes)",
-    index: "نقطة الدخول", main: "نقطة الدخول", app: "التطبيق الرئيسي",
-    config: "الإعدادات", utils: "دوال مساعدة", helpers: "دوال مساعدة",
-    middleware: "middleware", auth: "المصادقة والصلاحيات",
-    db: "اتصال قاعدة البيانات", database: "اتصال قاعدة البيانات",
-    model: "نماذج البيانات", models: "نماذج البيانات", schema: "مخطط البيانات",
-    test: "اختبارات", spec: "اختبارات",
-    widgets: "نظام الودجتات", widget: "ودجت",
-    style: "الأنماط (CSS)", styles: "الأنماط (CSS)",
-    theme: "نظام الثيمات", themes: "نظام الثيمات",
-    layout: "التخطيط والتوزيع",
-    state: "إدارة الحالة", store: "إدارة الحالة",
-    api: "طبقة الاتصال بالـ API", service: "طبقة الخدمات",
-    worker: "عملية خلفية (Worker)", logger: "نظام التسجيل",
-    cache: "نظام التخزين المؤقت", queue: "نظام الطوابير",
-    usage: "معلومات الاستخدام", cli: "واجهة سطر الأوامر",
-  };
-  const hint = nameHints[name.toLowerCase()];
-  if (hint) {
-    const extras: string[] = [];
-    if (fa.routes.length > 0) extras.push(`${fa.routes.length} endpoint`);
-    if (fa.functions.length > 0) extras.push(`${fa.functions.length} دالة`);
-    return extras.length > 0 ? `${hint} (${extras.join(", ")})` : hint;
-  }
-  // Context-aware fallback
-  const parts: string[] = [];
-  if (fa.context === "client") parts.push("واجهة مستخدم");
-  if (fa.routes.length > 0) parts.push(`${fa.routes.length} endpoint`);
-  if (fa.context !== "client" && fa.patterns.includes("HTTP Server")) parts.push("سيرفر");
-  if (fa.patterns.includes("WebSocket")) parts.push("WebSocket");
-  if (fa.patterns.includes("Database")) parts.push("قاعدة بيانات");
-  if (fa.patterns.includes("Auth")) parts.push("مصادقة");
-  if (fa.patterns.includes("DOM") && !parts.includes("واجهة مستخدم")) parts.push("واجهة مستخدم");
-  if (parts.length > 0) return parts.join(" + ");
-  if (fa.exports.length > 0) return fa.exports.slice(0, 3).join(", ");
-  return "—";
-}
-
 // Detect threads/workers from code
 function extractThreads(content: string, filePath: string): ThreadInfo[] {
   const threads: ThreadInfo[] = [];
@@ -740,7 +713,7 @@ export async function analyzeProject(projectPath: string): Promise<ProjectAnalys
   const files: FileAnalysis[] = [];
   const allRoutes: { method: string; path: string; file: string }[] = [];
   const graph: Record<string, string[]> = {};
-  const projectPatterns = new Set<string>();
+  const patternHits: string[][] = [];   // per file — corroborated below (#794)
   const callGraphEntries: { caller: string; callee: string; file: string }[] = [];
   const allThreads: ThreadInfo[] = [];
   const allIPC: IPCMessage[] = [];
@@ -801,7 +774,7 @@ export async function analyzeProject(projectPath: string): Promise<ProjectAnalys
 
     // Skip pattern detection for files that contain detection code (false
     // positives) — self-scan only (R9 F5, see isSelfScan above).
-    const isDetector = isSelfScan && (rel.includes("analyze") || rel.includes("tokenizer") || rel.includes("symbols") || rel.includes("export"));
+    const isDetector = isSelfScan && /analyze|tokenizer|symbols|export|scanner|manifest/.test(rel);   // + scanner/manifest: they name CMakeLists to DETECT it (#794)
     const patterns = isDetector ? [] : detectPatterns(content, ext, ctx);
     const routes = isDetector ? [] : extractRoutes(content);
 
@@ -839,7 +812,7 @@ export async function analyzeProject(projectPath: string): Promise<ProjectAnalys
       }
 
     totalFunctions += functions.length;
-    patterns.filter(p => p !== "DOM" && p !== "Canvas").forEach(p => { projectPatterns.add(p); });
+    patternHits.push(patterns.filter(p => p !== "DOM" && p !== "Canvas"));
 
     // Extract threads, IPC, data types, security (skip detector files)
     if (!isDetector) {
@@ -867,7 +840,8 @@ export async function analyzeProject(projectPath: string): Promise<ProjectAnalys
       context: ctx,
       description: "",
     };
-    fa.description = describeFile(fa);
+    // What the file says about itself wins; the heuristic only fills silence.
+    fa.description = filePurposeFromHeader(content) || describeFile(fa);
     files.push(fa);
     graph[rel] = imports;
     for (const r of routes) allRoutes.push({ ...r, file: rel });
@@ -920,7 +894,7 @@ export async function analyzeProject(projectPath: string): Promise<ProjectAnalys
     graph,
     callGraph: callGraphEntries,
     apiRoutes: allRoutes,
-    patterns: [...projectPatterns],
+    patterns: corroboratedPatterns(patternHits, files.length),
     fileRanks,
     fnRanks,
     threads: allThreads,

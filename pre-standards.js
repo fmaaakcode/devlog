@@ -123,6 +123,12 @@ try {
     latestVersion: (lang) => latestToolchain(lang).then(t => t.version),
   });
   if (outcome) {
+    // Rule telemetry (#787): report the fire — the block happens regardless.
+    try {
+      const { postRuleTelemetry } = await import("./src/telemetry-client.ts");
+      await postRuleTelemetry(`http://127.0.0.1:${parseInt(process.env.DEVLOG_PORT || "7777", 10)}`, cwd,
+        [{ gate: "write", action: "fire", rule: outcome.key, file: filePath }]);
+    } catch { /* telemetry never delays or breaks the gate */ }
     process.stderr.write(`${[
       "════════ DevLog Standards Gate ════════",
       outcome.title,
