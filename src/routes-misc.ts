@@ -6,7 +6,7 @@
 // machines). All shared imports, so makeMiscRoutes() takes no injected
 // server state. Spread into server.ts's routeDefs.
 
-import { loadData, withData, cleanupMissingProjects, DATA_DIR, PORT, PLUGIN_MODE, DEFAULT_INJECTION_CONFIG } from "./data";
+import { loadData, withData, cleanupMissingProjects, DATA_DIR, PORT, PLUGIN_MODE } from "./data";
 import { buildExportBundle, validateBundle, applyImportBundle, mergeArchiveBundle, type TransferBundle } from "./project-transfer";
 import { backupStores } from "./maintenance";
 import { broadcast } from "./broadcast";
@@ -96,7 +96,7 @@ export function makeMiscRoutes(): Record<string, unknown> {
           data.projects = {}; data.events = []; data.tags = []; data.plans = [];
           data.worklog = []; data.injections = []; data.descendants = [];
           data.projectInjectionConfigs = {};
-          data.injectionConfig = { ...DEFAULT_INJECTION_CONFIG };
+          data.injectionConfig = {};   // no deltas = every setting on its default (#810)
           data.rejections = []; data.migrations = {};
         });
         return Response.json({ ok: true });

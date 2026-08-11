@@ -283,7 +283,11 @@ export interface DevLogData {
   plans: PlanEntry[];
   worklog: WorklogEntry[];
   injections: InjectionEntry[];
-  injectionConfig: InjectionConfig;
+  /** Global injection settings — stored as DELTAS from DEFAULT_INJECTION_CONFIG
+   *  (#810), never the merged blob: an absent key follows the code default and
+   *  so inherits future changes to it. Resolve with getEffectiveConfig, which
+   *  layers DEFAULT < this < per-project override. */
+  injectionConfig: Partial<InjectionConfig>;
   projectInjectionConfigs: Record<string, Partial<InjectionConfig>>;
   descendants: DescendantProcess[];
   // One-time migration flags. Each migration runs once on startup, then

@@ -6,7 +6,7 @@
 // cap — so they're injected via `deps` (the routes-static pattern) rather than
 // moved. Everything else is a direct import. Spread into server.ts's routeDefs.
 
-import { loadData, withData } from "./data";
+import { loadData, withData, DEFAULT_INJECTION_CONFIG } from "./data";
 import { broadcast } from "./broadcast";
 import { resolveProjectFor } from "./project-resolve";
 import { getEffectiveConfig, buildContext } from "./inject";
@@ -122,7 +122,15 @@ export function makeInjectRoutes({ doInject, MAX_INJECTIONS_LOG }: InjectRouteDe
             override: data.projectInjectionConfigs[project] || {},
           });
         }
-        return Response.json({ global: data.injectionConfig, overrides: data.projectInjectionConfigs });
+        // The dashboard renders a toggle per key and reads a missing key as OFF,
+        // so the global tab is served the RESOLVED config (defaults + deltas),
+        // not the sparse stored one (#810). `globalOverrides` exposes what the
+        // user actually pinned, for callers that need to tell them apart.
+        return Response.json({
+          global: { ...DEFAULT_INJECTION_CONFIG, ...data.injectionConfig },
+          globalOverrides: data.injectionConfig,
+          overrides: data.projectInjectionConfigs,
+        });
       },
       async POST(req: ApiReq) {
         try {

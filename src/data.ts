@@ -58,6 +58,35 @@ export const DEFAULT_INJECTION_CONFIG: InjectionConfig = {
   standardsEnforce: true, // standards enforcement ON by default; opt out per project
 };
 
+/**
+ * Reduce a stored global injection config to the keys that actually DIFFER from
+ * the code defaults (#810).
+ *
+ * The store used to hold the fully-merged blob — every key, whether or not the
+ * user ever touched it. Because `getEffectiveConfig` layers DEFAULT < stored <
+ * per-project, a key frozen in the store outranks the default forever: flipping
+ * a default in code then reached nobody who already had a config on disk. That
+ * is how `preToolUseRead` stayed off everywhere after its default became `true`.
+ *
+ * Persisting only the deltas restores the intended precedence: an untouched key
+ * is ABSENT, so it follows the default and picks up future changes; a key the
+ * user deliberately set still differs, so it survives and keeps winning. Unknown
+ * keys (renamed or removed settings) are dropped rather than carried forever.
+ *
+ * Applied on both load and save, so the invariant holds no matter which write
+ * path ran — and an existing full-blob store is normalized the first time it is
+ * read, not only after the next dashboard toggle.
+ */
+export function injectionOverrides(cfg: Partial<InjectionConfig> | undefined): Partial<InjectionConfig> {
+  const out: Partial<InjectionConfig> = {};
+  for (const key of Object.keys(DEFAULT_INJECTION_CONFIG) as (keyof InjectionConfig)[]) {
+    const v = cfg?.[key];
+    if (v === undefined) continue;
+    if (v !== DEFAULT_INJECTION_CONFIG[key]) out[key] = v;
+  }
+  return out;
+}
+
 // Base dir for data + static files. In a compiled single-file binary,
 // import.meta.dir points into Bun's virtual fs ("$bunfs" / "~BUN"), which is
 // read-only — so data must live next to the executable instead. In dev it is
@@ -164,7 +193,7 @@ async function readFromDisk(): Promise<DevLogData> {
       plans,
       worklog: meta.worklog || [],
       injections: meta.injections || [],
-      injectionConfig: { ...DEFAULT_INJECTION_CONFIG, ...(meta.injectionConfig || {}) },
+      injectionConfig: injectionOverrides(meta.injectionConfig),
       projectInjectionConfigs: meta.projectInjectionConfigs || {},
       descendants: meta.descendants || [],
       rejections: meta.rejections || [],
@@ -183,7 +212,7 @@ async function readFromDisk(): Promise<DevLogData> {
       plans: raw.plans || [],
       worklog: raw.worklog || [],
       injections: raw.injections || [],
-      injectionConfig: { ...DEFAULT_INJECTION_CONFIG, ...(raw.injectionConfig || {}) },
+      injectionConfig: injectionOverrides(raw.injectionConfig),
       projectInjectionConfigs: raw.projectInjectionConfigs || {},
       descendants: raw.descendants || [],
       rejections: raw.rejections || [],
@@ -195,7 +224,7 @@ async function readFromDisk(): Promise<DevLogData> {
   }
   return {
     projects: {}, events: [], tags: [], plans: [], worklog: [],
-    injections: [], injectionConfig: { ...DEFAULT_INJECTION_CONFIG }, projectInjectionConfigs: {},
+    injections: [], injectionConfig: {}, projectInjectionConfigs: {},
     descendants: [],
     rejections: [],
     migrations: {},
@@ -260,7 +289,7 @@ async function writeAllSplit(data: DevLogData) {
     meta:     JSON.stringify({
       worklog: data.worklog,
       injections: data.injections,
-      injectionConfig: data.injectionConfig,
+      injectionConfig: injectionOverrides(data.injectionConfig),
       projectInjectionConfigs: data.projectInjectionConfigs,
       descendants: data.descendants,
       rejections: data.rejections || [], // was dropped on every write → lost on reload (#32)

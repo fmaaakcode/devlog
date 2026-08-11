@@ -3,7 +3,10 @@
 // per-project counter), and backfillNums (retro-numbering of open items).
 
 import { describe, test, expect } from "bun:test";
-import { normalizeTagContent, assignNum, backfillNums, openTodos, openBugs, openSecurity } from "../src/data";
+import {
+  normalizeTagContent, assignNum, backfillNums, openTodos, openBugs, openSecurity,
+  isMalformedPkgDescriptor, cleanupMalformedSecurityTags, cleanupMalformedOutdatedTags,
+} from "../src/data";
 import { withLockRetry } from "../src/fs-retry";
 import type { DevLogData, TagEntry, PlanEntry, ProjectProfile } from "../src/types";
 
@@ -197,5 +200,105 @@ describe("withLockRetry — transient Windows lock retry (#781)", () => {
     const bareOp = async () => { bare++; throw new Error("plain failure"); };
     await expect(withLockRetry(bareOp, 6, 1)).rejects.toThrow("plain failure");
     expect(bare).toBe(1);
+  });
+});
+
+// The scanner-artifact detector and the two cleanups that consume it. These are
+// pure (data in → count out) but were only ever exercised through the migration
+// path, so the branches below — every BAD_TOKEN position, the no-`@` fallback
+// shape, and the `security:own`/`security:dep` exemption — went unverified.
+describe("isMalformedPkgDescriptor", () => {
+  test("a bad token in the NAME position is malformed", () => {
+    for (const name of ["undefined", "null", "unknown", "system", "bundled"]) {
+      expect(isMalformedPkgDescriptor(`${name}@1.2.3 — GHSA-x`)).toBe(true);
+    }
+  });
+
+  test("a bad token in the VERSION position is malformed", () => {
+    for (const v of ["undefined", "null", "unknown"]) {
+      expect(isMalformedPkgDescriptor(`astro@${v} — GHSA-x`)).toBe(true);
+    }
+  });
+
+  test("an empty version is malformed (the empty string is a bad token)", () => {
+    expect(isMalformedPkgDescriptor("astro@ — GHSA-x")).toBe(true);
+  });
+
+  test("a `vendored-` prefix is malformed on either side", () => {
+    // The regression the v2 re-run existed for: the version capture must keep
+    // its hyphen, or `vendored-unknown` truncates to `vendored` and slips past.
+    expect(isMalformedPkgDescriptor("rnnoise@vendored-unknown — احدث: 0.1.8")).toBe(true);
+    expect(isMalformedPkgDescriptor("vendored-rnnoise@0.1.8 — احدث: 0.2.0")).toBe(true);
+  });
+
+  test("the no-`@` fallback needs a bad token on BOTH sides", () => {
+    expect(isMalformedPkgDescriptor("undefined  — undefined")).toBe(true);
+    expect(isMalformedPkgDescriptor("undefined — astro")).toBe(false);
+    expect(isMalformedPkgDescriptor("astro — undefined")).toBe(false);
+  });
+
+  test("a real advisory and ordinary prose are both left alone", () => {
+    expect(isMalformedPkgDescriptor("astro@5.12.0 — GHSA-qqqq: SSRF in the image endpoint")).toBe(false);
+    expect(isMalformedPkgDescriptor("just some prose with no descriptor")).toBe(false);
+    expect(isMalformedPkgDescriptor("")).toBe(false);
+  });
+});
+
+describe("cleanupMalformedSecurityTags / cleanupMalformedOutdatedTags", () => {
+  const malformedSec = () => [
+    tag("security", "undefined@undefined — GHSA-1", { num: 1 }),
+    tag("security", "rnnoise@vendored-unknown — GHSA-2", { num: 2 }),
+    tag("security", "astro@5.12.0 — GHSA-real", { num: 3 }),
+    tag("security:own", "undefined@undefined — hand written", { num: 4 }),
+    tag("security:dep", "null@null — hand written", { num: 5 }),
+  ];
+
+  test("splices out phantom `security` tags and reports the count", () => {
+    const data = baseData(malformedSec());
+    expect(cleanupMalformedSecurityTags(data)).toBe(2);
+    expect(data.tags.map(t => t.num)).toEqual([3, 4, 5]);
+  });
+
+  test("user-authored security:own / security:dep are never touched", () => {
+    const data = baseData(malformedSec());
+    cleanupMalformedSecurityTags(data);
+    expect(data.tags.filter(t => t.tag.startsWith("security:")).length).toBe(2);
+  });
+
+  test("it is idempotent — a second run removes nothing", () => {
+    const data = baseData(malformedSec());
+    expect(cleanupMalformedSecurityTags(data)).toBe(2);
+    expect(data.migrations?.cleanup_malformed_security_v1).toBe(true);
+    expect(data.migrations?.cleanup_malformed_security_v2).toBe(true);
+    data.tags.push(tag("security", "null@null — GHSA-3", { num: 6 }));
+    expect(cleanupMalformedSecurityTags(data)).toBe(0);
+    expect(data.tags.some(t => t.num === 6)).toBe(true);
+  });
+
+  test("a data blob with no `migrations` object gets one", () => {
+    const data = baseData(malformedSec());
+    delete (data as { migrations?: unknown }).migrations;
+    expect(cleanupMalformedSecurityTags(data)).toBe(2);
+    expect(data.migrations?.cleanup_malformed_security_v2).toBe(true);
+  });
+
+  test("the outdated cleanup mirrors it and stays in its own lane", () => {
+    const data = baseData([
+      tag("outdated", "rnnoise@vendored-unknown — احدث: 0.1.8", { num: 1 }),
+      tag("outdated", "astro@5.11.0 — احدث: 5.12.0", { num: 2 }),
+      tag("security", "undefined@undefined — GHSA-1", { num: 3 }),
+    ]);
+    expect(cleanupMalformedOutdatedTags(data)).toBe(1);
+    expect(data.tags.map(t => t.num)).toEqual([2, 3]);   // the malformed SECURITY tag survives
+    expect(data.migrations?.cleanup_malformed_outdated_v1).toBe(true);
+    expect(cleanupMalformedOutdatedTags(data)).toBe(0);
+  });
+
+  test("a clean store loses nothing but is still stamped", () => {
+    const data = baseData([tag("security", "astro@5.12.0 — GHSA-real", { num: 1 })]);
+    expect(cleanupMalformedSecurityTags(data)).toBe(0);
+    expect(cleanupMalformedOutdatedTags(data)).toBe(0);
+    expect(data.tags.length).toBe(1);
+    expect(data.migrations?.cleanup_malformed_outdated_v2).toBe(true);
   });
 });
