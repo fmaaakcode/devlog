@@ -1,76 +1,79 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.5.5/schema.json",
-  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
-  "files": {
-    "includes": [
-      "**",
-      "!audits",
-      "!coverage",
-      "!docs",
-      "!fable",
-      "!old",
-      "!bun.lock"
-    ]
-  },
-  "linter": {
-    "enabled": true,
-    "rules": {
-      "preset": "recommended",
-      "suspicious": {
-        "noEmptyBlockStatements": "error",
-        "noExplicitAny": "error"
-      },
-      "style": {
-        "noNonNullAssertion": "error"
-      }
-    }
-  },
-  "formatter": { "enabled": false },
-  "assist": { "enabled": false },
-  "overrides": [
-    {
-      "includes": ["assets/**"],
-      "linter": {
-        "rules": {
-          "correctness": { "noUnusedVariables": "off" },
-          "style": { "useConst": "off" }
-        }
-      }
-    },
-    {
-      "includes": ["assets/**/*.css"],
-      "linter": {
-        "rules": {
-          "style": { "noDescendingSpecificity": "off" },
-          "complexity": { "noImportantStyles": "off" }
-        }
-      }
-    },
-    {
-      "includes": ["**/*.html"],
-      "linter": {
-        "rules": {
-          "style": { "noDescendingSpecificity": "off" },
-          "a11y": { "noSvgWithoutTitle": "off" }
-        }
-      }
-    },
-    {
-      "includes": ["test/**"],
-      "linter": {
-        "rules": {
-          "suspicious": { "noExplicitAny": "off", "noTemplateCurlyInString": "off" },
-          "style": { "noNonNullAssertion": "off" }
-        }
-      }
-    },
-    {
-      "includes": ["parse-tags.ts"],
-      "linter": {
-        "rules": {
-          "suspicious": { "noExplicitAny": "off" }
-        }
-      }
-    }
-  ]
+	"$schema": "https://biomejs.dev/schemas/2.5.6/schema.json",
+	"vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+	"files": {
+		"includes": [
+			"**",
+			"!audits",
+			"!coverage",
+			"!docs",
+			"!fable",
+			"!old",
+			"!bun.lock"
+		]
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"preset": "recommended",
+			"suspicious": {
+				"noEmptyBlockStatements": "error",
+				"noExplicitAny": "error"
+			},
+			"style": {
+				"noNonNullAssertion": "error"
+			}
+		}
+	},
+	"formatter": { "enabled": false },
+	"assist": { "enabled": false },
+	"overrides": [
+		{
+			"includes": ["assets/**"],
+			"linter": {
+				"rules": {
+					"correctness": { "noUnusedVariables": "off" },
+					"style": { "useConst": "off" }
+				}
+			}
+		},
+		{
+			"includes": ["assets/**/*.css"],
+			"linter": {
+				"rules": {
+					"style": { "noDescendingSpecificity": "off" },
+					"complexity": { "noImportantStyles": "off" }
+				}
+			}
+		},
+		{
+			"includes": ["**/*.html"],
+			"linter": {
+				"rules": {
+					"style": { "noDescendingSpecificity": "off" },
+					"a11y": { "noSvgWithoutTitle": "off" }
+				}
+			}
+		},
+		{
+			"includes": ["test/**"],
+			"linter": {
+				"rules": {
+					"suspicious": {
+						"noExplicitAny": "off",
+						"noTemplateCurlyInString": "off"
+					},
+					"style": { "noNonNullAssertion": "off" }
+				}
+			}
+		},
+		{
+			"includes": ["parse-tags.ts"],
+			"linter": {
+				"rules": {
+					"suspicious": { "noExplicitAny": "off" }
+				}
+			}
+		}
+	]
 }

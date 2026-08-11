@@ -8,13 +8,17 @@
 // section. Spread into server.ts's routeDefs.
 
 import { join, resolve, sep } from "node:path";
-import { loadData } from "./data";
+import { loadData, withData } from "./data";
 import { resolveProjectFor } from "./project-resolve";
 import { pathsEqual } from "./path-utils";
 import { featureList, featuresSinceLastRelease, backfillCorpus } from "./features";
 import { buildDepsPayload } from "./deps-explain";
 import { collectClientReport, renderClientReportHtml, writeClientReport } from "./client-report";
-import { retroCorpus, fragileFiles, regressionGap } from "./retro";
+import { retroCorpus, fragileFiles, regressionGap, interimDebt } from "./retro";
+import { auditRecord, shapeDrift, previewRepair } from "./record-audit";
+import { archiveUndone } from "./event-archive";
+import { appendAudit } from "./audit";
+import { obj } from "./validators";
 import { modelScorecard } from "./model-stats";
 import { studyCorpus, monthlyTrend, STUDY_NAME_RE, type PrevStudyDoc } from "./study";
 import { loadRuleTelemetry } from "./rule-telemetry";
@@ -117,6 +121,63 @@ export function makeFeatureRoutes({ htmlResponse }: FeatureRouteDeps): Record<st
       },
     },
 
+    // Does the RECORD hold up? The other reflection surfaces read the stored
+    // tags and trust them; this one checks them against today's capture rules.
+    // `?all=1` widens to every project — the shape of a capture defect is rarely
+    // confined to one.
+    // GET /api/record-audit?project=…|cwd=…[&all=1]
+    "/api/record-audit": {
+      async GET(req: ApiReq) {
+        const url = new URL(req.url);
+        const all = url.searchParams.get("all") === "1";
+        const project = await resolveParam(req);
+        if (!project && !all) return Response.json({ project: null, scanned: 0, detectors: [], findings: 0 });
+        const data = await loadData();
+        const scope = all ? undefined : (project as string);
+        const audit = auditRecord(data, scope);
+        const tags = scope ? data.tags.filter(t => t.project === scope) : data.tags;
+        return Response.json({ project: all ? null : project, all, ...audit, drift: shapeDrift(tags) });
+      },
+    },
+
+    // Repair ONE audited entry, and only with an explicit confirmation.
+    //
+    // Three refusals are the point of this route, not caveats on it:
+    //   · no `confirm:true` → preview only, nothing is written;
+    //   · no `id` → 400, because there is no "repair everything" here;
+    //   · a failed archive → the write is refused, never "best effort".
+    // The last one is the store's existing archive-before-delete contract: this
+    // trims stored history, so the original has to survive somewhere first.
+    // POST /api/record-repair { id, confirm? }
+    "/api/record-repair": {
+      async POST(req: ApiReq) {
+        let body: { id?: unknown; confirm?: unknown };
+        try { body = obj(await req.json()); } catch { return Response.json({ error: "invalid json" }, { status: 400 }); }
+        const id = typeof body.id === "string" ? body.id : "";
+        if (!id) return Response.json({ error: "id required — repairs are per entry, never in bulk" }, { status: 400 });
+
+        const snapshot = await loadData();
+        const preview = previewRepair(snapshot, id);
+        if (!preview) return Response.json({ error: "unknown id, or nothing to repair" }, { status: 404 });
+        if (body.confirm !== true) return Response.json({ applied: false, ...preview });
+
+        const original = snapshot.tags.find(t => t.id === id);
+        if (!original) return Response.json({ error: "unknown id" }, { status: 404 });
+        const archived = await archiveUndone([{
+          undoneAt: new Date().toISOString(), project: preview.project, kind: "tag", entry: original,
+        }]);
+        if (!archived) {
+          return Response.json({ error: "archive failed — refusing to modify a row we cannot keep a copy of" }, { status: 503 });
+        }
+        await appendAudit("record.repair", req, { target: id, removed: preview.removed });
+        await withData(async (data) => {
+          const t = data.tags.find(x => x.id === id);
+          if (t) t.content = preview.after;
+        });
+        return Response.json({ applied: true, ...preview });
+      },
+    },
+
     // The retrospective corpus behind `-(ask:retro)`: every problem report
     // (bug/security, open and closed) with dates, age and touched files —
     // compact enough to analyze in-context. The clustering itself is Claude's
@@ -143,6 +204,10 @@ export function makeFeatureRoutes({ htmlResponse }: FeatureRouteDeps): Record<st
           // quiet ratio in the header — "what keeps breaking?" and "what did we
           // fix without guarding?" are the same reflection.
           testGap: regressionGap(data, project),
+          // Declared-stopgap debt: fixes that SAID they were temporary. Same
+          // reflection surface — a stopgap left standing is the third way a
+          // problem comes back, after "no test" and "fragile file".
+          interimDebt: interimDebt(data, project),
           // Model scorecard: per-model discipline aggregates ride the same
           // reflection surface (in-session audience); the dashboard modal is
           // the human-eye surface of the SAME numbers via /api/model-stats.

@@ -12,7 +12,7 @@ import { SINGLE_LINE_TAGS } from "./tag-parser";
 import type { DevLogData, PlanStep, TagEntry } from "./types";
 import {
   normalizeTagContent, assignNum, openTodos, openBugs, openSecurity, openPlanSteps,
-  CLOSER_KINDS, OPENER_TO_CLOSER, NUMBERED_OPENABLE, singleHashNum, leadingNums, isStepClosed,
+  CLOSER_KINDS, OPENER_TO_CLOSER, NUMBERED_OPENABLE, singleHashNum, leadingNums, isStepClosed, inflightClosures,
 } from "./data";
 import { appendDoc, writeDoc, applyTaskCompletion, applyTaskDrop, extractCheckboxes } from "./doc-store";
 import { writeReleaseHtml, parseVersion, parseVersionMarker, isRealVersion } from "./release-html";
@@ -607,22 +607,13 @@ export function detectReleaseOpenItems(
   // documented defer-then-release flow deadlocks (the deferral that would
   // satisfy the guard is held by the guard). Security is never subtracted this
   // way: applyUpcoming refuses to defer it, so the guard must keep blocking.
-  const inflightDone = new Set<number>();
-  const inflightBugFix = new Set<number>();
-  const inflightSecFix = new Set<number>();
-  const inflightDeferred = new Set<number>();
-  for (const e of batchEntries) {
-    const nums = [...String(e.content || "").matchAll(/#(\d+)/g)].map(m => parseInt(m[1], 10));
-    if (!nums.length) continue;
-    if (e.tag === "done" || e.tag === "dropped") for (const n of nums) inflightDone.add(n);
-    else if (e.tag === "bug fix") for (const n of nums) inflightBugFix.add(n);
-    else if (e.tag === "security fix") for (const n of nums) inflightSecFix.add(n);
-    else if (e.tag === "upcoming") for (const n of nums) inflightDeferred.add(n);
-  }
-  // An un-numbered item (num === undefined) can't be closed by `#N`, so it always
-  // counts as open — surfaced by text so Claude can still close it with -(done) <text>.
-  const stillOpen = (num: number | undefined, closed: Set<number>) =>
-    typeof num !== "number" || !closed.has(num);
+  // Type-matched through CLOSER_FOR (see inflightClosures): a `-(done) #N` aimed
+  // at a bug does NOT clear it, exactly as the ingest-side guard refuses that
+  // pairing. An un-numbered item can't be closed by `#N`, so it stays open —
+  // surfaced by text so Claude can still close it with -(done) <text>.
+  const inflight = inflightClosures(batchEntries);
+  const inflightDeferred = inflight.deferred;
+  const stillOpen = (num: number | undefined, openerTag: string) => !inflight.closes(num, openerTag);
 
   // «قادمة» never blocks a release — that's the whole point of the tier. The
   // release page snapshots them in its own «قادم» section instead.
@@ -634,10 +625,11 @@ export function detectReleaseOpenItems(
     allSteps.filter(s => typeof s.num === "number" && inflightDeferred.has(s.num)).map(s => s.planTitle));
   const deferred = (num: number | undefined) => typeof num === "number" && inflightDeferred.has(num);
   const out: ReleaseOpenItem[] = [];
-  for (const t of openTodos(tags)) if (!t.upcoming && stillOpen(t.num, inflightDone) && !deferred(t.num)) out.push({ num: t.num, tag: "todo", content: t.content });
-  for (const t of openBugs(tags)) if (!t.upcoming && stillOpen(t.num, inflightBugFix) && !deferred(t.num)) out.push({ num: t.num, tag: "bug found", content: t.content });
-  for (const t of openSecurity(tags)) if (stillOpen(t.num, inflightSecFix)) out.push({ num: t.num, tag: t.tag, content: t.content });
-  for (const s of allSteps) if (!s.planUpcoming && stillOpen(s.num, inflightDone) && !deferredPlanTitles.has(s.planTitle)) out.push({ num: s.num, tag: "plan-step", content: s.text, planTitle: s.planTitle });
+  for (const t of openTodos(tags)) if (!t.upcoming && stillOpen(t.num, "todo") && !deferred(t.num)) out.push({ num: t.num, tag: "todo", content: t.content });
+  for (const t of openBugs(tags)) if (!t.upcoming && stillOpen(t.num, "bug found") && !deferred(t.num)) out.push({ num: t.num, tag: "bug found", content: t.content });
+  for (const t of openSecurity(tags)) if (stillOpen(t.num, t.tag)) out.push({ num: t.num, tag: t.tag, content: t.content });
+  // Plan steps live under the todo vocabulary — closed by `-(done)`/`-(dropped)`.
+  for (const s of allSteps) if (!s.planUpcoming && stillOpen(s.num, "todo") && !deferredPlanTitles.has(s.planTitle)) out.push({ num: s.num, tag: "plan-step", content: s.text, planTitle: s.planTitle });
   return out.length ? { openItems: out } : null;
 }
 

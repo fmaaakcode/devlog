@@ -164,3 +164,50 @@ export function regressionGap(data: DevLogData, project: string, top = 8): TestG
   items.sort((a, b) => +new Date(b.closedAt || 0) - +new Date(a.closedAt || 0));
   return { judged: withTest + withoutTest, withTest, withoutTest, unknown, items: items.slice(0, top) };
 }
+
+export interface InterimItem { num?: number; text: string; closedAt?: string; ageDays?: number; reopened: boolean }
+
+export interface InterimDebt {
+  /** Reports closed by a DECLARED stopgap (`bug fix:interim`). */
+  count: number;
+  /** How many of those later came back — the stopgap that stopped holding. */
+  reopened: number;
+  /** Oldest first: the longest-standing stopgap is the one worth paying off. */
+  items: InterimItem[];
+}
+
+/**
+ * Declared-stopgap debt: reports closed with `bug fix:interim`.
+ *
+ * The point of the vocabulary is that a stopgap stays VISIBLE. A fix that says
+ * it is temporary and is then forgotten is no better than one that lied — so it
+ * is counted here, oldest first, and a re-opening is reported alongside rather
+ * than as a surprise: an interim fix coming back is the expected outcome, and
+ * the number to watch is how long the debt sat, not that it existed.
+ *
+ * Quiet like `regressionGap` — it reports, it never blocks.
+ */
+export function interimDebt(data: DevLogData, project: string, now = Date.now(), top = 8): InterimDebt {
+  const reopened = new Set<number>();
+  for (const t of data.tags) {
+    if (t.project === project && typeof t.relatedTo === "number") reopened.add(t.relatedTo);
+  }
+  const items: InterimItem[] = [];
+  for (const c of closedItems(data, project)) {
+    if (c.closedBy !== "bug fix:interim") continue;
+    const closedMs = c.closedAt ? Date.parse(c.closedAt) : Number.NaN;
+    items.push({
+      ...(typeof c.num === "number" ? { num: c.num } : {}),
+      text: c.text,
+      ...(c.closedAt ? { closedAt: c.closedAt } : {}),
+      ...(Number.isFinite(closedMs) ? { ageDays: Math.max(0, Math.round((now - closedMs) / 86_400_000)) } : {}),
+      reopened: typeof c.num === "number" && reopened.has(c.num),
+    });
+  }
+  items.sort((a, b) => +new Date(a.closedAt || 0) - +new Date(b.closedAt || 0));
+  return {
+    count: items.length,
+    reopened: items.filter(i => i.reopened).length,
+    items: items.slice(0, top),
+  };
+}

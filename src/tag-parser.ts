@@ -4,7 +4,7 @@
 
 export const ALLOWED_TAGS = [
   "desc", "about", "plan", "built", "todo", "upcoming", "done", "dropped", "undo",
-  "bug found", "bug fix", "security fix", "security",
+  "bug found", "bug fix", "bug fix:interim", "security fix", "security",
   "feature update", "feature removed", "feature",
   "lib",
   "release", "release:major", "release:minor", "release:patch", "note", "update", "refactor",
@@ -29,7 +29,7 @@ export interface ParsedTag {
 // server-side guard (120-char cap) for clients that don't parse.
 export const SINGLE_LINE_TAGS = new Set([
   "todo", "upcoming", "done", "dropped",
-  "bug found", "bug fix",
+  "bug found", "bug fix", "bug fix:interim",
   "security", "security:own", "security:dep", "security fix",
   "note", "outdated", "update",
   "feature", "feature update", "feature removed",
@@ -49,7 +49,7 @@ export const SINGLE_LINE_TAGS = new Set([
 // by a command line swallowed it into its content (live artifact: a `built`
 // stored with a trailing "\n\n-(ask:features)").
 export const COMMAND_TAGS = [
-  "ask:open", "ask:closed", "ask:features", "ask:retro", "ask:backfill", "ask:map",
+  "ask:open", "ask:closed", "ask:features", "ask:retro", "ask:backfill", "ask:map", "ask:why", "ask:record",
   "ask:study", "ask:rules", "ask:lib", "ask:deps", "ask:search", "rules:list", "rule:add", "rule:new", "rule:rm",
   "rule:ack", "rule:acks", "audit",
 ] as const;
@@ -65,6 +65,25 @@ const SUSPICIOUS_START = /^(?:\||>|\*(?!\*))/;
 // isn't part of the JS standard yet — if a Bun release changed or dropped it,
 // every Stop hook would crash and no tags would be captured at all.
 const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Is the text between a bullet and its `(` a real tag head in the ORIGINAL
+ * message, rather than the residue of a stripped inline-code span? (#805)
+ *
+ * Every scanner here matches against a stripped copy in which code spans became
+ * SPACES of equal length. That is what lets a prose bullet —
+ *     - `#793` (todo) — some sentence
+ * — read as the lenient `- (todo)` head the scanners accept. Both the extractor
+ * and the near-miss detector were fooled by it (the second found by sweeping
+ * after the first was fixed), so the check lives in ONE place: a genuine head
+ * has nothing but whitespace in that gap.
+ *
+ * @param headStart index in `msg` where the match begins (may include a newline)
+ * @param parenIndex index in `msg` of the `(` that opens the head
+ */
+export function isRealTagHead(msg: string, headStart: number, parenIndex: number): boolean {
+  return /^\r?\n?[ \t]*-[ \t]*$/.test(msg.slice(headStart, parenIndex));
+}
 
 /**
  * Extract DevLog tags from an assistant message. Strips fenced/inline code so
@@ -115,9 +134,25 @@ export function parseTags(msg: string): ParsedTag[] {
   // fenced block truncated the doc body — or got captured as a phantom doc).
   // Matches arrive in source order, so authoring order (Bug QA #3) is free.
   for (const m of stripped.matchAll(pattern)) {
-    const span = (m as RegExpMatchArray & { indices?: Array<[number, number] | undefined> }).indices?.[3];
+    const mi = (m as RegExpMatchArray & { indices?: Array<[number, number] | undefined> }).indices;
+    const span = mi?.[3];
     if (!span) continue;
     const tag = m[1];
+
+    // The head must be a head in the ORIGINAL text, not only after stripping
+    // (#805). `-\s*\(` deliberately tolerates `- (todo)`, a common slip. But
+    // code-stripping replaces an inline span with SPACES of equal length, so a
+    // prose bullet that merely mentions an item —
+    //     - `#793` (todo) — some sentence
+    // — becomes `-        (todo) …` in `stripped`, which is exactly the lenient
+    // form. That minted the phantom item #793 from a line nobody meant as a tag.
+    // Re-reading the gap from `msg` tells the two apart: a real head has only
+    // whitespace between the bullet and `(`, while the residue of a stripped
+    // span does not. This never rejects a genuine tag — its gap IS whitespace.
+    const headStart = mi?.[0]?.[0];
+    const nameStart = mi?.[1]?.[0];
+    if (headStart !== undefined && nameStart !== undefined
+        && !isRealTagHead(msg, headStart, nameStart - 1)) continue;   // -1 = the `(`
 
     // Slice from the ORIGINAL message so inline code survives. For non-doc
     // tags a trailing fenced block is illustration, not content — drop it
@@ -130,6 +165,19 @@ export function parseTags(msg: string): ParsedTag[] {
     // turn-echo, not content (see SINGLE_LINE_TAGS). Matches what ingest-side
     // enforcement would drop anyway, so no stored semantics change.
     if (SINGLE_LINE_TAGS.has(tag)) content = content.split(/\r?\n/)[0].trim();
+    // Body tags end at the first PARAGRAPH BREAK (#692). Their content runs to
+    // the next tag or to end-of-message, so a body tag that ends a reply keeps
+    // swallowing whatever the reply says next — one stored `built` grew to 959
+    // chars holding three paragraphs of conversation ("…جرب الآن", "بانتظار
+    // كلمتك للـpush"). A blank line is the one structural signal that separates
+    // them: across the store, genuine continuations are always the ADJACENT
+    // line (a second clause of the same sentence), while swallowed reply prose
+    // starts its own paragraph. `about` is the long project description and
+    // `doc:*` bodies are markdown by design — both keep their blank lines.
+    else if (tag !== "about" && !tag.startsWith("doc:")) {
+      const brk = content.search(/\r?\n[ \t]*\r?\n/);
+      if (brk >= 0) content = content.slice(0, brk).trim();
+    }
     if (!content) continue;
 
     if (!tag.startsWith("doc:")) {
@@ -191,7 +239,13 @@ export function nearMissTags(msg: string): NearMiss[] {
   const known = [...ALLOWED_TAGS, ...COMMAND_HEADS];
   const out: NearMiss[] = [];
   const seen = new Set<string>();
-  for (const m of stripped.matchAll(/^[ \t]*-\s*\(([^)\n]{2,40})\)/gm)) {
+  for (const m of stripped.matchAll(/^[ \t]*-\s*\(([^)\n]{2,40})\)/gdm)) {
+    // Same trap as the extractor's (#805, found by sweeping it): without this,
+    // prose like "- `#793` (bulit) — ..." draws a "you typo'd a tag" nudge for
+    // a line nobody meant as a tag. A guard that cries wolf stops being read.
+    const nameStart = (m as RegExpMatchArray & { indices?: Array<[number, number] | undefined> }).indices?.[1]?.[0];
+    if (m.index !== undefined && nameStart !== undefined
+        && !isRealTagHead(msg, m.index, nameStart - 1)) continue;
     const head = m[1].trim().replace(/!$/, "").toLowerCase();
     if (!head || seen.has(head)) continue;
     if ((ALLOWED_TAGS as readonly string[]).includes(head) || COMMAND_HEADS.has(head)) continue;

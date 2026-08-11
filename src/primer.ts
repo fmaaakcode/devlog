@@ -25,7 +25,7 @@ Emit tags and commands as RAW lines at line start. Anything wrapped in backticks
 Core tags:
 - \`-(desc)\` the project's STABLE one-line identity ("what is this project?") — never a session summary; it shows under the project name and as the client report's subtitle, so re-emit only when the project itself changes · \`-(about)\` the long description: plain-language "what it is / how it works" + the concrete stack (language, runtime, frameworks, key libraries, integration points) — a compact technical ID card, not marketing prose
 - \`-(built)\` new code not mapping to a plan step · \`-(refactor)\` restructure without behavior change · \`-(update)\` dependency bump
-- \`-(bug found)\` … / close with \`-(bug fix) #N\`
+- \`-(bug found)\` … / close with \`-(bug fix) #N <the root cause>\` — a bare number is blocked once, because a fix whose reason was never named comes back. Alternatives: \`-(bug fix:interim) #N\` for a knowingly temporary stopgap (tracked as visible debt), or \`-(dropped) #N\` to withdraw a report that turned out not to be a defect; never record a fix that didn't happen
 - \`-(security)\` / \`-(security:own)\` / \`-(security:dep)\` … / close with \`-(security fix) #N\`
 - \`-(todo)\` … / close with \`-(done) #N\` or cancel with \`-(dropped) #N\`
 - \`-(upcoming)\` deferred tier: create directly, or \`-(upcoming) #N\` to defer an open todo/bug (\`-(todo) #N\` promotes back). Never blocks a release; security is never deferrable.
@@ -39,7 +39,7 @@ Before ADDING a new dependency, emit \`-(ask:lib) <name…>\` (up to 8) — DevL
 
 To recall recorded history ("why did we choose X?", "have we hit this before?"), emit \`-(ask:search) <query>\` — DevLog answers with the best-matching stored tags (decisions, insights, closed bugs with their fixes). \`-(ask:search) all: <query>\` widens the search to every tracked project. Prefer it over re-deriving a past decision or re-investigating a solved problem.
 
-Before searching an unfamiliar part of the CODE, emit \`-(ask:map)\` — the project's files ranked by how much the rest depends on them, each with what it is for. \`-(ask:map) <subsystem>\` narrows it. Prefer it over grepping your way to the entry point.
+Before searching an unfamiliar part of the CODE, emit \`-(ask:map)\` — the project's files ranked by how much the rest depends on them, each with what it is for. \`-(ask:map) <subsystem>\` narrows it. Prefer it over grepping your way to the entry point. Then, before REWRITING a file the rest of the code leans on, emit \`-(ask:why) <path>\` — that one file's dossier: the decisions that shaped it, every report it caused and how each was fixed, and the newest work on it. It is what keeps you from re-proposing a rejected approach or re-introducing a fixed bug. And \`-(ask:record)\` audits the RECORD itself against today's capture rules (\`all:\` widens it) — form only, and it changes nothing.
 
 Atomic: one concept per tag; no questions or planning prose inside a tag; multiple items → multiple tags.
 
@@ -55,7 +55,7 @@ DevLog مفعّل. في نهاية كل رد أصدر تاقات \`-(tag) conten
 التاقات الأساسية:
 - \`-(desc)\` هوية المشروع الثابتة بسطر واحد («ما هذا المشروع؟») — ليس ملخص جلسة أبداً؛ يظهر تحت اسم المشروع وكعنوان فرعي في تقرير العميل، فلا تعِد إصداره إلا إذا تغيّر المشروع نفسه · \`-(about)\` الوصف المطوّل: «ما هو وكيف يعمل» بلغة بسيطة + الستاك الفعلي (اللغة، الـruntime، الأطر، المكتبات المهمة، نقاط التكامل) — بطاقة تعريف تقنية مضغوطة لا نصاً تسويقياً
 - \`-(built)\` كود جديد لا يخص خطوة خطة · \`-(refactor)\` إعادة هيكلة بلا تغيير سلوك · \`-(update)\` رفع تبعية
-- \`-(bug found)\` … / أغلِقه بـ \`-(bug fix) #N\`
+- \`-(bug found)\` … / أغلِقه بـ \`-(bug fix) #N <السبب الجذري>\` — الرقم وحده يُحجب مرة، لأن إصلاحًا لم يُسمَّ سببه يعود. وبديلاه: \`-(bug fix:interim) #N\` لحلّ مؤقت معلَن (يُتتبَّع كدين مرئي)، أو \`-(dropped) #N\` لسحب بلاغ تبيّن أنه ليس خطأً؛ لا تسجّل إصلاحًا لم يحدث
 - \`-(security)\` / \`-(security:own)\` / \`-(security:dep)\` … / أغلِقه بـ \`-(security fix) #N\`
 - \`-(todo)\` … / أغلِقه بـ \`-(done) #N\` أو ألغِه بـ \`-(dropped) #N\`
 - \`-(upcoming)\` طبقة المؤجَّل: أنشئ مباشرة، أو \`-(upcoming) #N\` لتأجيل todo/bug مفتوح (\`-(todo) #N\` يرقّيه). لا توقف الإصدار أبداً؛ الأمن لا يؤجَّل.
@@ -69,7 +69,7 @@ DevLog مفعّل. في نهاية كل رد أصدر تاقات \`-(tag) conten
 
 لاسترجاع التاريخ المسجَّل («لماذا اخترنا X؟»، «هل مررنا بهذا قبل؟») أصدر \`-(ask:search) <سؤال>\` — يجيبك DevLog بأفضل التاقات المطابقة (قرارات، insights، بلاغات مغلقة مع إصلاحاتها). \`-(ask:search) all: <سؤال>\` يوسّع البحث لكل المشاريع المتتبَّعة. فضّله على إعادة اشتقاق قرار ماضٍ أو إعادة التحقيق في مشكلة محلولة.
 
-قبل التنقيب في جزء غير مألوف من الكود أصدر \`-(ask:map)\` — ملفات المشروع مرتبة بمقدار اعتماد بقيته عليها، مع غرض كل ملف. و\`-(ask:map) <المحور>\` يضيّق النطاق. فضّله على التنقيب بـgrep بحثًا عن نقطة الدخول.
+قبل التنقيب في جزء غير مألوف من الكود أصدر \`-(ask:map)\` — ملفات المشروع مرتبة بمقدار اعتماد بقيته عليها، مع غرض كل ملف. و\`-(ask:map) <المحور>\` يضيّق النطاق. فضّله على التنقيب بـgrep بحثًا عن نقطة الدخول. ثم قبل إعادة كتابة ملف يعتمد عليه بقية الكود أصدر \`-(ask:why) <المسار>\` — دوسيه ذلك الملف وحده: القرارات التي شكّلته، وكل بلاغ مسّه وكيف أُصلح، وآخر الأعمال عليه. به لا تقترح حلًّا سبق رفضه ولا تعيد خطأً أُصلح. و\`-(ask:record)\` يدقّق السجل نفسه أمام قواعد الالتقاط الحالية (و\`all:\` يوسّعه) — شكلًا فقط، ولا يغيّر شيئًا.
 
 محتوى ذرّي: مفهوم واحد لكل تاق، بلا أسئلة أو تخطيط داخل التاق؛ عدّة عناصر → عدّة تاقات.
 

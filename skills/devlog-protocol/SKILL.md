@@ -20,6 +20,8 @@ These hooks enforce the rules mechanically — you don't need to remember, the h
 | **Stop closure-check** | every turn end | a `-(built)` / `-(refactor)` fuzzy-matches an open `#N` and you didn't emit its closure. Exit 2 → re-respond with the closure. |
 | **Stop untagged-guard** | a tag-less turn end | code files — or manual tracking files (tasks/TODO/decisions/CHANGELOG/plans `.md`) — were written this session and NOT ONE tag was ever stored for it. Blocks once per session — re-respond ending with tags that describe the work. Mute: `DEVLOG_UNTAGGED_CHECK=0`. |
 | **PreToolUse tracking-gate** | `Write`/`Edit` of a manual tracking file (`tasks.md`, `TODO.md`, `decisions.md`, `CHANGELOG.md`, `MEMORY.md`, `plans/*.md`) | always, once per file per session — that content IS a DevLog tag (`-(todo)`/`-(decision)`/`-(release)`/`-(doc:plan)`): record it as tags. Deliberate manual file? re-issue the SAME write — it passes. Ordinary docs (README etc.) never trip it. Mute: `DEVLOG_TRACKING_GATE=0`. |
+| **Stop root-cause** | a `-(bug fix) #N` that records no cause | the closer carries nothing but the number AND the turn holds no `-(insight)`. Once per `#N`. Re-emit as `-(bug fix) #N <the cause>`, or add an `-(insight)`, or declare a stopgap with `-(bug fix:interim) #N`. It checks that the question was ASKED, not that the answer is true. Mute: `DEVLOG_ROOTCAUSE_CHECK=0`. |
+| **PreToolUse load-bearing** | first `Write`/`Edit` of a file ≥5 other files import | always, once per file per session — names how many depend on it and how many reports it carried, and sends you to `-(ask:why) <path>` before you rebuild. Deliberate rebuild? re-issue the SAME edit — it passes. Fails OPEN when the daemon or the analysis is unavailable. Mute: `DEVLOG_DEMOLITION_GATE=0`. |
 | **Stop release-guard** | `-(release)` / `-(release:*)` in your response | ANY open item exists (todo, bug, security, plan step). Refuses to persist the release. Close everything first, or `DEVLOG_RELEASE_GUARD=0` to override. |
 | **PreToolUse release-guard** | `gh release create` / `git tag -a v*` / `git push --tags` / `npm publish` / `cargo publish` | same rule; also injects the full since-last-release changelog. |
 
@@ -61,8 +63,8 @@ Every open tag has a closure, emitted in the **same response** as the work.
 | Open | Close |
 |---|---|
 | `-(todo) X` | `-(done) #N` / `-(dropped) #N` |
-| `-(bug found) X` | `-(bug fix) #N` |
-| `-(security[:own/:dep]) X` | `-(security fix) #N` |
+| `-(bug found) X` | `-(bug fix) #N` — the root cause is gone. Two honest alternatives: `-(bug fix:interim) #N` when you knowingly shipped a STOPGAP (tracked as visible debt in `ask:retro`, and its later return reads as expected), or `-(dropped) #N` to WITHDRAW a report that turned out not to be a defect (collapsed premise, duplicate, deliberate behavior). Never record a fix that did not happen. |
+| `-(security[:own/:dep]) X` | `-(security fix) #N` — security is never droppable |
 | `[ ] step` in `doc:plan` | `-(done) #N` |
 | all `[ ]` under `### Pn` | `-(done) Pn` |
 
@@ -254,6 +256,34 @@ Where the recall command answers *"what did we decide?"*, this answers *"where d
 Computed from a **live** analysis, not from `.devlog/DEVLOG_STACK.md` (which is generated once and can sit far behind the code). A query matching nothing returns the unfiltered top with a "nothing matched" note rather than an empty answer. Multi-word queries are AND — `-(ask:map) tag closure` means both.
 
 The corollary is on you: a file with no purpose header gets a guessed description. Write the header when you create a module — three lines at the top (what it does, why it is separate, which trap it holds) is what makes this command worth asking.
+
+## File archaeology (`ask:why`)
+
+`ask:map` answers *"where do I look?"*. This answers *"what already happened HERE?"* — for one file. Pull it **before** rewriting something the rest of the code leans on, so you neither re-propose an approach that was rejected nor re-introduce a bug that was fixed. Same turn, never logged as a tag.
+
+| Command | Use |
+|---|---|
+| `-(ask:why) src/data.ts` | That file's dossier |
+| `-(ask:why) D:/proj/src/data.ts` | Absolute paths work too |
+
+The answer carries, in order: the file's **purpose** (read live from its own header), the **decisions and insights** that shaped it, every **report** it caused — oldest first, each with how long it stayed open, `⟲` when the fix did not hold, and the reasoning stored on the fix — the newest **work** on it, and its **last change**. Every section is capped, and a cap always states how many it left out; a file with no history says so instead of failing.
+
+The argument is required — a dossier needs a subject. Position memory (the automatic three-line whisper on a file's first read) points here whenever there is more to get, so the deep read stays opt-in.
+
+## Record audit (`ask:record`)
+
+Every other pull READS the record and trusts it. This one CHECKS it, against today's capture rules — the parser's rules are the specification, so auditing is re-applying them to entries written under older, looser ones. No model, no language understanding: a blank line inside a `built`, a body that starts mid-sentence, a tag head eaten by the entry above it, a markdown table inside an oversized `done`.
+
+| Command | Use |
+|---|---|
+| `-(ask:record)` | This project's audit |
+| `-(ask:record) all:` | Every tracked project — a capture defect is rarely confined to one |
+
+It also reports **shape drift**: the median length of each tag kind across time-ordered quarters, plus the newest slice on its own (a quarter split can hide a rise that is still happening). Drift is a habit, not a defect — it is context, never a finding.
+
+Two limits are deliberate, not gaps. It reports **form, never truth**: whether an entry honestly describes what happened is a judgement, and a judgement needs a judge. And it **changes nothing** — repair is per-entry, explicitly confirmed, and archives the original first. There is no "repair all", because a sweep that rewrites history on the strength of a regex is exactly what this is built to argue against.
+
+A finding means "does not match the rules as they are now", never "wrong": older entries were captured under the rules of their day, which were legitimate then.
 
 ## Releases & GitHub — split roles
 

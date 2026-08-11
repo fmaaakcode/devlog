@@ -1,11 +1,11 @@
-// The Stop hook's turn guards: five checks that inspect what just happened and,
+// The Stop hook's turn guards: six checks that inspect what just happened and,
 // when something needs saying, block the turn so Claude reads it while it can
 // still act. Extracted from parse-tags.ts (the size ratchet) — they used to sit
 // inline as ~260 lines of straight-line code, untestable except through the
 // full hook.
 //
 // They are deliberately NOT a table, unlike the pull commands next door. Those
-// eleven were the same operation with different arguments; these five differ in
+// eleven were the same operation with different arguments; these six differ in
 // what they read (the response text, the session's file writes, the manifest),
 // in their dedup scope (per head, per line, per session signature, once per
 // session), and in what they cost (two of them fetch, three don't). One
@@ -317,6 +317,77 @@ export async function untaggedSessionGuard(ctx: GuardCtx): Promise<void> {
  * A guard that throws is logged and skipped: the turn's tags and summary must
  * complete regardless.
  */
+/**
+ * Root cause on closing a report (solution altitude).
+ *
+ * The failure this exists for: a bug closed by a fix that made the symptom go
+ * away, with the cause never named — opening the window instead of finding what
+ * smells. It costs nothing at the time and returns later as a re-opened report,
+ * which the ⟲ detector only sees in hindsight. This is the same check moved
+ * BEFORE the close.
+ *
+ * Fires when a `-(bug fix) #N` carries no cause at all: nothing after the number
+ * on its own line, and no `-(insight)` anywhere in the turn. Purely textual — no
+ * fetch, no judgement.
+ *
+ * DELIBERATE LIMIT: this enforces that a cause was STATED, not that it is true.
+ * A confident wrong cause passes — that happened in this very project, on the
+ * same day this guard was written. Evidence of verification is a separate axis
+ * with its own nudge (the closure-without-a-test-run hint); this one only makes
+ * sure the question was asked. Do not "strengthen" it by pattern-matching the
+ * cause text for file paths: a real root cause is often a sentence about
+ * ordering or state, with no path in it, and a guard that cries wolf is ignored.
+ *
+ * Never fires for `dropped` (a withdrawal is not a fix), for `bug fix:interim`
+ * (which is itself the honest declaration that there is no root fix yet), or for
+ * security (its own path). Deduped per `#N`. Off with DEVLOG_ROOTCAUSE_CHECK=0.
+ */
+export async function rootCauseGuard(ctx: GuardCtx): Promise<void> {
+  if (!ctx.msg || ctx.stopHookActive || envOff("DEVLOG_ROOTCAUSE_CHECK")) return;
+  const tags = parseTags(ctx.msg);
+  // An insight anywhere in the turn IS the root cause, wherever it was written.
+  const hasInsight = tags.some(t => t.tag === "insight" && t.content.trim().length > 0);
+  if (hasInsight) return;
+
+  const bare: number[] = [];
+  for (const t of tags) {
+    if (t.tag !== "bug fix") continue;
+    // Everything after the leading `#N` run: that text is stored on the closer
+    // and shown by `-(ask:closed) #N`, so a cause written here is not lost.
+    const rest = t.content.replace(/^(?:[ \t]*#\d+)+/, "").trim();
+    if (rest.length >= 12) continue;             // a cause was given
+    const nums = t.content.match(/^[ \t]*#(\d+)/);
+    if (nums) bare.push(Number(nums[1]));
+  }
+  const fresh: number[] = [];
+  for (const n of bare) if (await ctx.shouldServeAsk(`rootcause:${n}`)) fresh.push(n);
+  if (!fresh.length) return;
+  for (const n of fresh) await ctx.markAskServed(`rootcause:${n}`);
+
+  const L = ctx.L;
+  const list = fresh.map(n => `#${n}`).join(", ");
+  const out = [
+    "════════ DevLog Root Cause ════════",
+    L(`⚠ ${list} closed with no cause recorded — the fix is stored, the reason is not.`,
+      `⚠ ${list} أُغلق بلا سبب مسجَّل — الإصلاح مخزَّن والسبب لا.`),
+    "",
+    L("What made it happen? Not what you changed — what allowed it. Pick one:",
+      "ما الذي جعله يحدث؟ ليس ما غيّرته، بل ما سمح بحدوثه. اختر:"),
+    L(`  · re-emit as -(bug fix) ${fresh.map(n => `#${n}`)[0]} <the cause> — it is stored with the closure`,
+      `  · أعد الإصدار -(bug fix) ${fresh.map(n => `#${n}`)[0]} <السبب> — يُخزَّن مع الإغلاق`),
+    L("  · or add -(insight) <root cause> in this response",
+      "  · أو أضف -(insight) <السبب الجذري> في هذا الرد"),
+    L("  · or say it is a stopgap: -(bug fix:interim) #N — honest, and tracked as debt",
+      "  · أو صرّح أنه مؤقت: -(bug fix:interim) #N — صادق، ويُتتبَّع كدين"),
+    "",
+    L("Say what you OBSERVED, not what sounds plausible — a confident guess here becomes the record.",
+      "قل ما لاحظتَه لا ما يبدو مقنعًا — التخمين الواثق هنا يصير هو السجل."),
+    "═══════════════════════════════════",
+  ].join("\n");
+  await ctx.log(`root-cause: served for ${list}`);
+  await ctx.blockContinue(`\n${out}\n`);
+}
+
 export async function runTurnGuards(ctx: GuardCtx): Promise<void> {
   const guards: [string, (c: GuardCtx) => Promise<void>][] = [
     ["near-miss", nearMissGuard],
@@ -324,6 +395,9 @@ export async function runTurnGuards(ctx: GuardCtx): Promise<void> {
     ["standards-check", standardsPullGuard],
     ["dep-freshness", depFreshnessGuard],
     ["untagged-guard", untaggedSessionGuard],
+    // Last: it asks for MORE writing, so everything that reports a mistake in
+    // what was already written gets to speak first.
+    ["root-cause", rootCauseGuard],
   ];
   for (const [name, guard] of guards) {
     try { await guard(ctx); } catch (e) { await ctx.log(`${name} error: ${(e as Error).message}`); }

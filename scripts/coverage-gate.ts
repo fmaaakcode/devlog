@@ -25,6 +25,21 @@ const SENSITIVE: Record<string, number> = {
   "tags-service.ts": 85,  // release/version + closure resolution
   "export.ts": 75,        // user-facing changelog / status.md
   "data.ts": 65,          // atomic persistence + migrations
+  // The closure vocabulary itself (CLOSER_FOR and the open-item resolvers).
+  // Extracted OUT of data.ts, which carried a floor — so the protocol's core
+  // arrived here guarded by nothing while the gate still watched the emptied
+  // file. A silent break means items read as closed when they are open: the
+  // release guard waves through unfinished work.
+  "open-items.ts": 95,
+  // The record's own auditor. It reports on the store and can TRIM entries in
+  // it, so a silent break here either invents findings nobody can act on or
+  // mis-trims real history. Both are worse than the pollution it cleans.
+  "record-audit.ts": 95,
+  // The two gates' decision halves. Each is a pure function whose whole value
+  // is the branch that stays silent — fail-open on missing data, pass below
+  // threshold. Untested, those branches rot into blocks nobody expects.
+  "demolition-gate.ts": 95,
+  "file-weight.ts": 95,
 };
 
 const lcovPath = process.argv[2] || "coverage/lcov.info";

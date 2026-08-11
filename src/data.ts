@@ -36,9 +36,9 @@ export {
   normalizeTagContent, SECURITY_OPEN_TAGS, CLOSER_FOR, CLOSER_KINDS, OPENER_TO_CLOSER,
   NUMBERED_OPENABLE, NUMBERED_TAGS, CLOSURE_TAGS, leadingNums, singleHashNum, closedNums,
   latestCloserTs, openTodos, openBugs, openSecurity, isStepClosed, openPlanSteps,
-  openOutdatedLibs,
+  openOutdatedLibs, inflightClosures,
 } from "./open-items";
-export type { OpenItemOpts, OpenPlanStep, OutdatedLib } from "./open-items";
+export type { OpenItemOpts, OpenPlanStep, OutdatedLib, InflightClosures } from "./open-items";
 
 export const DEFAULT_INJECTION_CONFIG: InjectionConfig = {
   sessionStart: true,

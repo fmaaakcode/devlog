@@ -9,6 +9,7 @@ import { parseStack } from "./stack-parser";
 import { buildTree } from "./tree";
 import { analyzeProject, type ProjectAnalysis } from "./analyze";
 import { buildMap } from "./project-map";
+import { fileWeight } from "./file-weight";
 import { resolveProjectFor } from "./project-resolve";
 import { ttlCached } from "./ttl-cache";
 import { obj } from "./validators";
@@ -151,6 +152,32 @@ export function makeStackRoutes(): Record<string, unknown> {
         const analysis = await cachedAnalysis(project.path);
         const map = buildMap(analysis, url.searchParams.get("q") || "");
         return Response.json({ project: name, ...map });
+      },
+    },
+
+    // How load-bearing is one file — the demolition gate's input, and readable
+    // on its own. Shares `cachedAnalysis` with /api/map on purpose: the walk is
+    // the expensive part, and a gate that re-walked the tree on every Write
+    // would be a gate nobody keeps enabled.
+    // GET /api/file-weight?cwd=…|project=…&file=src/foo.ts
+    "/api/file-weight": {
+      async GET(req: ApiReq) {
+        const url = new URL(req.url);
+        const file = url.searchParams.get("file") || "";
+        const cwd = url.searchParams.get("cwd") || "";
+        const named = url.searchParams.get("project") || "";
+        if (!file || (!cwd && !named)) {
+          return Response.json({ error: "file and (project or cwd) required" }, { status: 400 });
+        }
+        const data = await loadData();
+        const name = named || resolveProjectFor(data, cwd).name;
+        const profile = name ? data.projects[name] : undefined;
+        if (!profile?.path) return Response.json({ error: "unknown project" }, { status: 404 });
+        // A failed/cold walk must not become a block: fileWeight reports
+        // `unknown` with zero dependents and the caller fails open.
+        let analysis: Awaited<ReturnType<typeof cachedAnalysis>> | null = null;
+        try { analysis = await cachedAnalysis(profile.path); } catch { analysis = null; }
+        return Response.json({ project: name, ...fileWeight(data, name, file, analysis) });
       },
     },
 

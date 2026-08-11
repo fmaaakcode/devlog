@@ -51,6 +51,31 @@ function safe(s: string): string {
   return s.replace(/</g, "‹").replace(/>/g, "›");
 }
 
+// Per-line caps for the free-text sections (#808). The block is rebuilt from
+// live tags every session, so its size tracks how verbosely tags happen to be
+// written — and that drifted hard: the median `built` line went 68 → 260 chars
+// across this project's history and was still climbing, while one release line
+// reached 1424. Two thirds of the block was a single section.
+//
+// Only the RENDERING is clipped. The full text stays in the store, the
+// dashboard, the exports and `?open` — one command away. These sections exist
+// to say "here is what happened recently", which a headline does; the tail
+// (test counts, function names, how it was proven) is detail the reader can
+// pull when it matters.
+const MAX_BUILT_LINE = 120;
+const MAX_RELEASE_LINE = 240;   // ~the recent median (239); kills the 1424 outlier
+const MAX_REJECTION_LINE = 120;
+const MAX_DESC_LINE = 200;     // a one-line project identity, not a paragraph
+
+/** Truncate at a word boundary, falling back to a hard cut when a single token
+ *  runs past the limit (a long path, a stack frame). */
+export function clipLine(s: string, max: number): string {
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max);
+  const sp = cut.lastIndexOf(" ");
+  return `${(sp > max * 0.6 ? cut.slice(0, sp) : cut).trimEnd()}…`;
+}
+
 // A "N days ago" suffix for outdated-library lines, in the active language.
 function ageAgo(days: number): string {
   return L(`(${days}d ago)`, `(منذ ${days} يوم)`);
@@ -171,11 +196,17 @@ function formatOpenDetailed(data: DevLogData, project: string): string[] {
   return parts;
 }
 
-// The outdated-libraries section — lists ALL outdated libs (oldest first), not a
-// truncated preview, so Claude sees the full set at SessionStart without the user
-// having to type ?open. Empty when the toggle is off or no library qualifies.
-// Shared by the full SessionStart context and the standalone outdated-only
-// injection — the latter keeps this awareness even when the full summary is off.
+// The outdated-libraries section (oldest first), so Claude sees what is behind
+// at SessionStart without the user having to type ?open. Empty when the toggle
+// is off or no library qualifies. Shared by the full SessionStart context and
+// the standalone outdated-only injection — the latter keeps this awareness even
+// when the full summary is off.
+//
+// Capped like every other list here (`MAX_BUILT`, rejections' last 3): it used
+// to print EVERY qualifying library, the one section whose size grew without
+// bound — a dependency-heavy project could outweigh the rest of the block on
+// its own. The heading still carries the true total, and `?open` lists them all.
+const MAX_OUTDATED = 10;
 function outdatedSection(profile: ProjectProfile, config: InjectionConfig): string[] {
   if (!config.outdatedLibs) return [];
   const outdated = openOutdatedLibs(profile);
@@ -184,10 +215,13 @@ function outdatedSection(profile: ProjectProfile, config: InjectionConfig): stri
   out.push(L(
     `## Outdated libraries (${outdated.length}) — newest version out for >a week`,
     `## مكتبات منتهية (${outdated.length}) — أحدث إصدار متاح منذ ›أسبوع`));
-  for (const l of outdated) {
+  for (const l of outdated.slice(0, MAX_OUTDATED)) {
     const cur = l.current ? `${safe(l.current)} ` : "";
     out.push(`- ${safe(l.name)} ${cur}→ ${safe(l.latest)} ${ageAgo(l.daysSinceLatest)}`);
   }
+  const rest = outdated.length - MAX_OUTDATED;
+  if (rest > 0) out.push(L(`- …and ${rest} more — \`?open\` lists them all.`,
+                          `- …و${rest} أخرى — \`?open\` يسردها كلها.`));
   return out;
 }
 
@@ -438,7 +472,9 @@ export function buildContext(
     "سياق تلقائي من DevLog — لا تكرره في ردك، استخدمه لفهم المشروع فقط."));
   parts.push("");
   parts.push(L(`## Project: ${project}`, `## المشروع: ${project}`));
-  if (profile.description) parts.push(`desc: ${safe(profile.description)}`);
+  // `desc` is by contract a ONE-LINE identity; clip it like the rest so a
+  // paragraph pasted into it can't quietly become the biggest line in the block.
+  if (profile.description) parts.push(`desc: ${safe(clipLine(profile.description, MAX_DESC_LINE))}`);
   if (profile.about) parts.push(`about: yes`);
   if (profile.lastScan) parts.push(L(`Last scan: ${profile.lastScan.slice(0, 10)}`, `آخر فحص: ${profile.lastScan.slice(0, 10)}`));
 
@@ -479,7 +515,9 @@ export function buildContext(
         if (overlap >= 3 && (!best || overlap > best.overlap)) best = { num: step.num, overlap };
       }
       const hint = best ? L(` ← may close #${best.num}`, ` ← قد يُغلِق #${best.num}`) : "";
-      parts.push(`- ${safe(t.content)}${hint}`);
+      // Clip only here — the plan-step hint above matched on the FULL content,
+      // so truncating earlier would silently weaken the `← may close #N` link.
+      parts.push(`- ${safe(clipLine(t.content, MAX_BUILT_LINE))}${hint}`);
     }
   }
 
@@ -508,7 +546,7 @@ export function buildContext(
   if (lastRelease) {
     parts.push("");
     parts.push(L("## Latest release", "## آخر إصدار"));
-    parts.push(safe(lastRelease.content));
+    parts.push(safe(clipLine(lastRelease.content, MAX_RELEASE_LINE)));
   }
 
   // Outdated-library awareness (count + 3 oldest). Same block reused for the
@@ -524,7 +562,7 @@ export function buildContext(
   if (projectRejections.length) {
     parts.push("");
     parts.push(L(`## ⚠ Previously rejected (${projectRejections.length})`, `## ⚠ رُفِض في السابق (${projectRejections.length})`));
-    for (const r of projectRejections.slice(-3)) parts.push(`- ${safe(r.detail)}`);
+    for (const r of projectRejections.slice(-3)) parts.push(`- ${safe(clipLine(r.detail, MAX_REJECTION_LINE))}`);
   }
 
   parts.push("</devlog-context>");

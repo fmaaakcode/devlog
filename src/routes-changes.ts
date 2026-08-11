@@ -6,9 +6,13 @@
 // ONLY by these handlers, so they move here with the routes. Spread into
 // server.ts's routeDefs.
 
+import { isAbsolute, join } from "node:path";
 import { loadData } from "./data";
-import { normalizeSlashes } from "./path-utils";
+import { isPathInside, normalizeSlashes } from "./path-utils";
 import { buildFileStory, fileMatches } from "./file-story";
+import { buildFileWhy } from "./file-why";
+import { resolveProjectFor } from "./project-resolve";
+import { filePurposeFromHeader } from "./file-purpose";
 import { listArchiveMonths, readArchiveMonth } from "./event-archive";
 import type { EventEntry } from "./types";
 
@@ -101,6 +105,44 @@ export function makeChangesRoutes(): Record<string, unknown> {
           events: story.events.map(summarizeChange),
           archived: archived.map(summarizeChange),
         });
+      },
+    },
+
+    // `ask:why` — one file's dossier: the decisions that shaped it, the reports
+    // it caused and how each ended, and the work that last touched it. Deeper
+    // than /api/file-story (raw tags + events); this is the assembled read.
+    // GET /api/file-why?project=X&file=src/foo.ts
+    "/api/file-why": {
+      async GET(req: ApiReq) {
+        const url = new URL(req.url);
+        const file = url.searchParams.get("file") || "";
+        // `cwd` OR `project`, like /api/map: the Stop hook knows only the
+        // session's directory, the dashboard knows the name. Requiring `project`
+        // alone left the hook's calls unanswered with no error to see.
+        const named = url.searchParams.get("project") || "";
+        const cwd = url.searchParams.get("cwd") || "";
+        if ((!named && !cwd) || !file) {
+          return Response.json({ error: "file and (project or cwd) required" }, { status: 400 });
+        }
+        const data = await loadData();
+        const project = named || resolveProjectFor(data, cwd).name;
+        const root = data.projects[project]?.path || "";
+        if (!root) return Response.json({ error: "unknown project" }, { status: 404 });
+
+        // The file's purpose is stated in its own header, so it costs one read —
+        // and that read is the only untrusted-path surface here. Resolve against
+        // the project root and require containment (isPathInside), so `file` can
+        // never walk out of the project; a miss simply leaves the purpose unset
+        // rather than failing the dossier, which comes entirely from the store.
+        let purpose: string | undefined;
+        const abs = normalizeSlashes(isAbsolute(file) ? file : join(root, file));
+        if (isPathInside(root, abs)) {
+          try {
+            const f = Bun.file(abs);
+            if (await f.exists()) purpose = filePurposeFromHeader(await f.text()) || undefined;
+          } catch { /* unreadable file — the record still answers */ }
+        }
+        return Response.json(buildFileWhy(data, project, abs, purpose));
       },
     },
 

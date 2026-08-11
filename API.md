@@ -41,6 +41,7 @@
 
 ## Recall / history (`routes-changes.ts`)
 - `/api/file-story` — position memory (#486): one file's timeline — tags whose capture window touched it (`TagEntry.files`, stamped at Stop time) + its change events; `?project=&path=` required (path may be project-relative), `&deep=1` also sweeps the cold event archive (GET)
+- `/api/file-why` — the `ask:why` dossier for one file: its stated purpose (read from the file's own header) plus the decisions that shaped it, every report it caused with span/⟲/fix-reasoning, the newest work on it, and its last change; each section capped with a `…More` remainder. `?file=` plus either `?project=` or `?cwd=` required (file may be project-relative; a path outside the project root is refused for the header read) (GET)
 - `/api/changes` — recent code-edit events (GET)
 - `/api/changes/last` — last-N edits (GET)
 - `/api/changes/by-id/:id` — one event's full diff (GET)
@@ -74,6 +75,8 @@
 - `/api/features` — the current capability inventory (feature tags resolved: updates applied, removed dropped, each attributed to its shipping release) + since-last-release counters for the release nudge (GET; `?project=` or `?cwd=`) — powers `-(ask:features)`
 - `/api/features-backfill` — releases not covered by any declared capability, each with its summary + built/update material lines (GET; `?project=` or `?cwd=`) — powers `-(ask:backfill)`
 - `/api/deps` — the deps-explainer payload: every manifest library annotated with its recorded purpose (`lib` tags, latest per name wins), cached registry description and vuln/outdated status, uncovered-first (GET; `?project=` or `?cwd=`) — powers `-(ask:deps)` and `/deps.html`
+- `/api/record-audit` — the record's own audit: stored tags checked against TODAY's capture rules (swallowed reply prose, fragments cut mid-sentence, a tag head eaten by another body, document structure inside an oversized entry) plus `drift` (median content length per tag kind over time-ordered quarters). Reports FORM, never truth, and never repairs anything. `?project=` or `?cwd=`, `&all=1` widens to every project (GET) — powers `-(ask:record)`
+- `/api/record-repair` — trim ONE audited entry to what today's rules would keep. `{id}` alone returns a before/after preview and writes nothing; `{id, confirm:true}` applies it. Refuses without an `id` (there is no bulk repair), refuses an unknown id, and refuses the write when the archive fails — the original is written to the `undone` archive stream BEFORE the entry is modified (POST, audited)
 - `/api/retro` — the full problem corpus: every bug/security report, open and closed, with open/close dates, age in days and project-relative touched files, oldest first, plus `fragile` (files recurring across reports), `testGap` (fixes closed without their session touching a test — #585) and `modelStats` (the per-model scorecard) (GET; `?project=` or `?cwd=`) — powers `-(ask:retro)`
 - `/api/model-stats` — the model scorecard (#695 follow-up): per-model aggregates from attributed tags — reports opened, closures/fixes, reopened fixes (⟲ charged to the closer), test-gap ratio and mean close age — plus the unattributed pre-#695 count (GET; `?project=` or `?cwd=`) — powers the dashboard's «أداء النماذج» modal
 - `/api/trends` — the monthly-trend rows (opened work items / closed items / releases per month, whole history) behind the dashboard stats-popup trends tab (#788) — the same computation the study aggregates embed, served alone (GET; `?project=` or `?cwd=`)
@@ -106,6 +109,7 @@
 - `/api/stack/:project` — parsed DEVLOG_STACK.md + its mtime (GET)
 - `/api/stack/:project/regenerate` — explicit regeneration; the only path that overwrites an existing stack file (POST, audited)
 - `/api/stack/:project/layout` — saved node positions (GET/POST/DELETE)
+- `/api/file-weight` — how load-bearing one file is: `dependents` (files importing it, from the same cached import-graph walk `/api/map` uses) plus `reports`/`openReports` (bug/security tags whose capture window touched it). `unknown:true` when the file is absent from the analysis — new, unanalyzed, or not source — so a caller gating on the number can fail open. `?file=` plus either `?project=` or `?cwd=` (GET)
 - `/api/tree/:project` — project file tree (GET)
 - `/api/map` — the code map behind `-(ask:map)`: files ranked by PageRank over the import graph, each with the purpose stated in its own header (heuristic only for files that document nothing), size, weight and top exports. `?q=` filters to one subsystem (matched on path, purpose and exports; multi-word = AND; no match → unfiltered top with `fellBack: true`). Computed from a LIVE analysis — never the possibly-stale DEVLOG_STACK.md — and cached per project for 5 minutes (GET; `?project=` or `?cwd=`)
 

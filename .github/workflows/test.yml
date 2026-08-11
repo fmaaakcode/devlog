@@ -8,6 +8,13 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege for the run-scoped GITHUB_TOKEN. The repo default is already
+# `read`, but that is a repository SETTING — one toggle in the org/repo UI, or a
+# future fork, silently hands these jobs a write-capable token. Declaring it here
+# pins the intent in the file that actually runs.
+permissions:
+  contents: read
+
 jobs:
   test:
     # Cross-OS matrix answers "does it work on Unix/macOS/Windows?" on every push,
@@ -19,6 +26,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Don't leave the run token in .git/config: later steps execute
+          # third-party code (dependency lifecycle scripts, the test suite) in
+          # this same workspace, and none of them need repo credentials.
+          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.14"
@@ -39,6 +51,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Don't leave the run token in .git/config: later steps execute
+          # third-party code (dependency lifecycle scripts, the test suite) in
+          # this same workspace, and none of them need repo credentials.
+          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.14"
@@ -56,6 +73,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Don't leave the run token in .git/config: later steps execute
+          # third-party code (dependency lifecycle scripts, the test suite) in
+          # this same workspace, and none of them need repo credentials.
+          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.14"
@@ -72,7 +94,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - name: Install Claude Code
-        run: npm install -g @anthropic-ai/claude-code
+        # Pinned, not floating: an unversioned `-g` install runs whatever was
+        # published minutes earlier and executes its install scripts on the
+        # runner. Held at the version used locally, so a manifest that validates
+        # on the maintainer's machine validates identically here.
+        run: npm install -g @anthropic-ai/claude-code@2.1.227
       - name: Validate plugin manifests
         run: claude plugin validate ./ --strict

@@ -40,6 +40,10 @@ export type AskLang = "en" | "ar";
  * are written defensively (`?.`, `|| []`, `typeof x === "number"`) and nothing
  * here reaches storage or a render sink — the output is text shown to Claude.
  */
+// The one import: the shared "is this really a tag head?" check, so the rule
+// lives in a single place rather than being re-derived at each scanner (#805).
+import { isRealTagHead } from "./tag-parser";
+
 // biome-ignore lint/suspicious/noExplicitAny: wire payload from a possibly-older daemon; read defensively, never stored or rendered as HTML.
 export type AskData = any;
 
@@ -106,6 +110,14 @@ export async function unservedMatches(
   const out: AskHit[] = [];
   const seen = new Set<string>();
   for (const m of ctx.strippedMsg.matchAll(re)) {
+    // The head must be a head in the ORIGINAL text (#805, third site found by
+    // sweeping): blanking a code span leaves SPACES, so "- `#793` (ask:open)"
+    // reads here as the lenient "- (ask:open)" and the command RUNS off a line
+    // that only quoted a number. Blanking preserves length 1:1, so the `(`
+    // sits at the same offset in both copies.
+    const parenAt = m[0].indexOf("(");
+    if (m.index !== undefined && parenAt >= 0
+        && !isRealTagHead(ctx.msg, m.index, m.index + parenAt)) continue;
     const cmd = toCmd(m);
     if (seen.has(cmd)) continue;
     seen.add(cmd);

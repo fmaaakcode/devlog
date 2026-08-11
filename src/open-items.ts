@@ -69,7 +69,22 @@ export const SECURITY_OPEN_TAGS = new Set(["security", "security:own", "security
 /** Opener tag → closer verb(s) that close it (type-matched). */
 export const CLOSER_FOR: Record<string, string[]> = {
   "todo": ["done", "dropped"],
-  "bug found": ["bug fix"],
+  // A report has three honest exits, and only one of them is "solved":
+  //   bug fix          — the root cause is gone.
+  //   bug fix:interim  — DECLARED stopgap. Sometimes opening the window is the
+  //                      right call under time pressure; the danger is never the
+  //                      stopgap, it is the stopgap disguised as a real fix. A
+  //                      declared one stays visible as debt in retro, and its
+  //                      re-opening reads as an expected outcome, not a surprise.
+  //   dropped          — WITHDRAWN: not a defect after all (collapsed premise,
+  //                      misread, duplicate). Without it the only ways out were a
+  //                      fix that never happened — a lie that reaches the release
+  //                      notes — or an item open forever, blocking every release.
+  // `bug fix` stays FIRST: OPENER_TO_CLOSER suggests cs[0], and the default
+  // suggestion must remain the real fix, never the stopgap.
+  "bug found": ["bug fix", "bug fix:interim", "dropped"],
+  // Security has no withdrawal on purpose: "this isn't really a vulnerability"
+  // is exactly the call that must not be made by writing one word.
   "security": ["security fix"],
   "security:own": ["security fix"],
   "security:dep": ["security fix"],
@@ -142,6 +157,50 @@ export function closedNums(tags: TagEntry[], kinds: string[]): Set<number> {
   return nums;
 }
 
+/** What a single response's tags do to open `#N`s, before any of it is stored. */
+export interface InflightClosures {
+  /** Does this batch close `num`, with a verb the table accepts for `openerTag`? */
+  closes(num: number | undefined, openerTag: string): boolean;
+  /** `#N`s the batch defers with `-(upcoming)` — deferral is not closure. */
+  deferred: Set<number>;
+}
+
+/**
+ * Index the closers and deferrals a response aims at `#N`s, type-matched through
+ * CLOSER_FOR. The release guard needs this because a batch's own closures must
+ * count: "close everything, then release" happens in ONE response, so the items
+ * being closed are still open in the store when the guard runs.
+ *
+ * Verbs are kept verbatim and matched against the table at query time, rather
+ * than bucketed into hand-written sets (`tag === "bug fix"` …). That shape had
+ * to be edited in lockstep with the vocabulary, and silently under-counted the
+ * moment a second closer verb was added for an opener.
+ */
+export function inflightClosures(entries: { tag: string; content?: string }[]): InflightClosures {
+  const byNum = new Map<number, Set<string>>();
+  const deferred = new Set<number>();
+  for (const e of entries) {
+    const nums = [...String(e.content || "").matchAll(/#(\d+)/g)].map(m => parseInt(m[1], 10));
+    if (!nums.length) continue;
+    if (e.tag === "upcoming") { for (const n of nums) deferred.add(n); continue; }
+    if (!CLOSURE_TAGS.has(e.tag)) continue;
+    for (const n of nums) {
+      let verbs = byNum.get(n);
+      if (!verbs) { verbs = new Set<string>(); byNum.set(n, verbs); }
+      verbs.add(e.tag);
+    }
+  }
+  return {
+    closes(num, openerTag) {
+      if (typeof num !== "number") return false;
+      const verbs = byNum.get(num);
+      if (!verbs) return false;
+      return (CLOSER_FOR[openerTag] || []).some(v => verbs.has(v));
+    },
+    deferred,
+  };
+}
+
 // Orphan closure GC (#230) lives in ./orphan-closures — extracted under the
 // file-size budget; pure over the tags array, consumed by server startup only.
 
@@ -183,18 +242,18 @@ function textClosed(closedAt: Map<string, string>, t: TagEntry): boolean {
 
 /** Todos with no matching `-(done)`/`-(dropped)` closure (by text or by `#N`). */
 export function openTodos(tags: TagEntry[], opts: OpenItemOpts = {}): TagEntry[] {
-  const closedAt = latestCloserTs(tags, ["done", "dropped"]);
-  const byNum = closedNums(tags, ["done", "dropped"]);
+  const closedAt = latestCloserTs(tags, CLOSER_FOR.todo);
+  const byNum = closedNums(tags, CLOSER_FOR.todo);
   return tags.filter(t => t.tag === "todo"
     && passesNum(t, opts)
     && !textClosed(closedAt, t)
     && !(typeof t.num === "number" && byNum.has(t.num)));
 }
 
-/** Bugs with no matching `-(bug fix)` closure (by text or by `#N`). */
+/** Bugs with no matching `-(bug fix)` / `-(dropped)` closure (by text or `#N`). */
 export function openBugs(tags: TagEntry[], opts: OpenItemOpts = {}): TagEntry[] {
-  const closedAt = latestCloserTs(tags, ["bug fix"]);
-  const byNum = closedNums(tags, ["bug fix"]);
+  const closedAt = latestCloserTs(tags, CLOSER_FOR["bug found"]);
+  const byNum = closedNums(tags, CLOSER_FOR["bug found"]);
   return tags.filter(t => t.tag === "bug found"
     && passesNum(t, opts)
     && !textClosed(closedAt, t)
@@ -204,8 +263,8 @@ export function openBugs(tags: TagEntry[], opts: OpenItemOpts = {}): TagEntry[] 
 /** Security items (`security`/`security:own`/`security:dep`) with no matching
  *  `-(security fix)` closure (by text or by `#N`). */
 export function openSecurity(tags: TagEntry[], opts: OpenItemOpts = {}): TagEntry[] {
-  const closedAt = latestCloserTs(tags, ["security fix"]);
-  const byNum = closedNums(tags, ["security fix"]);
+  const closedAt = latestCloserTs(tags, CLOSER_FOR.security);
+  const byNum = closedNums(tags, CLOSER_FOR.security);
   return tags.filter(t => SECURITY_OPEN_TAGS.has(t.tag)
     && passesNum(t, opts)
     && !textClosed(closedAt, t)

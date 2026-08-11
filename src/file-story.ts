@@ -88,8 +88,9 @@ export function buildFileStory(data: DevLogData, project: string, filePath: stri
 }
 
 /** Path relative to the project root when it is inside it — story lines stay
- *  short and the same file reads identically across machines. */
-function relToProject(data: DevLogData, project: string, filePath: string): string {
+ *  short and the same file reads identically across machines. Exported for
+ *  file-why, which renders the same header line from the same anchor. */
+export function relToProject(data: DevLogData, project: string, filePath: string): string {
   const root = norm(data.projects[project]?.path || "").toLowerCase();
   const f = norm(filePath);
   if (root && f.toLowerCase().startsWith(`${root}/`)) return f.slice(root.length + 1);
@@ -119,6 +120,18 @@ export function formatFileStoryContext(data: DevLogData, project: string, filePa
   if (last) {
     const when = last.timestamp.slice(0, 16).replace("T", " ");
     parts.push(L(`Last change: ${when}`, `آخر تعديل: ${when}`));
+  }
+  // Point at the deeper read ONLY when there is more to get: history beyond the
+  // three lines shown, or a report on this file (whose fix reasoning and ⟲ live
+  // in the dossier, never here). Otherwise the hint is noise on every file open
+  // — this whisper is auto-injected, so a line that adds nothing costs tokens on
+  // every first read in every session.
+  const hasMore = story.tags.length > MAX_STORY_TAGS;
+  const hasReport = story.tags.some(t => t.tag === "bug found" || t.tag.startsWith("security"));
+  if (hasMore || hasReport) {
+    parts.push(L(
+      "> The full story — decisions, every report and how it was fixed — is one command away: -(ask:why) <path>",
+      "> القصة كاملةً — القرارات وكل بلاغ وكيف أُصلح — على بُعد أمر: -(ask:why) <المسار>"));
   }
   parts.push("</devlog-context>");
   return parts.join("\n");

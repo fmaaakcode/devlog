@@ -17,7 +17,11 @@ Write the tag content in the user's language.
   (language, runtime, frameworks, key libraries, integrations) — a technical ID card,
   not marketing prose
 - `-(built)` new code not mapping to a plan step · `-(refactor)` restructure, no behavior change · `-(update)` dependency bump
-- `-(bug found)` … / close with `-(bug fix) #N`
+- `-(bug found)` … / close with `-(bug fix) #N` **naming the root cause after the
+  number** (a bare number is blocked once). Alternatives: `-(bug fix:interim) #N`
+  for a knowingly temporary stopgap (visible as debt in `ask:retro`), or
+  `-(dropped) #N` to withdraw a report that turned out not to be a defect —
+  never record a fix that didn't happen
 - `-(security[:own|:dep])` … / close with `-(security fix) #N`
 - `-(todo)` … / close with `-(done) #N` or `-(dropped) #N`
 - `-(upcoming)` deferred tier: create directly, or `-(upcoming) #N` to defer an open
@@ -46,6 +50,15 @@ Write the tag content in the user's language.
   widens to every tracked project. Prefer it over re-deriving a past decision.
   Ephemeral, never stored. New open bugs also get an automatic one-shot recall hint
   when a similar closed bug exists.
+- `-(ask:record)` تدقيق السجل نفسه: مداخل مخزَّنة لا تطابق قواعد الالتقاط
+  الحالية (نثر محادثة مبتلَع، شظية، رأس تاق داخل جسم آخر، بنية مستند في مدخل
+  متضخّم) + انجراف الشكل. `all:` يوسّع لكل المشاريع. يبلّغ عن **الشكل لا الصدق**،
+  ولا يغيّر شيئًا — الإصلاح لكل مدخل بموافقة صريحة وبأرشفة الأصل أولًا.
+- `-(ask:why) <مسار>` دوسيه ملف واحد: غرضه، القرارات التي شكّلته، كل بلاغ
+  مسّه وكيف انتهى (مدّته، ⟲ إن لم يصمد الإصلاح، وسبب الإصلاح)، وآخر الأعمال
+  عليه. اسحبه **قبل** إعادة كتابة ملف مترابط، فلا تقترح حلًّا سبق رفضه ولا
+  تعيد خطأً أُصلح. `-(ask:map)` يقول «أين أنظر»، وهذا يقول «ماذا جرى هنا».
+  عابر، لا يُخزَّن.
 - `-(ask:map) [محور]` the project's code map — files ranked by how much the rest
   of the code depends on them, each with the purpose its own header states. Use it
   BEFORE grepping an unfamiliar area; the argument narrows to one subsystem

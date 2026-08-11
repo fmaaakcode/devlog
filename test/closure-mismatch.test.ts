@@ -44,10 +44,25 @@ describe("diagnoseClosureMismatch — wrong-verb", () => {
       { kind: "wrong-verb", num: 3, usedCloser: "done", openerTag: "security:own", suggested: "security fix" });
   });
 
-  test("dropped on an open bug → wrong-verb (dropped only closes todos)", () => {
+  test("dropped on an open bug is ACCEPTED — the withdrawal path for a non-defect", () => {
+    // A report whose premise collapsed (a misread, a duplicate, a setting the
+    // user had chosen deliberately) is not fixable and must not be recorded as
+    // fixed. Before this, `bug found` had one exit — so the only options were a
+    // `bug fix` that never happened or an item open forever, blocking releases.
     const d = data([tag("bug found", "flaky export", { num: 12 })]);
-    expect(diagnoseClosureMismatch("dropped", "#12", d, PROJ)).toEqual(
-      { kind: "wrong-verb", num: 12, usedCloser: "dropped", openerTag: "bug found", suggested: "bug fix" });
+    expect(diagnoseClosureMismatch("dropped", "#12", d, PROJ)).toBeNull();
+  });
+
+  test("dropped is still refused on security — that call is never one word", () => {
+    const d = data([tag("security:own", "path traversal in rule:new", { num: 3 })]);
+    expect(diagnoseClosureMismatch("dropped", "#3", d, PROJ)).toEqual(
+      { kind: "wrong-verb", num: 3, usedCloser: "dropped", openerTag: "security:own", suggested: "security fix" });
+  });
+
+  test("`bug fix` stays the SUGGESTED verb for a bug — dropped is the exception", () => {
+    const d = data([tag("bug found", "race in scan", { num: 9 })]);
+    expect(diagnoseClosureMismatch("security fix", "#9", d, PROJ)).toEqual(
+      { kind: "wrong-verb", num: 9, usedCloser: "security fix", openerTag: "bug found", suggested: "bug fix" });
   });
 
   test("bare digits without # also resolve (e.g. -(bug fix) 12 style)", () => {

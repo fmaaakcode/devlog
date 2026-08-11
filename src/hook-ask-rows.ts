@@ -287,6 +287,125 @@ export const ASK_ROWS: AskRow[] = [
     },
   },
 
+  // ── -(ask:why) <path> — one file's dossier ────────────────────────────────
+  // `ask:map` answers "where do I look?"; this answers "what happened HERE?" —
+  // the decisions that shaped a file, every report it caused with how each
+  // ended, and the latest work on it. Pulled before rewriting something
+  // load-bearing, so a rejected approach is not re-proposed and a fixed bug is
+  // not re-introduced. The argument is REQUIRED: a dossier needs a subject.
+  {
+    key: "ask:why",
+    label: "why",
+    re: /^[ \t]*-\s*\(ask:why\)(?:[ \t]+([^\n]+))?[ \t]*$/gm,
+    cmd: m => `ask:why ${(m[1] || "").trim()}`,
+    path: "/api/file-why",
+    // "each": one dossier per path asked, and the mode where `preflight` runs —
+    // an argument-less line must be corrected, not silently fetched as `file=`.
+    mode: "each",
+    preflight: (m, ctx) => (m[1]?.trim() ? null : {
+      note: ctx.L("ask:why needs a file — write the path after it, e.g. -(ask:why) src/data.ts",
+                  "ask:why يحتاج ملفًا — اكتب المسار بعده، مثل -(ask:why) src/data.ts"),
+    }),
+    qs: m => `&file=${encodeURIComponent((m[1] || "").trim())}`,
+    logLine: d => `ask:why: served ${d.file || "?"} (${(d.reports || []).length} report(s))`,
+    format: (d, _m, ctx) => {
+      const L = ctx.L;
+      const more = (n: number) => (n > 0 ? L(`\n  …and ${n} more.`, `\n  …و${n} أخرى.`) : "");
+      const out: string[] = [];
+      out.push(L(`📄 ${d.file}`, `📄 ${d.file}`) + (d.purpose ? ` — ${d.purpose}` : ""));
+
+      if (d.empty) {
+        out.push(L("  No history recorded for this file.", "  لا تاريخ مسجَّلًا لهذا الملف."));
+        if (d.lastChange) out.push(L(`  Last change: ${String(d.lastChange).slice(0, 16).replace("T", " ")}`,
+                                     `  آخر تعديل: ${String(d.lastChange).slice(0, 16).replace("T", " ")}`));
+        return out.join("\n");
+      }
+
+      const decisions: Row[] = d.decisions || [];
+      if (decisions.length) {
+        out.push(L(`  Decisions & insights (${decisions.length}):`, `  قرارات ورؤى (${decisions.length}):`));
+        for (const x of decisions) out.push(`    [${x.tag}${typeof x.num === "number" ? ` #${x.num}` : ""} ${x.date}] ${x.text}`);
+        out.push(more(d.decisionsMore || 0).trimStart() ? `  ${more(d.decisionsMore).trim()}` : "");
+      }
+
+      const reports: Row[] = d.reports || [];
+      if (reports.length) {
+        out.push(L(`  Reports (${reports.length}):`, `  بلاغات (${reports.length}):`));
+        for (const r of reports) {
+          const num = typeof r.num === "number" ? `#${r.num} ` : "";
+          const state = r.open
+            ? L("OPEN", "مفتوح")
+            : typeof r.spanDays === "number"
+              ? L(`fixed in ${r.spanDays}d`, `أُصلح خلال ${r.spanDays} يوم`)
+              : L("fixed", "أُصلح");
+          out.push(`    ${r.reopened ? "⟲ " : ""}${num}[${r.kind} · ${state}] ${r.text}`);
+          if (r.fixContext) out.push(L(`      ↳ fix: ${r.fixContext}`, `      ↳ الإصلاح: ${r.fixContext}`));
+        }
+        if (d.reportsMore) out.push(`  ${more(d.reportsMore).trim()}`);
+      }
+
+      const work: Row[] = d.work || [];
+      if (work.length) {
+        out.push(L(`  Latest work (${work.length}):`, `  آخر الأعمال (${work.length}):`));
+        for (const w of work) out.push(`    [${w.tag} ${w.date}] ${w.text}`);
+        if (d.workMore) out.push(`  ${more(d.workMore).trim()}`);
+      }
+
+      if (d.lastChange) {
+        out.push(L(`  Last change: ${String(d.lastChange).slice(0, 16).replace("T", " ")}`,
+                   `  آخر تعديل: ${String(d.lastChange).slice(0, 16).replace("T", " ")}`));
+      }
+      return out.filter(Boolean).join("\n");
+    },
+  },
+
+  // ── -(ask:record) — does the record itself hold up? ───────────────────────
+  // Every other pull READS the record; this one CHECKS it, against today's
+  // capture rules. Findings mean "does not match the rules as they are now",
+  // never "wrong" — older entries were captured under the rules of their day.
+  // `all:` widens to every project, because a capture defect is rarely confined
+  // to one. Nothing here repairs anything.
+  {
+    key: "ask:record",
+    label: "record",
+    re: /^[ \t]*-\s*\(ask:record\)(?:[ \t]+(all:))?[ \t]*$/gm,
+    cmd: m => `ask:record${m[1] ? " all" : ""}`,
+    path: "/api/record-audit",
+    qs: m => (m[1] ? "&all=1" : ""),
+    timeoutMs: 20000,
+    logLine: d => `ask:record: ${d.findings || 0} finding(s) over ${d.scanned || 0} tag(s)`,
+    format: (d, _m, ctx) => {
+      const L = ctx.L;
+      const dets: Row[] = (d.detectors || []).filter((x: Row) => x.total > 0);
+      const scope = d.all ? L("every tracked project", "كل المشاريع المتتبَّعة") : String(d.project || "");
+      const head = L(`Record audit — ${d.scanned} tag(s) in ${scope}: ${d.findings} entr(ies) do not match today's capture rules.`,
+                     `تدقيق السجل — ${d.scanned} تاق في ${scope}: ${d.findings} مدخلًا لا يطابق قواعد الالتقاط الحالية.`);
+      if (!dets.length) {
+        return L(`Record audit — ${d.scanned} tag(s) in ${scope}: everything matches today's rules.`,
+                 `تدقيق السجل — ${d.scanned} تاق في ${scope}: كل شيء مطابق لقواعد اليوم.`);
+      }
+      const blocks = dets.map((det: Row) => {
+        const title = ctx.L === undefined ? det.key : (det.title?.[ctx.L("en", "ar")] || det.key);
+        const lines = (det.findings || []).map((f: Row) =>
+          `    [${f.tag}${typeof f.num === "number" ? ` #${f.num}` : ""}${f.project && d.all ? ` · ${f.project}` : ""}] ${f.excerpt}`);
+        const rest = det.total - (det.findings || []).length;
+        const more = rest > 0 ? L(`\n    …and ${rest} more.`, `\n    …و${rest} أخرى.`) : "";
+        return `  ${title} — ${det.total}:\n${lines.join("\n")}${more}`;
+      });
+      // Drift is context, not a finding: growing tags are a habit, and the
+      // number that matters is the newest slice, which a quarter split hides.
+      const drift: Row[] = (d.drift || []).filter((r: Row) => r.factor >= 2).slice(0, 4);
+      const driftLine = drift.length
+        ? `\n  ${L("Shape drift (median chars, oldest→newest quarter · latest slice):",
+                   "انجراف الشكل (وسيط الأحرف، الربع الأقدم←الأحدث · الشريحة الأخيرة):")}\n`
+          + drift.map((r: Row) => `    ${r.tag}: ${r.quarters.join(" → ")} · ${r.recent}  (×${r.factor})`).join("\n")
+        : "";
+      const foot = L("\n  Nothing was changed. These are FORM findings — whether an entry is TRUE is not measurable here.",
+                     "\n  لم يُغيَّر شيء. هذه ملاحظات شكل — أما صدق المدخل فغير قابل للقياس هنا.");
+      return `${head}\n${blocks.join("\n")}${driftLine}${foot}`;
+    },
+  },
+
   // ── -(ask:features) — the capability inventory ────────────────────────────
   // The client-language "what does the system do today?" list, each attributed
   // to the release that shipped it — so `-(feature update) #N` targets the
@@ -383,6 +502,16 @@ export const ASK_ROWS: AskRow[] = [
             `Fixed without touching a test: ${testGap.withoutTest}/${testGap.judged}${testGap.unknown ? ` (${testGap.unknown} unknown)` : ""} — e.g. ${testGap.items.slice(0, 3).map((g: Row) => `${typeof g.num === "number" ? `#${g.num}` : ""}`).filter(Boolean).join(" ")}. A fix with no regression test can come back unnoticed.`,
             `أُصلح بلا لمس أي اختبار: ${testGap.withoutTest}/${testGap.judged}${testGap.unknown ? ` (${testGap.unknown} غير معروف)` : ""} — مثل ${testGap.items.slice(0, 3).map((g: Row) => `${typeof g.num === "number" ? `#${g.num}` : ""}`).filter(Boolean).join(" ")}. الإصلاح بلا اختبار انحدار قد يعود دون أن ينتبه أحد.`)}\n`
         : "";
+      // Declared-stopgap debt: the point of `bug fix:interim` is that a
+      // knowingly-temporary fix stays VISIBLE instead of aging into a surprise.
+      // Oldest first, because the longest-standing stopgap is the one to pay
+      // off; a re-opened one is labelled as expected, not as a failure.
+      const interim = (d as Row).interimDebt;
+      const interimLine = interim && interim.count > 0
+        ? `${L(
+            `Declared stopgaps still standing: ${interim.count}${interim.reopened ? ` (${interim.reopened} already came back)` : ""} — oldest ${interim.items.slice(0, 3).map((i: Row) => `${typeof i.num === "number" ? `#${i.num}` : ""}${typeof i.ageDays === "number" ? `(${i.ageDays}d)` : ""}`).filter(Boolean).join(" ")}. Each was closed as temporary on purpose; the debt is the age, not the choice.`,
+            `إصلاحات عرضية معلَنة قائمة: ${interim.count}${interim.reopened ? ` (${interim.reopened} عاد فعلًا)` : ""} — أقدمها ${interim.items.slice(0, 3).map((i: Row) => `${typeof i.num === "number" ? `#${i.num}` : ""}${typeof i.ageDays === "number" ? `(${i.ageDays}ي)` : ""}`).filter(Boolean).join(" ")}. كلٌّ منها أُغلق مؤقتًا عن قصد؛ الدين في عمره لا في القرار.`)}\n`
+        : "";
       // Model scorecard (#695 follow-up): per-model discipline line — only
       // models that actually closed or opened something; silent when the
       // attributed history is still empty (pre-v3.30.0 projects).
@@ -395,7 +524,7 @@ export const ASK_ROWS: AskRow[] = [
           }).join(" · ")}\n`
         : "";
       return items.length
-        ? `${fragileLine}${gapLine}${modelLine}${L(`Problem corpus (${items.length} reports, oldest first) — cluster the recurrences; codify a confirmed pattern with -(rule:add) or -(insight):`,
+        ? `${fragileLine}${gapLine}${interimLine}${modelLine}${L(`Problem corpus (${items.length} reports, oldest first) — cluster the recurrences; codify a confirmed pattern with -(rule:add) or -(insight):`,
             `سجل المشاكل (${items.length} بلاغًا، الأقدم أولًا) — اعنقد المتكرر؛ ثبّت النمط المؤكد بـ-(rule:add) أو -(insight):`)}\n${items.map(line).join("\n")}`
         : L("No problem reports recorded for this project yet.", "لا بلاغات مسجّلة لهذا المشروع بعد.");
     },

@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   openTodos, openBugs, openSecurity, openPlanSteps, openOutdatedLibs, closedNums,
-  DEFAULT_INJECTION_CONFIG,
+  DEFAULT_INJECTION_CONFIG, inflightClosures, CLOSER_FOR,
 } from "../src/data";
 import { exportStatusMd } from "../src/export";
 import { buildContext } from "../src/inject";
@@ -207,5 +207,77 @@ describe("consumers agree with the resolver", () => {
     };
     const ctx = buildContext(baseData(fixtureTags(), [plan]), PROJ, "SessionStart");
     for (const n of [1, 5, 4, 6, 8, 11]) expect(ctx).toContain(`#${n}`);
+  });
+});
+
+// The withdrawal path: `-(dropped)` closes a bug report whose premise collapsed.
+// Before this, `bug found` had exactly one exit — `bug fix` — so a non-defect
+// could only be recorded as fixed (a lie that reaches the release notes) or left
+// open, where it blocks every release.
+describe("dropped as a bug closer", () => {
+  test("`-(dropped) #N` closes an open bug", () => {
+    const tags = [tag("bug found", "not actually a defect", { num: 20 }), tag("dropped", "#20 premise collapsed")];
+    expect(openBugs(tags)).toEqual([]);
+  });
+
+  test("it closes by text too, like every other closer", () => {
+    const tags = [
+      tag("bug found", "not actually a defect", { num: 21, timestamp: "2026-06-01T00:00:00Z" }),
+      tag("dropped", "not actually a defect", { timestamp: "2026-06-02T00:00:00Z" }),
+    ];
+    expect(openBugs(tags)).toEqual([]);
+  });
+
+  test("security is NOT droppable — the table grants it one exit on purpose", () => {
+    for (const kind of ["security", "security:own", "security:dep"]) {
+      const tags = [tag(kind, "leaky token", { num: 22 }), tag("dropped", "#22")];
+      expect(openSecurity(tags).map(t => t.num)).toEqual([22]);
+    }
+    expect(CLOSER_FOR.security).toEqual(["security fix"]);
+  });
+
+  test("`bug fix` remains the primary verb (the one the guard suggests)", () => {
+    expect(CLOSER_FOR["bug found"][0]).toBe("bug fix");
+  });
+});
+
+describe("inflightClosures — what THIS response closes, before it is stored", () => {
+  const batch = (...pairs: [string, string][]) => pairs.map(([tag, content]) => ({ tag, content }));
+
+  test("a closer only clears an opener the table pairs it with", () => {
+    const f = inflightClosures(batch(["bug fix", "#7 patched"]));
+    expect(f.closes(7, "bug found")).toBe(true);
+    expect(f.closes(7, "todo")).toBe(false);          // wrong type — not cleared
+    expect(f.closes(8, "bug found")).toBe(false);     // different number
+  });
+
+  test("dropped now clears a bug as well as a todo, from one table lookup", () => {
+    const f = inflightClosures(batch(["dropped", "#5 withdrawn"]));
+    expect(f.closes(5, "bug found")).toBe(true);
+    expect(f.closes(5, "todo")).toBe(true);
+    expect(f.closes(5, "security")).toBe(false);
+  });
+
+  test("`-(upcoming) #N` is deferral, never closure", () => {
+    const f = inflightClosures(batch(["upcoming", "#3 later"]));
+    expect(f.deferred.has(3)).toBe(true);
+    expect(f.closes(3, "todo")).toBe(false);
+  });
+
+  test("non-closure tags and un-numbered content contribute nothing", () => {
+    const f = inflightClosures(batch(["built", "#4 mentioned in prose"], ["done", "no number here"]));
+    expect(f.closes(4, "todo")).toBe(false);
+    expect(f.deferred.size).toBe(0);
+  });
+
+  test("an un-numbered item can never be closed by `#N`", () => {
+    const f = inflightClosures(batch(["done", "#1"]));
+    expect(f.closes(undefined, "todo")).toBe(false);
+  });
+
+  test("several closers aimed at one number are all remembered", () => {
+    const f = inflightClosures(batch(["done", "#9"], ["bug fix", "#9"]));
+    expect(f.closes(9, "todo")).toBe(true);
+    expect(f.closes(9, "bug found")).toBe(true);
   });
 });

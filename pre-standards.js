@@ -97,6 +97,41 @@ if (process.env.DEVLOG_TRACKING_GATE !== "0") {
   } catch { /* fail-open — the Stop-time guard is the backstop */ }
 }
 
+// ── Load-bearing-wall gate ────────────────────────────────────────────────────
+// The second half of the solution-altitude pair (first half = the Stop-time
+// root-cause guard). Rewriting a file the rest of the code leans on, without
+// knowing what it already went through, is how a rejected approach gets
+// re-proposed and a fixed bug re-introduced. One advisory notice per file per
+// session, ack written BEFORE the block (install-gate pattern), and fail-open
+// at every step: no server, no analysis, or an unknown file all pass silently.
+if (process.env.DEVLOG_DEMOLITION_GATE !== "0") {
+  try {
+    const { GATED_TOOLS, decideDemolition } = await import("./src/demolition-gate.ts");
+    if (GATED_TOOLS.has(data.tool_name || "")) {
+      const ackDir = join(import.meta.dir, ".devlog", "demolition-ack");
+      const safeSid = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+      const ackFile = join(ackDir, `${safeSid}-${Bun.hash(filePath.toLowerCase()).toString(36)}.txt`);
+      if (!existsSync(ackFile)) {
+        const port = process.env.DEVLOG_PORT || "7777";
+        const url = `http://127.0.0.1:${port}/api/file-weight?cwd=${encodeURIComponent(cwd)}&file=${encodeURIComponent(filePath)}`;
+        let weight = null;
+        try {
+          const r = await fetch(url, { signal: AbortSignal.timeout(4000) });
+          if (r.ok) weight = await r.json();
+        } catch { /* daemon down — fail open, as decideDemolition also would */ }
+        const LANG = (process.env.DEVLOG_LANG || "").trim().toLowerCase().startsWith("ar") ? "ar" : "en";
+        const decision = decideDemolition({ weight, acked: false }, LANG);
+        if (decision.block) {
+          await mkdir(ackDir, { recursive: true });
+          await Bun.write(ackFile, String(Date.now()));   // ack BEFORE block
+          process.stderr.write(`${decision.message}\n`);
+          process.exit(2);
+        }
+      }
+    }
+  } catch { /* fail-open — never wedge an edit on this gate's account */ }
+}
+
 // Same off-switch as the Stop-hook check.
 if (process.env.DEVLOG_STANDARDS_CHECK === "0") process.exit(0);
 
