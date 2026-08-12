@@ -15,6 +15,7 @@
 // local disk, runs lifecycle commands and posts telemetry — a different shape
 // that a fetch-and-format row would only pretend to cover.
 
+import { noteAskFailure } from "./hook-asks";
 import type { AskCtx, AskData, AskHit, AskRow } from "./hook-asks";
 import { weightBar } from "./project-map";
 
@@ -154,7 +155,13 @@ export const ASK_ROWS: AskRow[] = [
       const r = await fetch(
         `${ctx.server}/api/lib-advice?cwd=${encodeURIComponent(ctx.cwd)}&names=${encodeURIComponent(names)}`,
         { signal: AbortSignal.timeout(25000) });
-      if (!r.ok) { await ctx.log(`ask:lib: server replied ${r.status}`); return; }
+      // Own fetch → own failure voice (#860): this row never reaches serveHit,
+      // so without the note a non-ok reply left the asker with pure silence.
+      if (!r.ok) {
+        await ctx.log(`ask:lib: server replied ${r.status}`);
+        noteAskFailure("lib-advice", `HTTP ${r.status}`, ctx);
+        return;
+      }
       // Record only now the fetch succeeded (#398) — and only lines whose
       // names ALL rode this batch (#749).
       for (const h of hits) if (!starved.some(s => s.h === h)) await ctx.markAskServed(h.cmd);

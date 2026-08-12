@@ -126,6 +126,25 @@ export async function unservedMatches(
   return out;
 }
 
+/**
+ * A pull that FAILED must SAY so (#860). Rule 4 leaves the command re-servable,
+ * but re-serving needs a continuation — and a continuation only happens when
+ * something BLOCKS. A failed pull blocks nothing, so when it was the last (or
+ * only) command of the turn the failure ended in pure silence: the asker saw no
+ * answer, no refusal, no reason, and had nothing to retry against. The
+ * non-blocking channel carries the reason instead; it costs no turn and cannot
+ * loop, and the "nothing consumed" wording is what tells the asker a plain
+ * re-emit is the fix.
+ */
+export function noteAskFailure(label: string, reason: string, ctx: AskCtx): void {
+  // Header is `ask-failed`, NEVER `[devlog <label>]`: that header is the shape
+  // of a SERVED answer, and wearing it for a failure would read as "here is
+  // your answer" to both Claude and every test that keys on it.
+  ctx.feedback.push(`\n[devlog ask-failed]\n${ctx.L(
+    `${label}: could not fetch the answer (${reason}) — nothing was served and nothing was consumed. Re-emit the command to retry.`,
+    `${label}: تعذّر جلب الجواب (${reason}) — لم يُقدَّم شيء ولم يُستهلَك شيء. أعد إصدار الأمر للمحاولة ثانية.`)}\n`);
+}
+
 /** Fetch + mark + format + block for ONE occurrence. Returns "served" (never,
  *  since blocking exits), "empty" (nothing worth showing) or "failed". */
 async function serveHit(row: AskRow, hit: AskHit, ctx: AskCtx): Promise<"empty" | "failed"> {
@@ -134,15 +153,28 @@ async function serveHit(row: AskRow, hit: AskHit, ctx: AskCtx): Promise<"empty" 
   const r = await fetch(url, { signal: AbortSignal.timeout(row.timeoutMs ?? 10000) });
   if (!r.ok) {
     await ctx.log(`${row.key}: server replied ${r.status}`);
+    noteAskFailure(row.label, `HTTP ${r.status}`, ctx);
     return "failed";
   }
   await ctx.markAskServed(hit.cmd);          // rule 1: only now (#398)
-  const data = row.raw ? await r.text() : await r.json();
-  const body = row.format ? row.format(data, hit.m, ctx) : String(data);
-  await ctx.log(row.logLine ? row.logLine(data, hit.m) : `${row.key}: served`);
-  if (row.skipIfEmpty && !body.trim()) return "empty";
-  await ctx.blockContinue(`\n[devlog ${row.label}]\n${body}\n`);
-  return "empty";                            // unreachable: blockContinue exits
+  // Past the mark, "nothing was consumed" would be a LIE — a decode/format
+  // throw here has already spent the turn's one chance. Say that instead, so
+  // the asker waits for the next turn rather than re-emitting into a dedup.
+  try {
+    const data = row.raw ? await r.text() : await r.json();
+    const body = row.format ? row.format(data, hit.m, ctx) : String(data);
+    await ctx.log(row.logLine ? row.logLine(data, hit.m) : `${row.key}: served`);
+    if (row.skipIfEmpty && !body.trim()) return "empty";
+    await ctx.blockContinue(`\n[devlog ${row.label}]\n${body}\n`);
+    return "empty";                          // unreachable: blockContinue exits
+  } catch (e) {
+    const reason = (e as Error)?.message || String(e);
+    await ctx.log(`${row.key}: post-fetch failure: ${reason}`);
+    ctx.feedback.push(`\n[devlog ask-failed]\n${ctx.L(
+      `${row.label}: the answer could not be rendered (${reason.slice(0, 120)}) — this command is already spent for this turn; ask again on the next one.`,
+      `${row.label}: تعذّر عرض الجواب (${reason.slice(0, 120)}) — هذا الأمر استُهلك لهذا الدور؛ أعد سؤاله في الدور التالي.`)}\n`);
+    return "failed";
+  }
 }
 
 /**
@@ -178,7 +210,11 @@ export async function serveAsks(rows: AskRow[], ctx: AskCtx): Promise<void> {
         await serveHit(row, hits[0], ctx);
       }
     } catch (e) {
-      await ctx.log(`${row.key} error: ${(e as Error).message}`);
+      const reason = (e as Error).message || String(e);
+      await ctx.log(`${row.key} error: ${reason}`);
+      // Covers the throwing paths the fetch-level check can't see: a timed-out
+      // AbortSignal, a torn connection, a row with its own `serve` that threw.
+      noteAskFailure(row.label, reason.slice(0, 120), ctx);
     }
   }
 }

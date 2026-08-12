@@ -17,7 +17,7 @@
 // headers/CSP, and the process-level error net that keeps a background-loop
 // failure from silently killing history capture mid-session.
 
-import { join, isAbsolute } from "node:path";
+import { isAbsolute } from "node:path";
 import { existsSync, watch } from "node:fs";
 import { loadData, withData, PORT, DATA_DIR, backfillNums, cleanupMalformedSecurityTags, cleanupMalformedOutdatedTags } from "./data";
 import { cleanupOrphanClosures } from "./orphan-closures";
@@ -25,6 +25,7 @@ import { cleanupOldBackups, backupStores } from "./maintenance";
 import { acquireDaemonLock, releaseDaemonLock } from "./daemon-lock";
 import { wsClients, broadcast } from "./broadcast";
 import { scanFreshProfile, applyPreservedScan, freshOrRelocatedProfile } from "./scanner";
+import { FRESHNESS_FILES, freshnessDirs, firstChangedSince } from "./manifest-freshness";
 import { parseHookEvent, attributionCwd } from "./hooks";
 import { exportStatusMd, generateStackMd } from "./export";
 import { rebuildChangelogsMigration } from "./changelog-rebuild";
@@ -94,7 +95,6 @@ async function renameWithRetry(from: string, to: string, attempts = 6): Promise<
 }
 
 const rescanTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const MANIFEST_FILES = ["package.json", "Cargo.toml", "requirements.txt", "pyproject.toml", "go.mod", "composer.json"];
 
 function scheduleRescan(cwd: string, name: string) {
   const existing = rescanTimers.get(cwd);
@@ -133,16 +133,15 @@ async function checkAndRescanIfStale(name: string) {
     const project = data.projects[name];
     if (!project?.path) return;
     const lastScanMs = new Date(project.lastScan).getTime();
-    if (Number.isFinite(lastScanMs)) {
-      for (const f of MANIFEST_FILES) {
-        try {
-          const stat = await Bun.file(join(project.path, f)).stat();
-          if (stat.mtimeMs > lastScanMs) {
-            scheduleRescan(project.path, name);
-            return;
-          }
-        } catch { /* manifest file absent → not a freshness signal, skip it */ }
-      }
+    // Manifests AND lockfiles, root AND nested layouts (#861) — see
+    // manifest-freshness.ts for why the old root-manifests-only probe left
+    // whole layouts with no time bound on their staleness.
+    const changed = await firstChangedSince(project.path, lastScanMs,
+      async p => (await Bun.file(p).stat().catch(() => null))?.mtimeMs ?? null);
+    if (changed) {
+      console.log(`[sweep] ${name}: ${changed} changed since last scan`);
+      scheduleRescan(project.path, name);
+      return;
     }
     // Manifests unchanged — but vuln data may be stale (CVEs published since last scan)
     const lastVulnMs = project.vulnScanDate ? new Date(project.vulnScanDate).getTime() : 0;
@@ -444,7 +443,9 @@ const routeDefs = {
     // Event / session-capture routes (hook, session-summary) live in
     // ./routes-events (plan 3.1). pushEvent/scheduleRescan/isRealCwd/MANIFEST_FILES
     // stay server-local and are injected via deps.
-    ...makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST_FILES }),
+    // FRESHNESS_FILES, not the manifest names alone (#861): an edit to a
+    // lockfile moves the reported versions just as much as a manifest edit.
+    ...makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST_FILES: FRESHNESS_FILES }),
 
     // Plan + changelog routes (plan, plan/:id, changelog/since-last-release) live
     // in ./routes-plan (plan 3.1); spread here.
@@ -719,26 +720,29 @@ setInterval(() => sweepProjects("interval"), PROJECT_SWEEP_MS);
 // covered without a server restart.
 const projectWatchers = new Map<string, ReturnType<typeof watch>>();
 
-function watchProject(name: string, projectPath: string) {
-  if (projectWatchers.has(projectPath)) return;
+// `dirPath` is the directory being watched, `projectPath` the project a hit
+// belongs to: fs.watch is non-recursive, so a nested layout (src-tauri/,
+// backend/…) needs its OWN watcher while still rescanning the project (#861).
+function watchProject(name: string, projectPath: string, dirPath: string = projectPath) {
+  if (projectWatchers.has(dirPath)) return;
   try {
-    const w = watch(projectPath, { recursive: false }, (_event, filename) => {
+    const w = watch(dirPath, { recursive: false }, (_event, filename) => {
       if (!filename) return;
       const base = filename.toString().split(/[\\/]/).pop() || "";
-      if (!MANIFEST_FILES.includes(base)) return;
+      if (!FRESHNESS_FILES.includes(base)) return;
       scheduleRescan(projectPath, name);
     });
     w.on("error", () => {
       // Path went away — drop the watcher; sweep will re-add if it returns.
-      projectWatchers.delete(projectPath);
+      projectWatchers.delete(dirPath);
       try { w.close(); } catch { /* watcher already dead/closing — nothing to release */ }
     });
-    projectWatchers.set(projectPath, w);
+    projectWatchers.set(dirPath, w);
   } catch (e) {
     // Watch can fail on missing paths or permission issues — the project just
     // loses live manifest watching, but that death should be visible in debug
     // mode instead of the watcher silently never existing.
-    softFail(`watchProject(${projectPath})`, e);
+    softFail(`watchProject(${dirPath})`, e);
   }
 }
 
@@ -764,8 +768,13 @@ async function refreshWatchers() {
     const live = new Set<string>();
     for (const [name, p] of Object.entries(data.projects)) {
       if (!p.path || !existsSync(p.path)) continue;
-      live.add(p.path);
-      watchProject(name, p.path);
+      // Root + whichever nested layout dirs exist; `live` must list every
+      // watched dir or the prune below would drop the nested ones each sweep.
+      for (const dir of freshnessDirs(p.path)) {
+        if (!existsSync(dir)) continue;
+        live.add(dir);
+        watchProject(name, p.path, dir);
+      }
     }
     // Drop watchers for projects that disappeared
     for (const [path, w] of projectWatchers) {

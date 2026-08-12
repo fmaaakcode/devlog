@@ -57,7 +57,7 @@ const { feedback, flushBlock, blockContinue } =
 
 // Disk queue for /api/tags during server outages — extracted to src/tag-queue.ts
 // (drain order, #768 poison quarantine and all).
-const { flushTagQueue, enqueueTags } = makeTagQueue(QUEUE_DIR, SERVER, log);
+const { flushTagQueue, enqueueTags, rejectBatch } = makeTagQueue(QUEUE_DIR, SERVER, log);
 
 await log(`=== ${new Date().toISOString()} ===`);
 
@@ -463,7 +463,15 @@ if (msg) {
       const respBody = await r.text();
       await log(`POST result: ${r.status} ${respBody.slice(0, 200)}`);
       // #768: a definitive 4xx must not enter the queue — that's how poison got in.
-      if (!r.ok && isPermanentReject(r.status)) { await log(`batch rejected ${r.status} — dropped, not queued`); await recordPosted(); }
+      // #768: a definitive 4xx must not enter the QUEUE — that's how poison got
+      // in. But dropping it outright (#862) left no copy anywhere and told
+      // nobody: the response announced work the log never received. So park it
+      // outside the drain's reach and say so — the tags are recoverable from
+      // disk, and Claude learns its claim didn't land instead of assuming it did.
+      if (!r.ok && isPermanentReject(r.status)) {
+        feedback.push(await rejectBatch(body, r.status, freshEntries.length, L));
+        await recordPosted();
+      }
       else if (!r.ok) { await enqueueTags(body); await recordPosted(); }
       else {
         await recordPosted();
