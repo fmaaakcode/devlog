@@ -8,6 +8,7 @@ import { entryKey, loadLedger, saveLedger, sweepTurnState } from "./src/turn-led
 import { makeTagQueue, isPermanentReject } from "./src/tag-queue.ts";
 import { ASK_ROWS, serveAsks } from "./src/hook-ask-rows.ts";
 import { runTurnGuards } from "./src/hook-guards.ts";
+import { makeBlockChannel } from "./src/block-channel.ts";
 
 // Single source for the server base — follows DEVLOG_PORT like data.ts /
 // doctor.ts / pre-release-hook.js instead of hardcoding 7777 in six places (R3 P5).
@@ -46,28 +47,13 @@ if (DEBUG) {
 }
 const log = DEBUG ? (line: string) => appendFile(LOG_PATH, `${line}\n`, "utf-8") : () => { /* debug logging disabled */ };
 
-// Stop-hook feedback channel. We speak to Claude via JSON on stdout + exit(0)
-// (`{decision:"block", reason}`), NOT stderr + exit(2): exit 2 renders as a red
-// hook *error* to the user, though every message here is normal protocol
-// feedback. JSON-on-exit-0 gives identical "block the stop, feed the text back,
-// continue the turn" semantics with no error label.
-//
-// Messages accrue in `feedback` so informational notes written earlier in a run
-// (rollback / closure-confirm / verify-hint) ride out with the blocking
-// message. On the no-block path they surface at the natural exit(0) instead.
-const feedback: string[] = [];
-// #752: every exit path awaits finalizeTurn() (Parts 2+3, hoisted from the file
-// end) — a blocking stop used to exit before them. `finalized` must live here,
-// above the first flushBlock call: at the file end its `let` sits in TDZ.
+// How this hook speaks to Claude (JSON block on stdout) and which blocks count
+// as enforcement — both live in src/block-channel.ts with the key table.
+// `finalized` must live here, above the first block: at the file end its `let`
+// would sit in TDZ (#752).
 let finalized = false;
-async function flushBlock(): Promise<never> {
-  await finalizeTurn();
-  process.stdout.write(JSON.stringify({ decision: "block", reason: feedback.join("\n") }));
-  process.exit(0);
-}
-async function blockContinue(text: string): Promise<never> {
-  feedback.push(text); return flushBlock();
-}
+const { feedback, flushBlock, blockContinue } =
+  makeBlockChannel(SERVER, () => cwd, () => finalizeTurn());
 
 // Disk queue for /api/tags during server outages — extracted to src/tag-queue.ts
 // (drain order, #768 poison quarantine and all).
@@ -399,7 +385,7 @@ if (msg) {
           out.push(L("✗ The release tag was NOT recorded.", "✗ الـrelease tag لم يُسجَّل."));
           out.push("══════════════════════════════════════");
           await log(`release-guard BLOCKED: open_items=${items.length}`);
-          await blockContinue(out.join("\n"));
+          await blockContinue(out.join("\n"), "release-guard");
         }
       } catch (e) {
         await log(`release-guard error: ${(e as Error).message}`);
@@ -443,7 +429,7 @@ if (msg) {
               "══════════════════════════════════════",
             ].join("\n");
             await log(`feature-nudge BLOCKED once: built=${sinceLastRelease.built}, features=0`);
-            await blockContinue(`\n${out}\n`);
+            await blockContinue(`\n${out}\n`, "feature-nudge");
           }
         }
       } catch (e) {
@@ -507,7 +493,7 @@ if (msg) {
               "═════════════════════════════════════════",
             ].join("\n");
             await log(`release-downgrade rejected: ${dg.version} <= ${dg.latest}`);
-            await blockContinue(`\n${out}\n`);
+            await blockContinue(`\n${out}\n`, "release-downgrade");
           }
           // Type+number conflict: -(release:minor) v1.102.0 — the intent tag
           // treats the whole reason as prose, so the number would be silently
@@ -527,7 +513,7 @@ if (msg) {
               "═════════════════════════════════════════",
             ].join("\n");
             await log(`release-intent-conflict rejected: ${c.declared} + ${c.version}`);
-            await blockContinue(`\n${out}\n`);
+            await blockContinue(`\n${out}\n`, "release-intent");
           }
           // Open-items guard fired on the SERVER (defense in depth). Reached when
           // the pre-send guard above was bypassed — server unreachable at pre-check
@@ -558,7 +544,7 @@ if (msg) {
                 "ثم أعد إصدار -(release). أو تجاوز بـ DEVLOG_RELEASE_GUARD=0."),
               "═════════════════════════════════════════");
             await log(`release-blocked (server): open_items=${items.length}`);
-            await blockContinue(`\n${out.join("\n")}\n`);
+            await blockContinue(`\n${out.join("\n")}\n`, "release-blocked");
           }
           // Release rollback outcome (QA #2): undoing a release reverses its
           // effects; report them so the manifest state is never silently out of
@@ -636,7 +622,7 @@ if (msg) {
             const bad = resp.upcomingChanges.some((c: any) => c.kind === "no-match" || c.kind === "security-refused");
             feedback.push(`\n[devlog upcoming]\n${resp.upcomingChanges.map(fmt).join("\n")}\n`);
             await log(`upcoming: ${resp.upcomingChanges.map((c: any) => `${c.kind}#${c.num ?? "?"}`).join(", ")}${bad ? " (blocking)" : ""}`);
-            if (bad) await flushBlock();
+            if (bad) await flushBlock("upcoming");
           }
           // Optional verify nudge (#232): closed something without running tests
           // this session. Informational only — never blocks. Mute
@@ -733,7 +719,7 @@ if (msg) {
             await log(`closure-text-divergence: ${resp.closureTextWarnings.map((w: any) => w.num).join(", ")}`);
             // Only self-flush when there's no harder closure mismatch below (that
             // one blocks too, flushing this along with it); avoid double handling.
-            if (!(Array.isArray(resp.closureHints) && resp.closureHints.length)) await flushBlock();
+            if (!(Array.isArray(resp.closureHints) && resp.closureHints.length)) await flushBlock("closure-divergence");
           }
           // Closure mismatch: Claude closed an item that won't actually close —
           // wrong verb for an open item (`-(done)` on a bug), or a #N matching no
@@ -777,7 +763,7 @@ if (msg) {
               "═════════════════════════════════════════",
             ].join("\n");
             await log(`closure-mismatch: served ${resp.closureHints.length}`);
-            await blockContinue(`\n${out}\n`);
+            await blockContinue(`\n${out}\n`, "closure-mismatch");
           }
           // Feature-reference problems: a -(feature update)/-(feature removed)
           // whose #N points at no recorded feature (or lost its ref/text). The
@@ -807,7 +793,7 @@ if (msg) {
               "══════════════════════════════════════════",
             ].join("\n");
             await log(`feature-hints: served ${resp.featureHints.length}`);
-            await blockContinue(`\n${out}\n`);
+            await blockContinue(`\n${out}\n`, "feature-hints");
           }
           if (resp.release) {
             const rel = resp.release;
@@ -839,7 +825,8 @@ if (msg) {
               "════════════════════════════════",
             ].join("\n");
             await log(`release-response: served ${rel.version}`);
-            await blockContinue(`\n${out}\n`);
+            // Delivery: it hands back the version the -(release) tag asked for.
+            await blockContinue(`\n${out}\n`, "serve");
           }
         } catch (e) { await log(`release-response parse error: ${(e as Error).message}`); }
       }
@@ -871,7 +858,7 @@ if (msg) {
             feedback.push(`\n[devlog closure-check]\n${msg}\n`);
             if (result.unclosed.length) {
               // Block: Claude sees the feedback and must respond again.
-              await flushBlock();
+              await flushBlock("closure-check");
             }
           }
         }
@@ -918,7 +905,7 @@ if (msg) {
         if (output.trim()) {
           // block: Claude sees the feedback and continues this turn with the
           // rules/confirmation in context.
-          await blockContinue(`\n[devlog standards]\n${output}\n`);
+          await blockContinue(`\n[devlog standards]\n${output}\n`, "serve");
         }
       }
     }
@@ -946,7 +933,9 @@ const strippedMsg = msg
 
 await serveAsks(ASK_ROWS, {
   msg, strippedMsg, cwd, server: SERVER, lang: LANG,
-  L, log, shouldServeAsk, markAskServed, blockContinue, feedback,
+  // An -(ask:*) answer is delivery: the block channel is how it arrives.
+  L, log, shouldServeAsk, markAskServed, feedback,
+  blockContinue: (text: string) => blockContinue(text, "serve"),
 });
 
 
@@ -958,7 +947,9 @@ await serveAsks(ASK_ROWS, {
 // testable); the order is fixed there and explained there.
 await runTurnGuards({
   msg, tagSegments, cwd, sessionId, stopHookActive, server: SERVER,
-  ledger, ledgerFile, L, log, shouldServeAsk, markAskServed, flushTagQueue, blockContinue,
+  ledger, ledgerFile, L, log, shouldServeAsk, markAskServed, flushTagQueue,
+  // Guards record themselves by name (blockRecorded) — never count twice here.
+  blockContinue: (text: string) => blockContinue(text, "guard-own"),
 });
 
 // No blocking message fired, but informational notes accrued — chiefly the

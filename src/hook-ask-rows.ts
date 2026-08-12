@@ -512,6 +512,18 @@ export const ASK_ROWS: AskRow[] = [
             `Declared stopgaps still standing: ${interim.count}${interim.reopened ? ` (${interim.reopened} already came back)` : ""} — oldest ${interim.items.slice(0, 3).map((i: Row) => `${typeof i.num === "number" ? `#${i.num}` : ""}${typeof i.ageDays === "number" ? `(${i.ageDays}d)` : ""}`).filter(Boolean).join(" ")}. Each was closed as temporary on purpose; the debt is the age, not the choice.`,
             `إصلاحات عرضية معلَنة قائمة: ${interim.count}${interim.reopened ? ` (${interim.reopened} عاد فعلًا)` : ""} — أقدمها ${interim.items.slice(0, 3).map((i: Row) => `${typeof i.num === "number" ? `#${i.num}` : ""}${typeof i.ageDays === "number" ? `(${i.ageDays}ي)` : ""}`).filter(Boolean).join(" ")}. كلٌّ منها أُغلق مؤقتًا عن قصد؛ الدين في عمره لا في القرار.`)}\n`
         : "";
+      // The enforcement tools themselves (plan guard-telemetry): how often each
+      // Stop guard blocked, and which blocked nothing. The silent list is the
+      // reason this line exists — a guard muted by an env var or broken by a
+      // refactor reads EXACTLY like a guard with nothing to catch, and only the
+      // full vocabulary can tell them apart. It never claims which one it is.
+      const guards = (d as Row).guards;
+      const guardRows = guards?.rows ?? [];
+      const guardLine = guardRows.length || guards?.silent?.length
+        ? `${L(
+            `Guards: ${guardRows.map((g: Row) => `${g.rule} ${g.fires}${g.passes ? ` (answered ${g.passes})` : ""}`).join(" · ") || "none fired"}${guards.silent?.length ? ` — silent: ${guards.silent.join(", ")}` : ""}. Silent means untriggered OR muted/broken; check one before reading it as health.`,
+            `الحرّاس: ${guardRows.map((g: Row) => `${g.rule} ${g.fires}${g.passes ? ` (استُجيب ${g.passes})` : ""}`).join(" · ") || "لم يطلق أحد"}${guards.silent?.length ? ` — صامتة: ${guards.silent.join(", ")}` : ""}. الصمت إما لم يُستفَز وإما معطَّل/مكسور؛ افحص واحدًا قبل قراءته كسلامة.`)}\n`
+        : "";
       // Model scorecard (#695 follow-up): per-model discipline line — only
       // models that actually closed or opened something; silent when the
       // attributed history is still empty (pre-v3.30.0 projects).
@@ -524,7 +536,7 @@ export const ASK_ROWS: AskRow[] = [
           }).join(" · ")}\n`
         : "";
       return items.length
-        ? `${fragileLine}${gapLine}${interimLine}${modelLine}${L(`Problem corpus (${items.length} reports, oldest first) — cluster the recurrences; codify a confirmed pattern with -(rule:add) or -(insight):`,
+        ? `${fragileLine}${gapLine}${interimLine}${guardLine}${modelLine}${L(`Problem corpus (${items.length} reports, oldest first) — cluster the recurrences; codify a confirmed pattern with -(rule:add) or -(insight):`,
             `سجل المشاكل (${items.length} بلاغًا، الأقدم أولًا) — اعنقد المتكرر؛ ثبّت النمط المؤكد بـ-(rule:add) أو -(insight):`)}\n${items.map(line).join("\n")}`
         : L("No problem reports recorded for this project yet.", "لا بلاغات مسجّلة لهذا المشروع بعد.");
     },

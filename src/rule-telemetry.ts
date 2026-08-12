@@ -15,12 +15,20 @@
 // It would add an HTTP call to the hot editing path for a number the events
 // store already implies (total code writes − fires). Install-gate passes ARE
 // captured — that hook already paid for a server round-trip.
+//
+// The `turn` gate (plan guard-telemetry, P1) covers the Stop-hook guards — the
+// checks that block the turn instead of a command. They were the enforcement
+// tools with NO trail at all: their only trace was a free-text hook log line
+// nobody aggregates, so a guard silently dead (muted env, broken refactor, a
+// daemon running older code) looked exactly like a guard with nothing to say.
+// Counters separate those two. What they do NOT measure is whether the tags the
+// block extracted are honest — that stays the verification loop's question.
 
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { DATA_DIR } from "./data";
 import { softFail } from "./soft-fail";
 
-export const RULE_GATES = ["write", "install", "lifecycle"] as const;
+export const RULE_GATES = ["write", "install", "lifecycle", "turn"] as const;
 export type RuleGate = (typeof RULE_GATES)[number];
 
 // fire = a gate blocked/warned · ack = a conscious override (rule:ack, or an
@@ -28,6 +36,10 @@ export type RuleGate = (typeof RULE_GATES)[number];
 // project-wide enforcement toggled (detail: "disabled"/"enabled") · adopt /
 // remove = rule lifecycle (rule:add / rule:rm) — adoption dates feed the
 // before/after report-rate analysis.
+// On the `turn` gate, `rule` is the guard's own name (the same label it logs)
+// and `fire` means it blocked the turn. A guard has no adoption date — it is
+// born with its code — so turn records never produce ruleEffect rows; counters
+// only (see rule-effect.ts).
 export const RULE_ACTIONS = ["fire", "ack", "pass", "exempt", "adopt", "remove"] as const;
 export type RuleAction = (typeof RULE_ACTIONS)[number];
 

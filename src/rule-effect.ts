@@ -27,7 +27,13 @@ export interface RuleStat {
 }
 
 /** Per gate+rule counters, most-fired first. Lifecycle adopt/remove/exempt
- *  records are not counters — they feed ruleEffect below. */
+ *  records are not counters — they feed ruleEffect below.
+ *
+ *  The `turn` gate (Stop guards) is counted here and NOWHERE else: a guard has
+ *  no adoption date — it ships with its code — so it has no honest "before"
+ *  window, and a ruleEffect row for it would be a fabricated number. It reaches
+ *  ruleEffect only as an absence: turn records never carry `adopt`. Pinned by
+ *  test/guard-telemetry.test.ts. */
 export function ruleStats(records: RuleTelemetryRecord[]): RuleStat[] {
   const byKey = new Map<string, RuleStat>();
   for (const r of records) {
@@ -42,6 +48,32 @@ export function ruleStats(records: RuleTelemetryRecord[]): RuleStat[] {
     if (!s.lastAt || r.ts > s.lastAt) s.lastAt = r.ts;
   }
   return [...byKey.values()].sort((a, b) => b.fires - a.fires || b.acks - a.acks || a.rule.localeCompare(b.rule));
+}
+
+export interface TurnGateRow { rule: string; fires: number; passes: number; lastAt?: string }
+
+/**
+ * The `turn` gate's read side (plan guard-telemetry, P3): what each Stop guard
+ * did, and — the point — which ones said nothing at all.
+ *
+ * `known` is the full vocabulary (block-channel's TURN_RULES), not the observed
+ * records, because the question this answers is "is my enforcement alive?" and a
+ * guard that never fired leaves no record to notice. A name in `silent` means
+ * either nothing tripped it or it is broken/muted; the caller must present it as
+ * that pair, never as proof of health.
+ *
+ * `passes` are only recorded where compliance is unambiguous (two guards today,
+ * see recordCompliance), so a zero there is "not measured" — not "ignored".
+ */
+export function turnGateSummary(
+  records: RuleTelemetryRecord[],
+  known: readonly string[],
+): { rows: TurnGateRow[]; silent: string[] } {
+  const rows = ruleStats(records.filter(r => r.gate === "turn"))
+    .map(s => ({ rule: s.rule, fires: s.fires, passes: s.passes, ...(s.lastAt ? { lastAt: s.lastAt } : {}) }))
+    .filter(r => r.fires > 0 || r.passes > 0);
+  const spoke = new Set(rows.filter(r => r.fires > 0).map(r => r.rule));
+  return { rows, silent: known.filter(k => !spoke.has(k)) };
 }
 
 // How an adopted rule's category is matched against problem reports:

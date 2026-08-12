@@ -22,7 +22,8 @@ import { obj } from "./validators";
 import { modelScorecard } from "./model-stats";
 import { studyCorpus, monthlyTrend, STUDY_NAME_RE, type PrevStudyDoc } from "./study";
 import { loadRuleTelemetry } from "./rule-telemetry";
-import { ruleStats, ruleEffect } from "./rule-effect";
+import { ruleStats, ruleEffect, turnGateSummary } from "./rule-effect";
+import { TURN_RULES } from "./block-channel";
 
 type ApiReq = Bun.BunRequest;
 
@@ -199,6 +200,10 @@ export function makeFeatureRoutes({ htmlResponse }: FeatureRouteDeps): Record<st
             stats: ruleStats(telemetry.filter(r => !r.project || r.project === project)),
             effects: ruleEffect(telemetry, items),
           },
+          // The `turn` gate: what the Stop guards did in THIS project, plus the
+          // ones that said nothing — a guard muted or broken is invisible in the
+          // records themselves, which is the whole reason the counters exist.
+          guards: turnGateSummary(telemetry.filter(r => r.project === project), TURN_RULES),
           fragile: fragileFiles(data, project),
           // #585: fixes that closed without their session touching a test. One
           // quiet ratio in the header — "what keeps breaking?" and "what did we

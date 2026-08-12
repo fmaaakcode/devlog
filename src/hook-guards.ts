@@ -56,6 +56,87 @@ interface ChangeItem { file_path?: string }
 
 const envOff = (name: string): boolean => process.env[name] === "0";
 
+/** Recording a block costs a round-trip on a path that is about to end the
+ *  process, so it gets a tighter budget than the command gates' 1500ms. */
+const GUARD_TELEMETRY_MS = 800;
+
+/** Session-scoped marker that the untagged block was answered — one pass per
+ *  fire, and it fires once per session. */
+const UNTAGGED_PASS_SIG = "untagged-pass";
+
+/**
+ * The ONLY way a guard speaks: log it, count it, then block.
+ *
+ * Wrapping the block instead of adding a `post` line inside each guard is the
+ * point — a seventh guard cannot forget the counter, because forgetting means
+ * not blocking at all. `test/guard-telemetry.test.ts` pins that shape: exactly
+ * one `ctx.blockContinue(` call site in this file.
+ *
+ * Ordering is the verification standard's rule #1: the record is written BEFORE
+ * the output, because `blockContinue` never returns — an unawaited fetch after
+ * it would be killed with the process, giving a silent guard the same empty
+ * trail as a dead one, which is the exact confusion this exists to remove.
+ * Telemetry still never changes the outcome: every failure is swallowed and the
+ * block happens regardless.
+ */
+async function blockRecorded(
+  ctx: GuardCtx,
+  guard: string,
+  logLine: string,
+  text: string,
+  extra: { file?: string; detail?: string } = {},
+): Promise<never> {
+  await ctx.log(logLine);
+  await recordGuard(ctx, guard, "fire", extra);
+  return ctx.blockContinue(text);
+}
+
+/** One telemetry shape for both halves of a guard's story. Failure is swallowed
+ *  by contract — the caller's decision never depends on it. */
+async function recordGuard(
+  ctx: GuardCtx,
+  guard: string,
+  action: "fire" | "pass",
+  extra: { file?: string; detail?: string } = {},
+): Promise<void> {
+  try {
+    const { postRuleTelemetry } = await import("./telemetry-client");
+    await postRuleTelemetry(ctx.server, ctx.cwd,
+      [{ gate: "turn", action, rule: guard, ...extra }], GUARD_TELEMETRY_MS);
+  } catch { /* a counter is never worth losing the nudge */ }
+}
+
+/**
+ * `pass` = a block that was ANSWERED (plan guard-telemetry, P2).
+ *
+ * Fires-only counters say how loud a guard is, not whether it worked. The
+ * compliance half is recorded ONLY where the answer is unambiguous in the
+ * guard's own inputs: this guard blocked X earlier, and X is now fixed in front
+ * of it. Two guards have that signal today — root-cause (the number now carries
+ * a cause) and untagged (the response now carries tags).
+ *
+ * The other four (near-miss, backtick, dep-freshness, standards-check) get NO
+ * pass records, deliberately: their triggers vanish for reasons other than
+ * compliance (a typo'd line simply not repeated, a manifest reverted), so a pass
+ * there would be a guess dressed as a measurement. Their absent pass count means
+ * "not measured", never "ignored" — the same rule study.ts states for empty
+ * telemetry.
+ *
+ * Both signals are SAME-TURN by design: the served keys are turn-scoped, and the
+ * continuation a block forces is the only window where "answered this block"
+ * cannot be confused with "did something else later".
+ */
+async function recordCompliance(
+  ctx: GuardCtx,
+  guard: string,
+  dedupKey: string,
+  detail: string,
+): Promise<void> {
+  if (!(await ctx.shouldServeAsk(dedupKey))) return;   // already recorded this turn
+  await ctx.markAskServed(dedupKey);
+  await recordGuard(ctx, guard, "pass", { detail });
+}
+
 async function sessionChanges(ctx: GuardCtx, timeoutMs = 3000): Promise<{ items: ChangeItem[]; tagCount?: number }> {
   const r = await fetch(`${ctx.server}/api/changes/session?session_id=${encodeURIComponent(ctx.sessionId)}`,
     { signal: AbortSignal.timeout(timeoutMs) });
@@ -89,8 +170,8 @@ export async function nearMissGuard(ctx: GuardCtx): Promise<void> {
       "لم يُخزَّن شيء. صحّح الرأس وأعد إصدار التاق."),
     "══════════════════════════════════",
   ].join("\n");
-  await ctx.log(`near-miss: served ${fresh.length} head(s)`);
-  await ctx.blockContinue(`\n${out}\n`);
+  await blockRecorded(ctx, "near-miss", `near-miss: served ${fresh.length} head(s)`, `\n${out}\n`,
+    { detail: fresh.map(nm => nm.head).join(",") });
 }
 
 /**
@@ -121,8 +202,8 @@ export async function backtickGuard(ctx: GuardCtx): Promise<void> {
       "لم يُنفَّذ ولم يُخزَّن شيء. للتنفيذ أعد إصدار كل سطر خامًا في بداية السطر — بلا باك-تيك ولا سور كود. وإن كان مجرد مثال فتجاهل هذا التنبيه."),
     "═════════════════════════════════",
   ].join("\n");
-  await ctx.log(`backtick-nudge: served ${fresh.length} line(s)`);
-  await ctx.blockContinue(`\n${out}\n`);
+  await blockRecorded(ctx, "backtick-nudge", `backtick-nudge: served ${fresh.length} line(s)`, `\n${out}\n`,
+    { detail: `${fresh.length} line(s)` });
 }
 
 // DISABLED (user directive 2026-06-24): the system no longer nags Claude at Stop
@@ -182,8 +263,12 @@ export async function standardsPullGuard(ctx: GuardCtx): Promise<void> {
     L("(disable once: DEVLOG_STANDARDS_CHECK=0)", "(تعطيل لمرة واحدة: DEVLOG_STANDARDS_CHECK=0)"),
     "════════════════════════════════════════",
   ].join("\n");
-  await ctx.log(`standards-check BLOCKED: code_writes=${codeWrites.length}, relevantUncovered=${[...relevant].join(",")}`);
-  await ctx.blockContinue(`\n${out}\n`);
+  // NOTE: unreachable while STANDARDS_PULL_ENFORCEMENT is false. Its counter
+  // will read zero forever — that zero means DISABLED, not "code always pulled
+  // its standard". Read it with this line, not without it.
+  await blockRecorded(ctx, "standards-check",
+    `standards-check BLOCKED: code_writes=${codeWrites.length}, relevantUncovered=${[...relevant].join(",")}`,
+    `\n${out}\n`, { detail: need });
 }
 
 const MANIFEST = /(?:^|[\\/])(Cargo\.toml|package\.json|go\.mod|pyproject\.toml|requirements\.txt|composer\.json)$/i;
@@ -232,8 +317,8 @@ export async function depFreshnessGuard(ctx: GuardCtx): Promise<void> {
     L("(disable: DEVLOG_STANDARDS_CHECK=0)", "(تعطيل: DEVLOG_STANDARDS_CHECK=0)"),
     "═════════════════════════════════════════",
   ].join("\n");
-  await ctx.log(`dep-freshness BLOCKED: ${violations.length} violations`);
-  await ctx.blockContinue(`\n${out}\n`);
+  await blockRecorded(ctx, "dep-freshness", `dep-freshness BLOCKED: ${violations.length} violations`, `\n${out}\n`,
+    { detail: violations.map((v: Violation) => v.name).join(",") });
 }
 
 interface Violation { name: string; installed: string; suggest: string; latest?: string; ageDays?: number; kind?: string }
@@ -249,10 +334,27 @@ interface Violation { name: string; installed: string; suggest: string; latest?:
  * sessions never see it.
  */
 export async function untaggedSessionGuard(ctx: GuardCtx): Promise<void> {
-  if (!ctx.cwd || !ctx.sessionId || ctx.stopHookActive || envOff("DEVLOG_UNTAGGED_CHECK") || ctx.ledger.session.hintedUntagged) return;
+  if (!ctx.cwd || !ctx.sessionId || envOff("DEVLOG_UNTAGGED_CHECK")) return;
   // Re-parse is deliberate: the Part-1 entries live in another scope and this
   // guard must also run on responses that carried no tags at all.
   const turnEntryCount = ctx.tagSegments.flatMap(s => parseTags(s.text)).length;
+
+  // Answered: it blocked this session (hintedUntagged) and tags are here now.
+  // Counted before the early returns, since the answering response is a
+  // continuation and carries the very tags that make the guard silent.
+  // Dedup is SESSION-scoped here, unlike root-cause's per-number key: this
+  // guard blocks once per session, so a turn-scoped key would record a fresh
+  // pass on every later tagged turn and turn one answered block into many.
+  const sigs = ctx.ledger?.session?.servedSignatures;
+  if (ctx.ledger?.session?.hintedUntagged && turnEntryCount > 0) {
+    if (Array.isArray(sigs) && !sigs.includes(UNTAGGED_PASS_SIG)) {
+      sigs.push(UNTAGGED_PASS_SIG);
+      await saveLedger(ctx.ledgerFile, ctx.ledger);
+      await recordGuard(ctx, "untagged-guard", "pass", { detail: `${turnEntryCount} tag(s)` });
+    }
+    return;
+  }
+  if (ctx.stopHookActive || ctx.ledger.session.hintedUntagged) return;
   if (turnEntryCount !== 0) return;
 
   // Drain the disk queue BEFORE asking for tagCount: tags from a server-outage
@@ -303,8 +405,9 @@ export async function untaggedSessionGuard(ctx: GuardCtx): Promise<void> {
     L("(once per session; mute: DEVLOG_UNTAGGED_CHECK=0)", "(مرة واحدة لكل جلسة؛ كتم: DEVLOG_UNTAGGED_CHECK=0)"),
     "═════════════════════════════════════════",
   ].join("\n");
-  await ctx.log(`untagged-guard BLOCKED: code_files=${codeFiles.size}, tracking_files=${trackingFiles.size}, session_tags=${tagCount}`);
-  await ctx.blockContinue(`\n${out}\n`);
+  await blockRecorded(ctx, "untagged-guard",
+    `untagged-guard BLOCKED: code_files=${codeFiles.size}, tracking_files=${trackingFiles.size}, session_tags=${tagCount}`,
+    `\n${out}\n`, { detail: `code=${codeFiles.size} tracking=${trackingFiles.size}` });
 }
 
 /**
@@ -343,11 +446,25 @@ export async function untaggedSessionGuard(ctx: GuardCtx): Promise<void> {
  * security (its own path). Deduped per `#N`. Off with DEVLOG_ROOTCAUSE_CHECK=0.
  */
 export async function rootCauseGuard(ctx: GuardCtx): Promise<void> {
-  if (!ctx.msg || ctx.stopHookActive || envOff("DEVLOG_ROOTCAUSE_CHECK")) return;
+  if (!ctx.msg || envOff("DEVLOG_ROOTCAUSE_CHECK")) return;
   const tags = parseTags(ctx.msg);
   // An insight anywhere in the turn IS the root cause, wherever it was written.
   const hasInsight = tags.some(t => t.tag === "insight" && t.content.trim().length > 0);
-  if (hasInsight) return;
+
+  // Compliance BEFORE the stopHookActive gate, not after: a continuation is
+  // exactly where an answered block shows up, and that gate exists to stop
+  // re-FIRING, not to stop counting.
+  for (const t of tags) {
+    if (t.tag !== "bug fix") continue;
+    const n = t.content.match(/^[ \t]*#(\d+)/)?.[1];
+    if (!n) continue;
+    const caused = hasInsight || t.content.replace(/^(?:[ \t]*#\d+)+/, "").trim().length >= 12;
+    // shouldServeAsk is true when the key was never served — i.e. this number
+    // was never blocked, so there is no block to have answered.
+    if (!caused || await ctx.shouldServeAsk(`rootcause:${n}`)) continue;
+    await recordCompliance(ctx, "root-cause", `rootcause-pass:${n}`, `#${n}`);
+  }
+  if (ctx.stopHookActive || hasInsight) return;
 
   const bare: number[] = [];
   for (const t of tags) {
@@ -384,8 +501,7 @@ export async function rootCauseGuard(ctx: GuardCtx): Promise<void> {
       "قل ما لاحظتَه لا ما يبدو مقنعًا — التخمين الواثق هنا يصير هو السجل."),
     "═══════════════════════════════════",
   ].join("\n");
-  await ctx.log(`root-cause: served for ${list}`);
-  await ctx.blockContinue(`\n${out}\n`);
+  await blockRecorded(ctx, "root-cause", `root-cause: served for ${list}`, `\n${out}\n`, { detail: list });
 }
 
 export async function runTurnGuards(ctx: GuardCtx): Promise<void> {

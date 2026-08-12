@@ -1,12 +1,14 @@
 // Hook-side client for /api/rule-telemetry (#787) — ONE fetch shape shared by
-// the three gate hooks (parse-tags, pre-standards, pre-install) instead of
-// three drifting inline copies (the fs-retry lesson, v3.34.0). Fire-and-forget
-// with a short timeout: telemetry never delays or changes a gate's outcome,
-// and a dead server just drops the counter. Deliberately free of data.ts
+// the three gate hooks (parse-tags, pre-standards, pre-install) plus the Stop
+// guards (hook-guards.ts) instead of drifting inline copies (the fs-retry
+// lesson, v3.34.0). Fire-and-forget with a short timeout: telemetry never
+// delays or changes a gate's outcome, and a dead server just drops the counter.
+// The guard caller passes a tighter timeout still — it records on a path that
+// is about to block the turn. Deliberately free of data.ts
 // imports — hook processes must not resolve DATA_DIR.
 
 export interface TelemetryClientRecord {
-  gate: "write" | "install" | "lifecycle";
+  gate: "write" | "install" | "lifecycle" | "turn";
   action: "fire" | "ack" | "pass" | "exempt" | "adopt" | "remove";
   rule: string;
   file?: string;

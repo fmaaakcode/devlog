@@ -40,6 +40,12 @@ const SENSITIVE: Record<string, number> = {
   // threshold. Untested, those branches rot into blocks nobody expects.
   "demolition-gate.ts": 95,
   "file-weight.ts": 95,
+  // The Stop hook's block channel. Its decision half — which blocks count as
+  // enforcement and which are delivery — is fully tested; the untested rest is
+  // the exit path (process.exit, unreachable in-process). A silent break here
+  // does not corrupt data, it makes the enforcement counters lie, which is worse
+  // than having none: a dead guard would then read as a quiet one.
+  "block-channel.ts": 70,
 };
 
 const lcovPath = process.argv[2] || "coverage/lcov.info";
