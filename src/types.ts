@@ -158,6 +158,12 @@ export interface TagEntry {
    *  a fix that didn't hold, detected at ingest (reopen.ts) and stored so
    *  recurrence is queryable data (retro ⟲, dashboard badge). Advisory. */
   relatedTo?: number;
+  /** #855 — claim-vs-trace verdict, stamped at capture and never recomputed:
+   *  "supported" (the window recorded edits), "unsupported" (none, and no command
+   *  channel that could hide them), "unverifiable" (commands ran, so absence
+   *  proves nothing). Absent on knowledge tags, and on every tag stored before
+   *  this shipped — absence is NOT a failed check. See src/claim-evidence.ts. */
+  evidence?: "supported" | "unsupported" | "unverifiable";
   /** «قادمة» (upcoming): a deferred open item. Still numbered, still closable
    *  by `#N`, but excluded from the release guard, the built-without-closure
    *  warnings and the "Open now" counts — recorded ambition, not tracked debt.

@@ -80,6 +80,11 @@ export interface FileWhy {
   lastChange?: string;
   /** No tag in the record ever touched this file. */
   empty: boolean;
+  /** #858: the path is not on disk anymore — established by the caller, which
+   *  already reads the file for its purpose. Absent = unjudged, never "present":
+   *  the dossier must not imply a live file (the protocol sends Claude here
+   *  BEFORE rewriting one), and must not deny history that really happened. */
+  missing?: true;
 }
 
 const day = (iso: string | undefined): string | undefined => iso?.slice(0, 10);
@@ -106,6 +111,7 @@ export function buildFileWhy(
   project: string,
   filePath: string,
   purpose?: string,
+  missing?: true,
 ): FileWhy {
   const file = relToProject(data, project, filePath);
   const base: FileWhy = {
@@ -114,6 +120,7 @@ export function buildFileWhy(
     reports: [], reportsMore: 0,
     work: [], workMore: 0,
     empty: true,
+    ...(missing ? { missing: true as const } : {}),
   };
   if (!filePath || isNoisePath(filePath)) return base;
 

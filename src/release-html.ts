@@ -1,7 +1,8 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { DevLogData, ProjectProfile, TagEntry, EventEntry } from "./types";
-import { isPathInside, normalizeSlashes, pathsEqual, projectRelativeFiles } from "./path-utils";
+import { isPathInside, makeAbsenceJudge, normalizeSlashes, pathsEqual, projectRelativeFiles } from "./path-utils";
+import { diskExists } from "./disk-probe";
 import { isStepClosed, leadingNums, normalizeTagContent, openTodos, openBugs } from "./data";
 
 // DEVLOG_HTML_SPEC v1.0 implementation.
@@ -99,15 +100,31 @@ interface DiffStats {
   filesChanged: number;
   added: number;
   removed: number;
-  files: Array<{ path: string; added: number; removed: number; edits: number }>;
+  /** `gone: true` = the path is not on disk (#856). Absent means "unjudged", not
+   *  "present" — never claim a deletion that was not observed. */
+  files: Array<{ path: string; added: number; removed: number; edits: number; gone?: boolean }>;
 }
+
+/** The absence rules (one-directional, disabled without a root) live in
+ *  path-utils.makeAbsenceJudge — shared with ask:why and «الأكثر كسرًا» (#858). */
+type AbsenceJudge = (abs: string) => true | undefined;
 
 function lineCount(s: string | undefined | null): number {
   if (typeof s !== "string" || s.length === 0) return 0;
   return s.split("\n").length;
 }
 
-function computeDiff(events: EventEntry[], project: string, start: number, end: number, projectPath?: string): DiffStats {
+/**
+ * Per-file line stats for one release window.
+ *
+ * #856: a file created AND deleted inside one window was published as a plain
+ * addition (v3.37.0 credited `src/block-keys.ts` with 75 lines while the file did
+ * not exist) — the footprint comes from write events and a shell delete emits
+ * none. `exists` labels such a path DELETED rather than hiding it: a file that
+ * came and went inside a release is information the reader is owed. One-
+ * directional by design — absence proves removal, presence proves nothing.
+ */
+function computeDiff(events: EventEntry[], project: string, start: number, end: number, projectPath?: string, isGone?: AbsenceJudge): DiffStats {
   const root = normalizeSlashes(projectPath || "");
   const inRange = events.filter(e => {
     if (e.project !== project) return false;
@@ -128,12 +145,17 @@ function computeDiff(events: EventEntry[], project: string, start: number, end: 
     return true;
   });
   const byFile = new Map<string, { added: number; removed: number; edits: number }>();
+  // Absolute path per display key: the probe needs the real path, the key is
+  // relative once the root prefix is stripped below.
+  const absFor = new Map<string, string>();
   for (const e of inRange) {
     let key = normalizeSlashes(e.file_path || "(unknown)");
+    const abs = key;
     // Project-relative display: the absolute prefix is the same for every row.
     if (root && key.toLowerCase().startsWith(root.toLowerCase())) {
       key = key.slice(root.length).replace(/^\//, "") || key;
     }
+    if (!absFor.has(key) && /^(?:[a-zA-Z]:)?\//.test(abs)) absFor.set(key, abs);
     const f = byFile.get(key) || { added: 0, removed: 0, edits: 0 };
     // Prefer pre-computed counts (warm/cold retention), else derive from
     // captured strings (hot events still hold the raw content).
@@ -150,7 +172,11 @@ function computeDiff(events: EventEntry[], project: string, start: number, end: 
   }
   let added = 0, removed = 0;
   const files = [...byFile.entries()]
-    .map(([path, s]) => ({ path, ...s }))
+    .map(([path, s]) => {
+      const abs = absFor.get(path);
+      const gone = abs && isGone ? isGone(abs) : undefined;
+      return { path, ...s, ...(gone ? { gone: true } : {}) };
+    })
     .sort((a, b) => (b.added + b.removed) - (a.added + a.removed));
   for (const f of files) { added += f.added; removed += f.removed; }
   return { filesChanged: files.length, added, removed, files };
@@ -160,7 +186,12 @@ function diffSummarySection(diff: DiffStats): string {
   if (diff.filesChanged === 0) return "";
   const fileList = diff.files.slice(0, 12).map(f => {
     // Paths are project-relative since the scoping fix — show them whole.
-    return `      <li><span class="dl-diff-file">${esc(f.path)}</span> <span class="dl-diff">+${f.added}/-${f.removed}</span></li>`;
+    // A file that no longer exists is LABELLED, not dropped (#856): it was
+    // written and then removed inside this release, and the counts stay true.
+    // Nested inside the diff span, not beside it: the row is a two-column flex
+    // (name ↔ counts) and a third child would break the alignment.
+    const goneMark = f.gone ? ` <span class="dl-diff-gone">حُذف لاحقًا</span>` : "";
+    return `      <li><span class="dl-diff-file">${esc(f.path)}</span> <span class="dl-diff">+${f.added}/-${f.removed}${goneMark}</span></li>`;
   }).join("\n");
   const more = diff.files.length > 12 ? `<li class="dl-diff-more">… و ${diff.files.length - 12} ملفات أخرى</li>` : "";
   return `
@@ -270,6 +301,7 @@ function standaloneCss(): string {
   .dl-diff-file { font-family:"Cascadia Code",Consolas,monospace; font-size:0.85em; color:var(--text); }
   .dl-diff-files li { display:flex; justify-content:space-between; align-items:baseline; gap:12px; }
   .dl-diff-more { color:var(--text2); font-size:0.8em; font-style:italic; }
+  .dl-diff-gone { color:var(--text2); font-style:italic; }
   .dl-changes-summary { background:var(--bg2); }
   .dl-rationale { margin-top:4px; color:var(--text2); font-size:0.85em; }
   .dl-rationale summary { cursor:pointer; color:var(--c-update); }
@@ -482,7 +514,7 @@ export function collectRelease(data: DevLogData, projectName: string, target: Ta
     date: target.timestamp,
     prevVersion: prev ? parseVersion(prev.content).version : null,
     context: releaseContext(data, projectName, start, end),
-    diff: computeDiff(data.events || [], projectName, start, end, p.path),
+    diff: computeDiff(data.events || [], projectName, start, end, p.path, makeAbsenceJudge(p.path || "", diskExists)),
     ...(upcoming.length ? { upcoming } : {}),
     sections: [
       // «قدرات جديدة» leads: client-language capabilities (`-(feature)`) are

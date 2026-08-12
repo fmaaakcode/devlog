@@ -38,6 +38,36 @@ export function fileMatches(stored: string, query: string): boolean {
   return s.endsWith(`/${q}`);
 }
 
+/** Start of the current capture window: the newest tag this session already
+ *  stored for this project. ONE definition, because the file footprint and the
+ *  evidence verdict (#855) must describe exactly the same window — two copies of
+ *  this loop would drift and stamp a verdict about a different span of work. */
+export function batchWindowStart(data: DevLogData, sessionId: string, project: string): number {
+  let since = 0;
+  for (const t of data.tags) {
+    if (t.session_id !== sessionId || t.project !== project) continue;
+    const ms = +new Date(t.timestamp) || 0;
+    if (ms > since) since = ms;
+  }
+  return since;
+}
+
+/** Commands (Bash/PowerShell) run in the same window. A command can write files
+ *  without emitting a change event, so its presence is what turns "no edits" from
+ *  an accusation into "unverifiable" (#855). Counted, not pattern-matched: a
+ *  script that writes files carries no `>` in its command line, and guessing
+ *  wrong here means a false accusation — the expensive direction. */
+export function sessionCommandCount(data: DevLogData, sessionId: string | undefined, project: string): number {
+  if (!sessionId) return 0;
+  const since = batchWindowStart(data, sessionId, project);
+  let n = 0;
+  for (const e of data.events) {
+    if (e.session_id !== sessionId || e.project !== project || e.type !== "command") continue;
+    if ((+new Date(e.timestamp) || 0) > since) n++;
+  }
+  return n;
+}
+
 /**
  * Files this session touched (change/create events) since its previous tag
  * batch — so each Stop capture links only the work of the response(s) it

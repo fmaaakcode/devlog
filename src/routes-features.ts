@@ -10,7 +10,9 @@
 import { join, resolve, sep } from "node:path";
 import { loadData, withData } from "./data";
 import { resolveProjectFor } from "./project-resolve";
-import { pathsEqual } from "./path-utils";
+import { makeAbsenceJudge, pathsEqual } from "./path-utils";
+import { diskExists } from "./disk-probe";
+import { tallyEvidence } from "./claim-evidence";
 import { featureList, featuresSinceLastRelease, backfillCorpus } from "./features";
 import { buildDepsPayload } from "./deps-explain";
 import { collectClientReport, renderClientReportHtml, writeClientReport } from "./client-report";
@@ -204,7 +206,12 @@ export function makeFeatureRoutes({ htmlResponse }: FeatureRouteDeps): Record<st
           // ones that said nothing — a guard muted or broken is invisible in the
           // records themselves, which is the whole reason the counters exist.
           guards: turnGateSummary(telemetry.filter(r => r.project === project), TURN_RULES),
-          fragile: fragileFiles(data, project),
+          // #855: how many work claims carried a material trace. Same reflection
+          // surface as the guard counters — both answer "is the record honest?"
+          evidence: tallyEvidence(data.tags.filter(t => t.project === project)),
+          // #858: label files that no longer exist — «انتبه لهذا الملف» about a
+          // deleted path is attention spent on nothing.
+          fragile: fragileFiles(data, project, 5, makeAbsenceJudge(data.projects[project]?.path || "", diskExists)),
           // #585: fixes that closed without their session touching a test. One
           // quiet ratio in the header — "what keeps breaking?" and "what did we
           // fix without guarding?" are the same reflection.

@@ -313,6 +313,13 @@ export const ASK_ROWS: AskRow[] = [
       const more = (n: number) => (n > 0 ? L(`\n  …and ${n} more.`, `\n  …و${n} أخرى.`) : "");
       const out: string[] = [];
       out.push(L(`📄 ${d.file}`, `📄 ${d.file}`) + (d.purpose ? ` — ${d.purpose}` : ""));
+      // #858: this dossier is pulled BEFORE rewriting a file. If the path is gone,
+      // say it on the first line — the history below is still true, but it is
+      // history, not a description of something you can open.
+      if (d.missing) {
+        out.push(L("  ⚠ This path is NOT on disk now — the history below is past, not present.",
+                   "  ⚠ هذا المسار غير موجود على القرص الآن — ما تحته تاريخ لا وصفٌ لملف قائم."));
+      }
 
       if (d.empty) {
         out.push(L("  No history recorded for this file.", "  لا تاريخ مسجَّلًا لهذا الملف."));
@@ -492,7 +499,9 @@ export const ASK_ROWS: AskRow[] = [
       // «الأكثر كسرًا» header (#557): the corpus pre-clustered by file.
       const fragileLine = fragile.length
         ? `${L("Most-broken files: ", "الأكثر كسرًا: ")}${fragile.map((f: Row) =>
-            `${f.file} ×${f.count}${f.open ? L(` (${f.open} open)`, ` (${f.open} مفتوح)`) : ""}`).join(" · ")}\n`
+            // #858: a deleted path stays in the list (its history is real) but is
+            // labelled, so «انتبه لهذا» is not spent on something that is gone.
+            `${f.file} ×${f.count}${f.open ? L(` (${f.open} open)`, ` (${f.open} مفتوح)`) : ""}${f.missing ? L(" [deleted]", " [محذوف]") : ""}`).join(" · ")}\n`
         : "";
       // Regression-test gap (#585): one quiet ratio, never a nag — "what keeps
       // breaking?" and "what did we fix with nothing guarding it?" are the same
@@ -524,6 +533,17 @@ export const ASK_ROWS: AskRow[] = [
             `Guards: ${guardRows.map((g: Row) => `${g.rule} ${g.fires}${g.passes ? ` (answered ${g.passes})` : ""}`).join(" · ") || "none fired"}${guards.silent?.length ? ` — silent: ${guards.silent.join(", ")}` : ""}. Silent means untriggered OR muted/broken; check one before reading it as health.`,
             `الحرّاس: ${guardRows.map((g: Row) => `${g.rule} ${g.fires}${g.passes ? ` (استُجيب ${g.passes})` : ""}`).join(" · ") || "لم يطلق أحد"}${guards.silent?.length ? ` — صامتة: ${guards.silent.join(", ")}` : ""}. الصمت إما لم يُستفَز وإما معطَّل/مكسور؛ افحص واحدًا قبل قراءته كسلامة.`)}\n`
         : "";
+      // Claim vs. trace (#855): work tags that asserted something, and whether the
+      // edit record backed them. `unmarked` is history stored before the stamp
+      // existed — reported separately so the ratio never counts unjudged tags as
+      // clean. Silent when nothing was ever judged: absence of data, not health.
+      const ev = (d as Row).evidence;
+      const judged = ev ? (ev.supported || 0) + (ev.unsupported || 0) + (ev.unverifiable || 0) : 0;
+      const evidenceLine = judged > 0
+        ? `${L(
+            `Work claims with a material trace: ${ev.supported}/${judged}${ev.unsupported ? ` · ${ev.unsupported} with NO trace` : ""}${ev.unverifiable ? ` · ${ev.unverifiable} unverifiable (commands ran)` : ""}${ev.unmarked ? ` · ${ev.unmarked} predate the stamp` : ""}. A traceless claim is not a lie — it is a claim nothing corroborates.`,
+            `ادعاءات عمل لها أثر مادي: ${ev.supported}/${judged}${ev.unsupported ? ` · ${ev.unsupported} بلا أثر` : ""}${ev.unverifiable ? ` · ${ev.unverifiable} غير قابلة للتحقق (جرت أوامر)` : ""}${ev.unmarked ? ` · ${ev.unmarked} أقدم من الختم` : ""}. الادعاء بلا أثر ليس كذبًا — هو ادعاء لا يسانده شيء.`)}\n`
+        : "";
       // Model scorecard (#695 follow-up): per-model discipline line — only
       // models that actually closed or opened something; silent when the
       // attributed history is still empty (pre-v3.30.0 projects).
@@ -536,7 +556,7 @@ export const ASK_ROWS: AskRow[] = [
           }).join(" · ")}\n`
         : "";
       return items.length
-        ? `${fragileLine}${gapLine}${interimLine}${guardLine}${modelLine}${L(`Problem corpus (${items.length} reports, oldest first) — cluster the recurrences; codify a confirmed pattern with -(rule:add) or -(insight):`,
+        ? `${fragileLine}${gapLine}${interimLine}${guardLine}${evidenceLine}${modelLine}${L(`Problem corpus (${items.length} reports, oldest first) — cluster the recurrences; codify a confirmed pattern with -(rule:add) or -(insight):`,
             `سجل المشاكل (${items.length} بلاغًا، الأقدم أولًا) — اعنقد المتكرر؛ ثبّت النمط المؤكد بـ-(rule:add) أو -(insight):`)}\n${items.map(line).join("\n")}`
         : L("No problem reports recorded for this project yet.", "لا بلاغات مسجّلة لهذا المشروع بعد.");
     },

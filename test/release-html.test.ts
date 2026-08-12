@@ -2,7 +2,7 @@ import { test, expect, describe } from "bun:test";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isRealVersion, generateManifest, generateProjectIndex, generateReleaseHtml, collectRelease, writeReleaseHtml } from "../src/release-html";
+import { isRealVersion, generateManifest, generateProjectIndex, generateReleaseHtml, collectRelease, renderReleaseHtml, writeReleaseHtml } from "../src/release-html";
 
 describe("isRealVersion", () => {
   test("accepts semantic versions", () => {
@@ -331,6 +331,59 @@ describe("collectRelease (the machine-readable facts)", () => {
     const byKey = Object.fromEntries(facts.sections.map(s => [s.key, s.items]));
     expect(byKey.built).toEqual([{ text: "the feature" }]);
     expect(byKey.fixes).toEqual([{ text: "the problem", cure: "the cure" }]);
+  });
+
+  // #856 — a file written and then DELETED inside one release window used to be
+  // published as a plain addition (v3.37.0 credited src/block-keys.ts with 75
+  // added lines while the file did not exist). Fault-injected on a REAL temp
+  // tree: one file present, one absent, same events shape.
+  describe("a file that no longer exists is labelled, not credited (#856)", () => {
+    const mkTree = (): string => {
+      const dir = mkdtempSync(join(tmpdir(), "rel-gone-"));
+      mkdirSync(join(dir, "src"), { recursive: true });
+      writeFileSync(join(dir, "src", "kept.ts"), "export const a = 1;\n");
+      return dir;
+    };
+    const factsFor = (root: string) => {
+      const target = { tag: "release", project: "p", content: "v2.0.0 — with a ghost", timestamp: "2026-04-05T00:00:00Z" };
+      const data: any = {
+        projects: { p: { ...baseProject, path: root } },
+        tags: [target, { tag: "release", project: "p", content: "v1.0.0", timestamp: "2026-04-01T00:00:00Z" }],
+        events: [
+          { project: "p", type: "create", file_path: `${root}/src/kept.ts`, lines_added: 5, lines_removed: 0, session_id: "s1", timestamp: "2026-04-03T02:00:00Z" },
+          { project: "p", type: "create", file_path: `${root}/src/ghost.ts`, lines_added: 75, lines_removed: 0, session_id: "s1", timestamp: "2026-04-03T03:00:00Z" },
+        ],
+      };
+      return collectRelease(data, "p", target as any);
+    };
+
+    test("the missing file is marked gone; the surviving one is not", () => {
+      const root = mkTree();
+      try {
+        const byPath = Object.fromEntries(factsFor(root).diff.files.map(f => [f.path, f]));
+        expect(byPath["src/ghost.ts"]?.gone).toBe(true);
+        expect(byPath["src/kept.ts"]?.gone).toBeUndefined();
+        // Its counts stay TRUE — the work happened; only the claim is corrected.
+        expect(byPath["src/ghost.ts"]?.added).toBe(75);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+
+    test("the label reaches the page, and the file is never dropped from it", () => {
+      const root = mkTree();
+      try {
+        const html = renderReleaseHtml(factsFor(root));
+        expect(html).toContain("src/ghost.ts");
+        expect(html).toContain("حُذف لاحقًا");
+        expect(html).toContain("src/kept.ts");
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+
+    test("a project root that is GONE claims nothing — one absent directory must not condemn every file", () => {
+      // The dangerous failure mode: a moved project or an unplugged drive.
+      const facts = factsFor(join(tmpdir(), "rel-gone-does-not-exist-9zz"));
+      expect(facts.diff.files.length).toBe(2);
+      expect(facts.diff.files.every(f => f.gone === undefined)).toBe(true);
+    });
   });
 
   test("«قدرات جديدة» excludes features backfilled to ANOTHER release; a matching marker is stripped", () => {

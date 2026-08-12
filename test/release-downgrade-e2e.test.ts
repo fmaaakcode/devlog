@@ -87,4 +87,37 @@ describe("release downgrade rejected wholesale (E2E)", () => {
     expect(resp.release?.version).toBe("v2.1.0");
     expect((await releaseTags(project)).sort()).toEqual(["v2.0.0 — current", "v2.1.0 — next"]);
   });
+
+  // #857 (tag-injection audit): a release is the loudest effect a planted line can
+  // reach — it rewrites every manifest. An implausible leap is refused ONCE and
+  // honoured on a deliberate re-issue. Tested through the live route because the
+  // wiring (refuse → record → let the second one through) is where it would break,
+  // not in the pure detector.
+  test("an implausible version leap is refused once, then honoured on re-issue", async () => {
+    await post(projDir, [{ tag: "release", content: "v2.0.0 — current" }]);
+
+    const first = await post(projDir, [{ tag: "release", content: "v9.9.9 — planted" }]);
+    expect(first.release).toBeNull();
+    expect(await releaseTags(project)).toEqual(["v2.0.0 — current"]);       // nothing stored
+    expect(existsSync(join(projDir, ".devlog", "releases", "v9.9.9.html"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(projDir, "package.json"), "utf8")).version).toBe("2.0.0");
+    // Claude is told, and told WHY — the refusal is not silent.
+    const d: any = await asJson(await fetch(`${BASE}/api/data`));
+    const rej = (d.rejections || []).filter((r: any) => r.reason === "release-jump");
+    expect(rej.length).toBe(1);
+    expect(rej[0].detail).toContain("v9.9.9");
+
+    // Deliberate re-issue of the SAME version now passes.
+    const second = await post(projDir, [{ tag: "release", content: "v9.9.9 — planted" }]);
+    expect(second.release?.version).toBe("v9.9.9");
+    expect(JSON.parse(readFileSync(join(projDir, "package.json"), "utf8")).version).toBe("9.9.9");
+  });
+
+  test("a one-line major bump is never refused (control)", async () => {
+    await post(projDir, [{ tag: "release", content: "v2.0.0 — current" }]);
+    const resp = await post(projDir, [{ tag: "release", content: "v3.0.0 — deliberate major" }]);
+    expect(resp.release?.version).toBe("v3.0.0");
+    const d: any = await asJson(await fetch(`${BASE}/api/data`));
+    expect((d.rejections || []).some((r: any) => r.reason === "release-jump")).toBe(false);
+  });
 });

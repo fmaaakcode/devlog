@@ -77,6 +77,36 @@ export function projectRelativeFiles(files: string[] | undefined, root: string):
   return out.length ? out : undefined;
 }
 
+/** Does this absolute path exist? Always INJECTED — this module keeps its
+ *  zero-fs invariant (see the header), so the real probe lives in disk-probe.ts
+ *  and the deciding functions here stay pure and testable. */
+export type ExistsProbe = (absPath: string) => boolean;
+
+/**
+ * "Is this file gone?" — ONE implementation for every surface that reports on a
+ * recorded file (#858, family of #856 and #576: a generated record outliving the
+ * reality it describes).
+ *
+ * Two rules, both about not lying:
+ *  · ONE-DIRECTIONAL — absence is claimed, presence never is. `true` or
+ *    `undefined`, never `false`: a file on disk today says nothing about whether
+ *    it was deleted and later restored.
+ *  · DISABLED WITHOUT A ROOT — if the project directory itself is missing (moved
+ *    project, unplugged drive) every path under it would read as deleted, turning
+ *    one absent directory into a record full of false claims.
+ */
+export function makeAbsenceJudge(root: string, exists: ExistsProbe): (abs: string) => true | undefined {
+  const r = normalizeSlashes(root || "");
+  const canJudge = Boolean(r) && exists(r);
+  return (abs: string): true | undefined => {
+    if (!canJudge || !abs) return undefined;
+    const n = normalizeSlashes(abs);
+    // Only absolute paths can be probed; a relative one (older stores) is unjudged.
+    if (!/^(?:[a-zA-Z]:)?\//.test(n)) return undefined;
+    return exists(n) ? undefined : true;
+  };
+}
+
 // True when `child` is strictly inside `parent` (not equal). Used to detect
 // when a hook's cwd lives under an existing project's path — e.g. Tauri's
 // `src-tauri/` subfolder triggering a phantom second project registration.

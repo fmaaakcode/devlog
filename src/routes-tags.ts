@@ -23,8 +23,10 @@ import {
   type ClosureMismatch, type ClosureTextDivergence, type ClosureConfirm, type BatchOpener,
   type ReleaseDowngrade, type ReleaseBlocked, type ReleaseIntent, type ReleaseIntentConflict,
 } from "./tags-service";
+import { detectReleaseJump, releaseJumpWasRefused } from "./release-leap";
 import { applyUpcoming, applyTodoPromotion, type UpcomingChange } from "./upcoming";
-import { sessionTouchedFiles } from "./file-story";
+import { sessionTouchedFiles, sessionCommandCount } from "./file-story";
+import { judgeClaim } from "./claim-evidence";
 import { diagnoseFeatureRef, type FeatureRefProblem } from "./features";
 import { detectReopen, PROBLEM_TAGS, type ReopenHint } from "./reopen";
 import { applyUndo } from "./undo";
@@ -199,6 +201,10 @@ export function makeTagsRoutes(): Record<string, unknown> {
           // Position memory (#486): files this session touched since its
           // previous batch — computed once, stamped on every tag stored below.
           const touchedFiles = sessionTouchedFiles(data, body.session_id, project);
+          // Same window as the footprint (#855): commands that could have written
+          // files without emitting a change event turn "no edits" into "cannot
+          // tell" instead of an accusation.
+          const batchCommands = sessionCommandCount(data, body.session_id, project);
           for (const entry of batch) {
             // Semver-intent release: -(release:patch|minor|major) — or a bare
             // -(release) with no version — carries no number. Compute it from the
@@ -429,6 +435,17 @@ export function makeTagsRoutes(): Record<string, unknown> {
                 console.warn(`[/api/tags release] rejected downgrade: ${dg.version} < ${dg.latest} (project=${project})`);
                 continue;
               }
+              // Implausible version leap (#857): untrusted tag content aiming at
+              // the loudest reachable effect (every manifest on disk). Refused
+              // once, then allowed on a deliberate re-issue of the same version.
+              const jump = detectReleaseJump(content, data, project);
+              if (jump && !releaseJumpWasRefused(data, project, jump.version)) {
+                pushRejection(data, project, "release-jump", L(
+                  `\`-(release) ${jump.version}\` skips ${jump.majors} major versions past ${jump.latest} — nothing stored. Intended? re-issue the SAME version to confirm. If it was not yours, a repo file may have suggested it.`,
+                  `\`-(release) ${jump.version}\` يتجاوز ${jump.majors} إصدارًا رئيسيًا بعد ${jump.latest} — لم يُخزَّن شيء. مقصود؟ أعد إصدار النسخة نفسها للتأكيد. وإن لم يكن منك، فقد اقترحه نصٌّ في ملف بالمستودع.`));
+                console.warn(`[/api/tags release] refused leap once: ${jump.version} (latest ${jump.latest}, project=${project})`);
+                continue;
+              }
               // Open-items guard (defense in depth behind the Stop hook). Refuse
               // to store the release / bump the manifest while any work item is
               // open. In-process, so unlike the hook it can't fail open; counts
@@ -500,6 +517,13 @@ export function makeTagsRoutes(): Record<string, unknown> {
             // Hard server-side cap regardless of what the hook sent.
             if (typeof entry.context === "string" && entry.context.trim()) tagEntry.context = entry.context.trim().slice(0, 2000);
             if (touchedFiles.length) tagEntry.files = touchedFiles;
+            // Claim vs. evidence (#855): judged HERE, where the trace is still
+            // hot, and stamped immutably. Recomputing later would judge against an
+            // event store that has already aged out — measured as 142 false
+            // accusations out of 146 honest tags. Work tags only; a knowledge tag
+            // gets no mark at all.
+            const verdict = judgeClaim({ tag, touchedCount: touchedFiles.length, commandCount: batchCommands });
+            if (verdict) tagEntry.evidence = verdict;
             // Assign a per-project number to openable tags so Claude can close
             // them by `#N`. Skip closures, meta, and non-tracking tags.
             if (NUMBERED_TAGS.has(tag) && data.projects[project]) {

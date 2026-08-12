@@ -85,6 +85,25 @@ export function isRealTagHead(msg: string, headStart: number, parenIndex: number
   return /^\r?\n?[ \t]*-[ \t]*$/.test(msg.slice(headStart, parenIndex));
 }
 
+/** Heads that must be spelled TIGHTLY — `-(release)`, never `- (release)`. Only
+ *  the release family, the one tag whose capture writes to files on disk (every
+ *  manifest is bumped). See isTightTagHead (#857). */
+export const STRICT_HEAD_TAGS = new Set<string>(["release", "release:major", "release:minor", "release:patch"]);
+
+/**
+ * No gap between the bullet and `(` in the ORIGINAL text (#857, tag-injection
+ * audit).
+ *
+ * The lenient `- (tag)` shape is deliberate and stays for every other tag: #805
+ * kept it so a model that slips a space is still captured, and losing a real work
+ * record is the more expensive failure. But an ordinary markdown bullet has that
+ * exact shape — `- (release) v9.9.9` quoted from a repo file would fire the one
+ * tag that mutates the tree. Strictness is priced by damage.
+ */
+export function isTightTagHead(msg: string, headStart: number, parenIndex: number): boolean {
+  return /^\r?\n?[ \t]*-$/.test(msg.slice(headStart, parenIndex));
+}
+
 /**
  * Extract DevLog tags from an assistant message. Strips fenced/inline code so
  * documentation that mentions `-(tag)` doesn't get captured accidentally —
@@ -153,6 +172,12 @@ export function parseTags(msg: string): ParsedTag[] {
     const nameStart = mi?.[1]?.[0];
     if (headStart !== undefined && nameStart !== undefined
         && !isRealTagHead(msg, headStart, nameStart - 1)) continue;   // -1 = the `(`
+
+    // The release family additionally requires the tight spelling (#857): a
+    // markdown bullet is indistinguishable from the lenient head, and this is the
+    // one tag that rewrites manifests. Every other tag keeps #805's tolerance.
+    if (STRICT_HEAD_TAGS.has(tag) && headStart !== undefined && nameStart !== undefined
+        && !isTightTagHead(msg, headStart, nameStart - 1)) continue;
 
     // Slice from the ORIGINAL message so inline code survives. For non-doc
     // tags a trailing fenced block is illustration, not content — drop it

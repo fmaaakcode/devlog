@@ -69,6 +69,16 @@ export interface FragileFile {
   file: string;   // project-relative
   count: number;  // problem reports touching it (open + closed)
   open: number;   // of those, still open
+  /** #858: not on disk anymore. Absent = unjudged, never "present". */
+  missing?: true;
+}
+
+/** Corpus file paths are project-relative; the absence probe needs an absolute
+ *  one. An already-absolute stored path is passed through. */
+function absFor(data: DevLogData, project: string, file: string): string {
+  if (/^(?:[a-zA-Z]:)?\//.test(file)) return file;
+  const root = data.projects[project]?.path || "";
+  return root ? `${root.replace(/[\\/]+$/, "")}/${file}` : file;
 }
 
 /**
@@ -77,7 +87,7 @@ export interface FragileFile {
  * section and the retro header line can never disagree. One report = one hit
  * per file, however many times the file was touched fixing it.
  */
-export function fragileFiles(data: DevLogData, project: string, top = 5): FragileFile[] {
+export function fragileFiles(data: DevLogData, project: string, top = 5, isGone?: (abs: string) => true | undefined): FragileFile[] {
   const byFile = new Map<string, { count: number; open: number }>();
   for (const it of retroCorpus(data, project)) {
     for (const f of it.files ?? []) {
@@ -91,7 +101,13 @@ export function fragileFiles(data: DevLogData, project: string, top = 5): Fragil
     .filter(([, e]) => e.count >= 2)
     .sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))
     .slice(0, top)
-    .map(([file, e]) => ({ file, count: e.count, open: e.open }));
+    .map(([file, e]) => {
+      // #858: a deleted file topping «الأكثر كسرًا» forever sends attention to
+      // something that no longer exists. Labelled, never dropped — its history
+      // is still the record's; only the implication "go look at it" is corrected.
+      const gone = isGone?.(absFor(data, project, file));
+      return { file, count: e.count, open: e.open, ...(gone ? { missing: true } : {}) };
+    });
 }
 
 // ── Regression-test gap (#585) ───────────────────────────────────────────────

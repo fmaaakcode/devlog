@@ -69,6 +69,35 @@ These are deliberate trade-offs for a local dev tool, documented here so they ar
 - **Your history is sensitive.** `~/.devlog/` holds code diffs, commands, and project
   paths across every project DevLog touched. It stays local and is git-ignored — keep
   it that way; don't commit `.devlog-data/` or `~/.devlog/`.
+- **Tag input is untrusted by design.** Tags are written by a model that reads your
+  repository, so any file it opens — a README, a code comment, a dependency's docs —
+  can attempt to steer what gets recorded. DevLog never scans repo files for tags: it
+  parses only the assistant's own response, so there is no parser to attack; the
+  vector is the model, and the defence is what the store refuses to do with a tag it
+  receives. Audited 2026-08-12 (`test/tag-injection-audit.test.ts` keeps each attack
+  runnable):
+  - *Path traversal via a doc name* — contained. `docSlug` reduces a name to letters,
+    digits and hyphens (max 80), so no separator, dot segment, or drive colon can
+    reach the filesystem.
+  - *A tag head planted in prose* — contained. Only a raw line at line start is
+    captured: inline code, fenced blocks, mid-line text, blockquotes and typo'd heads
+    all store nothing. The `release` family additionally requires the tight
+    `-(release)` spelling, because the lenient `- (release)` form is also an ordinary
+    markdown bullet and release is the one tag that rewrites files on disk.
+  - *An implausible version leap* — refused once. `-(release) v9.9.9` on a 3.x project
+    skips whole major lines; it is rejected, recorded in the rejection trail the model
+    sees next session, and stored only if the same version is deliberately re-issued.
+    Backward versions are refused outright.
+  - *Closing an open security item* — still not **prevented**, but no longer
+    unexamined. Since #855 every work claim (`built`, `refactor`, `bug fix`,
+    `security fix`) is stamped at capture with a claim-vs-trace verdict:
+    `supported` (the session's recorded edits back it), `unsupported` (no edits and
+    no command channel that could hide them), or `unverifiable` (commands ran, so
+    absence proves nothing). The stamp is computed from the edit events, which come
+    from the tool layer and not from the model, and it is never recomputed later.
+    It marks and counts — it does not block — and `-(ask:retro)` reports the tally
+    while `-(ask:closed) #N` still shows who closed what and when. A fix closure
+    with an `unsupported` stamp is the thing to look at.
 
 ## Supported versions
 

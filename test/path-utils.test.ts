@@ -9,7 +9,9 @@ import { normalizePath, pathsEqual, isPathInside } from "../src/path-utils";
 describe("normalizePath — MSYS drive fold", () => {
   test("MSYS spelling equals the Windows spelling of the same tree", () => {
     expect(pathsEqual("/d/helper", "D:\\helper")).toBe(true);
-    expect(pathsEqual("/c/Users/blue", "C:/Users/blue")).toBe(true);
+    // A generic account name on purpose: this file ships in the public snapshot,
+    // and a real local username is a personal detail with no test value.
+    expect(pathsEqual("/c/Users/dev", "C:/Users/dev")).toBe(true);
   });
 
   test("existing folds still hold (slashes, trailing slash, case)", () => {

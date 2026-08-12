@@ -8,7 +8,8 @@
 
 import { isAbsolute, join } from "node:path";
 import { loadData } from "./data";
-import { isPathInside, normalizeSlashes } from "./path-utils";
+import { isPathInside, makeAbsenceJudge, normalizeSlashes } from "./path-utils";
+import { diskExists } from "./disk-probe";
 import { buildFileStory, fileMatches } from "./file-story";
 import { buildFileWhy } from "./file-why";
 import { resolveProjectFor } from "./project-resolve";
@@ -135,14 +136,23 @@ export function makeChangesRoutes(): Record<string, unknown> {
         // never walk out of the project; a miss simply leaves the purpose unset
         // rather than failing the dossier, which comes entirely from the store.
         let purpose: string | undefined;
+        // #858: the same read establishes whether the file still EXISTS. The
+        // dossier is pulled before rewriting a file, so a deleted path must say
+        // so instead of reading like a live one. Only absence is claimed: a path
+        // outside the root, or an unreadable one, stays unjudged (fail open).
+        let missing: true | undefined;
         const abs = normalizeSlashes(isAbsolute(file) ? file : join(root, file));
         if (isPathInside(root, abs)) {
           try {
             const f = Bun.file(abs);
             if (await f.exists()) purpose = filePurposeFromHeader(await f.text()) || undefined;
           } catch { /* unreadable file — the record still answers */ }
+          // The shared judge, not a second existence check: it carries the root
+          // guard (an absent project root claims nothing) and Bun.file cannot
+          // answer for a directory.
+          missing = makeAbsenceJudge(root, diskExists)(abs);
         }
-        return Response.json(buildFileWhy(data, project, abs, purpose));
+        return Response.json(buildFileWhy(data, project, abs, purpose, missing));
       },
     },
 

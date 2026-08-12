@@ -11,7 +11,8 @@ import { fragileFiles } from "./retro";
 import type { TagEntry } from "./types";
 import { closedItems } from "./closed-items";
 import { resolveProjectFor } from "./project-resolve";
-import { pathsEqual } from "./path-utils";
+import { makeAbsenceJudge, pathsEqual } from "./path-utils";
+import { diskExists } from "./disk-probe";
 import { scanCatalog, parseRules, readAcks } from "./standards";
 import { sanitizeRuleRecord, appendRuleTelemetry } from "./rule-telemetry";
 import { ENFORCED_CATEGORIES } from "./write-checks";
@@ -141,7 +142,8 @@ export function makeStandardsRoutes(): Record<string, unknown> {
         }));
         // «الأكثر كسرًا» (#557) rides the same judgment payload: the security
         // card renders it next to the reports it is derived from.
-        return Response.json({ project: name, todos, bugs, security, fragile: fragileFiles(data, name) });
+        return Response.json({ project: name, todos, bugs, security,
+          fragile: fragileFiles(data, name, 5, makeAbsenceJudge(data.projects[name]?.path || "", diskExists)) });
       },
     },
 

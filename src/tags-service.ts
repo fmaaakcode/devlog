@@ -453,6 +453,10 @@ export function detectReleaseDowngrade(content: string, data: DevLogData, projec
   return compareSemver(version, latest) <= 0 ? { version, latest } : null;
 }
 
+// Its sibling guard — the implausible-leap refusal (#857) — lives in
+// src/release-leap.ts and imports EXPLICIT_VERSION_RE from here: one regex, no
+// parallel copy (#742/#773). Split for this file's size ratchet, not by design.
+
 export interface ReleaseIntent { version: string; from: string; bump: BumpType; auto?: boolean; warning?: { suggested: BumpType }; }
 
 const BUMP_RANK: Record<BumpType, number> = { patch: 0, minor: 1, major: 2 };
@@ -498,7 +502,9 @@ export interface ReleaseIntentConflict { declared: BumpType; version: string; }
 // pattern for both the conflict detector and resolveReleaseIntent (#773): the
 // intent resolver carried its own boundary-less copy, so «-(release) 2.5x
 // faster» slipped past it as an explicit version and minted a phantom 2.5.
-const EXPLICIT_VERSION_RE = /^v?\d+(?:\.\d+)+(?:-[\w.]+)?(?=$|[\s—–:|،,])/i;
+// Exported for release-leap.ts — the ONE spelling of "a whole-token version at
+// the start of the content"; a second copy is how #742/#773 happened.
+export const EXPLICIT_VERSION_RE = /^v?\d+(?:\.\d+)+(?:-[\w.]+)?(?=$|[\s—–:|،,])/i;
 
 export function detectReleaseIntentConflict(tag: string, content: string): ReleaseIntentConflict | null {
   const declared: BumpType | null =

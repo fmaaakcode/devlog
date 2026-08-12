@@ -46,6 +46,13 @@ const SENSITIVE: Record<string, number> = {
   // does not corrupt data, it makes the enforcement counters lie, which is worse
   // than having none: a dead guard would then read as a quiet one.
   "block-channel.ts": 70,
+  // The claim-vs-trace verdict (#855) and the version-leap refusal (#857). Both
+  // are pure deciders whose whole value is the branch that stays quiet —
+  // "unverifiable" instead of an accusation, "refused once" instead of a silent
+  // manifest rewrite. A silent break here makes the record lie in the direction
+  // that is hardest to notice: it clears what it never checked.
+  "claim-evidence.ts": 95,
+  "release-leap.ts": 95,
 };
 
 const lcovPath = process.argv[2] || "coverage/lcov.info";
