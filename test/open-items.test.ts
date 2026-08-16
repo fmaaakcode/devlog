@@ -164,13 +164,21 @@ describe("openOutdatedLibs (outdated libraries in ?open)", () => {
   });
 
   test("?open surfaces outdated libs", () => {
-    const data = baseData(fixtureTags(), []);
-    data.projects[PROJ] = profileWithVulns();
-    const ctx = buildContext(data, PROJ, "UserPromptSubmit", { userPrompt: "?open" });
-    expect(ctx).toContain("Outdated libraries");   // English is the default injection language
-    expect(ctx).toContain("behind-old");
-    expect(ctx).toContain("1.5.0");
-    expect(ctx).not.toContain("behind-fresh");
+    // Asserts the English DEFAULT, so run with DEVLOG_LANG genuinely unset —
+    // never inherit the developer shell (DEVLOG_LANG=ar) or an earlier file.
+    const saved = process.env.DEVLOG_LANG;
+    delete process.env.DEVLOG_LANG;
+    try {
+      const data = baseData(fixtureTags(), []);
+      data.projects[PROJ] = profileWithVulns();
+      const ctx = buildContext(data, PROJ, "UserPromptSubmit", { userPrompt: "?open" });
+      expect(ctx).toContain("Outdated libraries");   // English is the default injection language
+      expect(ctx).toContain("behind-old");
+      expect(ctx).toContain("1.5.0");
+      expect(ctx).not.toContain("behind-fresh");
+    } finally {
+      if (saved !== undefined) process.env.DEVLOG_LANG = saved;
+    }
   });
 });
 

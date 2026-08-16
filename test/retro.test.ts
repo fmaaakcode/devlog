@@ -126,12 +126,21 @@ describe("release page per-tag files (#500)", () => {
   });
 
   test("html renders a dl-tag-files line, capped at 6 with a rest count", () => {
-    const many = Array.from({ length: 8 }, (_, i) => `D:/proj/src/f${i}.ts`);
-    const html = generateReleaseHtml(mk(many), "p", target(mk(many)));
-    expect(html).toContain("dl-tag-files");
-    expect(html).toContain("src/f5.ts");
-    expect(html).not.toContain("src/f6.ts");
-    expect(html).toContain("… و 2 أخرى");
+    // The rest-count label is localized (#891); pin the language instead of
+    // relying on whatever an earlier test file left in DEVLOG_LANG.
+    const saved = process.env.DEVLOG_LANG;
+    process.env.DEVLOG_LANG = "ar";
+    try {
+      const many = Array.from({ length: 8 }, (_, i) => `D:/proj/src/f${i}.ts`);
+      const html = generateReleaseHtml(mk(many), "p", target(mk(many)));
+      expect(html).toContain("dl-tag-files");
+      expect(html).toContain("src/f5.ts");
+      expect(html).not.toContain("src/f6.ts");
+      expect(html).toContain("… و 2 أخرى");
+    } finally {
+      if (saved === undefined) delete process.env.DEVLOG_LANG;
+      else process.env.DEVLOG_LANG = saved;
+    }
   });
 
   test("no files → no dl-tag-files div (older tags stay untouched)", () => {

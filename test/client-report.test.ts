@@ -3,12 +3,17 @@
 // shows: open work appears as a count only, and security as a reassurance
 // line — internal item texts and vulnerability specifics must never render.
 
-import { describe, test, expect, beforeAll } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import type { DevLogData, ProjectProfile, TagEntry } from "../src/types";
 import { DEFAULT_INJECTION_CONFIG } from "../src/data";
 import { collectClientReport, renderClientReportHtml } from "../src/client-report";
 
+const PREV_LANG = process.env.DEVLOG_LANG;
 beforeAll(() => { process.env.DEVLOG_LANG = "en"; });
+afterAll(() => {   // restore — bun runs every test file in one process, so a leak flips other files' default-language assertions
+  if (PREV_LANG === undefined) delete process.env.DEVLOG_LANG;
+  else process.env.DEVLOG_LANG = PREV_LANG;
+});
 
 const P = "clientproj";
 

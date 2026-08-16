@@ -1,4 +1,4 @@
-import { test, expect, describe, beforeAll } from "bun:test";
+import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +7,12 @@ import { isRealVersion, generateManifest, generateProjectIndex, generateReleaseH
 // The page bakes in the language active at render time (#891). These
 // assertions were written against the Arabic output — pin it explicitly,
 // since CI runs without DEVLOG_LANG and would otherwise render English.
+const PREV_LANG = process.env.DEVLOG_LANG;
 beforeAll(() => { process.env.DEVLOG_LANG = "ar"; });
+afterAll(() => {   // restore — bun runs every test file in one process, so a leak flips other files' default-language assertions
+  if (PREV_LANG === undefined) delete process.env.DEVLOG_LANG;
+  else process.env.DEVLOG_LANG = PREV_LANG;
+});
 
 /** Run `fn` under a specific DEVLOG_LANG (undefined = unset), restoring after. */
 function withLang(lang: string | undefined, fn: () => void): void {

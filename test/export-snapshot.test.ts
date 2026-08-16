@@ -4,7 +4,7 @@
 // "آخر تحديث: <today>" line is non-deterministic, so we assert structure
 // rather than a byte-for-byte snapshot.
 
-import { describe, test, expect, beforeAll } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +13,12 @@ import type { DevLogData, TagEntry, PlanEntry, ProjectProfile } from "../src/typ
 
 // #892: the status file renders in the DEVLOG_LANG language. The snapshot
 // below pins the Arabic skeleton, so pin the language too (CI has none set).
+const PREV_LANG = process.env.DEVLOG_LANG;
 beforeAll(() => { process.env.DEVLOG_LANG = "ar"; });
+afterAll(() => {   // restore — bun runs every test file in one process, so a leak flips other files' default-language assertions
+  if (PREV_LANG === undefined) delete process.env.DEVLOG_LANG;
+  else process.env.DEVLOG_LANG = PREV_LANG;
+});
 
 const PROJ = "fixture-proj";
 let _id = 0;

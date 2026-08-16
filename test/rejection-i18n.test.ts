@@ -32,7 +32,11 @@ const lastRejectionDetail = async (): Promise<string> => {
   return last?.detail ?? "";
 };
 
-afterEach(() => { delete process.env.DEVLOG_LANG; });
+const PREV_LANG = process.env.DEVLOG_LANG;
+afterEach(() => {
+  if (PREV_LANG === undefined) delete process.env.DEVLOG_LANG;
+  else process.env.DEVLOG_LANG = PREV_LANG;
+});
 
 describe("undo-ambiguous rejection honors DEVLOG_LANG", () => {
   test("default (no DEVLOG_LANG) → English, not Arabic", async () => {
