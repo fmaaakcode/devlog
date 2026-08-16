@@ -28,5 +28,8 @@ export function parsePlanMarkdown(content: string): { title: string; steps: Plan
     }
   }
 
-  return { title: title || "خطة بدون عنوان", steps };
+  // English fallback on purpose (audit C4): this title is STORED on the plan
+  // record, so a hardcoded Arabic default leaked past the i18n policy and no
+  // later language switch could fix it.
+  return { title: title || "Untitled plan", steps };
 }

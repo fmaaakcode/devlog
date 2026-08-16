@@ -21,13 +21,17 @@ export async function asJson<T = Record<string, any>>(r: Response): Promise<T> {
   return await r.json() as T;
 }
 
-/** Boot the real server on `port`, isolated to `dataDir`. Version check is off so
- *  a test boot never hits the network. */
+/** Boot the real server on `port`, isolated to `dataDir`. ALL outbound checks are
+ *  off — version, OSV vuln scan, registry lookups — so a test boot never hits the
+ *  network (audit 2026-08-14 B2: only the version switch was set, so every e2e
+ *  server that registered a project with a manifest fired a real OSV scan,
+ *  shipping the dev machine's package list to api.osv.dev on each test run).
+ *  Tests OF those checks inject fetchImpl or spawn their own server instead. */
 export function startServer(dataDir: string, port: number): Subprocess {
   return spawn({
     cmd: ["bun", join("src", "server.ts")],
     cwd: PROJECT_ROOT,
-    env: { ...process.env, DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(port), DEVLOG_VERSION_CHECK_DISABLED: "1" },
+    env: { ...process.env, DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(port), DEVLOG_VERSION_CHECK_DISABLED: "1", DEVLOG_VULN_CHECK_DISABLED: "1", DEVLOG_REGISTRY_CHECK_DISABLED: "1" },
     stdout: "pipe", stderr: "pipe",
   });
 }

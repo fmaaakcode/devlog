@@ -156,72 +156,103 @@ export function detectLanguage(files: Record<string, number>): string {
   return sorted[0]?.[0] || "Unknown";
 }
 
-// Every parser stamps its libraries with its manifest's ecosystem key (ecoMap
-// values), so a merged multi-manifest list (Tauri: package.json + src-tauri/
-// Cargo.toml) keeps each library routable to its OWN registry.
-export async function detectPackages(dirPath: string, _depth = 0): Promise<{ framework: string; libraries: { name: string; version: string; dev?: boolean; eco: string }[] }> {
-  const result: { framework: string; libraries: { name: string; version: string; dev?: boolean; eco: string }[] } = { framework: "", libraries: [] };
+// Every parser stamps its libraries with its manifest's ecosystem key, so a
+// merged multi-manifest list (Tauri: package.json + src-tauri/Cargo.toml)
+// keeps each library routable to its OWN registry.
+type DetectedLib = { name: string; version: string; dev?: boolean; eco: string };
+type DetectResult = { framework: string; libraries: DetectedLib[] };
 
-  // package.json
-  const pkgFile = Bun.file(join(dirPath, "package.json"));
-  if (await pkgFile.exists()) {
-    try {
-      const pkg = await pkgFile.json();
+// Strip range operators so "^18.0.0" / ">=2.0" render as bare versions.
+const cleanVer = (v: string) => v.replace(/[\^~>=<!\s]/g, "");
+
+// Shared framework pick: first pair whose package is already in `libraries`
+// wins, later manifests may overwrite an earlier pick (historical behavior).
+// Options carry the per-ecosystem quirks: npm counts only prod deps,
+// go matches by substring (names are full module paths), and only the
+// npm/pypi/packagist blocks strip range operators from the version.
+function pickFramework(
+  result: DetectResult,
+  pairs: [string, string][],
+  opts: { clean?: boolean; byInclude?: boolean; prodOnly?: boolean } = {},
+): void {
+  for (const [pkg, name] of pairs) {
+    const lib = result.libraries.find(l =>
+      (opts.byInclude ? l.name.includes(pkg) : l.name === pkg) && !(opts.prodOnly && l.dev));
+    if (lib) {
+      result.framework = `${name} ${opts.clean ? cleanVer(lib.version) : lib.version}`.trim();
+      break;
+    }
+  }
+}
+
+// The seven manifest formats as one table instead of seven copy-pasted blocks.
+// The runner in detectPackages() owns the shared scaffolding — existence
+// check, read, swallow-on-parse-error, the fallback-only gate — and each entry
+// owns only its format. Table order is load-bearing: `fallbackOnly` looks at
+// what earlier entries produced, and a later framework pick overwrites an
+// earlier one.
+type ManifestSpec = {
+  file: string;
+  /** Loose in-house format: parsed only when no earlier manifest yielded
+   *  libraries, and excluded from the nested-subfolder probe. */
+  fallbackOnly?: boolean;
+  parse: (text: string, result: DetectResult, dirPath: string) => void | Promise<void>;
+};
+
+const MANIFESTS: ManifestSpec[] = [
+  {
+    file: "package.json",
+    parse: (text, result) => {
+      const pkg = JSON.parse(text);
       const deps = pkg.dependencies || {};
       const devDeps = pkg.devDependencies || {};
       for (const [name, ver] of Object.entries(deps)) result.libraries.push({ name, version: String(ver), eco: "npm" });
       for (const [name, ver] of Object.entries(devDeps)) result.libraries.push({ name, version: String(ver), dev: true, eco: "npm" });
-      const fwMap: [string, string][] = [["next","Next.js"],["nuxt","Nuxt"],["react","React"],["vue","Vue"],["svelte","Svelte"],["express","Express"],["hono","Hono"],["elysia","Elysia"]];
-      for (const [pkg, name] of fwMap) {
-        if (deps[pkg]) { result.framework = `${name} ${String(deps[pkg]).replace(/[\^~>=<\s]/g, "")}`; break; }
-      }
-    } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
-  }
-
-  // requirements.txt
-  const reqFile = Bun.file(join(dirPath, "requirements.txt"));
-  if (await reqFile.exists()) {
-    try {
-      const text = await reqFile.text();
+      pickFramework(result, [["next","Next.js"],["nuxt","Nuxt"],["react","React"],["vue","Vue"],["svelte","Svelte"],["express","Express"],["hono","Hono"],["elysia","Elysia"]], { clean: true, prodOnly: true });
+    },
+  },
+  {
+    file: "requirements.txt",
+    parse: (text, result) => {
       for (const line of text.split("\n")) {
         const t = line.trim();
         if (!t || t.startsWith("#")) continue;
         const m = t.match(/^([a-zA-Z0-9_-]+)\s*([=<>!~]+\s*\S+)?/);
-        if (m) result.libraries.push({ name: m[1], version: m[2]?.replace(/[=<>!~\s]/g, "") || "*", eco: "pypi" });
+        if (m) result.libraries.push({ name: m[1], version: cleanVer(m[2] || "") || "*", eco: "pypi" });
       }
-      const pyFw: [string, string][] = [["django","Django"],["flask","Flask"],["fastapi","FastAPI"]];
-      for (const [pkg, name] of pyFw) {
-        const lib = result.libraries.find(l => l.name === pkg);
-        if (lib) { result.framework = `${name} ${lib.version.replace(/[\^~>=<\s]/g, "") || ""}`; break; }
-      }
-    } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
-  }
-
-  // pyproject.toml
-  const pyprojectFile = Bun.file(join(dirPath, "pyproject.toml"));
-  if (await pyprojectFile.exists() && result.libraries.length === 0) {
-    try {
-      const text = await pyprojectFile.text();
+      pickFramework(result, [["django","Django"],["flask","Flask"],["fastapi","FastAPI"]], { clean: true });
+    },
+  },
+  {
+    // pyproject.toml — always parsed, like every other standard manifest here
+    // (audit 2026-08-13, ج‑4): the old `libraries.length === 0` guard made it
+    // a fallback, so a multi-language repo (package.json + pyproject.toml)
+    // lost its Python deps entirely — including from the OSV vuln scan. Dedup
+    // by name against requirements.txt above: both speak pypi and real repos
+    // often carry both manifests for the same package set; first wins.
+    file: "pyproject.toml",
+    parse: (text, result) => {
       const depMatch = text.match(/dependencies\s*=\s*\[([\s\S]*?)\]/);
-      if (depMatch) {
-        for (const m of depMatch[1].matchAll(/"([a-zA-Z0-9_-]+)([^"]*)?"/g)) {
-          result.libraries.push({ name: m[1], version: m[2]?.replace(/[>=<~!\s]/g, "") || "*", eco: "pypi" });
-        }
+      if (!depMatch) return;
+      const seenPy = new Set(result.libraries.filter(l => l.eco === "pypi").map(l => l.name));
+      for (const m of depMatch[1].matchAll(/"([a-zA-Z0-9_-]+)([^"]*)?"/g)) {
+        if (seenPy.has(m[1])) continue;
+        seenPy.add(m[1]);
+        result.libraries.push({ name: m[1], version: cleanVer(m[2] || "") || "*", eco: "pypi" });
       }
-    } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
-  }
-
-  // Cargo.toml — supports both single-crate and workspace layouts.
-  // Workspace roots typically have only [workspace.dependencies] (no plain
-  // [dependencies]) and the actual crates live under members in subdirs.
-  // Parsing lives in cargo-workspace.ts (shared with version-writer):
-  //   1. The root's dependency sections — plain, dev/build, workspace, the
-  //      platform-conditional [target.'cfg(...)'.dependencies] variants, and
-  //      the [dependencies.NAME] section form.
-  //   2. Each member crate's Cargo.toml (same sections), de-duplicated by name.
-  const cargoFile = Bun.file(join(dirPath, "Cargo.toml"));
-  if (await cargoFile.exists()) {
-    try {
+    },
+  },
+  {
+    // Cargo.toml — supports both single-crate and workspace layouts.
+    // Workspace roots typically have only [workspace.dependencies] (no plain
+    // [dependencies]) and the actual crates live under members in subdirs.
+    // Parsing lives in cargo-workspace.ts (shared with version-writer):
+    //   1. The root's dependency sections — plain, dev/build, workspace, the
+    //      platform-conditional [target.'cfg(...)'.dependencies] variants, and
+    //      the [dependencies.NAME] section form.
+    //   2. Each member crate's Cargo.toml (same sections), de-duplicated by name.
+    file: "Cargo.toml",
+    parse: async (rootText, result, dirPath) => {
       const seen = new Set<string>();
       const pushDeps = (deps: CargoDep[]) => {
         for (const d of deps) {
@@ -231,7 +262,6 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<{ fra
         }
       };
 
-      const rootText = await cargoFile.text();
       pushDeps(parseCargoDeps(rootText));
 
       for (const md of await resolveWorkspaceMemberDirs(rootText, dirPath)) {
@@ -256,64 +286,73 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<{ fra
         } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
       }
 
-      const rsFw: [string, string][] = [["actix-web","Actix"],["axum","Axum"],["rocket","Rocket"],["wry","Wry (WebView)"],["tauri","Tauri"]];
-      for (const [pkg, name] of rsFw) {
-        const lib = result.libraries.find(l => l.name === pkg);
-        if (lib) { result.framework = `${name} ${lib.version}`; break; }
-      }
-    } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
-  }
-
-  // go.mod
-  const goModFile = Bun.file(join(dirPath, "go.mod"));
-  if (await goModFile.exists()) {
-    try {
-      const text = await goModFile.text();
-      for (const m of text.matchAll(/require\s+(\S+)\s+v(\S+)/g)) result.libraries.push({ name: m[1], version: m[2], eco: "go" });
+      pickFramework(result, [["actix-web","Actix"],["axum","Axum"],["rocket","Rocket"],["wry","Wry (WebView)"],["tauri","Tauri"]]);
+    },
+  },
+  {
+    file: "go.mod",
+    parse: (text, result) => {
+      // Dedup like the Cargo path above: the single-line and block regexes can
+      // both see a module (or one can appear twice) — first occurrence wins.
+      const seenGo = new Set<string>();
+      const pushGo = (name: string, version: string) => {
+        if (seenGo.has(name)) return;
+        seenGo.add(name);
+        result.libraries.push({ name, version, eco: "go" });
+      };
+      for (const m of text.matchAll(/require\s+(\S+)\s+v(\S+)/g)) pushGo(m[1], m[2]);
       const block = text.match(/require\s*\(([\s\S]*?)\)/);
-      if (block) for (const m of block[1].matchAll(/\s+(\S+)\s+v(\S+)/g)) result.libraries.push({ name: m[1], version: m[2], eco: "go" });
-      const goFw: [string, string][] = [["gin","Gin"],["fiber","Fiber"]];
-      for (const [pkg, name] of goFw) {
-        const lib = result.libraries.find(l => l.name.includes(pkg));
-        if (lib) { result.framework = `${name} ${lib.version}`; break; }
-      }
-    } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
-  }
-
-  // dependencies.json (custom C++ manifest, e.g. vcpkg + vendored)
-  const depsJsonFile = Bun.file(join(dirPath, "dependencies.json"));
-  if (await depsJsonFile.exists() && result.libraries.length === 0) {
-    try {
-      const pkg = await depsJsonFile.json();
+      if (block) for (const m of block[1].matchAll(/\s+(\S+)\s+v(\S+)/g)) pushGo(m[1], m[2]);
+      pickFramework(result, [["gin","Gin"],["fiber","Fiber"]], { byInclude: true });
+    },
+  },
+  {
+    // dependencies.json (custom C++ manifest, e.g. vcpkg + vendored).
+    // Deliberately fallback-only, unlike pyproject above: this is a loose
+    // in-house format, and "dependencies.json" is a name generic enough to
+    // collide with unrelated tooling files in repos that already have a real
+    // manifest. A standard manifest always outranks it.
+    file: "dependencies.json",
+    fallbackOnly: true,
+    parse: (text, result) => {
+      const pkg = JSON.parse(text);
       const lang = pkg?.project?.language || "";
-      if (lang === "C++" || lang === "C" || /klmny3.local\/schemas\/dependencies/.test(pkg?.$schema || "")) {
-        for (const dep of (pkg.dependencies || [])) {
-          if (!dep?.name) continue;
-          result.libraries.push({
-            name: String(dep.name),
-            version: String(dep.version || "*"),
-            ...(dep.transitive ? { dev: true } : {}), eco: "vcpkg",
-          });
-        }
-        // Pick GUI framework if present
-        const qt = (pkg.dependencies || []).find((d: Record<string, unknown>) => /^qt\d?$/i.test(String(d.name ?? "")));
-        if (qt) result.framework = `Qt ${qt.version || ""}`.trim();
+      if (lang !== "C++" && lang !== "C" && !/klmny3.local\/schemas\/dependencies/.test(pkg?.$schema || "")) return;
+      for (const dep of (pkg.dependencies || [])) {
+        if (!dep?.name) continue;
+        result.libraries.push({
+          name: String(dep.name),
+          version: String(dep.version || "*"),
+          ...(dep.transitive ? { dev: true } : {}), eco: "vcpkg",
+        });
       }
-    } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
-  }
-
-  // composer.json
-  const composerFile = Bun.file(join(dirPath, "composer.json"));
-  if (await composerFile.exists()) {
-    try {
-      const pkg = await composerFile.json();
-      const deps = pkg.require || {};
+      // Pick GUI framework if present
+      const qt = (pkg.dependencies || []).find((d: Record<string, unknown>) => /^qt\d?$/i.test(String(d.name ?? "")));
+      if (qt) result.framework = `Qt ${qt.version || ""}`.trim();
+    },
+  },
+  {
+    file: "composer.json",
+    parse: (text, result) => {
+      const deps = JSON.parse(text).require || {};
       for (const [name, ver] of Object.entries(deps)) {
         if (name === "php") continue;
         result.libraries.push({ name, version: String(ver), eco: "packagist" });
       }
-      if (deps["laravel/framework"]) result.framework = `Laravel ${String(deps["laravel/framework"]).replace(/[\^~>=<\s]/g, "")}`;
-      else if (deps["symfony/framework-bundle"]) result.framework = `Symfony ${String(deps["symfony/framework-bundle"]).replace(/[\^~>=<\s]/g, "")}`;
+      pickFramework(result, [["laravel/framework","Laravel"],["symfony/framework-bundle","Symfony"]], { clean: true });
+    },
+  },
+];
+
+export async function detectPackages(dirPath: string, _depth = 0): Promise<DetectResult> {
+  const result: DetectResult = { framework: "", libraries: [] };
+
+  for (const manifest of MANIFESTS) {
+    const f = Bun.file(join(dirPath, manifest.file));
+    if (!(await f.exists())) continue;
+    if (manifest.fallbackOnly && result.libraries.length > 0) continue;
+    try {
+      await manifest.parse(await f.text(), result, dirPath);
     } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
   }
 
@@ -324,17 +363,14 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<{ fra
   // Dedup by name against what the root already produced. Single-level only.
   if (_depth === 0) {
     const seen = new Set<string>(result.libraries.map(l => l.name));
+    const probeFiles = MANIFESTS.filter(m => !m.fallbackOnly).map(m => m.file);
     for (const sub of NESTED_MANIFEST_DIRS) {
       const subPath = join(dirPath, sub);
-      try {
-        const stat = await Bun.file(join(subPath, "package.json")).stat().catch(() => null)
-          || await Bun.file(join(subPath, "Cargo.toml")).stat().catch(() => null)
-          || await Bun.file(join(subPath, "requirements.txt")).stat().catch(() => null)
-          || await Bun.file(join(subPath, "pyproject.toml")).stat().catch(() => null)
-          || await Bun.file(join(subPath, "go.mod")).stat().catch(() => null)
-          || await Bun.file(join(subPath, "composer.json")).stat().catch(() => null);
-        if (!stat) continue;
-      } catch { continue; }
+      let hasManifest = false;
+      for (const file of probeFiles) {
+        if (await Bun.file(join(subPath, file)).exists()) { hasManifest = true; break; }
+      }
+      if (!hasManifest) continue;
       const nested = await detectPackages(subPath, 1);
       if (!result.framework && nested.framework) result.framework = nested.framework;
       for (const lib of nested.libraries) {
@@ -390,7 +426,6 @@ export async function detectRuntime(dirPath: string, language: string): Promise<
             edition = ver ? `TS 7 (${ver})` : "TS 7 (native)";
           } else if (allDeps.typescript) {
             const ver = allDeps.typescript.replace(/[\^~>=<\s]/g, "");
-            const _major = ver.match(/^(\d+)/)?.[1];
             edition = ver ? `TS ${ver}` : "";
           }
         } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }

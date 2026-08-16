@@ -99,6 +99,24 @@ class Animal:
     expect(by(symbols, "Animal")?.kind).toBe("class");
     expect(method(symbols, "Animal")?.name).toContain("speak");
   });
+  test("endLine follows indentation, not the header line (audit 2026-08-14 B6)", () => {
+    // top: header line 1, body line 2 → endLine 2 (was endLine=line → every fn 1 line)
+    expect(by(symbols, "top")).toMatchObject({ line: 1, endLine: 2 });
+    // Animal: header line 3, deepest body line 5 (method body)
+    expect(by(symbols, "Animal")).toMatchObject({ line: 3, endLine: 5 });
+    expect(method(symbols, "Animal")).toMatchObject({ line: 4, endLine: 5 });
+  });
+  test("blank lines inside a block don't end it; a dedented line does", () => {
+    const { symbols: s } = extractSymbols(
+      `def gap():
+    a = 1
+
+    b = 2
+def after():
+    pass`, "py");
+    expect(by(s, "gap")).toMatchObject({ line: 1, endLine: 4 });
+    expect(by(s, "after")).toMatchObject({ line: 5, endLine: 6 });
+  });
 });
 
 describe("extractSymbols — Go", () => {

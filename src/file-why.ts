@@ -14,19 +14,19 @@
 import type { DevLogData, TagEntry } from "./types";
 import { buildFileStory, isNoisePath, relToProject } from "./file-story";
 import { closedItems, type ClosedItem } from "./closed-items";
-import { SECURITY_OPEN_TAGS } from "./open-items";
+import { isReport } from "./open-items";
 
 // Caps: a dossier that scrolls is a dossier nobody reads. Every truncation is
 // reported as a `…More` count — the record never shrinks silently.
 const MAX_DECISIONS = 8;
 const MAX_REPORTS = 12;
 const MAX_WORK = 5;
+const MAX_STORIES = 2;
 const DECISION_CHARS = 200;
 const WORK_CHARS = 120;
 
 const DECISION_TAGS = new Set(["decision", "insight"]);
 const WORK_TAGS = new Set(["built", "refactor", "update"]);
-const isReport = (tag: string) => tag === "bug found" || SECURITY_OPEN_TAGS.has(tag);
 
 /** Truncate at a word boundary; a single over-long token is cut hard. */
 function clip(s: string, max: number): string {
@@ -48,6 +48,9 @@ export interface WhyReport {
   num?: number;
   kind: string;         // bug found | security | security:own | security:dep
   text: string;
+  /** Narrative layer P1: the user's words that opened the turn which stored
+   *  this report — the "why was this even asked" the tag itself never carries. */
+  prompt?: string;
   openedAt?: string;    // YYYY-MM-DD
   closedAt?: string;    // YYYY-MM-DD — absent while open
   /** Days from report to fix; absent while open or when either date is missing. */
@@ -69,6 +72,10 @@ export interface FileWhy {
   /** Project-relative when the file sits inside the project root. */
   file: string;
   purpose?: string;
+  /** Narrative layer P2: session stories whose batch touched this file —
+   *  newest first, the turning points behind the work below. */
+  stories: Array<{ date: string; text: string }>;
+  storiesMore: number;
   decisions: WhyDecision[];
   decisionsMore: number;
   /** Oldest first — a file's reports read as a history, not a feed. */
@@ -116,6 +123,7 @@ export function buildFileWhy(
   const file = relToProject(data, project, filePath);
   const base: FileWhy = {
     file, purpose,
+    stories: [], storiesMore: 0,
     decisions: [], decisionsMore: 0,
     reports: [], reportsMore: 0,
     work: [], workMore: 0,
@@ -128,6 +136,14 @@ export function buildFileWhy(
   base.lastChange = story.events[0]?.timestamp;
   if (!story.tags.length) return base;
   base.empty = false;
+
+  // ── Session stories (narrative layer P2) ──────────────────────────────────
+  const storyTags = story.tags.filter(t => t.tag === "story");
+  base.storiesMore = Math.max(0, storyTags.length - MAX_STORIES);
+  base.stories = storyTags.slice(0, MAX_STORIES).map(t => ({
+    date: day(t.timestamp) ?? "",
+    text: clip(t.content, DECISION_CHARS),
+  }));
 
   // ── Decisions and insights ────────────────────────────────────────────────
   const decisionTags = story.tags.filter(t => DECISION_TAGS.has(t.tag));
@@ -154,13 +170,24 @@ export function buildFileWhy(
     if (t.project === project && typeof t.relatedTo === "number") reopenedNums.add(t.relatedTo);
   }
 
+  // Narrative layer P1: tag id → the captured user prompt of its batch. Only
+  // reports surface it (the dossier's "why was this asked"); decisions carry
+  // their own reasoning in-text already.
+  const promptByTagId = new Map<string, string>();
+  for (const p of data.prompts || []) {
+    if (p.project !== project) continue;
+    for (const id of p.tagIds) promptByTagId.set(id, p.text);
+  }
+
   const reportTags = story.tags.filter(t => isReport(t.tag)).reverse();   // oldest first
   base.reportsMore = Math.max(0, reportTags.length - MAX_REPORTS);
   base.reports = reportTags.slice(0, MAX_REPORTS).map((t: TagEntry) => {
     const closed = typeof t.num === "number" ? closedByNum.get(t.num) : undefined;
     const openedAt = t.timestamp;
     const closedAt = closed?.closedAt;
+    const prompt = promptByTagId.get(t.id);
     return {
+      ...(prompt ? { prompt: clip(prompt, DECISION_CHARS) } : {}),
       ...(typeof t.num === "number" ? { num: t.num } : {}),
       kind: t.tag,
       text: clip(t.content, DECISION_CHARS),

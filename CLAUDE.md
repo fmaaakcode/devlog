@@ -64,7 +64,16 @@ Write the tag content in the user's language.
   BEFORE grepping an unfamiliar area; the argument narrows to one subsystem
   (matched on paths, purposes, exports). Computed live, never from the stale
   generated file. Ephemeral, never stored.
+- `-(ask:recent) [N | Nd]` الباب الزمني: «وش صار آخر شي؟» — خلاصة الجلسات السابقة
+  (التاقات بترتيبها، الملفات الملموسة بأحجام تعديلها، الأوامر وما فشل منها).
+  بلا وسيطة = آخر جلسة؛ `3` = آخر 3 جلسات؛ `7d` = جلسات آخر 7 أيام. الجلسة
+  الحالية مستثناة دائمًا. اسحبه عند استلام عمل سابق أو العودة بعد غياب بدل
+  قراءة البيانات الخام. عابر، لا يُخزَّن.
 - `-(note)` · `-(decision)` — name the rejected alternative and why it lost (wider trade-off study → `-(doc:comparison)`) · `-(insight)`
+- `-(story)` قصة دفعة الإغلاق/الإصدار: **المنعطفات فقط** — نهج فشل، تغيير اتجاه،
+  تأجيل متعمد — لا إعادة سرد للتاقات (≤1200 حرف، واحدة للدفعة). همسة تطلبها مرة
+  واحدة بعد دفعة تغلق عناصر أو إصدار؛ تُختم بحكم الدليل على أثر الجلسة كاملًا
+  وتُربط بأرقام ما أغلقته الدفعة.
 - `-(doc:report|analysis|plan|comparison|readme)` name\n<markdown>
 
 **Closure is mandatory** — every open item (todo/bug/security/plan step) is closed by

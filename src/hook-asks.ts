@@ -55,6 +55,9 @@ export interface AskCtx {
   /** `msg` with fenced/inline code blanked — the only text detection may read. */
   strippedMsg: string;
   cwd: string;
+  /** The asking session — rows whose answer must not include the asker's own
+   *  activity (ask:recent) pass it upstream. Absent on older callers. */
+  sessionId?: string;
   server: string;
   lang: AskLang;
   L: (en: string, ar: string) => string;
@@ -80,8 +83,9 @@ export interface AskRow {
    *  must produce distinct keys or the second one is deduped away. */
   cmd?: (m: RegExpMatchArray) => string;
   path: string;
-  /** Extra query params appended after `cwd`. */
-  qs?: (m: RegExpMatchArray) => string;
+  /** Extra query params appended after `cwd`. Gets the ctx too, for rows whose
+   *  query depends on the turn (ask:recent excludes the asking session). */
+  qs?: (m: RegExpMatchArray, ctx: AskCtx) => string;
   timeoutMs?: number;
   /** Response is text/plain (the audit report) rather than JSON. */
   raw?: boolean;
@@ -148,7 +152,7 @@ export function noteAskFailure(label: string, reason: string, ctx: AskCtx): void
 /** Fetch + mark + format + block for ONE occurrence. Returns "served" (never,
  *  since blocking exits), "empty" (nothing worth showing) or "failed". */
 async function serveHit(row: AskRow, hit: AskHit, ctx: AskCtx): Promise<"empty" | "failed"> {
-  const extra = row.qs ? row.qs(hit.m) : "";
+  const extra = row.qs ? row.qs(hit.m, ctx) : "";
   const url = `${ctx.server}${row.path}?cwd=${encodeURIComponent(ctx.cwd)}${extra}`;
   const r = await fetch(url, { signal: AbortSignal.timeout(row.timeoutMs ?? 10000) });
   if (!r.ok) {

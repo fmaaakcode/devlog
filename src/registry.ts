@@ -3,6 +3,8 @@
 // public endpoint the package manager itself uses, with no API key and no
 // private server, so version checking works fully offline of any DevLog backend.
 
+import { TtlMap } from "./ttl-cache";
+
 export interface VersionInfo {
   version: string | null;
   date: string | null; // ISO publish date of `version`, when the registry exposes it
@@ -12,7 +14,10 @@ export interface VersionInfo {
   description?: string | null;
 }
 
-const CACHE = new Map<string, { version: string | null; date: string | null; description?: string | null; at: number }>();
+// TtlMap (not a plain Map) for all three caches in this file: entries expire
+// AND get deleted, so packages that leave every manifest stop occupying memory
+// on a long-lived daemon (audit 2026-08-14 E2).
+const CACHE = new TtlMap<{ version: string | null; date: string | null; description?: string | null }>();
 const TTL_MS = 6 * 60 * 60 * 1000; // 6h — registries change slowly; avoid hammering
 // Negative results (version===null: transient failure or 404) get a much shorter
 // TTL so a momentary ECONNRESET doesn't freeze a package as "unknown" for 6h —
@@ -64,7 +69,7 @@ async function fetchJson<T = unknown>(url: string): Promise<T | null> {
         headers: { "User-Agent": UA, Accept: "application/json" },
       });
       if (r.status === 404) return null;            // genuinely absent — don't retry
-      if (!r.ok) { if (attempt < 2) { await backoff(attempt); continue; } return null; }  // 429/5xx
+      if (!r.ok) { if (attempt < 2) { await sleep(retryDelayMs(r, attempt)); continue; } return null; }  // 429/5xx
       return (await r.json()) as T;
     } catch {                                       // ECONNRESET / timeout — retry then give up
       if (attempt < 2) { await backoff(attempt); continue; }
@@ -78,7 +83,30 @@ async function fetchJson<T = unknown>(url: string): Promise<T | null> {
 // reset the connection (crates.io under load) tends to reset again; a short
 // pause lets it recover. 250ms, 500ms.
 function backoff(attempt: number): Promise<void> {
-  return new Promise(r => setTimeout(r, 250 * (attempt + 1)));
+  return sleep(250 * (attempt + 1));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+// How long to wait before retrying a failed HTTP response (audit 2026-08-13):
+// a rate limiter that answers 429/503 WITH a Retry-After knows better than our
+// linear guess — retrying earlier just burns the remaining attempts against a
+// window that hasn't reopened. Honors both header forms (delta-seconds and
+// HTTP-date), capped so an external header can never park the daemon, and any
+// other status keeps the plain backoff.
+export const RETRY_AFTER_CAP_MS = 10_000;
+export function retryDelayMs(r: { status: number; headers: { get(n: string): string | null } }, attempt: number): number {
+  if (r.status === 429 || r.status === 503) {
+    const h = (r.headers.get("retry-after") || "").trim();
+    if (h) {
+      const secs = Number(h);
+      const ms = Number.isFinite(secs) ? secs * 1000 : (+new Date(h) || 0) - Date.now();
+      if (ms > 0) return Math.min(ms, RETRY_AFTER_CAP_MS);
+    }
+  }
+  return 250 * (attempt + 1);
 }
 
 // fetchJson's plain-text twin (same retry/404/UA discipline) for endpoints that
@@ -94,7 +122,7 @@ async function fetchText(url: string): Promise<string | null> {
         headers: { "User-Agent": UA },
       });
       if (r.status === 404) return null;
-      if (!r.ok) { if (attempt < 2) { await backoff(attempt); continue; } return null; }
+      if (!r.ok) { if (attempt < 2) { await sleep(retryDelayMs(r, attempt)); continue; } return null; }
       return (await r.text()).slice(0, TEXT_CAP);
     } catch {
       if (attempt < 2) { await backoff(attempt); continue; }
@@ -208,13 +236,10 @@ async function queryRegistry(ecosystem: string, name: string): Promise<VersionIn
 export async function latestVersionInfo(ecosystem: string, name: string): Promise<VersionInfo> {
   const key = `${ecosystem}:${name}`;
   const cached = CACHE.get(key);
-  const now = Date.now();
-  if (cached) {
-    const ttl = cached.version == null ? NEG_TTL_MS : TTL_MS;
-    if (now - cached.at < ttl) return { version: cached.version, date: cached.date, description: cached.description ?? null };
-  }
+  if (cached) return { version: cached.version, date: cached.date, description: cached.description ?? null };
   const info = await queryRegistry(ecosystem, name);
-  CACHE.set(key, { version: info.version, date: info.date, description: info.description ?? null, at: now });
+  CACHE.set(key, { version: info.version, date: info.date, description: info.description ?? null },
+    info.version == null ? NEG_TTL_MS : TTL_MS);
   return info;
 }
 
@@ -253,9 +278,25 @@ export interface VersionEntry { version: string; date: string | null; }
 const STABLE_VER_RE = /^\d+\.\d+(?:\.\d+)?$/;
 
 function sortVersionsDesc(entries: VersionEntry[]): VersionEntry[] {
-  return entries.sort((a, b) =>
-    isVersionBehind(a.version, b.version) ? 1 : isVersionBehind(b.version, a.version) ? -1 : 0,
-  );
+  // One TOTAL order, honoring Array.sort's contract — a comparator built on
+  // isVersionBehind alone is non-transitive (an unparseable version compares
+  // "equal" to everything), and engine behavior on that is undefined.
+  // Parseable versions descend semantically (stable above its own pre-release,
+  // as isVersionBehind ranks them); unparseable ones sink below, lexically.
+  return entries.sort((a, b) => {
+    const av = parseVer(a.version);
+    const bv = parseVer(b.version);
+    if (av && bv) {
+      for (let i = 0; i < 3; i++) if (av[i] !== bv[i]) return bv[i] - av[i];
+      const aPre = isPreRelease(a.version);
+      const bPre = isPreRelease(b.version);
+      if (aPre !== bPre) return aPre ? 1 : -1;
+      return a.version.localeCompare(b.version);
+    }
+    if (av) return -1;
+    if (bv) return 1;
+    return b.version.localeCompare(a.version);
+  });
 }
 
 async function queryHistory(ecosystem: string, name: string): Promise<VersionEntry[]> {
@@ -324,20 +365,16 @@ async function queryHistory(ecosystem: string, name: string): Promise<VersionEnt
 // How many Go versions get a per-version .info date fetch (see case "go").
 const GO_INFO_LIMIT = 8;
 
-const HIST_CACHE = new Map<string, { hist: VersionEntry[]; at: number }>();
+const HIST_CACHE = new TtlMap<VersionEntry[]>();
 
 /** Stable version history (newest first) with publish dates. Cached like the
  *  latest-version path; empty list on failure/unsupported (caller skips matured). */
 export async function versionHistory(ecosystem: string, name: string): Promise<VersionEntry[]> {
   const key = `${ecosystem}:${name}`;
   const cached = HIST_CACHE.get(key);
-  const now = Date.now();
-  if (cached) {
-    const ttl = cached.hist.length === 0 ? NEG_TTL_MS : TTL_MS;
-    if (now - cached.at < ttl) return cached.hist;
-  }
+  if (cached) return cached;
   const hist = await queryHistory(ecosystem, name);
-  HIST_CACHE.set(key, { hist, at: now });
+  HIST_CACHE.set(key, hist, hist.length === 0 ? NEG_TTL_MS : TTL_MS);
   return hist;
 }
 
@@ -489,17 +526,13 @@ async function queryToolchain(lang: string): Promise<ToolchainInfo> {
 
 // Toolchains get their own cache (ToolchainInfo, not VersionInfo) but reuse the
 // same TTLs and fetch/backoff as the package path.
-const TC_CACHE = new Map<string, { info: ToolchainInfo; at: number }>();
+const TC_CACHE = new TtlMap<ToolchainInfo>();
 
 export async function latestToolchain(lang: string): Promise<ToolchainInfo> {
   const key = (lang || "").toLowerCase();
   const cached = TC_CACHE.get(key);
-  const now = Date.now();
-  if (cached) {
-    const ttl = cached.info.version == null ? NEG_TTL_MS : TTL_MS;
-    if (now - cached.at < ttl) return cached.info;
-  }
+  if (cached) return cached;
   const info = await queryToolchain(key);
-  TC_CACHE.set(key, { info, at: now });
+  TC_CACHE.set(key, info, info.version == null ? NEG_TTL_MS : TTL_MS);
   return info;
 }

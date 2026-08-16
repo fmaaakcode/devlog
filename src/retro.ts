@@ -9,7 +9,7 @@
 // closure resolver (closed-items.ts) — same pairing the open/closed views trust.
 
 import type { DevLogData, TagEntry } from "./types";
-import { openBugs, openSecurity } from "./data";
+import { openBugs, openSecurity, isReport } from "./data";
 import { closedItems } from "./closed-items";
 import { projectRelativeFiles } from "./path-utils";
 
@@ -27,8 +27,6 @@ export interface RetroItem {
 const DAY_MS = 86_400_000;
 const ageDays = (openedAt: string, closedAt?: string): number =>
   Math.max(0, Math.round(((closedAt ? +new Date(closedAt) : Date.now()) - +new Date(openedAt)) / DAY_MS));
-
-const isReport = (kind: string) => kind === "bug found" || kind.startsWith("security");
 
 /** All problem reports of `project`, oldest first (recurrence reads best in
  *  chronological order). Open items carry no closedAt and age until now. */

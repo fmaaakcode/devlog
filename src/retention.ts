@@ -29,30 +29,54 @@ const MAX_EVENTS_LOG = 10000;
 // can't starve quiet ones: 200 × ~20 projects stays under the global cap.
 const PER_PROJECT_MAX_EVENTS = 200;
 
+// How far past the global cap the hot store may grow while eviction is
+// deferred on archive failure. Past this, memory wins over completeness.
+const EVICTION_DEBT_SLACK = 1000;
+
 /** Append an event to the hot store, honoring the per-project cap first and the
  *  global MAX_EVENTS_LOG safety net second. Lived in server.ts until the
- *  file-size ratchet; it belongs with the caps and capEventsPerProject anyway. */
-export function pushEvent(events: EventEntry[], entry: EventEntry) {
+ *  file-size ratchet; it belongs with the caps and capEventsPerProject anyway.
+ *
+ *  Eviction is archival, not deletion (cold archive — the 2026-07-06 changelog
+ *  wipe), and since audit 2026-08-13 (هـ‑3) the archive is AWAITED with
+ *  eviction deferred a cycle on failure — the same contract runRetention
+ *  already honored, where the old fire-and-forget lost the batch silently.
+ *  Deferral means the caps are soft under archive failure: everything stays in
+ *  the hot store and the NEXT push recomputes the same eviction and retries the
+ *  archive. Only past MAX_EVENTS_LOG + EVICTION_DEBT_SLACK does memory win and
+ *  the batch evict unarchived — loudly. */
+export async function pushEvent(
+  events: EventEntry[], entry: EventEntry,
+  archive: (evicted: EventEntry[]) => Promise<boolean> = archiveEvents,
+): Promise<void> {
   events.push(entry);
   // Per-project cap FIRST so a busy project (the one Claude is working in) can't
-  // evict a quiet project's history from a shared global ring (#NNN). Mutate in
-  // place to preserve the caller's array reference.
-  const capped = capEventsPerProject(events, PER_PROJECT_MAX_EVENTS);
+  // evict a quiet project's history from a shared global ring (#236).
+  const afterProject = capEventsPerProject(events, PER_PROJECT_MAX_EVENTS);
   const evicted: EventEntry[] = [];
-  if (capped.length !== events.length) {
-    const kept = new Set(capped);
+  if (afterProject.length !== events.length) {
+    const kept = new Set(afterProject);
     for (const e of events) if (!kept.has(e)) evicted.push(e);
-    events.splice(0, events.length, ...capped);
   }
   // Global memory safety net across many projects.
-  if (events.length > MAX_EVENTS_LOG) {
-    evicted.push(...events.slice(0, events.length - MAX_EVENTS_LOG));
-    events.splice(0, events.length - MAX_EVENTS_LOG);
+  let final = afterProject;
+  if (final.length > MAX_EVENTS_LOG) {
+    // Loop, not push(...spread): the overflow after a huge import can be tens
+    // of thousands of rows, and spreading them as call arguments overflows the
+    // stack (audit 2026-08-14 E4).
+    for (const e of final.slice(0, final.length - MAX_EVENTS_LOG)) evicted.push(e);
+    final = final.slice(final.length - MAX_EVENTS_LOG);
   }
-  // Eviction is archival, not deletion (cold archive — the 2026-07-06 changelog
-  // wipe). Fire-and-forget: archiveEvents retries transient locks and logs a
-  // failed batch; re-queuing here would break the cap invariant we just applied.
-  if (evicted.length) void archiveEvents(evicted);
+  if (!evicted.length) return;
+  const archived = await archive(evicted);
+  if (!archived && events.length <= MAX_EVENTS_LOG + EVICTION_DEBT_SLACK) return; // defer a cycle
+  if (!archived) {
+    console.error(`[retention] archive still failing at ${events.length} hot events (cap ${MAX_EVENTS_LOG} + slack ${EVICTION_DEBT_SLACK}) — evicting ${evicted.length} event(s) UNARCHIVED to protect memory`);
+  }
+  // Mutate in place to preserve the caller's array reference — without
+  // spreading `final` (up to MAX_EVENTS_LOG rows) as splice arguments (E4).
+  events.length = 0;
+  for (const e of final) events.push(e);
 }
 const HOT_DAYS = 7;
 const WARM_DAYS = 30;

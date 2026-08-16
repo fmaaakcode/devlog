@@ -21,7 +21,12 @@ import { addAck, findDevlogDir, listAcks } from "./standards-ack";
 import { join } from "node:path";
 import { normalizeSlashes } from "./path-utils";
 import { homedir } from "node:os";
-import { isUiFile } from "./design-check";
+import { currentLang } from "./i18n";
+
+// i18n policy (#906): this was the widest all-Arabic surface left — every
+// -(ask:rules) answer and rule-command error. i18n.ts is env-only, so the
+// module stays importable by the standalone Stop hook.
+const L = <T>(en: T, ar: T): T => (currentLang() === "ar" ? ar : en);
 
 // Read dynamically (not a captured const) so a process that changes
 // DEVLOG_STANDARDS_DIR after load — and the test suite, which points it at a
@@ -54,7 +59,11 @@ export interface RuleCommand {
   key: string;
 }
 
-const RULES_HEADING = "## القواعد";
+// STORAGE FORMAT, not a display string: existing standards files carry the
+// Arabic heading, files created under an English env get the English one — so
+// reads must accept BOTH forever, while writes follow the current language.
+const RULES_HEADINGS = new Set(["## القواعد", "## Rules"]);
+const rulesHeading = () => L("## Rules", "## القواعد");
 
 // ── Catalog discovery ────────────────────────────────────────────────────────
 function isHiddenFile(name: string): boolean {
@@ -180,9 +189,9 @@ const BULLET_RE = /^[ \t]*-[ \t]+(?:\[[ xX]\][ \t]+)?(.*\S)\s*$/;
 
 interface RuleBlock { headingIdx: number; bullets: Array<{ lineIdx: number; text: string }>; }
 
-/** Locate the `## القواعد` block and its bullet lines in a file's lines. */
+/** Locate the rules block (`## القواعد` / `## Rules`) and its bullet lines. */
 function locateRules(lines: string[]): RuleBlock {
-  const headingIdx = lines.findIndex(l => l.trim() === RULES_HEADING);
+  const headingIdx = lines.findIndex(l => RULES_HEADINGS.has(l.trim()));
   const bullets: Array<{ lineIdx: number; text: string }> = [];
   if (headingIdx < 0) return { headingIdx, bullets };
   for (let i = headingIdx + 1; i < lines.length; i++) {
@@ -244,7 +253,7 @@ function numberForDisplay(content: string): string {
   const { bullets } = locateRules(lines);
   bullets.forEach((b, i) => {
     const { kind, text } = classifyRule(b.text);
-    const label = kind === "check" ? "[فحص]" : "[نصيحة]";
+    const label = kind === "check" ? L("[check]", "[فحص]") : L("[guide]", "[نصيحة]");
     const indentMatch = lines[b.lineIdx].match(/^[ \t]*-[ \t]+/);
     const prefix = indentMatch ? indentMatch[0] : "- ";
     lines[b.lineIdx] = `${prefix}#${i + 1} ${label} ${text}`;
@@ -274,16 +283,20 @@ export async function readCategories(cats: string[], cwd?: string): Promise<Read
     for (const entry of entries) {
       try {
         const raw = await readFile(entry.path, "utf-8");
-        const scopeLabel = entry.scope === "project" ? " — خاص بالمشروع" : "";
-        blocks.push(`════════ معايير: ${entry.category} (${entry.axis}${scopeLabel}) ════════\n${numberForDisplay(raw).trim()}`);
+        const scopeLabel = entry.scope === "project" ? L(" — project-local", " — خاص بالمشروع") : "";
+        blocks.push(`════════ ${L("standards", "معايير")}: ${entry.category} (${entry.axis}${scopeLabel}) ════════\n${numberForDisplay(raw).trim()}`);
         readAny = true;
       } catch { /* unreadable file in one scope — try the others */ }
     }
     if (readAny) found++; else missing.push(cat);
   }
   if (missing.length) {
-    const avail = catalog.length ? formatCatalogNames(catalog) : "(الكتالوج فارغ — أضف ملفات في ~/.claude/standards)";
-    blocks.push(`⚠ تصنيفات غير موجودة: ${missing.join(", ")}\nالمتاح: ${avail}`);
+    const avail = catalog.length ? formatCatalogNames(catalog) : L(
+      "(the catalog is empty — add files under ~/.claude/standards)",
+      "(الكتالوج فارغ — أضف ملفات في ~/.claude/standards)");
+    blocks.push(L(
+      `⚠ unknown categories: ${missing.join(", ")}\navailable: ${avail}`,
+      `⚠ تصنيفات غير موجودة: ${missing.join(", ")}\nالمتاح: ${avail}`));
   }
   return { output: blocks.join("\n\n"), found, missing };
 }
@@ -293,11 +306,13 @@ export interface AddResult { ok: boolean; message: string; }
 
 export async function addRule(cat: string, text: string): Promise<AddResult> {
   const ruleText = text.trim();
-  if (!ruleText) return { ok: false, message: "نص القاعدة فارغ." };
+  if (!ruleText) return { ok: false, message: L("empty rule text.", "نص القاعدة فارغ.") };
   const catalog = await scanCatalog();
   const entry = findCategory(catalog, cat);
   if (!entry) {
-    return { ok: false, message: `التصنيف "${cat}" غير موجود. أنشئه أولاً بـ -(rule:new) <محور>/${cat}` };
+    return { ok: false, message: L(
+      `category "${cat}" does not exist. Create it first with -(rule:new) <axis>/${cat}`,
+      `التصنيف "${cat}" غير موجود. أنشئه أولاً بـ -(rule:new) <محور>/${cat}`) };
   }
   const raw = await readFile(entry.path, "utf-8");
   const lines = raw.split("\n");
@@ -306,7 +321,9 @@ export async function addRule(cat: string, text: string): Promise<AddResult> {
   // Dedup: identical (normalized) rule already present → no-op.
   const needle = normRule(ruleText);
   if (bullets.some(b => normRule(b.text) === needle)) {
-    return { ok: true, message: `موجودة مسبقاً في "${entry.category}" — لم تُضف نسخة مكررة.` };
+    return { ok: true, message: L(
+      `already present in "${entry.category}" — no duplicate added.`,
+      `موجودة مسبقاً في "${entry.category}" — لم تُضف نسخة مكررة.`) };
   }
 
   // Multi-line rules: keep the first line as the bullet, indent the rest.
@@ -314,9 +331,9 @@ export async function addRule(cat: string, text: string): Promise<AddResult> {
   const bulletBlock = [`- ${ruleLines[0].trim()}`, ...ruleLines.slice(1).map(l => `  ${l.trim()}`)];
 
   if (headingIdx < 0) {
-    // No ## القواعد section yet — append one at the end.
+    // No rules section yet — append one at the end.
     if (lines.length && lines[lines.length - 1].trim() !== "") lines.push("");
-    lines.push(RULES_HEADING, ...bulletBlock);
+    lines.push(rulesHeading(), ...bulletBlock);
   } else {
     // Insert after the last existing bullet's WHOLE block (append-only,
     // preserves order). #769: a multi-line rule's continuation lines sit under
@@ -334,21 +351,30 @@ export async function addRule(cat: string, text: string): Promise<AddResult> {
     lines.splice(insertAt, 0, ...bulletBlock);
   }
   await writeFile(entry.path, lines.join("\n"), "utf-8");
-  return { ok: true, message: `أُضيفت لـ "${entry.category}" (#${bullets.length + 1}).` };
+  return { ok: true, message: L(
+    `added to "${entry.category}" (#${bullets.length + 1}).`,
+    `أُضيفت لـ "${entry.category}" (#${bullets.length + 1}).`) };
 }
 
 // ── Create a new category ────────────────────────────────────────────────────
 const KNOWN_AXES = ["languages", "runtimes", "frameworks", "platforms", "app-types", "cross-cutting"];
 
 function categoryTemplate(cat: string): string {
-  return `# ${cat} — معايير
+  return L(`# ${cat} — standards
+
+## When it applies
+
+(One line: when should Claude pull this category.)
+
+${rulesHeading()}
+`, `# ${cat} — معايير
 
 ## متى تنطبق
 
 (اشرح بسطر متى يسحب كلود هذا التصنيف.)
 
-${RULES_HEADING}
-`;
+${rulesHeading()}
+`);
 }
 
 export interface NewResult { ok: boolean; message: string; }
@@ -358,25 +384,35 @@ export interface NewResult { ok: boolean; message: string; }
 export async function createCategory(axisRaw: string, cat: string): Promise<NewResult> {
   const axis = axisRaw.trim().toLowerCase();
   const category = cat.trim().toLowerCase();
-  if (!axis || !category) return { ok: false, message: "الصيغة: -(rule:new) <محور>/<تصنيف>" };
+  if (!axis || !category) return { ok: false, message: L("syntax: -(rule:new) <axis>/<category>", "الصيغة: -(rule:new) <محور>/<تصنيف>") };
   // Validate BOTH segments against a strict charset before building the path:
   // `axis` flows into join(standardsDir(), axis), so an unvalidated "../.." would
   // let -(rule:new) write a .md file outside the standards dir (path traversal).
   if (!/^[a-z0-9_-]+$/.test(category)) {
-    return { ok: false, message: `اسم تصنيف غير صالح: "${category}" (حروف صغيرة وأرقام و - فقط).` };
+    return { ok: false, message: L(
+      `invalid category name: "${category}" (lowercase letters, digits and - only).`,
+      `اسم تصنيف غير صالح: "${category}" (حروف صغيرة وأرقام و - فقط).`) };
   }
   if (!/^[a-z0-9_-]+$/.test(axis)) {
-    return { ok: false, message: `اسم محور غير صالح: "${axis}" (حروف صغيرة وأرقام و - فقط).` };
+    return { ok: false, message: L(
+      `invalid axis name: "${axis}" (lowercase letters, digits and - only).`,
+      `اسم محور غير صالح: "${axis}" (حروف صغيرة وأرقام و - فقط).`) };
   }
   const catalog = await scanCatalog();
   if (findCategory(catalog, category)) {
-    return { ok: false, message: `التصنيف "${category}" موجود مسبقاً — استخدم -(rule:add) للإضافة إليه.` };
+    return { ok: false, message: L(
+      `category "${category}" already exists — use -(rule:add) to extend it.`,
+      `التصنيف "${category}" موجود مسبقاً — استخدم -(rule:add) للإضافة إليه.`) };
   }
-  const axisHint = KNOWN_AXES.includes(axis) ? "" : ` (محور جديد خارج المعتاد: ${KNOWN_AXES.join("/")})`;
+  const axisHint = KNOWN_AXES.includes(axis) ? "" : L(
+    ` (new axis outside the usual: ${KNOWN_AXES.join("/")})`,
+    ` (محور جديد خارج المعتاد: ${KNOWN_AXES.join("/")})`);
   const dir = join(standardsDir(), axis);
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, `${category}.md`), categoryTemplate(category), "utf-8");
-  return { ok: true, message: `أُنشئ تصنيف "${category}" في ${axis}/${axisHint}. أضِف قواعده بـ -(rule:add) ${category}` };
+  return { ok: true, message: L(
+    `created category "${category}" under ${axis}/${axisHint}. Add its rules with -(rule:add) ${category}`,
+    `أُنشئ تصنيف "${category}" في ${axis}/${axisHint}. أضِف قواعده بـ -(rule:add) ${category}`) };
 }
 
 // ── Remove a rule by number ──────────────────────────────────────────────────
@@ -385,12 +421,14 @@ export interface RemoveResult { ok: boolean; message: string; }
 export async function removeRule(cat: string, num: number): Promise<RemoveResult> {
   const catalog = await scanCatalog();
   const entry = findCategory(catalog, cat);
-  if (!entry) return { ok: false, message: `التصنيف "${cat}" غير موجود.` };
+  if (!entry) return { ok: false, message: L(`category "${cat}" does not exist.`, `التصنيف "${cat}" غير موجود.`) };
   const raw = await readFile(entry.path, "utf-8");
   const lines = raw.split("\n");
   const { bullets } = locateRules(lines);
   if (num < 1 || num > bullets.length) {
-    return { ok: false, message: `#${num} خارج النطاق — "${entry.category}" فيه ${bullets.length} قاعدة.` };
+    return { ok: false, message: L(
+      `#${num} out of range — "${entry.category}" has ${bullets.length} rule(s).`,
+      `#${num} خارج النطاق — "${entry.category}" فيه ${bullets.length} قاعدة.`) };
   }
   const target = bullets[num - 1];
   // Remove the bullet line plus any indented continuation lines that follow it.
@@ -399,44 +437,22 @@ export async function removeRule(cat: string, num: number): Promise<RemoveResult
   const removed = bullets[num - 1].text;
   lines.splice(target.lineIdx, end - target.lineIdx);
   await writeFile(entry.path, lines.join("\n"), "utf-8");
-  return { ok: true, message: `حُذفت #${num} من "${entry.category}": ${removed.slice(0, 60)}` };
+  return { ok: true, message: L(
+    `removed #${num} from "${entry.category}": ${removed.slice(0, 60)}`,
+    `حُذفت #${num} من "${entry.category}": ${removed.slice(0, 60)}`) };
 }
 
 // ── List the catalog ─────────────────────────────────────────────────────────
 export async function listCatalog(cwd?: string): Promise<string> {
   const catalog = await scanCatalog(cwd);
-  if (!catalog.length) return "الكتالوج فارغ — أضف ملفات .md في ~/.claude/standards/<محور>/";
+  if (!catalog.length) return L(
+    "the catalog is empty — add .md files under ~/.claude/standards/<axis>/",
+    "الكتالوج فارغ — أضف ملفات .md في ~/.claude/standards/<محور>/");
   const globalCats = catalog.filter(e => e.scope === "global");
   const projectCats = catalog.filter(e => e.scope === "project");
-  let out = `الكتالوج (${catalog.length} تصنيف):\n${formatCatalogNames(globalCats)}`;
-  if (projectCats.length) out += `\nخاص بالمشروع (.devlog/standards): ${formatCatalogNames(projectCats)}`;
+  let out = `${L("catalog", "الكتالوج")} (${catalog.length} ${L("categories", "تصنيف")}):\n${formatCatalogNames(globalCats)}`;
+  if (projectCats.length) out += `\n${L("project-local", "خاص بالمشروع")} (.devlog/standards): ${formatCatalogNames(projectCats)}`;
   return out;
-}
-
-// ── Enforcement gate ─────────────────────────────────────────────────────────
-// SessionStart only INJECTS the catalog NAMES (awareness). Nothing forces Claude
-// to actually pull + apply the rules, so a session can write code while ignoring
-// the standards entirely (observed in the wild). This gate, evaluated by the Stop
-// hook, decides when to force a correction — the same enforcement pattern as the
-// closure-check. Pure so it's unit-testable; the hook supplies the observed facts.
-export interface GateInput {
-  catalogCount: number;       // number of categories available
-  relevantUncovered: number;  // available categories the written code NEEDS but weren't
-                              // pulled/auto-served (inferred per written file, ∩ catalog,
-                              // minus covered). The hook computes this.
-  stopHookActive: boolean;    // are we already inside a forced continuation?
-}
-
-// Relevance-aware: nag ONLY when a standard that actually applies to the written
-// code exists and wasn't engaged. The old gate fired on "wrote code + pulled
-// nothing", which forced THEATER pulls — e.g. a C++-only session with no `cpp`
-// category got nagged and pulled irrelevant categories just to silence it. Now a
-// session whose files map to no available category (or whose relevant ones are all
-// covered) ends cleanly.
-export function shouldEnforceStandards(g: GateInput): boolean {
-  if (g.stopHookActive) return false;     // never loop on our own continuation
-  if (g.catalogCount === 0) return false; // nothing to enforce against
-  return g.relevantUncovered > 0;         // a relevant standard exists but wasn't engaged
 }
 
 // ── Per-project markers (exemption + acks) — extracted to standards-ack.ts ───
@@ -446,54 +462,6 @@ export {
   ENFORCE_MARKER, enforceMarkerPath, isEnforcementDisabled,
   ACK_MARKER, readAcks, isAcked, type AckResult, addAck, listAcks,
 } from "./standards-ack";
-
-// PROACTIVE gate (PreToolUse on Write/Edit): instead of blocking a code write and
-// telling Claude to go pull standards (the old shouldGateWrite), the gate now
-// INFERS the file's categories (P1) and TEACHES — injects their rules into the
-// block message and records them as served, so the retry write is already
-// informed. This is the "system teaches Claude" inversion: one block, rules in
-// hand, no separate -(ask:rules) round-trip. Pure decision here; the hook does IO.
-
-// Marker the gate writes into the per-session rules-state when it auto-injects a
-// category's rules, so a later write of the same language doesn't re-teach it and
-// the Stop-hook backstop sees standards as engaged.
-export const AUTO_SERVED_PREFIX = "auto-served|";
-
-/**
- * Categories already covered this session, parsed from the rules-state keys:
- * `ask:rules` command keys (their argLine lists the pulled categories) plus the
- * gate's own `auto-served|<cat>` markers. Lets the gate be per-category — writing
- * a second `.rs` file won't re-teach Rust, but the first `.go` file still gets Go
- * taught even though Rust was covered earlier.
- */
-export function coveredCategories(servedKeys: string[]): string[] {
-  const out = new Set<string>();
-  for (const k of servedKeys) {
-    const s = String(k);
-    if (s.startsWith("ask:rules|")) {
-      for (const c of (s.split("|")[1] || "").split(/\s+/).filter(Boolean)) out.add(c.toLowerCase());
-    } else if (s.startsWith(AUTO_SERVED_PREFIX)) {
-      const c = s.slice(AUTO_SERVED_PREFIX.length).trim().toLowerCase();
-      if (c) out.add(c);
-    }
-  }
-  return [...out];
-}
-
-export interface GateDecision { block: boolean; serve: string[]; }
-
-/**
- * Decide the write gate for a file. `needed` = inferCategories(...) for it;
- * `covered` = coveredCategories(state). Serves (and blocks on) only the needed
- * categories not yet covered. Non-code, empty `needed` (unknown ext + nothing
- * cross-cutting), or fully-covered ⇒ allow.
- */
-export function gateWriteDecision(g: { isCode: boolean; needed: string[]; covered: string[] }): GateDecision {
-  if (!g.isCode) return { block: false, serve: [] };
-  const cov = new Set(g.covered.map(c => c.toLowerCase()));
-  const serve = g.needed.filter(c => !cov.has(c.toLowerCase()));
-  return { block: serve.length > 0, serve };
-}
 
 // Is a written file "code" for enforcement? Excludes docs/manifests/assets and
 // anything under .devlog, so doc-only or DevLog-internal edits don't trip the gate.
@@ -505,14 +473,7 @@ export function isCodeWrite(filePath: string): boolean {
   return !NON_CODE_RE.test(f);
 }
 
-// ── File → category inference (P1) ───────────────────────────────────────────
-// Maps a file being written to the standards categories that apply to it, so the
-// write-time gate can INJECT the right rules instead of asking Claude to guess
-// which categories to pull. The system knows a `.rs` file is Rust — making Claude
-// rediscover that is "Claude teaches the system"; this inverts it. Pure + data-
-// driven so it's unit-testable: the gate supplies the path, the scanned catalog
-// names, and optional project hints, then reads whatever categories come back.
-
+// ── File → language mapping ──────────────────────────────────────────────────
 // Extension (lowercased, no dot) → language category slug. Header ambiguity
 // (.h could be C or C++) resolves to C by convention; a C++ project that wants
 // otherwise can pull cpp explicitly.
@@ -547,73 +508,6 @@ export function langForFile(filePath: string): string | null {
   const dot = base.lastIndexOf(".");
   if (dot < 0) return null;
   return EXT_LANG[base.slice(dot + 1)] ?? null;
-}
-
-// Dependency name → framework/tool category (P0). A project using astro/vite/react
-// has no file extension that says so — the SIGNAL is its manifest deps. Mapping
-// here is harmless when the category doesn't exist (inferCategories intersects with
-// the catalog), so the table can list more than the user has authored.
-const DEP_CATEGORY: Record<string, string> = {
-  react: "react", "react-dom": "react",
-  next: "next",
-  astro: "astro",
-  vue: "vue", "@vue/runtime-core": "vue",
-  svelte: "svelte", "@sveltejs/kit": "svelte",
-  "solid-js": "solid",
-  vite: "vite",
-  webpack: "webpack",
-  tailwindcss: "tailwind",
-  express: "express",
-  fastify: "fastify",
-  "@nestjs/core": "nestjs",
-};
-
-/** Framework/tool categories implied by a manifest's dependency names. */
-export function frameworkCategoriesFromDeps(depNames: string[]): string[] {
-  const out: string[] = [];
-  for (const n of depNames) {
-    const cat = DEP_CATEGORY[(n || "").trim().toLowerCase()];
-    if (cat && !out.includes(cat)) out.push(cat);
-  }
-  return out;
-}
-
-export interface InferOpts {
-  /** Project platform hint (e.g. "windows" | "web" | "linux"), if known. */
-  platform?: string | null;
-  /** Project app-type hint (e.g. "desktop-gui" | "cli" | "website"), if known. */
-  appType?: string | null;
-  /** Manifest dependency names → framework categories (astro, vite, react…). */
-  deps?: string[];
-  /** JS runtime ("bun" | "node" | "deno"), mapped to a runtimes/ category. */
-  runtime?: string | null;
-  /** cross-cutting categories to always include WHEN PRESENT in the catalog.
-   *  Defaults to ["security"] — security applies regardless of language. */
-  alwaysInclude?: string[];
-}
-
-/**
- * The standards categories that apply to a file write, intersected with what's
- * actually available so we never suggest a category with no file. Order: language
- * → design (UI) → framework (deps) → runtime → platform → app-type → cross-cutting.
- * Caller passes the scanned catalog names (keeps this pure — no FS).
- */
-export function inferCategories(filePath: string, available: string[], opts: InferOpts = {}): string[] {
-  const avail = new Set(available.map(c => c.toLowerCase()));
-  const picked: string[] = [];
-  const add = (c: string | null | undefined): void => {
-    if (!c) return;
-    const k = c.trim().toLowerCase();
-    if (avail.has(k) && !picked.includes(k)) picked.push(k);
-  };
-  add(langForFile(filePath));
-  if (isUiFile(filePath)) add("design"); // UI file → pull the visual standard
-  for (const c of frameworkCategoriesFromDeps(opts.deps ?? [])) add(c);
-  add(opts.runtime);
-  add(opts.platform);
-  add(opts.appType);
-  for (const c of opts.alwaysInclude ?? ["security"]) add(c);
-  return picked;
 }
 
 // ── Template resolution (P3) ─────────────────────────────────────────────────
@@ -652,7 +546,9 @@ export function resolveTemplate(content: string, values: TemplateValues): string
     const lang = langRaw.toLowerCase();
     const v = values[`${kind}:${lang}`];
     if (v) return v;
-    return kind === "edition" ? `أحدث edition لـ${lang}` : `أحدث إصدار مستقر لـ${lang}`;
+    return kind === "edition"
+      ? L(`the latest ${lang} edition`, `أحدث edition لـ${lang}`)
+      : L(`the latest stable ${lang} release`, `أحدث إصدار مستقر لـ${lang}`);
   });
 }
 
@@ -694,7 +590,7 @@ export async function runRuleCommands(cmds: RuleCommand[], cwd?: string, events?
   for (const c of cmds) {
     if (c.cmd === "ask:rules") {
       const cats = c.argLine.split(/\s+/).filter(Boolean);
-      if (!cats.length) { parts.push("⚠ -(ask:rules) بلا تصنيف. مثال: -(ask:rules) rust windows"); continue; }
+      if (!cats.length) { parts.push(L("⚠ -(ask:rules) without a category. Example: -(ask:rules) rust windows", "⚠ -(ask:rules) بلا تصنيف. مثال: -(ask:rules) rust windows")); continue; }
       const r = await readCategories(cats, cwd);
       parts.push(r.output);
     } else if (c.cmd === "rule:add") {
@@ -702,21 +598,21 @@ export async function runRuleCommands(cmds: RuleCommand[], cwd?: string, events?
       const cat = tokens[0] || "";
       const inlineRest = tokens.slice(1).join(" ");
       const ruleText = [inlineRest, c.body].filter(Boolean).join("\n").trim();
-      if (!cat) { parts.push("⚠ -(rule:add) بلا تصنيف."); continue; }
+      if (!cat) { parts.push(L("⚠ -(rule:add) without a category.", "⚠ -(rule:add) بلا تصنيف.")); continue; }
       const r = await addRule(cat, ruleText);
       if (r.ok) events?.push({ action: "adopt", rule: cat, detail: ruleText.split("\n")[0].slice(0, 200) });
       parts.push(`${r.ok ? "✓" : "✗"} rule:add ${cat}: ${r.message}`);
     } else if (c.cmd === "rule:new") {
       const m = c.argLine.match(/^([^/\s]+)\s*[/\s]\s*([^/\s]+)/);
-      if (!m) { parts.push("⚠ الصيغة: -(rule:new) <محور>/<تصنيف>"); continue; }
+      if (!m) { parts.push(L("⚠ syntax: -(rule:new) <axis>/<category>", "⚠ الصيغة: -(rule:new) <محور>/<تصنيف>")); continue; }
       const r = await createCategory(m[1], m[2]);
       parts.push(`${r.ok ? "✓" : "✗"} rule:new: ${r.message}`);
     } else if (c.cmd === "rules:list") {
       parts.push(await listCatalog(cwd));
     } else if (c.cmd === "rule:ack") {
-      if (!cwd) { parts.push("⚠ rule:ack يحتاج مشروعاً (cwd)."); continue; }
+      if (!cwd) { parts.push(L("⚠ rule:ack needs a project (cwd).", "⚠ rule:ack يحتاج مشروعاً (cwd).")); continue; }
       const key = c.argLine.trim();
-      if (!key) { parts.push("⚠ الصيغة: -(rule:ack) <مفتاح> — مثل cargo-edition أو cargo-edition:2021 أو dep:astro"); continue; }
+      if (!key) { parts.push(L("⚠ syntax: -(rule:ack) <key> — e.g. cargo-edition, cargo-edition:2021, or dep:astro", "⚠ الصيغة: -(rule:ack) <مفتاح> — مثل cargo-edition أو cargo-edition:2021 أو dep:astro")); continue; }
       const r = await addAck(cwd, key);
       if (r.ok) events?.push({ action: "ack", rule: key });
       parts.push(`${r.ok ? "✓" : "✗"} rule:ack: ${r.message}`);
@@ -724,7 +620,7 @@ export async function runRuleCommands(cmds: RuleCommand[], cwd?: string, events?
       parts.push(listAcks(cwd || ""));
     } else if (c.cmd === "rule:rm") {
       const m = c.argLine.match(/^(\S+)\s+#?(\d+)/);
-      if (!m) { parts.push("⚠ الصيغة: -(rule:rm) <تصنيف> #N"); continue; }
+      if (!m) { parts.push(L("⚠ syntax: -(rule:rm) <category> #N", "⚠ الصيغة: -(rule:rm) <تصنيف> #N")); continue; }
       const r = await removeRule(m[1], parseInt(m[2], 10));
       if (r.ok) events?.push({ action: "remove", rule: `${m[1]} #${m[2]}` });
       parts.push(`${r.ok ? "✓" : "✗"} rule:rm: ${r.message}`);

@@ -551,8 +551,27 @@ function extractRust(tokens: Token[]): Symbol[] {
 
 // ============ Python ============
 
+// Python block end by indentation: the block a `def`/`class` header owns runs
+// through the last non-blank line indented DEEPER than the header. Blank lines
+// never terminate a block (they carry no indent of their own). Without this,
+// every Python symbol stored endLine=line, so fn.lines was always 1 — wrecking
+// the analysis body window and the stack map's size-based ranking.
+function pythonBlockEnd(lines: string[], startLine: number): number {
+  const headerIndent = lines[startLine - 1]?.match(/^\s*/)?.[0].length ?? 0;
+  let end = startLine;
+  for (let ln = startLine + 1; ln <= lines.length; ln++) {
+    const text = lines[ln - 1];
+    if (text.trim() === "") continue;
+    const indent = text.match(/^\s*/)?.[0].length ?? 0;
+    if (indent <= headerIndent) break;
+    end = ln;
+  }
+  return end;
+}
+
 function extractPython(tokens: Token[], source: string): Symbol[] {
   const symbols: Symbol[] = [];
+  const lines = source.split("\n");
   // Python uses indentation, so we track scope from newlines
   let currentClass = "";
 
@@ -567,7 +586,7 @@ function extractPython(tokens: Token[], source: string): Symbol[] {
         symbols.push({
           name: currentClass, kind: "class", params: "",
           isExported: !currentClass.startsWith("_"),
-          isAsync: false, line: t.line, endLine: t.line,
+          isAsync: false, line: t.line, endLine: pythonBlockEnd(lines, t.line),
         });
       }
     }
@@ -587,7 +606,7 @@ function extractPython(tokens: Token[], source: string): Symbol[] {
             params = groupText(tokens[j]);
           }
           // Check if this is a method (indented under class)
-          const lineText = source.split("\n")[t.line - 1] || "";
+          const lineText = lines[t.line - 1] || "";
           const indent = lineText.match(/^\s*/)?.[0].length || 0;
           const isMethod = indent >= 4 && currentClass;
 
@@ -596,7 +615,7 @@ function extractPython(tokens: Token[], source: string): Symbol[] {
             kind: isMethod ? "method" : "function",
             params: simplifyParams(params, "py"),
             isExported: !name.startsWith("_"),
-            isAsync, line: t.line, endLine: t.line,
+            isAsync, line: t.line, endLine: pythonBlockEnd(lines, t.line),
             parent: isMethod ? currentClass : undefined,
           });
         }

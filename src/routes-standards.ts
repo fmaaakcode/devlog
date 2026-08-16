@@ -21,11 +21,10 @@ import { versionHistories, type VersionEntry } from "./registry";
 import { runProjectAudit, formatAuditReport } from "./vuln-audit";
 import { ecoMap } from "./eco-map";
 import { currentLang } from "./i18n";
+import { REGISTRY_CHECK_DISABLED, VULN_CHECK_DISABLED } from "./check-flags";
 
 type ApiReq = Bun.BunRequest;
 const L = <T>(en: T, ar: T): T => (currentLang() === "ar" ? ar : en);
-const REGISTRY_CHECK_DISABLED = process.env.DEVLOG_REGISTRY_CHECK_DISABLED === "1";
-const VULN_CHECK_DISABLED = process.env.DEVLOG_VULN_CHECK_DISABLED === "1";
 
 /** Build the standards/report route group. Spread into server.ts's routeDefs. */
 export function makeStandardsRoutes(): Record<string, unknown> {
@@ -64,7 +63,7 @@ export function makeStandardsRoutes(): Record<string, unknown> {
           let scannedAny = false;
           for (const l of p.libraries || []) {
             const v = vulns[l.name];
-            if (!v || v.status === "unscannable" || v.status === "unknown") continue;
+            if (!v || v.status === "indeterminate") continue;
             scannedAny = true;
             if (v.icon === "warning" || v.icon === "x") { hasDanger = true; break; }
             if (v.isLatest === false && l.version !== "latest") hasWarn = true;

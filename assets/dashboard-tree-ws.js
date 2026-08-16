@@ -5,6 +5,7 @@
         import { extIcons, renderActivePlanCard, renderChangesCard, buildTodosHtml, fragileFilesHtml } from "./dashboard-panels.js";
         import { buildDocsHtml, refreshDocsCard } from "./dashboard-docs-card.js";
         import { t as tr, locale, uiDir } from "./dashboard-i18n.js";
+        import { cssVar } from "./theme.js";
 
         function renderTreeNodes(nodes, basePath) {
             let html = '';
@@ -759,7 +760,7 @@
             if (!item) return;
             const w = window.open("", "_blank", "width=780,height=600");
             w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${tr("inj.docTitle", { type: esc(item.type) })}</title>
-                <style>body{background:#0a1420;color:#eaeaea;font-family:'Cascadia Code',Consolas,monospace;padding:20px;font-size:13px;white-space:pre-wrap;direction:ltr;text-align:left}h3{color:#ffd166}</style></head>
+                <style>body{background:#0a1420;color:#eaeaea;font-family:'Cascadia Code',Consolas,monospace;padding:20px;font-size:13px;white-space:pre-wrap;direction:ltr;text-align:left}h3{color:${cssVar("--gold", "#ffd166")}}</style></head>
                 <body><h3>${esc(item.type)} · ${esc(String(item.chars))} chars · ${esc(new Date(item.timestamp).toLocaleString())}</h3><hr>${esc(item.content)}</body></html>`);
         }
 

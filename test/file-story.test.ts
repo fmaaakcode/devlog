@@ -2,7 +2,7 @@
 // story assembly, and the compact PreToolUse context.
 
 import { describe, it, expect } from "bun:test";
-import { sessionTouchedFiles, fileMatches, isNoisePath, buildFileStory, formatFileStoryContext } from "../src/file-story";
+import { sessionTouchedFiles, fileMatches, isNoisePath, buildFileStory, formatFileStoryContext, storyInjected, recordStoryInjection, MAX_STORY_SESSIONS } from "../src/file-story";
 import type { DevLogData, EventEntry, TagEntry } from "../src/types";
 
 const T0 = Date.parse("2026-07-01T10:00:00Z");
@@ -101,5 +101,35 @@ describe("formatFileStoryContext", () => {
     const data = dd([ev({ file_path: "D:/proj/src/a.ts" })], []);
     expect(formatFileStoryContext(data, "p", "D:/proj/src/a.ts")).toBe("");
     expect(formatFileStoryContext(data, "p", "D:/proj/.devlog/status.md")).toBe("");
+  });
+});
+
+describe("session story memory (أ‑5: session-scoped, not the globally-trimmed log)", () => {
+  it("remembers per session, case- and slash-insensitively", () => {
+    expect(storyInjected("mem-s1", "D:/proj/src/a.ts")).toBe(false);
+    recordStoryInjection("mem-s1", "D:/proj/src/a.ts");
+    expect(storyInjected("mem-s1", "D:/proj/src/a.ts")).toBe(true);
+    expect(storyInjected("mem-s1", "d:\\proj\\src\\A.TS")).toBe(true);
+    // A different session or a different file is untouched.
+    expect(storyInjected("mem-s2", "D:/proj/src/a.ts")).toBe(false);
+    expect(storyInjected("mem-s1", "D:/proj/src/b.ts")).toBe(false);
+  });
+
+  it("an empty session id never records and never matches", () => {
+    recordStoryInjection("", "D:/proj/src/a.ts");
+    expect(storyInjected("", "D:/proj/src/a.ts")).toBe(false);
+  });
+
+  it("survives far past the old 100-entry trim within one session", () => {
+    for (let i = 0; i < 150; i++) recordStoryInjection("mem-busy", `D:/proj/src/f${i}.ts`);
+    expect(storyInjected("mem-busy", "D:/proj/src/f0.ts")).toBe(true); // the old bug forgot this one
+    expect(storyInjected("mem-busy", "D:/proj/src/f149.ts")).toBe(true);
+  });
+
+  it("evicts the oldest SESSION past the cap, never a file within a live session", () => {
+    recordStoryInjection("mem-evict-oldest", "D:/proj/src/a.ts");
+    for (let i = 0; i < MAX_STORY_SESSIONS; i++) recordStoryInjection(`mem-evict-${i}`, "D:/proj/src/a.ts");
+    expect(storyInjected("mem-evict-oldest", "D:/proj/src/a.ts")).toBe(false);
+    expect(storyInjected(`mem-evict-${MAX_STORY_SESSIONS - 1}`, "D:/proj/src/a.ts")).toBe(true);
   });
 });

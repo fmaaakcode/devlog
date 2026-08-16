@@ -335,6 +335,14 @@ export const ASK_ROWS: AskRow[] = [
         return out.join("\n");
       }
 
+      // Narrative layer P2: the turning points behind the sections below.
+      const stories: Row[] = d.stories || [];
+      if (stories.length) {
+        out.push(L(`  Session stories (${stories.length}):`, `  قصص الجلسات (${stories.length}):`));
+        for (const s of stories) out.push(`    [${s.date}] ${s.text}`);
+        if (d.storiesMore) out.push(`  ${more(d.storiesMore).trim()}`);
+      }
+
       const decisions: Row[] = d.decisions || [];
       if (decisions.length) {
         out.push(L(`  Decisions & insights (${decisions.length}):`, `  قرارات ورؤى (${decisions.length}):`));
@@ -353,6 +361,8 @@ export const ASK_ROWS: AskRow[] = [
               ? L(`fixed in ${r.spanDays}d`, `أُصلح خلال ${r.spanDays} يوم`)
               : L("fixed", "أُصلح");
           out.push(`    ${r.reopened ? "⟲ " : ""}${num}[${r.kind} · ${state}] ${r.text}`);
+          // Narrative layer P1: what the USER asked when this report was born.
+          if (r.prompt) out.push(L(`      ↳ asked: «${r.prompt}»`, `      ↳ الطلب: «${r.prompt}»`));
           if (r.fixContext) out.push(L(`      ↳ fix: ${r.fixContext}`, `      ↳ الإصلاح: ${r.fixContext}`));
         }
         if (d.reportsMore) out.push(`  ${more(d.reportsMore).trim()}`);
@@ -370,6 +380,79 @@ export const ASK_ROWS: AskRow[] = [
                    `  آخر تعديل: ${String(d.lastChange).slice(0, 16).replace("T", " ")}`));
       }
       return out.filter(Boolean).join("\n");
+    },
+  },
+
+  // ── -(ask:recent) [N | Nd] — the time door (plan narrative-layer P3) ──────
+  // Every other pull asks by SUBJECT; this one asks by TIME: the previous
+  // session(s) — tags in order, files touched, commands that failed. The
+  // asking session is excluded server-side (its work is already in context).
+  // Bare = last session; `3` = last 3 sessions; `7d` = sessions of 7 days.
+  {
+    key: "ask:recent",
+    label: "recent",
+    re: /^[ \t]*-\s*\(ask:recent\)(?:[ \t]+([^\n]+))?[ \t]*$/gm,
+    cmd: m => `ask:recent${m[1] ? ` ${m[1].trim()}` : ""}`,
+    path: "/api/recent",
+    mode: "each",
+    preflight: (m, ctx) => {
+      const arg = (m[1] || "").trim();
+      return !arg || /^\d+d?$/i.test(arg) ? null : {
+        note: ctx.L("ask:recent takes a session count or a day window — e.g. -(ask:recent) 3 or -(ask:recent) 7d.",
+                    "ask:recent يقبل عدد جلسات أو نافذة أيام — مثل -(ask:recent) 3 أو -(ask:recent) 7d."),
+      };
+    },
+    qs: (m, ctx) => {
+      const arg = (m[1] || "").trim();
+      const days = /^(\d+)d$/i.exec(arg)?.[1];
+      const sessions = /^\d+$/.test(arg) ? arg : "";
+      return `${days ? `&days=${days}` : sessions ? `&sessions=${sessions}` : ""}${ctx.sessionId ? `&exclude=${encodeURIComponent(ctx.sessionId)}` : ""}`;
+    },
+    logLine: d => `ask:recent: served ${(d.sessions || []).length} session(s)`,
+    format: (d, _m, ctx) => {
+      const L = ctx.L;
+      const sessions: Row[] = d.sessions || [];
+      if (!sessions.length) {
+        return d.window?.days
+          ? L(`No recorded sessions in the last ${d.window.days} day(s)${d.olderSessions ? ` — ${d.olderSessions} older exist (widen the window)` : ""}.`,
+              `لا جلسات مسجّلة في آخر ${d.window.days} يوم${d.olderSessions ? ` — توجد ${d.olderSessions} أقدم (وسّع النافذة)` : ""}.`)
+          : L("No previous sessions recorded for this project.", "لا جلسات سابقة مسجّلة لهذا المشروع.");
+      }
+      const blocks = sessions.map((s: Row, i: number) => {
+        // Same-day session → end shows time only; a session spanning midnight
+        // keeps the full stamp so the span reads honestly.
+        const endStamp = day(s.start) === day(s.end) ? stamp(s.end).slice(11) : stamp(s.end);
+        const head = L(
+          `🕘 ${i === 0 ? "Last session" : `Session −${i + 1}`} — ${stamp(s.start)} → ${endStamp}${s.models?.length ? ` (${s.models.map(who).filter(Boolean).join(", ")})` : ""}`,
+          `🕘 ${i === 0 ? "آخر جلسة" : `الجلسة −${i + 1}`} — ${stamp(s.start)} → ${endStamp}${s.models?.length ? ` (${s.models.map(who).filter(Boolean).join("، ")})` : ""}`);
+        const out = [head];
+        // Narrative layer P1: the user's own words lead the digest — they are
+        // the "why" every line below serves.
+        for (const p of s.prompts || []) out.push(L(`  » user asked: «${p}»`, `  » طلب المستخدم: «${p}»`));
+        const tags: Row[] = s.tags || [];
+        if (tags.length) {
+          out.push(L(`  Tags (${tags.length}${s.tagsMore ? `+${s.tagsMore}` : ""}):`, `  التاقات (${tags.length}${s.tagsMore ? `+${s.tagsMore}` : ""}):`));
+          for (const t of tags) out.push(`    [${t.tag}${typeof t.num === "number" ? ` #${t.num}` : ""}${t.breaking ? "!" : ""}] ${t.text}`);
+        } else {
+          out.push(L("  No tags — an undocumented session.", "  بلا تاقات — جلسة غير موثقة."));
+        }
+        const files: Row[] = s.files || [];
+        if (files.length) {
+          out.push(L(`  Files (${files.length}${s.filesMore ? `+${s.filesMore}` : ""}): `, `  الملفات (${files.length}${s.filesMore ? `+${s.filesMore}` : ""}): `)
+            + files.map((f: Row) => `${f.path}${f.edits > 1 ? ` ×${f.edits}` : ""}${f.linesAdded || f.linesRemoved ? ` (+${f.linesAdded}/−${f.linesRemoved})` : ""}`).join(" · "));
+        }
+        const c = s.commands || {};
+        if (c.total) {
+          out.push(L(`  Commands: ${c.total}${c.failed ? `, ${c.failed} failed` : ""}`, `  الأوامر: ${c.total}${c.failed ? `، فشل منها ${c.failed}` : ""}`));
+          for (const f of c.failedSamples || []) out.push(`    ✗ ${f}`);
+        }
+        return out.join("\n");
+      });
+      const foot = d.olderSessions
+        ? L(`\n  ${d.olderSessions} older session(s) exist — widen with -(ask:recent) <N> or -(ask:recent) <N>d. Deeper: -(ask:why) <file> · -(ask:search) <question>.`,
+            `\n  توجد ${d.olderSessions} جلسة أقدم — وسّع بـ-(ask:recent) <N> أو -(ask:recent) <N>d. وللأعمق: -(ask:why) <ملف> · -(ask:search) <سؤال>.`)
+        : "";
+      return blocks.join("\n") + foot;
     },
   },
 
@@ -399,7 +482,7 @@ export const ASK_ROWS: AskRow[] = [
                  `تدقيق السجل — ${d.scanned} تاق في ${scope}: كل شيء مطابق لقواعد اليوم.`);
       }
       const blocks = dets.map((det: Row) => {
-        const title = ctx.L === undefined ? det.key : (det.title?.[ctx.L("en", "ar")] || det.key);
+        const title = det.title?.[ctx.L("en", "ar")] || det.key;
         const lines = (det.findings || []).map((f: Row) =>
           `    [${f.tag}${typeof f.num === "number" ? ` #${f.num}` : ""}${f.project && d.all ? ` · ${f.project}` : ""}] ${f.excerpt}`);
         const rest = det.total - (det.findings || []).length;

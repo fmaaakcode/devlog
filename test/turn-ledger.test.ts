@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { emptyLedger, entryKey, loadLedger, saveLedger, sweepTurnState } from "../src/turn-ledger";
+import { ACK_DIRS, emptyLedger, entryKey, loadLedger, saveLedger, sweepAckDirs, sweepLegacyStateDirs, sweepTurnState } from "../src/turn-ledger";
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "turn-ledger-")); });
@@ -46,7 +46,7 @@ describe("loadLedger", () => {
 
     const { ledger: next } = await loadLedger(dir, "s1", "T2");
     expect(next.turn).toEqual({ turnId: "T2", postedKeys: [], servedCommands: [] });
-    expect(next.session).toEqual({ hintedVerify: true, hintedRegression: true, hintedSweep: true, hintedUntagged: false, servedSignatures: ["sig-1"], envDriftChecked: false });
+    expect(next.session).toEqual({ hintedVerify: true, hintedRegression: true, hintedSweep: true, hintedUntagged: false, hintedDemolitionWhy: false, servedSignatures: ["sig-1"], envDriftChecked: false });
   });
 
   test("corrupt state file fails open to a fresh ledger", async () => {
@@ -114,5 +114,47 @@ describe("sweepTurnState", () => {
 
   test("missing directory is a silent no-op", async () => {
     await sweepTurnState(join(dir, "does-not-exist"));
+  });
+});
+
+describe("sweepLegacyStateDirs", () => {
+  test("removes the three superseded state dirs whole, leaves everything else", async () => {
+    for (const legacy of ["rules-state", "verify-state", "ask-state"]) {
+      await Bun.write(join(dir, legacy, "s1.json"), "[]");
+    }
+    await Bun.write(join(dir, "turn-state", "s1.json"), "{}");
+
+    await sweepLegacyStateDirs(dir);
+
+    for (const legacy of ["rules-state", "verify-state", "ask-state"]) {
+      expect(await Bun.file(join(dir, legacy, "s1.json")).exists()).toBe(false);
+    }
+    expect(await Bun.file(join(dir, "turn-state", "s1.json")).exists()).toBe(true);
+  });
+
+  test("absent legacy dirs are a silent no-op", async () => {
+    await sweepLegacyStateDirs(dir);
+  });
+});
+
+describe("sweepAckDirs", () => {
+  test("removes stale acks in every ack dir, keeps fresh ones", async () => {
+    const past = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    for (const ack of ACK_DIRS) {
+      await Bun.write(join(dir, ack, "old-sid-abc.txt"), "1");
+      await Bun.write(join(dir, ack, "new-sid-def.txt"), "1");
+      await utimes(join(dir, ack, "old-sid-abc.txt"), past, past);
+    }
+
+    await sweepAckDirs(dir, 7 * 24 * 60 * 60 * 1000);
+
+    for (const ack of ACK_DIRS) {
+      expect(await Bun.file(join(dir, ack, "old-sid-abc.txt")).exists()).toBe(false);
+      expect(await Bun.file(join(dir, ack, "new-sid-def.txt")).exists()).toBe(true);
+    }
+  });
+
+  test("absent ack dirs are a silent no-op", async () => {
+    await sweepAckDirs(dir);
   });
 });

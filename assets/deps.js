@@ -3,11 +3,10 @@
 // one-liner, and its vuln/outdated status — all from GET /api/deps. Standalone
 // on purpose: no dashboard-core import, so the page carries zero dashboard
 // state and stays a plain read-only viewer. UI strings come from the shared
-// dictionary (#708).
+// dictionary (#708); esc() from the stateless dom-safe.js (audit C2) — the
+// no-dashboard-state rule holds.
 import { t as tr, applyI18n } from "./dashboard-i18n.js";
-
-const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
-  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+import { esc } from "./dom-safe.js";
 
 // Registry page per ecosystem — navigation links only (CSP connect-src stays 'self').
 const REGISTRY_URL = {

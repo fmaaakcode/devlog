@@ -76,7 +76,7 @@ const sendTelemetry = async (action, detail) => {
 };
 
 await mkdir(ACK_DIR, { recursive: true });
-await log(`fire: cmd=${cmd.slice(0, 120)} pkgs=${pkgs.map(p => p.name).join(",")}`);
+log(`fire: cmd=${cmd.slice(0, 120)} pkgs=${pkgs.map(p => p.name).join(",")}`);
 
 // Ack: this exact command was already gated for this session recently — a
 // re-issue is the sanctioned conscious-override path, let it through. If the
@@ -98,10 +98,10 @@ if (existsSync(ackFile)) {
             body: JSON.stringify({ cwd, pins: ack.vulnPins }),
             signal: AbortSignal.timeout(5000),
           });
-          await log(`ack-pass + override recorded (${ack.vulnPins.length} vulnerable pin(s))`);
-        } catch (e) { await log(`ack-pass, override record failed: ${e.message}`); }
+          log(`ack-pass + override recorded (${ack.vulnPins.length} vulnerable pin(s))`);
+        } catch (e) { log(`ack-pass, override record failed: ${e.message}`); }
       } else {
-        await log("ack-pass");
+        log("ack-pass");
       }
       await sendTelemetry("ack");
       process.exit(0);
@@ -125,7 +125,7 @@ async function strictBlock(reason) {
       "العودة للوضع المتسامح: احذف DEVLOG_INSTALL_GATE · تعطيل البوابة: DEVLOG_INSTALL_GATE=0"),
     "══════════════════════════════════════",
   ];
-  await log(`strict block: ${reason}`);
+  log(`strict block: ${reason}`);
   console.error(out.join("\n"));
   process.exit(2);
 }
@@ -144,18 +144,18 @@ try {
   );
   if (!r.ok) {
     if (STRICT) await strictBlock(`HTTP ${r.status}`);
-    await log(`advice ${r.status} — fail open`);
+    log(`advice ${r.status} — fail open`);
     process.exit(0);
   }
   items = (await r.json()).items || [];
 } catch (e) {
   if (STRICT) await strictBlock(e.name === "TimeoutError" ? "timeout" : e.message);
-  await log(`advice fetch error: ${e.message} — fail open`);
+  log(`advice fetch error: ${e.message} — fail open`);
   process.exit(0);
 }
 
 const { blocks, warns, vulnPins } = decideGate(pkgs, items, LANG, STRICT);
-if (!blocks.length && !warns.length) { await log("clean — pass"); await sendTelemetry("pass"); process.exit(0); }
+if (!blocks.length && !warns.length) { log("clean — pass"); await sendTelemetry("pass"); process.exit(0); }
 
 // Write the ack BEFORE blocking so the very next identical issue passes. It
 // carries the vulnerable pins so the pass-through above can record them.
@@ -179,7 +179,7 @@ out.push(L(
   STRICT ? "الوضع الصارم مفعّل — العودة للمتسامح: احذف DEVLOG_INSTALL_GATE · التعطيل: =0" : "تعطيل البوابة: DEVLOG_INSTALL_GATE=0 · فشل الفحص = حجب: =strict"));
 out.push("══════════════════════════════════════");
 
-await log(`gate: ${blocks.length} block(s), ${warns.length} warn(s)`);
+log(`gate: ${blocks.length} block(s), ${warns.length} warn(s)`);
 // Command-level classification (decideGate returns rendered lines, not per-pkg
 // verdicts): every package in a gated command records one fire; the detail
 // carries the block/warn split.

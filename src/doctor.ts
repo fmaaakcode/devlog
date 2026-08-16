@@ -11,7 +11,10 @@ import { normalizeSlashes } from "./path-utils";
 import { spawnSync } from "./spawn";
 import { openTodos, openBugs, openSecurity, isStepClosed } from "./data";
 import { checkInvariants, type Finding } from "./doctor-invariants";
+import { currentLang } from "./i18n";
 import type { DevLogData, TagEntry, PlanEntry } from "./types";
+
+const L = (en: string, ar: string): string => (currentLang() === "ar" ? ar : en);
 
 // Read at call time (not module load) so the value honors a DEVLOG_PORT set
 // after import — e.g. tests that boot an isolated server on a private port.
@@ -85,8 +88,11 @@ async function diagnose(projectPath: string): Promise<DoctorReport> {
     findings.push({
       severity: "medium",
       code: "PROJECT_NOT_INDEXED",
-      title: "المشروع غير مسجَّل في الداشبورد",
-      detail: `لا يوجد مدخل لـ '${projectKey}' في data. شغّل rescan أو افتح dashboard من جذر المشروع.`,
+      title: L("Project not indexed in the dashboard", "المشروع غير مسجَّل في الداشبورد"),
+      detail: L(
+        `No entry for '${projectKey}' in data. Run a rescan or open the dashboard from the project root.`,
+        `لا يوجد مدخل لـ '${projectKey}' في data. شغّل rescan أو افتح dashboard من جذر المشروع.`,
+      ),
     });
   }
 
@@ -114,8 +120,8 @@ async function diagnose(projectPath: string): Promise<DoctorReport> {
     findings.push({
       severity: staleOpen.length >= 5 ? "high" : "medium",
       code: "STALE_OPEN_ITEMS",
-      title: `${staleOpen.length} مهام/مشاكل مفتوحة أكثر من ${STALE_OPEN_DAYS} يوم`,
-      detail: "هذه إما منسية أو يجب إسقاطها بـ -(dropped) #N.",
+      title: L(`${staleOpen.length} items open for more than ${STALE_OPEN_DAYS} days`, `${staleOpen.length} مهام/مشاكل مفتوحة أكثر من ${STALE_OPEN_DAYS} يوم`),
+      detail: L("These are either forgotten or should be dropped with -(dropped) #N.", "هذه إما منسية أو يجب إسقاطها بـ -(dropped) #N."),
       items: staleOpen.slice(0, 10).map(t => `#${t.num} [${t.tag}] ${(t.content || "").slice(0, 80)} (${Math.round(daysAgo(t.timestamp))}d)`),
     });
   }
@@ -132,8 +138,8 @@ async function diagnose(projectPath: string): Promise<DoctorReport> {
     findings.push({
       severity: "medium",
       code: "STALE_PLANS",
-      title: `${stalePlans.length} خطط مهجورة (< 50% مغلق و > ${STALE_PLAN_DAYS} يوم بدون نشاط)`,
-      detail: "إما أن تكمَّل، أو تنقّى من الخطوات الميتة، أو يُحذف الـplan كاملاً.",
+      title: L(`${stalePlans.length} abandoned plans (< 50% closed and > ${STALE_PLAN_DAYS} days without activity)`, `${stalePlans.length} خطط مهجورة (< 50% مغلق و > ${STALE_PLAN_DAYS} يوم بدون نشاط)`),
+      detail: L("Finish it, prune the dead steps, or delete the plan entirely.", "إما أن تكمَّل، أو تنقّى من الخطوات الميتة، أو يُحذف الـplan كاملاً."),
       items: stalePlans.map(p => {
         const total = p.steps?.length || 0;
         const closed = (p.steps || []).filter(isStepClosed).length;
@@ -153,15 +159,15 @@ async function diagnose(projectPath: string): Promise<DoctorReport> {
       vers.forEach(v => { phaseVers.add(v); });
     }
     if (phaseVers.size > 1) {
-      misnamed.push(`${p.title} → يحوي إصدارات: ${[...phaseVers].join(", ")}`);
+      misnamed.push(`${p.title} → ${L("spans versions", "يحوي إصدارات")}: ${[...phaseVers].join(", ")}`);
     }
   }
   if (misnamed.length) {
     findings.push({
       severity: "low",
       code: "MISLEADING_PLAN_NAME",
-      title: `${misnamed.length} خطة اسمها يوحي بإصدار واحد لكنها تغطي إصدارات متعددة`,
-      detail: "أعد تسمية الخطة (مثلاً v2.x-roadmap) أو قسّمها.",
+      title: L(`${misnamed.length} plans named after one version but spanning several`, `${misnamed.length} خطة اسمها يوحي بإصدار واحد لكنها تغطي إصدارات متعددة`),
+      detail: L("Rename the plan (e.g. v2.x-roadmap) or split it.", "أعد تسمية الخطة (مثلاً v2.x-roadmap) أو قسّمها."),
       items: misnamed,
     });
   }
@@ -176,8 +182,8 @@ async function diagnose(projectPath: string): Promise<DoctorReport> {
     findings.push({
       severity: "high",
       code: "MISSING_RELEASE_NOTES",
-      title: `${missingReleaseFiles.length} إصدارات في git بدون ملف release notes`,
-      detail: ".devlog/releases/vX.Y.Z.html مفقود — يعني الـrelease خرج بدون -(release) tag في DevLog.",
+      title: L(`${missingReleaseFiles.length} git releases without a release-notes file`, `${missingReleaseFiles.length} إصدارات في git بدون ملف release notes`),
+      detail: L(".devlog/releases/vX.Y.Z.html is missing — the release shipped without a -(release) tag in DevLog.", ".devlog/releases/vX.Y.Z.html مفقود — يعني الـrelease خرج بدون -(release) tag في DevLog."),
       items: missingReleaseFiles,
     });
   }
@@ -198,8 +204,8 @@ async function diagnose(projectPath: string): Promise<DoctorReport> {
     findings.push({
       severity: "high",
       code: "THIN_RELEASE_COMMITS",
-      title: `${thinReleases.length} commits لـrelease أقل من ${THIN_RELEASE_MIN_CHARS} حرف`,
-      detail: "خبير جيت هب رفع release بدون توضيح المنجزات. يجب أن يحوي body قائمة المهام المُغلقة.",
+      title: L(`${thinReleases.length} release commits under ${THIN_RELEASE_MIN_CHARS} chars`, `${thinReleases.length} commits لـrelease أقل من ${THIN_RELEASE_MIN_CHARS} حرف`),
+      detail: L("The GitHub specialist pushed a release without describing what shipped. The body must list the closed items.", "خبير جيت هب رفع release بدون توضيح المنجزات. يجب أن يحوي body قائمة المهام المُغلقة."),
       items: thinReleases,
     });
   }
@@ -220,8 +226,11 @@ async function diagnose(projectPath: string): Promise<DoctorReport> {
       findings.push({
         severity: "high",
         code: "OPEN_BUGS_SHIPPED",
-        title: `${openBefore.length} bugs/security مفتوحة قبل آخر release`,
-        detail: `آخر release: ${(latestRelease.content || "").slice(0, 60)} — هذي الأمور شُحنت معروفة بدون إصلاح/إسقاط.`,
+        title: L(`${openBefore.length} bugs/security items open before the last release`, `${openBefore.length} bugs/security مفتوحة قبل آخر release`),
+        detail: L(
+          `Last release: ${(latestRelease.content || "").slice(0, 60)} — these shipped as known issues without a fix or a drop.`,
+          `آخر release: ${(latestRelease.content || "").slice(0, 60)} — هذي الأمور شُحنت معروفة بدون إصلاح/إسقاط.`,
+        ),
         items: openBefore.slice(0, 10).map(t => `#${t.num} [${t.tag}] ${(t.content || "").slice(0, 80)}`),
       });
     }
@@ -242,8 +251,8 @@ async function diagnose(projectPath: string): Promise<DoctorReport> {
     findings.push({
       severity: "medium",
       code: "GIT_TAGS_WITHOUT_DEVLOG",
-      title: `${ghostReleases.length} git tags بدون -(release) مقابل في DevLog`,
-      detail: "إصدارات حصلت لكن لا يوجد لها أثر في سجل DevLog — كلود نسي إصدار التاق.",
+      title: L(`${ghostReleases.length} git tags with no matching -(release) in DevLog`, `${ghostReleases.length} git tags بدون -(release) مقابل في DevLog`),
+      detail: L("Releases happened but left no trace in the DevLog record — Claude forgot to emit the tag.", "إصدارات حصلت لكن لا يوجد لها أثر في سجل DevLog — كلود نسي إصدار التاق."),
       items: ghostReleases,
     });
   }
@@ -270,8 +279,8 @@ async function diagnose(projectPath: string): Promise<DoctorReport> {
     findings.push({
       severity: "high",
       code: "DUPLICATE_ITEM_NUMS",
-      title: `${dupNums.length} رقم عنصر مكرّر — الإغلاق بـ#N يصيب العنصر الخطأ`,
-      detail: "عدّاد nextItemNum تخلّف عن أعلى رقم مستخدم (استرجاع backup أو rescan قديم). أعد ترقيم المكرّرات المفتوحة يدويًا.",
+      title: L(`${dupNums.length} duplicate item numbers — closing by #N hits the wrong item`, `${dupNums.length} رقم عنصر مكرّر — الإغلاق بـ#N يصيب العنصر الخطأ`),
+      detail: L("The nextItemNum counter fell behind the highest used number (a backup restore or an old rescan). Manually renumber the open duplicates.", "عدّاد nextItemNum تخلّف عن أعلى رقم مستخدم (استرجاع backup أو rescan قديم). أعد ترقيم المكرّرات المفتوحة يدويًا."),
       items: dupNums.slice(0, 20).map(n => `#${n}`),
     });
   }
@@ -293,19 +302,21 @@ const C = {
   green: "\x1b[32m", cyan: "\x1b[36m", bold: "\x1b[1m", reset: "\x1b[0m",
 };
 function sevColor(s: string) { return s === "high" ? C.red : s === "medium" ? C.yellow : C.gray; }
-function sevLabel(s: string) { return s === "high" ? "حرج" : s === "medium" ? "متوسط" : "بسيط"; }
+function sevLabel(s: string) {
+  return s === "high" ? L("high", "حرج") : s === "medium" ? L("medium", "متوسط") : L("low", "بسيط");
+}
 
 function printReport(r: DoctorReport) {
   console.log(`${C.bold}${C.cyan}devlog doctor — ${r.project}${C.reset}`);
   console.log(`${C.gray}${r.path}${C.reset}`);
   console.log(`${C.gray}tags=${r.stats.tags} plans=${r.stats.plans} open=${r.stats.openItems} gitTags=${r.stats.gitTags} releaseFiles=${r.stats.releaseFiles}${C.reset}\n`);
   if (!r.findings.length) {
-    console.log(`${C.green}✓ نظيف. لا توجد مشاكل.${C.reset}`);
+    console.log(`${C.green}${L("✓ Clean. No findings.", "✓ نظيف. لا توجد مشاكل.")}${C.reset}`);
     return;
   }
   const counts = { high: 0, medium: 0, low: 0 };
   r.findings.forEach(f => { counts[f.severity]++; });
-  console.log(`${C.bold}الحصيلة:${C.reset} ${C.red}${counts.high} حرج${C.reset} · ${C.yellow}${counts.medium} متوسط${C.reset} · ${C.gray}${counts.low} بسيط${C.reset}\n`);
+  console.log(`${C.bold}${L("Summary", "الحصيلة")}:${C.reset} ${C.red}${counts.high} ${sevLabel("high")}${C.reset} · ${C.yellow}${counts.medium} ${sevLabel("medium")}${C.reset} · ${C.gray}${counts.low} ${sevLabel("low")}${C.reset}\n`);
   for (const f of r.findings) {
     const col = sevColor(f.severity);
     console.log(`${col}● [${sevLabel(f.severity)}] ${f.code}${C.reset}  ${C.bold}${f.title}${C.reset}`);

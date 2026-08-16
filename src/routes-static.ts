@@ -100,9 +100,16 @@ export function makeStaticRoutes({ htmlResponse, DEV_ASSETS, ASSET_ROOT }: Stati
         return !!pp && (pathsEqual(real, pp) || isPathInside(pp, real));
       });
       if (!realInside) return new Response("Forbidden", { status: 403 });
+      // Size gate BEFORE reading: a multi-GB file inside a tracked project
+      // (db dump, core file) must not be pulled whole into daemon memory —
+      // this process is the only capture point, so an OOM here loses history.
       const MAX = 512 * 1024;
-      let text = await file.text();
-      if (text.length > MAX) text = `${text.slice(0, MAX)}\n\n… [${L("truncated — file larger than 512KB", "مقتطع — الملف أكبر من 512KB")}]`;
+      let text: string;
+      if (file.size > MAX) {
+        text = `${await file.slice(0, MAX).text()}\n\n… [${L("truncated — file larger than 512KB", "مقتطع — الملف أكبر من 512KB")}]`;
+      } else {
+        text = await file.text();
+      }
       return new Response(text, {
         headers: { "Content-Type": "text/plain; charset=utf-8", "X-Content-Type-Options": "nosniff" },
       });

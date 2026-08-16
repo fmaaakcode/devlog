@@ -19,7 +19,8 @@
 
 import { isAbsolute } from "node:path";
 import { existsSync, watch } from "node:fs";
-import { loadData, withData, PORT, DATA_DIR, backfillNums, cleanupMalformedSecurityTags, cleanupMalformedOutdatedTags } from "./data";
+import { loadData, withData, dropCache, PORT, DATA_DIR, backfillNums, cleanupMalformedSecurityTags, cleanupMalformedOutdatedTags } from "./data";
+import { storyInjected, recordStoryInjection } from "./file-story";
 import { cleanupOrphanClosures } from "./orphan-closures";
 import { cleanupOldBackups, backupStores } from "./maintenance";
 import { acquireDaemonLock, releaseDaemonLock } from "./daemon-lock";
@@ -79,8 +80,11 @@ const BOOT_MS = Date.now();
 // hook POST silently hits a dead port until the next session (R4 devops F1).
 // Log and stay alive instead; a corrupt-state crash is rarer than a transient
 // one, and a logged anomaly beats a silent data-capture gap.
-process.on("unhandledRejection", (e) => { console.error("[fatal:unhandledRejection]", e); });
-process.on("uncaughtException", (e) => { console.error("[fatal:uncaughtException]", e); });
+// dropCache: an error that bypassed withData's catch may leave the shared
+// store object half-mutated in memory; stay alive, but force the next reader
+// to reload the last consistent state from disk instead of persisting it.
+process.on("unhandledRejection", (e) => { console.error("[fatal:unhandledRejection]", e); dropCache(); });
+process.on("uncaughtException", (e) => { console.error("[fatal:uncaughtException]", e); dropCache(); });
 
 const MAX_INJECTIONS_LOG = 100;
 const RESCAN_DEBOUNCE_MS = 500;
@@ -221,7 +225,7 @@ async function doInject(body: Record<string, unknown>) {
     if (type !== "PreToolUse") {
       const entry = parseHookEvent({ ...body, hook_event_name: type });
       entry.project = name;   // resolved parent name, not raw basename (subfolder fix)
-      pushEvent(data.events, entry);
+      await pushEvent(data.events, entry);
       broadcast("hook", { project: name, event: entry.event, tool: entry.tool, file_path: entry.file_path, type: entry.type, description: entry.description, command: entry.command });
     }
 
@@ -250,10 +254,10 @@ async function doInject(body: Record<string, unknown>) {
       const wantSecurity = type === "UserPromptSubmit" && newSecurityAlerts(data, name, sessionId).length > 0;
       // A file's story injects at most once per session — the first Read is
       // the "position recall" moment; every later Read of the same file would
-      // repeat known context and burn budget.
-      const alreadyInjected = type === "PreToolUse" && !!injFile && data.injections.some(i =>
-        i.type === "PreToolUse" && i.session_id === sessionId && !!sessionId
-        && (i.file_path || "").toLowerCase() === injFile.toLowerCase());
+      // repeat known context and burn budget. Session-scoped memory (أ‑5):
+      // checking data.injections here broke after 100 injections, because that
+      // log is trimmed globally across projects and sessions.
+      const alreadyInjected = type === "PreToolUse" && !!injFile && !!sessionId && storyInjected(sessionId, injFile);
       if ((isDynamicTypeEnabled(config, type) || isOpenCmd || wantOutdated || wantDescribe || wantSecurity) && !alreadyInjected) {
         // Standards catalog names — injected on SessionStart only (awareness
         // that a rules library exists; content is pulled on demand via the
@@ -288,6 +292,9 @@ async function doInject(body: Record<string, unknown>) {
           if (data.injections.length > MAX_INJECTIONS_LOG) {
             data.injections = data.injections.slice(-MAX_INJECTIONS_LOG);
           }
+          // Recorded only when content actually went out, mirroring the old
+          // log-based check: an empty build must not silence the next Read.
+          if (type === "PreToolUse" && injFile && sessionId) recordStoryInjection(sessionId, injFile);
           // Clear surfaced rejections for this project (P1.9): they've been
           // shown once, don't repeat on every prompt.
           if (type === "SessionStart" && data.rejections?.length) {
@@ -664,7 +671,10 @@ async function runRetention(reason: string) {
       // cold archive holds the rows. On a failed archive write, put them back —
       // they age right past the cutoff again, so the next cycle (6h) retries.
       if (res.removedEvents.length && !(await archiveEvents(res.removedEvents))) {
-        data.events.unshift(...res.removedEvents);
+        // concat, NOT unshift(...spread): spreading tens of thousands of rows
+        // as call arguments overflows the stack (audit 2026-08-14 E4). Same
+        // order — restored rows in front, in their original relative order.
+        data.events = res.removedEvents.concat(data.events);
         res.removed = 0;
       }
       after = data.events.length;

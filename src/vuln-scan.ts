@@ -21,11 +21,9 @@ import { broadcast } from "./broadcast";
 import { softFail } from "./soft-fail";
 import { currentLang } from "./i18n";
 import { ecoMap } from "./eco-map";
+import { REGISTRY_CHECK_DISABLED, VULN_CHECK_DISABLED } from "./check-flags";
 
 const L = <T>(en: T, ar: T): T => (currentLang() === "ar" ? ar : en);
-
-const REGISTRY_CHECK_DISABLED = process.env.DEVLOG_REGISTRY_CHECK_DISABLED === "1";
-const VULN_CHECK_DISABLED = process.env.DEVLOG_VULN_CHECK_DISABLED === "1";
 
 // Global concurrency gate across ALL projects' scans. latestVersions already
 // caps to 4 requests per scan, but the startup sweep fired runVulnScan for all
@@ -187,173 +185,161 @@ export async function runVulnScan(name: string) {
       const project = data.projects[name];
       if (!project) return; // project deleted between phases — drop results
 
-    // Store vuln results
-    if (libResults?.results) {
-      const vulnMap: Record<string, unknown> = {};
-      // Sanitize fields from the (external, possibly attacker-controlled) Vuln API
-      // at the source — defense-in-depth beyond safeHref at the render sink (D4).
-      const sStr = (v: unknown, max: number) => typeof v === "string" ? v.slice(0, max) : "";
-      const sUrl = (v: unknown) => (typeof v === "string" && /^https?:\/\//i.test(v)) ? v.slice(0, 500) : "";
-      const priorVuln = project.vulnResults || {};
-      for (const pkg of libResults.results) {
-        // Indeterminate (registry lookup failed) — latest is unknown. Keep the
-        // last known entry rather than overwriting it with a misleading
-        // isLatest=true; if there's no prior entry, leave it out (R4 cq F1).
-        if (pkg.status === "indeterminate") {
-          const keep = priorVuln[pkg.name];
-          if (keep) vulnMap[sStr(pkg.name, 100)] = keep;
-          continue;
-        }
-        // Don't store CLEAN transitive deps — a project's tree is hundreds of nodes
-        // and persisting every safe one would bloat the dataset. They still flow
-        // through the tag-reconciliation loop below (to auto-close a fixed vuln);
-        // here we keep only direct deps + any transitive dep that actually has a vuln.
-        if (pkg.direct === false && !(pkg.vulns > 0)) continue;
-        // Sanitize each advisory at the source too (external OSV data). Cap at 25
-        // so a package with a huge advisory list can't bloat the stored dataset.
-        const advisories = Array.isArray(pkg.advisories)
-          ? pkg.advisories.slice(0, 25).map((a: Record<string, unknown>) => ({
-              id: sStr(a?.id, 60), severity: sStr(a?.severity, 20) || "none",
-              summary: sStr(a?.summary, 300), fix: sStr(a?.fix, 50), url: sUrl(a?.url),
-              kind: sStr(a?.kind, 20) || "vuln",
-            }))
-          : [];
-        vulnMap[sStr(pkg.name, 100)] = { status: sStr(pkg.status, 20), icon: sStr(pkg.icon, 20), message: sStr(pkg.message, 500), vulns: pkg.vulns ?? 0, notices: pkg.notices ?? 0, severity: sStr(pkg.severity, 20) || "none", topVuln: pkg.topVuln || null, fixVersion: sStr(pkg.fixVersion, 50), latestVersion: sStr(pkg.latestVersion, 50), isLatest: pkg.isLatest === undefined ? true : pkg.isLatest, unscannableReason: sStr(pkg.unscannableReason, 200), detailsUrl: sUrl(pkg.detailsUrl), daysSinceFix: pkg.daysSinceFix ?? null, daysSinceLatest: pkg.daysSinceLatest ?? null, fixReleaseDate: sStr(pkg.fixReleaseDate, 40), latestReleaseDate: sStr(pkg.latestReleaseDate, 40), description: sStr(pkg.description, 300), advisories, transitive: pkg.direct === false };
-      }
-      project.vulnResults = vulnMap as typeof project.vulnResults;
-      project.vulnScanDate = new Date().toISOString();
-    }
-
-    // Auto-create security tags + auto-close fixed + track outdated
-    const now = new Date().toISOString();
-
-    // Cleanup: remove outdated tags for "latest" versions (meaningless)
-    data.tags = data.tags.filter(t => !(t.project === name && t.tag === "outdated" && t.content.toLowerCase().includes("@latest")));
-
-    // Cleanup: drop orphaned outdated tags — packages that no longer exist
-    // in the project's library list. Happens when a dep is removed, or when
-    // an older scanner version picked up libs the current one ignores
-    // (e.g. Rust crates before the nested-manifest merge). Safe because the
-    // function already early-returned if libraries is empty.
-    const currentLibNames = new Set(projectSnap.libraries.map(l => l.name.toLowerCase()));
-    data.tags = data.tags.filter(t => {
-      if (t.project !== name || t.tag !== "outdated") return true;
-      const m = t.content.match(/^([^\s@]+)@/);
-      if (!m) return true;
-      return currentLibNames.has(m[1].toLowerCase());
-    });
-
-    // ALL security variants — a hand-authored `security:dep` for the same package
-    // must be superseded/auto-closed like the scanner's own `security` tags, or
-    // the same vuln shows twice and the manual claim dangles open forever
-    // (third recurrence of the `=== "security"` blindness: #235, #159, test-temp
-    // dup 2026-07-17). `security:own` tags are safe here structurally: every
-    // close path below requires the content to start with `<pkg>@`.
-    const existingSecTags = data.tags.filter(t => t.project === name && SECURITY_OPEN_TAGS.has(t.tag));
-    // Order-aware closure state (#743): a fix only covers claims at or before
-    // its own timestamp. The old any-timestamp text sets made a REINTRODUCED
-    // vuln (same pkg@version pinned again after an upgrade closed it) both
-    // undetectable at creation (deduped against the closed twin) and — worse —
-    // unfixable forever (the ancient fix text starved the auto-close of ever
-    // pushing a NEW fix for the reopened claim).
-    const latestSecFixTs = latestCloserTs(data.tags.filter(t => t.project === name), ["security fix"]);
-    const secClosed = (low: string, ts: string) => (latestSecFixTs.get(low) ?? "") >= ts;
-    const openSecTexts = new Set(
-      existingSecTags.filter(t => !secClosed(normalizeTagContent(t.content), t.timestamp || "")).map(t => normalizeTagContent(t.content)),
-    );
-    const existingOutdatedTexts = new Set(data.tags.filter(t => t.project === name && t.tag === "outdated").map(t => normalizeTagContent(t.content)));
-
-    if (libResults?.results) {
-      for (const pkg of libResults.results) {
-        // Indeterminate: native registry lookup failed (transient/404), latest
-        // is UNKNOWN. Leave EVERY tag for this package untouched — never evict an
-        // `outdated` tag and never forge an `update` tag off a guess (R4 cq F1).
-        if (pkg.status === "indeterminate") continue;
-        // Status semantics (per Vuln API v1):
-        //   "danger"   — malware OR vuln with no fix    → security tag
-        //   "update"   — vuln, fix available            → security tag
-        //   "outdated" — no CVE, just behind on version → outdated tag (informational)
-        //   "safe"     — no CVE AND on latest           → close any open tags
-        // "unscannable" (v0.5.1-beta) — input couldn't be resolved (vendored,
-        // undefined, etc). "unknown" (v0.5.6-beta) — package not in any
-        // registry. Both: don't treat as safe or dangerous, don't churn tags.
-        // Also evict any stale `outdated` tag left over from older API versions
-        // that cross-matched this package against an unrelated registry entry.
-        if (pkg.status === "unscannable" || pkg.status === "unknown") {
-          for (let i = data.tags.length - 1; i >= 0; i--) {
-            const t = data.tags[i];
-            if (t.project === name && t.tag === "outdated" &&
-                t.content.toLowerCase().startsWith(`${pkg.name.toLowerCase()}@`)) {
-              data.tags.splice(i, 1);
-            }
+      // Store vuln results
+      if (libResults?.results) {
+        const vulnMap: Record<string, unknown> = {};
+        // Sanitize fields from the (external, possibly attacker-controlled) Vuln API
+        // at the source — defense-in-depth beyond safeHref at the render sink (D4).
+        const sStr = (v: unknown, max: number) => typeof v === "string" ? v.slice(0, max) : "";
+        const sUrl = (v: unknown) => (typeof v === "string" && /^https?:\/\//i.test(v)) ? v.slice(0, 500) : "";
+        const priorVuln = project.vulnResults || {};
+        for (const pkg of libResults.results) {
+          // Indeterminate (registry lookup failed) — latest is unknown. Keep the
+          // last known entry rather than overwriting it with a misleading
+          // isLatest=true; if there's no prior entry, leave it out (R4 cq F1).
+          if (pkg.status === "indeterminate") {
+            const keep = priorVuln[pkg.name];
+            if (keep) vulnMap[sStr(pkg.name, 100)] = keep;
+            continue;
           }
-          continue;
+          // Don't store CLEAN transitive deps — a project's tree is hundreds of nodes
+          // and persisting every safe one would bloat the dataset. They still flow
+          // through the tag-reconciliation loop below (to auto-close a fixed vuln);
+          // here we keep only direct deps + any transitive dep that actually has a vuln.
+          if (pkg.direct === false && !(pkg.vulns > 0)) continue;
+          // Sanitize each advisory at the source too (external OSV data). Cap at 25
+          // so a package with a huge advisory list can't bloat the stored dataset.
+          const advisories = Array.isArray(pkg.advisories)
+            ? pkg.advisories.slice(0, 25).map((a: Record<string, unknown>) => ({
+                id: sStr(a?.id, 60), severity: sStr(a?.severity, 20) || "none",
+                summary: sStr(a?.summary, 300), fix: sStr(a?.fix, 50), url: sUrl(a?.url),
+                kind: sStr(a?.kind, 20) || "vuln",
+              }))
+            : [];
+          vulnMap[sStr(pkg.name, 100)] = { status: sStr(pkg.status, 20), icon: sStr(pkg.icon, 20), message: sStr(pkg.message, 500), vulns: pkg.vulns ?? 0, notices: pkg.notices ?? 0, severity: sStr(pkg.severity, 20) || "none", topVuln: pkg.topVuln || null, fixVersion: sStr(pkg.fixVersion, 50), latestVersion: sStr(pkg.latestVersion, 50), ...(typeof pkg.isLatest === "boolean" ? { isLatest: pkg.isLatest } : {}), unscannableReason: sStr(pkg.unscannableReason, 200), detailsUrl: sUrl(pkg.detailsUrl), daysSinceFix: pkg.daysSinceFix ?? null, daysSinceLatest: pkg.daysSinceLatest ?? null, fixReleaseDate: sStr(pkg.fixReleaseDate, 40), latestReleaseDate: sStr(pkg.latestReleaseDate, 40), description: sStr(pkg.description, 300), advisories, transitive: pkg.direct === false };
         }
+        project.vulnResults = vulnMap as typeof project.vulnResults;
+        project.vulnScanDate = new Date().toISOString();
+      }
 
-        const hasCve = pkg.status === "update" || pkg.status === "danger";
-        const isOutdated = pkg.status === "outdated";
-        const isSafe = pkg.status === "safe";
+      // Auto-create security tags + auto-close fixed + track outdated
+      const now = new Date().toISOString();
 
-        // Security tags only when we actually have CVE data (external API) FOR
-        // THIS PACKAGE'S ECOSYSTEM. A native version-only scan knows nothing
-        // about vulnerabilities, so it must never create or auto-close security
-        // tags — and an OSV run for npm says nothing about a vcpkg library.
-        if (osvEcos.has(pkg.eco)) {
-          if (hasCve) {
-            const text = `${pkg.name}@${pkg.vulnVersion || pkg.version} — ${pkg.message}`.slice(0, 100);
-            const norm = normalizeTagContent(text);
-            if (!openSecTexts.has(norm)) {
-              data.tags.push({ id: crypto.randomUUID(), project: name, tag: "security", content: text, timestamp: now, num: assignNum(data, name) });
-              openSecTexts.add(norm);
-            }
-            // Supersede: one open claim per package. An older OPEN security tag
-            // for the SAME package with a DIFFERENT text (message drift, or a
-            // stale pre-fix cross-ecosystem claim) is closed — the tag just
-            // pushed carries the current truth, and two contradicting open
-            // entries for one package is exactly what made the card read wrong.
-            for (const secTag of existingSecTags) {
-              const low = normalizeTagContent(secTag.content);
-              if (low === norm || !low.startsWith(`${pkg.name.toLowerCase()}@`)) continue;
-              if (secClosed(low, secTag.timestamp || "")) continue;
-              data.tags.push({ id: crypto.randomUUID(), project: name, tag: "security fix", content: secTag.content, timestamp: now });
-              latestSecFixTs.set(low, now);
-            }
-          } else {
-            // No CVE on this lib — auto-close any open security tags for it
-            for (const secTag of existingSecTags) {
-              const low = normalizeTagContent(secTag.content);
-              if (low.startsWith(`${pkg.name.toLowerCase()}@`) && !secClosed(low, secTag.timestamp || "")) {
+      // The `outdated` deletions below (four sites) are EXEMPT from the
+      // archive-before-delete contract — machine-derived rows the next scan
+      // re-derives from scratch; see the contract-boundary note in undo.ts
+      // (audit 2026-08-14 C3). Human-authored tags never go through here.
+      // Cleanup: remove outdated tags for "latest" versions (meaningless)
+      data.tags = data.tags.filter(t => !(t.project === name && t.tag === "outdated" && t.content.toLowerCase().includes("@latest")));
+
+      // Cleanup: drop orphaned outdated tags — packages that no longer exist
+      // in the project's library list. Happens when a dep is removed, or when
+      // an older scanner version picked up libs the current one ignores
+      // (e.g. Rust crates before the nested-manifest merge). Safe because the
+      // function already early-returned if libraries is empty.
+      const currentLibNames = new Set(projectSnap.libraries.map(l => l.name.toLowerCase()));
+      data.tags = data.tags.filter(t => {
+        if (t.project !== name || t.tag !== "outdated") return true;
+        const m = t.content.match(/^([^\s@]+)@/);
+        if (!m) return true;
+        return currentLibNames.has(m[1].toLowerCase());
+      });
+
+      // ALL security variants — a hand-authored `security:dep` for the same package
+      // must be superseded/auto-closed like the scanner's own `security` tags, or
+      // the same vuln shows twice and the manual claim dangles open forever
+      // (third recurrence of the `=== "security"` blindness: #235, #159, test-temp
+      // dup 2026-07-17). `security:own` tags are safe here structurally: every
+      // close path below requires the content to start with `<pkg>@`.
+      const existingSecTags = data.tags.filter(t => t.project === name && SECURITY_OPEN_TAGS.has(t.tag));
+      // Order-aware closure state (#743): a fix only covers claims at or before
+      // its own timestamp. The old any-timestamp text sets made a REINTRODUCED
+      // vuln (same pkg@version pinned again after an upgrade closed it) both
+      // undetectable at creation (deduped against the closed twin) and — worse —
+      // unfixable forever (the ancient fix text starved the auto-close of ever
+      // pushing a NEW fix for the reopened claim).
+      const latestSecFixTs = latestCloserTs(data.tags.filter(t => t.project === name), ["security fix"]);
+      const secClosed = (low: string, ts: string) => (latestSecFixTs.get(low) ?? "") >= ts;
+      const openSecTexts = new Set(
+        existingSecTags.filter(t => !secClosed(normalizeTagContent(t.content), t.timestamp || "")).map(t => normalizeTagContent(t.content)),
+      );
+      const existingOutdatedTexts = new Set(data.tags.filter(t => t.project === name && t.tag === "outdated").map(t => normalizeTagContent(t.content)));
+
+      if (libResults?.results) {
+        for (const pkg of libResults.results) {
+          // Indeterminate: native registry lookup failed (transient/404), latest
+          // is UNKNOWN. Leave EVERY tag for this package untouched — never evict an
+          // `outdated` tag and never forge an `update` tag off a guess (R4 cq F1).
+          if (pkg.status === "indeterminate") continue;
+          // Status semantics (per Vuln API v1):
+          //   "danger"   — malware OR vuln with no fix    → security tag
+          //   "update"   — vuln, fix available            → security tag
+          //   "outdated" — no CVE, just behind on version → outdated tag (informational)
+          //   "safe"     — no CVE AND on latest           → close any open tags
+          const hasCve = pkg.status === "update" || pkg.status === "danger";
+          const isOutdated = pkg.status === "outdated";
+          const isSafe = pkg.status === "safe";
+
+          // Security tags only when we actually have CVE data (external API) FOR
+          // THIS PACKAGE'S ECOSYSTEM. A native version-only scan knows nothing
+          // about vulnerabilities, so it must never create or auto-close security
+          // tags — and an OSV run for npm says nothing about a vcpkg library.
+          if (osvEcos.has(pkg.eco)) {
+            if (hasCve) {
+              const text = `${pkg.name}@${pkg.vulnVersion || pkg.version} — ${pkg.message}`.slice(0, 100);
+              const norm = normalizeTagContent(text);
+              if (!openSecTexts.has(norm)) {
+                data.tags.push({ id: crypto.randomUUID(), project: name, tag: "security", content: text, timestamp: now, num: assignNum(data, name) });
+                openSecTexts.add(norm);
+              }
+              // Supersede: one open claim per package. An older OPEN security tag
+              // for the SAME package with a DIFFERENT text (message drift, or a
+              // stale pre-fix cross-ecosystem claim) is closed — the tag just
+              // pushed carries the current truth, and two contradicting open
+              // entries for one package is exactly what made the card read wrong.
+              for (const secTag of existingSecTags) {
+                const low = normalizeTagContent(secTag.content);
+                if (low === norm || !low.startsWith(`${pkg.name.toLowerCase()}@`)) continue;
+                if (secClosed(low, secTag.timestamp || "")) continue;
                 data.tags.push({ id: crypto.randomUUID(), project: name, tag: "security fix", content: secTag.content, timestamp: now });
                 latestSecFixTs.set(low, now);
+              }
+            } else {
+              // No CVE on this lib — auto-close any open security tags for it
+              for (const secTag of existingSecTags) {
+                const low = normalizeTagContent(secTag.content);
+                if (low.startsWith(`${pkg.name.toLowerCase()}@`) && !secClosed(low, secTag.timestamp || "")) {
+                  data.tags.push({ id: crypto.randomUUID(), project: name, tag: "security fix", content: secTag.content, timestamp: now });
+                  latestSecFixTs.set(low, now);
+                }
+              }
+            }
+          }
+
+          // Track outdated: status === "outdated", or status === "safe" but version is behind.
+          const behindVersion = pkg.isLatest === false && pkg.latestVersion && pkg.version !== "latest";
+          if ((isOutdated || (isSafe && behindVersion)) && pkg.latestVersion) {
+            const text = `${pkg.name}@${pkg.version} — ${L("latest", "احدث")}: ${pkg.latestVersion}`.slice(0, 100);
+            if (!existingOutdatedTexts.has(normalizeTagContent(text))) {
+              const idx = data.tags.findIndex(t => t.project === name && t.tag === "outdated" && t.content.toLowerCase().startsWith(`${pkg.name.toLowerCase()}@`));
+              if (idx >= 0) data.tags.splice(idx, 1);
+              data.tags.push({ id: crypto.randomUUID(), project: name, tag: "outdated", content: text, timestamp: now });
+            }
+          } else if (pkg.isLatest === true) {
+            // Library is latest — remove outdated tag + create update tag if was outdated
+            const outdatedIdx = data.tags.findIndex(t => t.project === name && t.tag === "outdated" && t.content.toLowerCase().startsWith(`${pkg.name.toLowerCase()}@`));
+            if (outdatedIdx >= 0) {
+              data.tags.splice(outdatedIdx, 1);
+              // Create update tag as proof it was updated
+              const updateText = `${pkg.name} — ${L("updated to", "تم التحديث الى")} ${pkg.version}`.slice(0, 100);
+              const hasUpdate = data.tags.some(t => t.project === name && t.tag === "update" && normalizeTagContent(t.content) === normalizeTagContent(updateText));
+              if (!hasUpdate) {
+                data.tags.push({ id: crypto.randomUUID(), project: name, tag: "update", content: updateText, timestamp: now });
               }
             }
           }
         }
-
-        // Track outdated: status === "outdated", or status === "safe" but version is behind.
-        const behindVersion = pkg.isLatest === false && pkg.latestVersion && pkg.version !== "latest";
-        if ((isOutdated || (isSafe && behindVersion)) && pkg.latestVersion) {
-          const text = `${pkg.name}@${pkg.version} — ${L("latest", "احدث")}: ${pkg.latestVersion}`.slice(0, 100);
-          if (!existingOutdatedTexts.has(normalizeTagContent(text))) {
-            const idx = data.tags.findIndex(t => t.project === name && t.tag === "outdated" && t.content.toLowerCase().startsWith(`${pkg.name.toLowerCase()}@`));
-            if (idx >= 0) data.tags.splice(idx, 1);
-            data.tags.push({ id: crypto.randomUUID(), project: name, tag: "outdated", content: text, timestamp: now });
-          }
-        } else if (pkg.isLatest === true) {
-          // Library is latest — remove outdated tag + create update tag if was outdated
-          const outdatedIdx = data.tags.findIndex(t => t.project === name && t.tag === "outdated" && t.content.toLowerCase().startsWith(`${pkg.name.toLowerCase()}@`));
-          if (outdatedIdx >= 0) {
-            data.tags.splice(outdatedIdx, 1);
-            // Create update tag as proof it was updated
-            const updateText = `${pkg.name} — ${L("updated to", "تم التحديث الى")} ${pkg.version}`.slice(0, 100);
-            const hasUpdate = data.tags.some(t => t.project === name && t.tag === "update" && normalizeTagContent(t.content) === normalizeTagContent(updateText));
-            if (!hasUpdate) {
-              data.tags.push({ id: crypto.randomUUID(), project: name, tag: "update", content: updateText, timestamp: now });
-            }
-          }
-        }
       }
-    }
       broadcast("vuln", { project: name });
       return { libraries: libResults };
     });

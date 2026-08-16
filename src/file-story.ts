@@ -38,6 +38,37 @@ export function fileMatches(stored: string, query: string): boolean {
   return s.endsWith(`/${q}`);
 }
 
+// ─── Session story memory (audit 2026-08-13, أ‑5) ────────────────────────────
+// "A file's story injects at most once per session" used to be checked against
+// data.injections — an array trimmed to its last 100 entries GLOBALLY across
+// projects and sessions, so a busy day erased the guard's memory and the same
+// story re-injected into the same session. The promise is session-scoped, so
+// the memory is too: a per-session set of story-injected files, held in daemon
+// memory (a restart forgets it — worst case is ONE extra injection per file,
+// the exact price of today's bug, paid only on restart). FIFO-evicted past a
+// cap no real machine reaches, so it can never grow unbounded.
+export const MAX_STORY_SESSIONS = 500;
+const injectedStories = new Map<string, Set<string>>();
+
+export function storyInjected(sessionId: string, filePath: string): boolean {
+  if (!sessionId || !filePath) return false;
+  return injectedStories.get(sessionId)?.has(norm(filePath).toLowerCase()) ?? false;
+}
+
+export function recordStoryInjection(sessionId: string, filePath: string): void {
+  if (!sessionId || !filePath) return;
+  let set = injectedStories.get(sessionId);
+  if (!set) {
+    set = new Set();
+    injectedStories.set(sessionId, set);
+    if (injectedStories.size > MAX_STORY_SESSIONS) {
+      const oldest = injectedStories.keys().next().value;
+      if (oldest !== undefined) injectedStories.delete(oldest);
+    }
+  }
+  set.add(norm(filePath).toLowerCase());
+}
+
 /** Start of the current capture window: the newest tag this session already
  *  stored for this project. ONE definition, because the file footprint and the
  *  evidence verdict (#855) must describe exactly the same window — two copies of

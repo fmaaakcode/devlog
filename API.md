@@ -27,7 +27,7 @@
 - `/api/server/restart` — self-restart: close both loopback listeners → spawn replacement → exit (POST, audited, token-gated when enabled; `DEVLOG_NO_RESPAWN=1` degrades to stop). A freshness watchdog also triggers this hand-over automatically when the code on disk is newer than the running process and the system is idle (source quiet ≥20s, no mutating request ≥30s, one attempt per source state); disable with `DEVLOG_AUTO_RESTART=0`
 
 ## Tag protocol (`routes-tags.ts`)
-- `/api/tags` — the tag-processing pipeline (POST)
+- `/api/tags` — the tag-processing pipeline (POST). Body may carry `user_prompt` (narrative layer P1): the turn-opening user words, stored ONCE per batch in the `prompts` meta store (continuations with the same text merge their `tagIds`), head-capped at 700 chars, only for batches that stored entries
 - `/api/tags/:project` — one project's tags, newest-first, `?limit=` (GET)
 - `/api/recall` — recall search behind `-(ask:search)` (GET, `?q=..&cwd=..&all=1&limit=8`): BM25 with Arabic/English normalization over the stored tags (`recall.ts`), scoped to the cwd's project unless `all=1` widens it to every project. Read-only
 - `/api/tag/:id` — delete a tag (DELETE, token-gated when enabled)
@@ -42,6 +42,7 @@
 ## Recall / history (`routes-changes.ts`)
 - `/api/file-story` — position memory (#486): one file's timeline — tags whose capture window touched it (`TagEntry.files`, stamped at Stop time) + its change events; `?project=&path=` required (path may be project-relative), `&deep=1` also sweeps the cold event archive (GET)
 - `/api/file-why` — the `ask:why` dossier for one file: its stated purpose (read from the file's own header) plus the decisions that shaped it, every report it caused with span/⟲/fix-reasoning, the newest work on it, and its last change; each section capped with a `…More` remainder. `?file=` plus either `?project=` or `?cwd=` required (file may be project-relative; a path outside the project root is refused for the header read) (GET)
+- `/api/recent` — the `ask:recent` time door (plan narrative-layer P3): the previous session(s)' digest — the captured user prompts (P1), tags in order, files touched (project-relative) with edit sizes, commands run and which failed — newest session first. `?cwd=` or `?project=` required; window via `&sessions=N` (≤10, default 1) or `&days=N` (≤90); `&exclude=<session_id>` drops the asking session so a mid-session ask never gets its own work back (GET)
 - `/api/changes` — recent code-edit events (GET)
 - `/api/changes/last` — last-N edits (GET)
 - `/api/changes/by-id/:id` — one event's full diff (GET)

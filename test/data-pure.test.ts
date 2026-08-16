@@ -108,8 +108,8 @@ describe("assignNum", () => {
     const data = baseData([], [plan], profile({ nextItemNum: 5 }));
     expect(assignNum(data, PROJ)).toBe(41);
   });
-  test("returns 1 for an unknown project", () => {
-    expect(assignNum(baseData([]), "no-such-project")).toBe(1);
+  test("throws for an unknown project — a silent 1 would let two items share a number", () => {
+    expect(() => assignNum(baseData([]), "no-such-project")).toThrow(/unknown project/);
   });
 });
 

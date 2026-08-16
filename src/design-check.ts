@@ -4,16 +4,19 @@
 //
 // Pure (no FS/network): the gate supplies the written file content + path. Scope
 // is deliberately conservative to avoid false-positive blocks (the cardinal sin
-// for developer experience): it scans CSS-family files and the <style> blocks of
-// component files, where a `#rrggbb` is unambiguously a colour — NOT inline JSX
-// styles or markup where `#abc` could be an anchor/URL fragment.
+// for developer experience): it scans CSS-family files, the <style> blocks of
+// component files, and `style="…"` attribute strings (their value is
+// unambiguously CSS — audit 2026-08-14 C1: most dashboard styling lives in
+// exactly those strings inside .js files, which the check never saw) — NOT
+// JSX object styles or bare markup where `#abc` could be an anchor/URL fragment.
 
 import { normalizeSlashes } from "./path-utils";
 
 const UI_EXT = new Set([
   "css", "scss", "sass", "less", "styl",   // stylesheets
   "html", "htm", "vue", "svelte", "astro", // markup / components (have <style>)
-  "jsx", "tsx",                            // linked for advisory rules (not hex-scanned)
+  "jsx", "tsx",                            // advisory rules + style="…" strings
+  "js", "ts",                              // HTML-building code: <style> blocks + style="…" strings
 ]);
 const STYLE_EXT = new Set(["css", "scss", "sass", "less", "styl"]);
 
@@ -29,13 +32,20 @@ export function isUiFile(path: string): boolean {
 }
 
 /** The CSS text to scan for a given file: the whole file for stylesheets, or the
- *  concatenated `<style>` blocks for component/markup files. Empty for files with
- *  no scannable CSS (e.g. plain .jsx) — those still get advisory design rules. */
+ *  concatenated `<style>` blocks + `style="…"` attribute values for everything
+ *  else. Empty for files with no scannable CSS (e.g. a .jsx with object styles
+ *  only) — those still get advisory design rules. */
 export function extractCssRegions(content: string, path: string): string {
   const c = content || "";
   if (STYLE_EXT.has(extOf(path))) return c;
   const blocks: string[] = [];
   for (const m of c.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)) blocks.push(m[1]);
+  // style="…" attribute values, wherever they appear — markup or the HTML
+  // template strings of .js/.ts. The optional backslash keeps escaped-quote
+  // JS strings (`"style=\"color:#fff\""`) in scope; anchors (`href="#top"`)
+  // never match because only the style attribute is taken.
+  for (const m of c.matchAll(/style\s*=\s*\\?"([^"\\]*)\\?"/gi)) blocks.push(m[1]);
+  for (const m of c.matchAll(/style\s*=\s*\\?'([^'\\]*)\\?'/gi)) blocks.push(m[1]);
   return blocks.join("\n");
 }
 

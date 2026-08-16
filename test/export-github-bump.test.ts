@@ -4,12 +4,16 @@
 // mints minor, a breaking `bug fix` never reached MAJOR, and `-(feature)`
 // declarations were invisible. These tests pin each case to the authority.
 
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeAll } from "bun:test";
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportGithubMd } from "../src/export";
 import type { DevLogData, TagEntry, ProjectProfile } from "../src/types";
+
+// #892: DEVLOG_GITHUB.md renders in the DEVLOG_LANG language; these
+// assertions pin the Arabic headings, so pin the language (CI has none set).
+beforeAll(() => { process.env.DEVLOG_LANG = "ar"; });
 
 const PROJ = "fixture-proj";
 let _id = 0;
@@ -87,5 +91,35 @@ describe("DEVLOG_GITHUB.md bump suggestion agrees with the release path (#772)",
     const md = await renderGithubMd([RELEASE, tag("refactor", "أُعيد الهيكل بكسر الواجهة", { breaking: true })]);
     expect(md).toContain("**Bump:** MAJOR");
     expect(md).toContain("الإصدار المقترح: v2.0.0");
+  });
+});
+
+// #892: DevLog's own labels switch with DEVLOG_LANG; tag text stays verbatim.
+describe("DEVLOG_GITHUB.md i18n (#892)", () => {
+  test("English run renders English headings around the same facts", async () => {
+    const saved = process.env.DEVLOG_LANG;
+    process.env.DEVLOG_LANG = "en";
+    try {
+      const md = await renderGithubMd([RELEASE, tag("update", "bun 1.2 → 1.3")]);
+      expect(md).toContain("Suggested release: v1.3.0");
+      expect(md).toContain("**Bump:** MINOR");
+      expect(md).toContain("## 📌 Project");
+      expect(md).toContain("**Why:**");
+      expect(md).not.toContain("الإصدار المقترح");
+    } finally {
+      process.env.DEVLOG_LANG = saved;
+    }
+  });
+
+  test("English no-changes window says so in English", async () => {
+    const saved = process.env.DEVLOG_LANG;
+    process.env.DEVLOG_LANG = "en";
+    try {
+      const md = await renderGithubMd([RELEASE]);
+      expect(md).toContain("## ✅ No changes since the last release");
+      expect(md).toContain("Nothing new to release right now.");
+    } finally {
+      process.env.DEVLOG_LANG = saved;
+    }
   });
 });

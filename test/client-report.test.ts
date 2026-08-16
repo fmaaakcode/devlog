@@ -117,7 +117,9 @@ describe("renderClientReportHtml", () => {
   test("carries a print stylesheet flipping the dark screen theme to paper values", () => {
     const html = renderClientReportHtml(collectClientReport(makeData(baseTags()), P));
     expect(html).toContain("@media print");
-    expect(html).toContain("--ink:#111111");
+    // Since the shared dl-theme (audit C5) the local ink names alias the shared
+    // tokens, so print flips the underlying --text, not --ink directly.
+    expect(html).toContain("--text:#111111");
   });
 
   test("open security renders as a count only — never the finding text", () => {

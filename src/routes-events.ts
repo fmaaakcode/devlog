@@ -13,6 +13,7 @@ import { scanFreshProfile, applyPreservedScan } from "./scanner";
 import { generateStackMd, exportStatusMd } from "./export";
 import { runVulnScan } from "./vuln-scan";
 import { parseHookEvent, attributionCwd } from "./hooks";
+import { warmAnalysis } from "./routes-stack";
 import { listArchiveMonths, readArchiveMonth } from "./event-archive";
 import { softFail } from "./soft-fail";
 import { broadcast } from "./broadcast";
@@ -25,7 +26,7 @@ const L = <T>(en: T, ar: T): T => (currentLang() === "ar" ? ar : en);
 
 export interface EventRouteDeps {
   // Append an event honoring the per-project + global MAX_EVENTS_LOG caps.
-  pushEvent: (events: EventEntry[], entry: EventEntry) => void;
+  pushEvent: (events: EventEntry[], entry: EventEntry) => Promise<void>;
   // Debounced manifest-change rescan trigger.
   scheduleRescan: (cwd: string, name: string) => void;
   // cwd sanity guard (mirrors doInject) — rejects "$NAME"/relative/missing paths.
@@ -82,6 +83,7 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
           // Stop-hook closure checks failed silently (R9 F1). Capture the
           // target under the lock, fire detached after it, like runVulnScan.
           let stackJob: { cwd: string; profile: ProjectProfile } | null = null;
+          let warmPath = "";
           const res = await withData(async (data) => {
             const resolved = resolveProjectFor(data, cwd);
             const name = resolved.name;
@@ -102,7 +104,12 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
 
             const entry = parseHookEvent(body);
             entry.project = name;   // resolved parent name, not raw basename — fixes subfolder misattribution (code-quality R2 #2)
-            pushEvent(data.events, entry);
+            await pushEvent(data.events, entry);
+
+            // Warm target for the demolition gate (audit B1): the registered
+            // project path — the same key /api/file-weight reads — not the raw
+            // cwd, which can be a subfolder and would warm a dead cache entry.
+            if (entry.event === "SessionStart") warmPath = data.projects[name]?.path || "";
 
             // Auto-mark plan steps as completed
             if (entry.event === "TaskCompleted" && entry.description) {
@@ -120,7 +127,9 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
             // Auto-rescan if manifest changed, file created, or file deleted (debounced)
             const changedFile = normalizeSlashes(entry.file_path).split("/").pop() || "";
             const bashCmd = (entry.command || "").toLowerCase();
-            const isDelete = entry.type === "command" && (bashCmd.includes("rm ") || bashCmd.includes("del ") || bashCmd.includes("remove-item"));
+            // Word-anchored: bare includes("rm ") fired on "confirm ", queuing a
+            // pointless (debounced but disk-walking) rescan on a false positive.
+            const isDelete = entry.type === "command" && /(^|[\s;|&(])(rm|del|remove-item)\s/.test(bashCmd);
             const isCreate = entry.tool === "Create";
             if ((MANIFEST_FILES.includes(changedFile) || isDelete || isCreate) && effectiveCwd) {
               scheduleRescan(effectiveCwd, name);
@@ -134,6 +143,12 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
             const { cwd: stackCwd, profile } = stackJob;
             generateStackMd(stackCwd, profile).catch(e => softFail("generateStackMd", e));
           }
+          // Demolition-gate cache warm-up (audit B1): the gate's file-weight
+          // probe aborts at 4s but a cold analysis walk can take far longer on
+          // a big repo, so the gate was silent on exactly the projects it was
+          // built for. Kick the walk at session start, detached like the jobs
+          // above, so the cache is warm before the session's first Write.
+          if (warmPath) warmAnalysis(warmPath);
           return res;
         } catch (e) {
           softFail("api.hook", e);
@@ -212,7 +227,7 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
             // a superset growth chain (the doctor's bloatedTwins class).
             const prevIdx = data.events.findIndex(e => e.type === "session-summary" && e.session_id === sessionId);
             if (prevIdx >= 0) data.events.splice(prevIdx, 1);
-            pushEvent(data.events, summary);   // honor MAX_EVENTS_LOG cap (R3 P3 #4)
+            await pushEvent(data.events, summary);   // honor MAX_EVENTS_LOG cap (R3 P3 #4)
             broadcast("session-summary", { project, session_id: sessionId, summary });
             return Response.json({ ok: true, summary });
           });

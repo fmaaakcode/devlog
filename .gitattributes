@@ -1,0 +1,9 @@
+# Normalize everything to LF in the repo and on checkout — kills the
+# LF↔CRLF warning storm on Windows and makes clones byte-identical to CI.
+* text=auto eol=lf
+
+# Binary — never touch line endings.
+*.jpeg binary
+*.jpg binary
+*.png binary
+*.ico binary

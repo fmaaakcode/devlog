@@ -4,12 +4,16 @@
 // "آخر تحديث: <today>" line is non-deterministic, so we assert structure
 // rather than a byte-for-byte snapshot.
 
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeAll } from "bun:test";
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportStatusMd } from "../src/export";
 import type { DevLogData, TagEntry, PlanEntry, ProjectProfile } from "../src/types";
+
+// #892: the status file renders in the DEVLOG_LANG language. The snapshot
+// below pins the Arabic skeleton, so pin the language too (CI has none set).
+beforeAll(() => { process.env.DEVLOG_LANG = "ar"; });
 
 const PROJ = "fixture-proj";
 let _id = 0;
@@ -80,6 +84,29 @@ describe("DEVLOG_STATUS.md export — structural snapshot", () => {
       expect(md).toContain("- [ ] `#21` step two");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // #892: under English the same skeleton renders with English headings —
+  // same resolver, same items, different surface language.
+  test("renders English headings when DEVLOG_LANG is not Arabic", async () => {
+    const saved = process.env.DEVLOG_LANG;
+    process.env.DEVLOG_LANG = "en";
+    const tmpEn = mkdtempSync(join(tmpdir(), "devlog-snap-en-"));
+    const projectPath = join(tmpEn, PROJ);
+    try {
+      await exportStatusMd(projectPath, data());
+      const mdEn = readFileSync(join(projectPath, ".devlog", "DEVLOG_STATUS.md"), "utf8");
+      expect(mdEn).toContain("## Tasks");
+      expect(mdEn).toContain("## Open issues");
+      expect(mdEn).toContain("## Changes for the next release");
+      expect(mdEn).toContain("Last updated:");
+      expect(mdEn).not.toContain("## المهام");
+      // Items keep their stored text verbatim — only DevLog's own labels switch.
+      expect(mdEn).toContain("- [ ] `#1` مهمة مفتوحة");
+    } finally {
+      process.env.DEVLOG_LANG = saved;
+      rmSync(tmpEn, { recursive: true, force: true });
     }
   });
 

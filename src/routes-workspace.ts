@@ -7,7 +7,7 @@ import { loadData, withData } from "./data";
 import { resolveProjectFor } from "./project-resolve";
 import { scanFreshProfile, applyPreservedScan } from "./scanner";
 import { broadcast } from "./broadcast";
-import { normalizeSlashes } from "./path-utils";
+import { isPathInside, normalizeSlashes, pathsEqual } from "./path-utils";
 import { obj, str } from "./validators";
 import { join, resolve, relative, sep } from "node:path";
 
@@ -100,8 +100,11 @@ export function makeWorkspaceRoutes(): Record<string, unknown> {
           // (R9 sweep, same class as #730): the full disk walk stays OFF the
           // mutation lock; only the cheap merge runs under it.
           const snap = await loadData();
-          const norm = normalizeSlashes(targetPath);
-          const hit = Object.entries(snap.projects).find(([, p]) => norm.startsWith(normalizeSlashes(p.path)));
+          // Containment via the canonical helper, not a raw prefix: startsWith
+          // is case-sensitive (d:/x vs D:/x on Windows) and lets "D:/helperX"
+          // match project "D:/helper", silently skipping the rescan.
+          const hit = Object.entries(snap.projects).find(([, p]) =>
+            !!p.path && (pathsEqual(targetPath, p.path) || isPathInside(p.path, targetPath)));
           if (hit) {
             const [name, proj] = hit;
             const fresh = await scanFreshProfile(proj.path);

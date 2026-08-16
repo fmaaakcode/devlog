@@ -8,9 +8,11 @@
 // generate-once by default), so it — not a fresh analysis run — is the source of
 // truth for what the map shows.
 //
-// Consequence to respect: the section headings are matched by their Arabic
-// titles, so renaming a heading in export.ts silently empties the corresponding
-// section here. The two files must change together.
+// Consequence to respect: each section is matched against a fixed list of
+// heading variants (Arabic + English since #908 — stack files exist in both
+// languages), so renaming a heading in export.ts without adding the new
+// spelling to the matching list here silently empties that section. The two
+// files must change together.
 //
 // Runnable standalone for debugging: `bun src/stack-parser.ts [path]` prints the
 // parsed JSON.
@@ -65,14 +67,17 @@ function countImportance(marker: string): number {
   return (marker.match(/█/g) || []).length;
 }
 
-function extractSection(content: string, heading: string): string {
+// Accepts every language variant of a heading: DEVLOG_STACK.md files exist in
+// Arabic (pre-#906 and DEVLOG_LANG=ar) and English (the #906 default), and the
+// parser must read BOTH forever — the generated file outlives the generator.
+function extractSection(content: string, headings: string[]): string {
   const lines = content.split(/\r?\n/);
   let inSection = false;
   const result: string[] = [];
   for (const line of lines) {
     if (line.startsWith("## ")) {
       if (inSection) break;
-      if (line.slice(3).trim().startsWith(heading)) {
+      if (headings.some(h => line.slice(3).trim().startsWith(h))) {
         inSection = true;
         continue;
       }
@@ -93,7 +98,7 @@ function parseFilesTable(section: string): StackFile[] {
   const files: StackFile[] = [];
   for (const line of section.split(/\r?\n/)) {
     if (!line.startsWith("|")) continue;
-    if (line.includes("الأهمية") || /^\|\s*-+/.test(line)) continue;
+    if (line.includes("الأهمية") || line.includes("Importance") || /^\|\s*-+/.test(line)) continue;
     const cells = line.split("|").slice(1, -1).map(s => s.trim());
     if (cells.length < 5) continue;
     const [marker, fileCell, linesCell, description, exportsCell] = cells;
@@ -123,7 +128,7 @@ function parseFunctions(section: string): StackFunction[] {
     // `[N سطر]` is optional: the generator only writes it when lines > 1, so a
     // 1-line function has no bracket. Making it mandatory here dropped those
     // functions silently on round-trip (R3 P5). Absent → 1 line (see below).
-    const fnMatch = line.match(/^- ([█░]{3})\s+(.+?)(?:\s+—\s+(.+?))?(?:\s+\[(\d+)\s+سطر\])?\s*$/);
+    const fnMatch = line.match(/^- ([█░]{3})\s+(.+?)(?:\s+—\s+(.+?))?(?:\s+\[(\d+)\s+(?:سطر|lines)\])?\s*$/);
     if (fnMatch) {
       const [, marker, signatureRaw, description, linesStr] = fnMatch;
       const boldMatch = signatureRaw.match(/^\*\*(.+?)\*\*$/);
@@ -145,7 +150,7 @@ function parseFunctions(section: string): StackFunction[] {
       lastFn = fn;
       continue;
     }
-    const callsMatch = line.match(/^\s+-\s+ينادي:\s+(.+)$/);
+    const callsMatch = line.match(/^\s+-\s+(?:ينادي|calls):\s+(.+)$/);
     if (callsMatch && lastFn) {
       lastFn.calls = splitList(callsMatch[1]);
     }
@@ -169,7 +174,7 @@ function parseFileRelations(section: string): FileRelation[] {
       }
     }
     if (leftIdx >= 0) {
-      const uMatch = line.slice(leftIdx).match(/يستخدمه:\s*(.+)$/);
+      const uMatch = line.slice(leftIdx).match(/(?:يستخدمه|used by):\s*(.+)$/);
       if (uMatch) {
         for (const s of splitList(uMatch[1])) {
           relations.push({ from: s, to: source });
@@ -222,12 +227,12 @@ function parseDataTypes(section: string): StackDataType[] {
 
 export function parseStack(content: string): StackData {
   return {
-    files: parseFilesTable(extractSection(content, "خريطة الملفات")),
-    functions: parseFunctions(extractSection(content, "الدوال الرئيسية")),
-    fileRelations: parseFileRelations(extractSection(content, "العلاقات بين الملفات")),
-    entryPoints: parseEntryPoints(extractSection(content, "نقاط الدخول")),
-    apis: parseApis(extractSection(content, "الـ APIs")),
-    dataTypes: parseDataTypes(extractSection(content, "أنواع البيانات")),
+    files: parseFilesTable(extractSection(content, ["خريطة الملفات", "File map"])),
+    functions: parseFunctions(extractSection(content, ["الدوال الرئيسية", "Key functions"])),
+    fileRelations: parseFileRelations(extractSection(content, ["العلاقات بين الملفات", "File relationships"])),
+    entryPoints: parseEntryPoints(extractSection(content, ["نقاط الدخول", "Entry points"])),
+    apis: parseApis(extractSection(content, ["الـ APIs", "APIs"])),
+    dataTypes: parseDataTypes(extractSection(content, ["أنواع البيانات", "Data types"])),
   };
 }
 

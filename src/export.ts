@@ -26,6 +26,12 @@ import { analyzeProject } from "./analyze";
 import { suggestBumpSince } from "./tags-service";
 import { computeNextVersion } from "./version-writer";
 import { parseVersionMarker } from "./release-html";
+import { currentLang } from "./i18n";
+
+// #892: the committed mirrors (DEVLOG_STATUS.md / DEVLOG_GITHUB.md) render in
+// the DEVLOG_LANG language. DEVLOG_STACK.md stays out of scope — its section
+// headings are the contract stack-parser.ts reads back.
+const L = (en: string, ar: string): string => (currentLang() === "ar" ? ar : en);
 
 // True when two strings share a long common prefix that covers most of both
 // (≥25 chars AND ≥80% of the longer). Guards against treating items that merely
@@ -95,19 +101,19 @@ export async function exportStatusMd(projectPath: string, data: DevLogData, proj
   const lines: string[] = [];
 
   // Header
-  const version = releases[0]?.content || "لا يوجد إصدار";
+  const version = releases[0]?.content || L("no release yet", "لا يوجد إصدار");
   const desc = project?.description || "";
   const date = new Date().toISOString().split("T")[0];
   lines.push(`# ${name} | ${version}`);
   if (desc) lines.push(`> ${desc}`);
-  lines.push(`آخر تحديث: ${date}`);
+  lines.push(`${L("Last updated", "آخر تحديث")}: ${date}`);
   lines.push("");
 
   // Blueprint
   const bp = project?.blueprint || [];
   const builtTexts = builts.map(b => b.content.trim().toLowerCase());
   if (bp.length) {
-    lines.push("## هيكل المشروع");
+    lines.push(L("## Project blueprint", "## هيكل المشروع"));
     for (const item of bp) {
       const low = item.toLowerCase();
       const isDone = doneTexts.has(low) || builtTexts.some(b => b.includes(low) || low.includes(b));
@@ -126,31 +132,31 @@ export async function exportStatusMd(projectPath: string, data: DevLogData, proj
   const currentBugTags = openBugTags.filter(t => !t.upcoming);
   const upcomingTags = [...openTodoTags, ...openBugTags].filter(t => t.upcoming);
   if (todos.length) {
-    lines.push("## المهام");
+    lines.push(L("## Tasks", "## المهام"));
     for (const t of currentTodoTags) lines.push(`- [ ] ${numPrefix(t.num)}${t.content}`);
     for (const t of closedTodoTags) lines.push(`- [x] ${numPrefix(t.num)}${t.content}`);
     lines.push("");
   }
   if (upcomingTags.length) {
-    lines.push("## قادمة (مؤجلة — لا توقف الإصدار)");
-    for (const t of upcomingTags) lines.push(`- ☾ ${numPrefix(t.num)}${t.content} — منذ ${t.timestamp.slice(0, 10)}`);
+    lines.push(L("## Upcoming (deferred — never blocks a release)", "## قادمة (مؤجلة — لا توقف الإصدار)"));
+    for (const t of upcomingTags) lines.push(`- ☾ ${numPrefix(t.num)}${t.content} — ${L("since", "منذ")} ${t.timestamp.slice(0, 10)}`);
     lines.push("");
   }
 
   // Open issues
   if (openSecurityTags.length || currentBugTags.length) {
-    lines.push("## مشاكل مفتوحة");
+    lines.push(L("## Open issues", "## مشاكل مفتوحة"));
     for (const s of openSecurityTags) lines.push(`- 🔒 ${numPrefix(s.num)}${s.content}`);
     for (const b of currentBugTags) lines.push(`- 🔴 ${numPrefix(b.num)}${b.content}`);
     lines.push("");
   }
   if (outdatedTags.length) {
-    lines.push("## مكتبات قديمة");
+    lines.push(L("## Outdated libraries", "## مكتبات قديمة"));
     for (const o of outdatedTags) lines.push(`- 📦 ${o.content}`);
     lines.push("");
   }
   if (closedSecurityTags.length) {
-    lines.push("## مشاكل مُصلحة");
+    lines.push(L("## Fixed issues", "## مشاكل مُصلحة"));
     for (const s of closedSecurityTags) lines.push(`- ✅ ${numPrefix(s.num)}${s.content}`);
     lines.push("");
   }
@@ -164,7 +170,7 @@ export async function exportStatusMd(projectPath: string, data: DevLogData, proj
 
   const currentWork = dedupTags(tags.filter(t => workTags.includes(t.tag) && (!lastReleaseTime || new Date(t.timestamp) > new Date(lastReleaseTime))));
   if (currentWork.length) {
-    lines.push("## تغييرات النسخة القادمة");
+    lines.push(L("## Changes for the next release", "## تغييرات النسخة القادمة"));
     for (const t of currentWork) lines.push(`- ${workIcon[t.tag] || "•"} ${t.content}`);
     lines.push("");
   }
@@ -213,6 +219,53 @@ export async function exportStatusMd(projectPath: string, data: DevLogData, proj
   }
 }
 
+// The five release-notes categories of a tag window. The LIVE window ("what's
+// ready to release") and the last-release snapshot both run this SAME
+// categorization + fence renderer below, so their filters, sections and order
+// can never drift apart again (#772 was exactly such a hand-kept divergence).
+interface NoteGroups {
+  breaking: TagEntry[];
+  features: TagEntry[];
+  fixes: TagEntry[];
+  security: TagEntry[];
+  updates: TagEntry[];
+}
+
+function categorizeNotes(window: TagEntry[]): NoteGroups {
+  return {
+    // ANY tag can carry the breaking flag — the old built/update/refactor-only
+    // union missed a breaking `bug fix` and under-promised the bump (#772).
+    breaking: dedupTags(window.filter(t => t.breaking && t.tag !== "release")),
+    features: dedupTags(window.filter(t => t.tag === "built" && !t.breaking)),
+    fixes: dedupTags(window.filter(t => t.tag === "bug fix" && !t.breaking)),
+    security: dedupTags(window.filter(t => t.tag === "security fix")),
+    updates: dedupTags(window.filter(t => t.tag === "update" && !t.breaking)),
+  };
+}
+
+const notesTotal = (g: NoteGroups): number =>
+  g.breaking.length + g.features.length + g.fixes.length + g.security.length + g.updates.length;
+
+// Ready-to-paste categorized notes (for `gh release create`), fenced as markdown.
+function releaseNotesFence(g: NoteGroups): string[] {
+  const sections: [string, TagEntry[]][] = [
+    ["### ⚠️ Breaking changes", g.breaking],
+    ["### ✨ Features", g.features],
+    ["### 🐛 Fixes", g.fixes],
+    ["### 🔒 Security", g.security],
+    ["### 📦 Dependencies", g.updates],
+  ];
+  const out = ["```markdown"];
+  for (const [heading, tags] of sections) {
+    if (!tags.length) continue;
+    out.push(heading);
+    for (const t of tags) out.push(`- ${t.content}`);
+    out.push("");
+  }
+  out.push("```");
+  return out;
+}
+
 // Generate DEVLOG_GITHUB.md — a single overwriting snapshot of "what's
 // ready to release since last -(release) tag" tailored for the GitHub-
 // specialist Claude. Reads same data as exportStatusMd, presents it
@@ -233,20 +286,14 @@ export async function exportGithubMd(projectPath: string, data: DevLogData, proj
 
   const since = tags.filter(t => new Date(t.timestamp).getTime() > lastReleaseTime);
 
-  const features = dedupTags(since.filter(t => t.tag === "built" && !t.breaking));
-  const fixes = dedupTags(since.filter(t => t.tag === "bug fix" && !t.breaking));
-  const securityFixes = dedupTags(since.filter(t => t.tag === "security fix"));
-  const updates = dedupTags(since.filter(t => t.tag === "update" && !t.breaking));
+  const groups = categorizeNotes(since);
+  const { breaking: allBreaking, features, fixes, security: securityFixes, updates } = groups;
   const refactors = dedupTags(since.filter(t => t.tag === "refactor" && !t.breaking));
-  // ANY tag can carry the breaking flag — the old built/update/refactor-only
-  // union missed a breaking `bug fix` and under-promised the bump (#772).
-  const allBreaking = dedupTags(since.filter(t => t.breaking && t.tag !== "release"));
   // `-(feature)` declarations count as minor evidence exactly like the release
   // path; backfilled `[vX.Y.Z]` ones are past history, never evidence (#772).
   const featureDecls = dedupTags(since.filter(t => t.tag === "feature" && !parseVersionMarker(t.content)));
 
-  const totalUserVisible = features.length + fixes.length + securityFixes.length +
-                           updates.length + allBreaking.length;
+  const totalUserVisible = notesTotal(groups);
 
   // The bump TYPE comes from the SAME evidence function the actual release
   // path runs (suggestBumpSince → computeNextVersion) so this file can never
@@ -265,10 +312,10 @@ export async function exportGithubMd(projectPath: string, data: DevLogData, proj
   const lines: string[] = [];
   lines.push(`# DevLog → GitHub | ${name}`);
   lines.push("");
-  lines.push("> ملف مولَّد تلقائياً. لا تعدّله — التعديلات ستُكتب فوقها.");
-  lines.push(`> آخر تحديث: ${new Date().toISOString()}`);
+  lines.push(L("> Auto-generated file. Don't edit — edits will be overwritten.", "> ملف مولَّد تلقائياً. لا تعدّله — التعديلات ستُكتب فوقها."));
+  lines.push(`> ${L("Last updated", "آخر تحديث")}: ${new Date().toISOString()}`);
   lines.push("");
-  lines.push("## 📌 المشروع");
+  lines.push(L("## 📌 Project", "## 📌 المشروع"));
   lines.push(`- **Local path:** \`${projectPath}\``);
   if (lastRelease) {
     const days = Math.floor((Date.now() - lastReleaseTime) / 86400000);
@@ -280,9 +327,9 @@ export async function exportGithubMd(projectPath: string, data: DevLogData, proj
   lines.push("");
 
   if (totalUserVisible === 0 && refactors.length === 0 && featureDecls.length === 0) {
-    lines.push("## ✅ لا تغييرات منذ آخر إصدار");
+    lines.push(L("## ✅ No changes since the last release", "## ✅ لا تغييرات منذ آخر إصدار"));
     lines.push("");
-    lines.push("لا شيء جديد للإصدار حالياً.");
+    lines.push(L("Nothing new to release right now.", "لا شيء جديد للإصدار حالياً."));
     lines.push("");
     // Snapshot of what shipped IN the last release. Without this, once the
     // -(release) tag is emitted, the GitHub-specialist Claude loses access
@@ -295,47 +342,19 @@ export async function exportGithubMd(projectPath: string, data: DevLogData, proj
         const ts = new Date(t.timestamp).getTime();
         return ts > lastWindowStart && ts <= lastReleaseTime;
       });
-      const lastFeatures = dedupTags(inLast.filter(t => t.tag === "built" && !t.breaking));
-      const lastFixes = dedupTags(inLast.filter(t => t.tag === "bug fix" && !t.breaking));
-      const lastSecFixes = dedupTags(inLast.filter(t => t.tag === "security fix"));
-      const lastUpdates = dedupTags(inLast.filter(t => t.tag === "update" && !t.breaking));
-      // Same breaking definition as the live window above (#772).
-      const lastAllBreaking = dedupTags(inLast.filter(t => t.breaking && t.tag !== "release"));
-      const lastTotal = lastFeatures.length + lastFixes.length + lastSecFixes.length + lastUpdates.length + lastAllBreaking.length;
-      if (lastTotal > 0) {
-        lines.push(`## 📦 آخر إصدار: ${lastVersion}`);
+      // Same categorization as the live window below (#772) — shared on purpose.
+      const lastGroups = categorizeNotes(inLast);
+      if (notesTotal(lastGroups) > 0) {
+        lines.push(`## 📦 ${L("Last release", "آخر إصدار")}: ${lastVersion}`);
         lines.push("");
-        lines.push(`صدر في ${lastRelease.timestamp.split("T")[0]}. الـrelease notes الجاهزة (للنسخ في \`gh release create\`):`);
+        lines.push(L(
+          `Shipped on ${lastRelease.timestamp.split("T")[0]}. Ready-to-paste release notes (for \`gh release create\`):`,
+          `صدر في ${lastRelease.timestamp.split("T")[0]}. الـrelease notes الجاهزة (للنسخ في \`gh release create\`):`,
+        ));
         lines.push("");
-        lines.push("```markdown");
-        if (lastAllBreaking.length > 0) {
-          lines.push("### ⚠️ Breaking changes");
-          for (const t of lastAllBreaking) lines.push(`- ${t.content}`);
-          lines.push("");
-        }
-        if (lastFeatures.length > 0) {
-          lines.push("### ✨ Features");
-          for (const t of lastFeatures) lines.push(`- ${t.content}`);
-          lines.push("");
-        }
-        if (lastFixes.length > 0) {
-          lines.push("### 🐛 Fixes");
-          for (const t of lastFixes) lines.push(`- ${t.content}`);
-          lines.push("");
-        }
-        if (lastSecFixes.length > 0) {
-          lines.push("### 🔒 Security");
-          for (const t of lastSecFixes) lines.push(`- ${t.content}`);
-          lines.push("");
-        }
-        if (lastUpdates.length > 0) {
-          lines.push("### 📦 Dependencies");
-          for (const t of lastUpdates) lines.push(`- ${t.content}`);
-          lines.push("");
-        }
-        lines.push("```");
+        lines.push(...releaseNotesFence(lastGroups));
         lines.push("");
-        lines.push(`المصدر الكامل: \`.devlog/releases/${lastVersion}.html\``);
+        lines.push(`${L("Full source", "المصدر الكامل")}: \`.devlog/releases/${lastVersion}.html\``);
         lines.push("");
       }
     }
@@ -344,13 +363,13 @@ export async function exportGithubMd(projectPath: string, data: DevLogData, proj
   }
 
   if (totalUserVisible === 0 && featureDecls.length === 0 && refactors.length > 0) {
-    lines.push("## ⏸️ تغييرات داخلية فقط — لا تستحق إصداراً منفرداً");
+    lines.push(L("## ⏸️ Internal changes only — not worth a standalone release", "## ⏸️ تغييرات داخلية فقط — لا تستحق إصداراً منفرداً"));
     lines.push("");
-    lines.push(`${refactors.length} refactor دون أي ميزة أو إصلاح ظاهر للمستخدم.`);
-    lines.push("استمر في التطوير، أو ادفع كـ commit بدون release حتى تتراكم تغييرات user-visible.");
+    lines.push(L(`${refactors.length} refactors with no user-visible feature or fix.`, `${refactors.length} refactor دون أي ميزة أو إصلاح ظاهر للمستخدم.`));
+    lines.push(L("Keep developing, or push as a commit without a release until user-visible changes accumulate.", "استمر في التطوير، أو ادفع كـ commit بدون release حتى تتراكم تغييرات user-visible."));
     lines.push("");
   } else if (bump) {
-    lines.push(`## 🎯 الإصدار المقترح: ${suggestedVersion}`);
+    lines.push(`## 🎯 ${L("Suggested release", "الإصدار المقترح")}: ${suggestedVersion}`);
     lines.push("");
     lines.push(`**Bump:** ${bump}`);
     lines.push("");
@@ -363,42 +382,16 @@ export async function exportGithubMd(projectPath: string, data: DevLogData, proj
       if (featureDecls.length) parts.push(`${featureDecls.length} feature`);
       reasons.push(`${parts.join(" + ")} → MINOR`);
     } else reasons.push(`fixes/security only → PATCH`);
-    if (securityFixes.length > 0) reasons.push("⚠️ يحتوي security fix — اقترح الإصدار فوراً");
-    lines.push(`**السبب:** ${reasons.join("; ")}`);
+    if (securityFixes.length > 0) reasons.push(L("⚠️ contains a security fix — suggest releasing immediately", "⚠️ يحتوي security fix — اقترح الإصدار فوراً"));
+    lines.push(`**${L("Why", "السبب")}:** ${reasons.join("; ")}`);
     lines.push("");
   }
 
   // Release notes (skip if no user-visible)
   if (totalUserVisible > 0) {
-    lines.push("## 📝 Release notes (للنسخ في `gh release create`)");
+    lines.push(L("## 📝 Release notes (paste into `gh release create`)", "## 📝 Release notes (للنسخ في `gh release create`)"));
     lines.push("");
-    lines.push("```markdown");
-    if (allBreaking.length > 0) {
-      lines.push("### ⚠️ Breaking changes");
-      for (const t of allBreaking) lines.push(`- ${t.content}`);
-      lines.push("");
-    }
-    if (features.length > 0) {
-      lines.push("### ✨ Features");
-      for (const t of features) lines.push(`- ${t.content}`);
-      lines.push("");
-    }
-    if (fixes.length > 0) {
-      lines.push("### 🐛 Fixes");
-      for (const t of fixes) lines.push(`- ${t.content}`);
-      lines.push("");
-    }
-    if (securityFixes.length > 0) {
-      lines.push("### 🔒 Security");
-      for (const t of securityFixes) lines.push(`- ${t.content}`);
-      lines.push("");
-    }
-    if (updates.length > 0) {
-      lines.push("### 📦 Dependencies");
-      for (const t of updates) lines.push(`- ${t.content}`);
-      lines.push("");
-    }
-    lines.push("```");
+    lines.push(...releaseNotesFence(groups));
     lines.push("");
   }
 
@@ -451,7 +444,7 @@ export async function exportGithubMd(projectPath: string, data: DevLogData, proj
       headline = `${parts.join(" + ")} since ${lastVersion}`;
     }
 
-    lines.push("## 💬 Commit message (مقترح)");
+    lines.push(L("## 💬 Commit message (suggested)", "## 💬 Commit message (مقترح)"));
     lines.push("");
     lines.push("```");
     lines.push(`${conv}: ${headline}`);
@@ -466,28 +459,31 @@ export async function exportGithubMd(projectPath: string, data: DevLogData, proj
   }
 
   // Stats
-  lines.push(`## 📊 الإحصائيات (since ${lastVersion})`);
+  lines.push(`## 📊 ${L("Stats", "الإحصائيات")} (since ${lastVersion})`);
   lines.push("");
-  lines.push("| النوع | العدد |");
+  lines.push(L("| Kind | Count |", "| النوع | العدد |"));
   lines.push("|---|---|");
   lines.push(`| ⚠️ breaking | ${allBreaking.length} |`);
   lines.push(`| ✨ feature (built) | ${features.length} |`);
   lines.push(`| 🐛 fix (bug fix) | ${fixes.length} |`);
   lines.push(`| 🔒 security fix | ${securityFixes.length} |`);
   lines.push(`| 📦 update | ${updates.length} |`);
-  lines.push(`| ♻️ refactor (مستثنى من notes) | ${refactors.length} |`);
+  lines.push(`| ♻️ refactor (${L("excluded from notes", "مستثنى من notes")}) | ${refactors.length} |`);
   lines.push("");
 
   // Alerts
   const alerts: string[] = [];
-  if (allBreaking.length > 0) alerts.push("⚠️ يحتوي breaking — تنبيه صريح للمستخدمين قبل push");
-  if (securityFixes.length > 0) alerts.push("🔒 security fix → اقترح PATCH فوري");
+  if (allBreaking.length > 0) alerts.push(L("⚠️ contains breaking changes — warn users explicitly before push", "⚠️ يحتوي breaking — تنبيه صريح للمستخدمين قبل push"));
+  if (securityFixes.length > 0) alerts.push(L("🔒 security fix → suggest an immediate PATCH", "🔒 security fix → اقترح PATCH فوري"));
   if (lastReleaseTime > 0) {
     const days = Math.floor((Date.now() - lastReleaseTime) / 86400000);
-    if (days > 14 && totalUserVisible >= 3) alerts.push(`⏰ ${days} يوم منذ آخر إصدار + ${totalUserVisible} تغييرات → الوقت مناسب للإصدار`);
+    if (days > 14 && totalUserVisible >= 3) alerts.push(L(
+      `⏰ ${days} days since the last release + ${totalUserVisible} changes → good time to release`,
+      `⏰ ${days} يوم منذ آخر إصدار + ${totalUserVisible} تغييرات → الوقت مناسب للإصدار`,
+    ));
   }
   if (alerts.length > 0) {
-    lines.push("## ⚠️ تنبيهات");
+    lines.push(L("## ⚠️ Alerts", "## ⚠️ تنبيهات"));
     lines.push("");
     for (const a of alerts) lines.push(`- ${a}`);
     lines.push("");
@@ -502,8 +498,9 @@ export async function generateStackMd(projectPath: string, project: ProjectProfi
 
   // Generate-once by default (may carry manual edits); force = explicit regen.
   // R9 F2 exception: an EMPTY-analysis file is frozen residue of the old lib/ skip — regenerate it, or the fix reaches no one.
+  // Both language variants of the empty marker are probed (#906 made headings bilingual).
   const file = Bun.file(stackFile);
-  if (!force && await file.exists() && !(await file.text().then(t => t.includes("| 0 سطر | 0 دالة")).catch(() => false))) return;
+  if (!force && await file.exists() && !(await file.text().then(t => t.includes("| 0 سطر | 0 دالة") || t.includes("| 0 lines | 0 functions")).catch(() => false))) return;
 
   try { await mkdir(devlogDir, { recursive: true }); } catch { /* best-effort: a real failure resurfaces at the write below */ }
 
@@ -566,20 +563,23 @@ export async function generateStackMd(projectPath: string, project: ProjectProfi
   // `-(desc)` yet → no line at all; the describe-nudge already asks for one.
   const declaredDesc = (project.description || "").trim();
 
-  // Stack
+  // Stack. Headings follow the i18n policy like STATUS/GITHUB (#892/#906):
+  // English default, DEVLOG_LANG=ar for Arabic.
   lines.push("## Stack");
-  lines.push(`- **اللغة**: ${langStr}`);
-  if (declaredDesc) lines.push(`- **الوصف**: ${declaredDesc}`);
-  if (project.framework) lines.push(`- **الإطار**: ${project.framework}`);
-  if (analysis.patterns.length > 0) lines.push(`- **الأنماط**: ${analysis.patterns.join("، ")}`);
-  lines.push(`- **الملفات**: ${project.totalFiles} ملف | ${analysis.totalLines} سطر | ${analysis.totalFunctions} دالة`);
+  lines.push(L(`- **Language**: ${langStr}`, `- **اللغة**: ${langStr}`));
+  if (declaredDesc) lines.push(L(`- **Description**: ${declaredDesc}`, `- **الوصف**: ${declaredDesc}`));
+  if (project.framework) lines.push(L(`- **Framework**: ${project.framework}`, `- **الإطار**: ${project.framework}`));
+  if (analysis.patterns.length > 0) lines.push(L(`- **Patterns**: ${analysis.patterns.join(", ")}`, `- **الأنماط**: ${analysis.patterns.join("، ")}`));
+  lines.push(L(
+    `- **Files**: ${project.totalFiles} files | ${analysis.totalLines} lines | ${analysis.totalFunctions} functions`,
+    `- **الملفات**: ${project.totalFiles} ملف | ${analysis.totalLines} سطر | ${analysis.totalFunctions} دالة`));
   lines.push("");
 
   // Libraries
   const prodLibs = project.libraries.filter(l => !l.dev);
   const devLibs = project.libraries.filter(l => l.dev);
   if (project.libraries.length > 0) {
-    lines.push("## المكتبات");
+    lines.push(L("## Libraries", "## المكتبات"));
     if (prodLibs.length > 0) {
       for (const l of prodLibs) lines.push(`- ${l.name} \`${l.version}\``);
     }
@@ -603,8 +603,8 @@ export async function generateStackMd(projectPath: string, project: ProjectProfi
 
   // File map — sorted by importance (already sorted by PageRank)
   if (analysis.files.length > 0) {
-    lines.push("## خريطة الملفات (مرتبة بالأهمية)");
-    lines.push("| الأهمية | الملف | الأسطر | الوصف | يصدّر |");
+    lines.push(L("## File map (sorted by importance)", "## خريطة الملفات (مرتبة بالأهمية)"));
+    lines.push(L("| Importance | File | Lines | Description | Exports |", "| الأهمية | الملف | الأسطر | الوصف | يصدّر |"));
     lines.push("|---------|-------|--------|-------|-------|");
     for (const f of analysis.files) {
       const rank = analysis.fileRanks?.[f.path] || 0;
@@ -619,7 +619,7 @@ export async function generateStackMd(projectPath: string, project: ProjectProfi
   const maxFnRank = Math.max(...Object.values(analysis.fnRanks || {}), 0.001);
   const filesWithFns = analysis.files.filter(f => f.functions.length > 0);
   if (filesWithFns.length > 0) {
-    lines.push("## الدوال الرئيسية");
+    lines.push(L("## Key functions", "## الدوال الرئيسية"));
     for (const f of filesWithFns) {
       const fname = f.path.split("/").pop()?.replace(/\.\w+$/, "") || f.path;
       // Sort functions by rank
@@ -637,10 +637,10 @@ export async function generateStackMd(projectPath: string, project: ProjectProfi
         const async_ = fn.isAsync ? "async " : "";
         let line = `- ${bar} ${prefix}${async_}${fn.name}${fn.params}${suffix}`;
         if (fn.description) line += ` — ${fn.description}`;
-        if (fn.lines > 1) line += ` [${fn.lines} سطر]`;
+        if (fn.lines > 1) line += L(` [${fn.lines} lines]`, ` [${fn.lines} سطر]`);
         lines.push(line);
         if (fn.calls.length > 0) {
-          lines.push(`  - ينادي: ${fn.calls.map(c => `\`${c}\``).join("، ")}`);
+          lines.push(L(`  - calls: ${fn.calls.map(c => `\`${c}\``).join(", ")}`, `  - ينادي: ${fn.calls.map(c => `\`${c}\``).join("، ")}`));
         }
       }
       lines.push("");
@@ -669,7 +669,7 @@ export async function generateStackMd(projectPath: string, project: ProjectProfi
       }
     }
 
-    lines.push("## العلاقات بين الملفات");
+    lines.push(L("## File relationships", "## العلاقات بين الملفات"));
     for (const f of analysis.files) {
       const deps = f.imports.map(i => i.replace(/^\.\//, ""));
       const usedBy = importedBy[f.path] || [];
@@ -677,7 +677,7 @@ export async function generateStackMd(projectPath: string, project: ProjectProfi
 
       let line = `- \`${f.path}\``;
       if (deps.length > 0) line += ` → ${deps.map(d => `\`${d}\``).join("، ")}`;
-      if (usedBy.length > 0) line += ` ← يستخدمه: ${usedBy.map(u => `\`${u}\``).join("، ")}`;
+      if (usedBy.length > 0) line += L(` ← used by: ${usedBy.map(u => `\`${u}\``).join(", ")}`, ` ← يستخدمه: ${usedBy.map(u => `\`${u}\``).join("، ")}`);
       lines.push(line);
     }
     lines.push("");
@@ -685,7 +685,7 @@ export async function generateStackMd(projectPath: string, project: ProjectProfi
 
   // Entry points
   if (analysis.entryPoints.length > 0) {
-    lines.push("## نقاط الدخول");
+    lines.push(L("## Entry points", "## نقاط الدخول"));
     for (const ep of analysis.entryPoints) {
       lines.push(`- \`${ep}\``);
     }
@@ -694,7 +694,7 @@ export async function generateStackMd(projectPath: string, project: ProjectProfi
 
   // API Routes
   if (analysis.apiRoutes.length > 0) {
-    lines.push("## الـ APIs");
+    lines.push(L("## APIs", "## الـ APIs"));
     // Group by method
     const byMethod: Record<string, { path: string; file: string }[]> = {};
     for (const r of analysis.apiRoutes) {
@@ -718,7 +718,7 @@ export async function generateStackMd(projectPath: string, project: ProjectProfi
   const hasClient = analysis.files.some(f => f.context === "client");
 
   if (hasServer) {
-    lines.push("## تدفق البيانات");
+    lines.push(L("## Data flow", "## تدفق البيانات"));
     lines.push("```");
     if (hasHooks && hasWS) {
       lines.push("Hooks → API → data.json → WebSocket → Dashboard");
@@ -739,7 +739,7 @@ export async function generateStackMd(projectPath: string, project: ProjectProfi
 
   // Threads
   if (analysis.threads.length > 0) {
-    lines.push("## الخيوط (Threads)");
+    lines.push(L("## Threads", "## الخيوط (Threads)"));
     for (let i = 0; i < analysis.threads.length; i++) {
       const t = analysis.threads[i];
       lines.push(`- **Thread ${i + 1}**: ${t.purpose} ← \`${t.file}\``);
@@ -749,7 +749,9 @@ export async function generateStackMd(projectPath: string, project: ProjectProfi
 
   // IPC Messages
   if (analysis.ipcMessages.length > 0) {
-    lines.push("## IPC Protocol");
+    lines.push("## IPC Protocol", L(
+      "> Textual inference from the code — a list of likely candidates, not a confirmed protocol inventory.",
+      "> استدلال نصّي من الكود — قائمة مرشّحات محتملة، لا حصرًا مؤكَّدًا للبروتوكول.")); // heuristic harvest, never authoritative
     const jsToNative = analysis.ipcMessages.filter(m => m.direction === "js→native");
     const nativeToJs = analysis.ipcMessages.filter(m => m.direction === "native→js");
     if (jsToNative.length > 0) {
@@ -766,7 +768,7 @@ export async function generateStackMd(projectPath: string, project: ProjectProfi
 
   // Data Types (structs, enums, interfaces)
   if (analysis.dataTypes.length > 0) {
-    lines.push("## أنواع البيانات");
+    lines.push(L("## Data types", "## أنواع البيانات"));
     for (const dt of analysis.dataTypes) {
       const fieldsStr = dt.fields.slice(0, 8).join(", ") + (dt.fields.length > 8 ? ` ... (+${dt.fields.length - 8})` : "");
       lines.push(`- **${dt.name}** (${dt.kind}) — ${fieldsStr} ← \`${dt.file}\``);
@@ -776,7 +778,7 @@ export async function generateStackMd(projectPath: string, project: ProjectProfi
 
   // Security
   if (analysis.security.length > 0) {
-    lines.push("## الأمان");
+    lines.push(L("## Security", "## الأمان"));
     // Deduplicate by type
     const seen = new Set<string>();
     for (const s of analysis.security) {
@@ -791,7 +793,7 @@ export async function generateStackMd(projectPath: string, project: ProjectProfi
   // File types
   const exts = Object.entries(project.files).sort((a, b) => b[1] - a[1]);
   if (exts.length > 0) {
-    lines.push("## أنواع الملفات");
+    lines.push(L("## File types", "## أنواع الملفات"));
     for (const [ext, count] of exts) lines.push(`- \`.${ext}\` ${count}`);
     lines.push("");
   }
@@ -850,7 +852,15 @@ async function appendChangelog(devlogDir: string, tags: TagEntry[]) {
   // True append — O(delta), not O(file). Header created once.
   if (!mdExists) await Bun.write(file, "# سجل التغييرات\n");
   await appendFile(file, append, "utf-8");
-  await Bun.write(idxFp, JSON.stringify({ ids: [...logged], lastDay }));
+  // Prune-on-write (audit 2026-08-14 E5): persist only ids still present in
+  // the store, not every id ever logged. A dead id can't be re-appended — the
+  // dedup filter above walks current tags — so keeping it only grew the index
+  // without bound. Cost of the prune: a tag deleted from the store and later
+  // re-imported with its original id may duplicate its line in the .md;
+  // rebuildChangelog heals exactly that, and it writes this same
+  // store-intersected shape.
+  const ids = tags.filter(t => logged.has(t.id)).map(t => t.id);
+  await Bun.write(idxFp, JSON.stringify({ ids, lastDay }));
 }
 
 // changelogLine + rebuildChangelog(sMigration) moved to ./changelog-rebuild.ts

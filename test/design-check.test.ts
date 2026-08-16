@@ -7,8 +7,11 @@ describe("isUiFile", () => {
       expect(isUiFile(f)).toBe(true);
     }
   });
+  test("js/ts count as UI since the C1 widening (style strings are scanned)", () => {
+    for (const f of ["dashboard-core.js", "server.ts"]) expect(isUiFile(f)).toBe(true);
+  });
   test("non-UI files are not UI", () => {
-    for (const f of ["main.rs", "server.ts", "data.json", "notes.md", ""]) {
+    for (const f of ["main.rs", "data.json", "notes.md", ""]) {
       expect(isUiFile(f)).toBe(false);
     }
   });
@@ -27,6 +30,21 @@ describe("extractCssRegions", () => {
   });
   test("plain jsx with no <style> → empty (not hex-scanned)", () => {
     expect(extractCssRegions(`const c = "#fff";`, "C.jsx")).toBe("");
+  });
+  test("js template string → style attribute values (audit C1)", () => {
+    const js = "const h = `<div style=\"color:#ffd166\" href=\"#top\">x</div>`;";
+    expect(extractCssRegions(js, "panel.js")).toBe("color:#ffd166");
+  });
+  test("escaped-quote JS string form is still caught", () => {
+    const js = `el.innerHTML = "<b style=\\"background:#ef476f\\">!</b>";`;
+    expect(extractCssRegions(js, "x.js")).toBe("background:#ef476f");
+  });
+  test("single-quoted style attribute in ts-built markup", () => {
+    expect(extractCssRegions(`html += "<i style='color:#06d6a0'></i>";`, "gen.ts")).toBe("color:#06d6a0");
+  });
+  test("anchor/url fragments outside style attributes stay invisible", () => {
+    const js = `location.hash = "#abcdef"; const a = '<a href="#abc">x</a>';`;
+    expect(extractCssRegions(js, "nav.js")).toBe("");
   });
 });
 

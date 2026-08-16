@@ -28,6 +28,11 @@ import { pageRankFiles, pageRankFunctions } from "./pagerank";
 import { join, extname, relative } from "node:path";
 import { extractSymbols, type Symbol as CodeSymbol } from "./symbols";
 import { normalizeSlashes } from "./path-utils";
+import { currentLang } from "./i18n";
+
+// Generated descriptions land in DEVLOG_STACK.md + the dashboard's stack map,
+// so they follow the i18n policy (#906): English default, DEVLOG_LANG=ar.
+const L = <T>(en: T, ar: T): T => (currentLang() === "ar" ? ar : en);
 import { CONTENT_PATTERNS, corroboratedPatterns } from "./analyze-patterns";
 import { describeFile, filePurposeFromHeader } from "./file-purpose";
 import { softFail } from "./soft-fail";
@@ -307,56 +312,56 @@ function extractWrites(body: string): string[] {
 // Summarize function params
 
 // Auto-describe a function based on what it does
-function describeFn(name: string, body: string, _params: string, reads: string[], writes: string[], _calls: string[]): string {
+function describeFn(name: string, body: string, reads: string[], writes: string[]): string {
   // Route handler?
   if (/req\.json|req\.params|req\.query/.test(body) && /Response\.json/.test(body)) {
-    if (/saveData/.test(body) && /broadcast/.test(body)) return "يستقبل بيانات، يحفظها، ويبث التحديث";
-    if (/saveData/.test(body)) return "يستقبل بيانات ويحفظها";
-    if (/loadData/.test(body)) return "يقرأ البيانات ويرجعها";
-    return "يعالج طلب API";
+    if (/saveData/.test(body) && /broadcast/.test(body)) return L("receives data, saves it, broadcasts the update", "يستقبل بيانات، يحفظها، ويبث التحديث");
+    if (/saveData/.test(body)) return L("receives and saves data", "يستقبل بيانات ويحفظها");
+    if (/loadData/.test(body)) return L("reads and returns data", "يقرأ البيانات ويرجعها");
+    return L("handles an API request", "يعالج طلب API");
   }
 
   // Scanner/walker?
-  if (/readdir/.test(body) && /walk|recursive|depth/.test(body)) return "يمسح المجلدات بشكل متكرر";
-  if (/readdir/.test(body)) return "يقرأ محتويات مجلد";
+  if (/readdir/.test(body) && /walk|recursive|depth/.test(body)) return L("walks directories recursively", "يمسح المجلدات بشكل متكرر");
+  if (/readdir/.test(body)) return L("reads a directory's contents", "يقرأ محتويات مجلد");
 
   // Parser?
-  if (/match|matchAll|RegExp|\.exec/.test(body) && /push/.test(body)) return "يحلل ويستخرج بيانات";
+  if (/match|matchAll|RegExp|\.exec/.test(body) && /push/.test(body)) return L("parses and extracts data", "يحلل ويستخرج بيانات");
 
   // Generator/builder?
-  if (/lines\.push|\.join.*\\n|\.write/.test(body) && /mkdir/.test(body)) return "يولّد ملف";
-  if (/lines\.push|\.join.*\\n/.test(body)) return "يبني محتوى نصي";
+  if (/lines\.push|\.join.*\\n|\.write/.test(body) && /mkdir/.test(body)) return L("generates a file", "يولّد ملف");
+  if (/lines\.push|\.join.*\\n/.test(body)) return L("builds text content", "يبني محتوى نصي");
 
   // Writer?
-  if (writes.includes("data") && writes.includes("websocket")) return "يحفظ ويبث التحديث";
-  if (writes.includes("data")) return "يكتب بيانات";
+  if (writes.includes("data") && writes.includes("websocket")) return L("saves and broadcasts the update", "يحفظ ويبث التحديث");
+  if (writes.includes("data")) return L("writes data", "يكتب بيانات");
 
   // Reader?
-  if (reads.includes("data") && !writes.includes("data")) return "يقرأ بيانات";
-  if (reads.includes("filesystem")) return "يقرأ نظام الملفات";
+  if (reads.includes("data") && !writes.includes("data")) return L("reads data", "يقرأ بيانات");
+  if (reads.includes("filesystem")) return L("reads the filesystem", "يقرأ نظام الملفات");
 
   // Matcher/comparator?
-  if (/===|!==|includes|startsWith|\.test\(/.test(body) && body.split("\n").length < 10) return "يقارن/يطابق";
+  if (/===|!==|includes|startsWith|\.test\(/.test(body) && body.split("\n").length < 10) return L("compares/matches", "يقارن/يطابق");
 
   // Name-based hints
   const nameLower = name.toLowerCase();
-  if (nameLower.includes("detect")) return "يكشف ويحدد";
-  if (nameLower.includes("parse")) return "يحلل ويستخرج بيانات";
-  if (nameLower.includes("format") || nameLower.includes("render")) return "يُنسّق للعرض";
-  if (nameLower.includes("validate") || nameLower.includes("check")) return "يتحقق من الصحة";
-  if (nameLower.includes("convert") || nameLower.includes("transform")) return "يحوّل البيانات";
-  if (nameLower.includes("init") || nameLower.includes("setup")) return "يهيّئ ويجهّز";
-  if (nameLower.includes("handle") || nameLower.includes("process")) return "يعالج الطلب";
-  if (nameLower.includes("export") || nameLower.includes("generate")) return "يولّد مخرجات";
-  if (nameLower.includes("scan") || nameLower.includes("collect")) return "يجمع ويمسح";
-  if (nameLower.includes("build") || nameLower.includes("create")) return "يبني ويُنشئ";
-  if (nameLower.includes("update") || nameLower.includes("patch")) return "يحدّث";
-  if (nameLower.includes("delete") || nameLower.includes("remove")) return "يحذف";
-  if (nameLower.includes("find") || nameLower.includes("search") || nameLower.includes("get")) return "يبحث ويسترجع";
-  if (nameLower.includes("sort") || nameLower.includes("filter")) return "يرتّب/يفلتر";
+  if (nameLower.includes("detect")) return L("detects and identifies", "يكشف ويحدد");
+  if (nameLower.includes("parse")) return L("parses and extracts data", "يحلل ويستخرج بيانات");
+  if (nameLower.includes("format") || nameLower.includes("render")) return L("formats for display", "يُنسّق للعرض");
+  if (nameLower.includes("validate") || nameLower.includes("check")) return L("validates", "يتحقق من الصحة");
+  if (nameLower.includes("convert") || nameLower.includes("transform")) return L("transforms data", "يحوّل البيانات");
+  if (nameLower.includes("init") || nameLower.includes("setup")) return L("initializes", "يهيّئ ويجهّز");
+  if (nameLower.includes("handle") || nameLower.includes("process")) return L("processes the request", "يعالج الطلب");
+  if (nameLower.includes("export") || nameLower.includes("generate")) return L("generates output", "يولّد مخرجات");
+  if (nameLower.includes("scan") || nameLower.includes("collect")) return L("scans and collects", "يجمع ويمسح");
+  if (nameLower.includes("build") || nameLower.includes("create")) return L("builds and creates", "يبني ويُنشئ");
+  if (nameLower.includes("update") || nameLower.includes("patch")) return L("updates", "يحدّث");
+  if (nameLower.includes("delete") || nameLower.includes("remove")) return L("deletes", "يحذف");
+  if (nameLower.includes("find") || nameLower.includes("search") || nameLower.includes("get")) return L("finds and retrieves", "يبحث ويسترجع");
+  if (nameLower.includes("sort") || nameLower.includes("filter")) return L("sorts/filters", "يرتّب/يفلتر");
 
   // Short utility?
-  if (body.split("\n").length <= 3) return "دالة مساعدة";
+  if (body.split("\n").length <= 3) return L("helper function", "دالة مساعدة");
 
   return "";
 }
@@ -364,7 +369,7 @@ function describeFn(name: string, body: string, _params: string, reads: string[]
 // Table-driven (4.4): the rules live in ./analyze-patterns; this is just the
 // engine that runs them with the context filter. Add a capability = add a row
 // there, not code here.
-function detectPatterns(content: string, _ext: string, ctx: "server" | "client" | "shared" | "unknown"): string[] {
+function detectPatterns(content: string, ctx: "server" | "client" | "shared" | "unknown"): string[] {
   const patterns: string[] = [];
   for (const { label, re, ctx: rctx } of CONTENT_PATTERNS) {
     if (rctx === "server-only" && ctx === "client") continue;
@@ -414,7 +419,7 @@ function extractThreads(content: string, filePath: string): ThreadInfo[] {
 
     // Detect if persistent (has loop/listen) or temporary
     const isPersistent = /\bloop\s*\{|\.for_each|\.listen|\.recv|while\s|\.accept/s.test(ctx);
-    const kind = isPersistent ? "دائم" : "مؤقت";
+    const kind = isPersistent ? L("persistent", "دائم") : L("temporary", "مؤقت");
 
     // Deduplicate by purpose
     const key = `${purpose}|${kind}`;
@@ -426,7 +431,7 @@ function extractThreads(content: string, filePath: string): ThreadInfo[] {
 
   // JS: new Worker
   for (const m of content.matchAll(/new\s+Worker\s*\(\s*['"]([^'"]+)['"]/g)) {
-    threads.push({ name: m[1], file, purpose: "Web Worker (دائم)" });
+    threads.push({ name: m[1], file, purpose: `Web Worker (${L("persistent", "دائم")})` });
   }
 
   // Python: threading.Thread
@@ -437,7 +442,17 @@ function extractThreads(content: string, filePath: string): ThreadInfo[] {
   return threads;
 }
 
-// Detect IPC messages between JS and native code
+// Detect IPC messages between JS and native code.
+//
+// TRIMMED to the actually-tracked stacks (audit 2026-08-13, د‑1): every project
+// with a real IPC surface in the store speaks the Wry family — `ipc.postMessage`
+// on the JS side, `evaluate_script`/`format!` on the Rust side (verified by
+// grep across the tracked trees: zero hits for Electron's ipcRenderer/
+// webContents.send, Tauri's __TAURI_INVOKE__, or WebView2's
+// chrome.webview.postMessage). Those three families were speculative
+// generality and are gone — git history keeps them for the day such a project
+// is actually tracked. Text-matching remains a HEURISTIC: consumers label the
+// output as candidates, not an authoritative protocol listing.
 function extractIPC(content: string, filePath: string): IPCMessage[] {
   const messages: IPCMessage[] = [];
   const file = filePath.split("/").pop() || filePath;
@@ -475,10 +490,6 @@ function extractIPC(content: string, filePath: string): IPCMessage[] {
       add("native→js", m[1]);
     }
   }
-  // Electron: webContents.send
-  for (const m of content.matchAll(/webContents\.send\s*\(\s*['"](\w+)['"]/g)) {
-    add("native→js", m[1]);
-  }
 
   // === JS → Native ===
   // Pattern 1: postMessage(JSON.stringify({type/cmd/action: "xxx", ...}))
@@ -486,7 +497,7 @@ function extractIPC(content: string, filePath: string): IPCMessage[] {
     add("js→native", m[1]);
   }
   // Pattern 2: helper function call — sendToRust("xxx") / ipcSend("xxx") / send("xxx", ...) where send is IPC
-  for (const m of content.matchAll(/(?:sendToRust|ipcSend|sendIPC|sendNative|ipc\.send|invoke|__TAURI_INVOKE__)\s*\(\s*['"](\w+)['"]/g)) {
+  for (const m of content.matchAll(/(?:sendToRust|ipcSend|sendIPC|sendNative|ipc\.send)\s*\(\s*['"](\w+)['"]/g)) {
     add("js→native", m[1]);
   }
   // Pattern 3: postMessage with template literal or variable — postMessage(`{"cmd":"${cmd}"}`)
@@ -500,39 +511,31 @@ function extractIPC(content: string, filePath: string): IPCMessage[] {
     if (/[A-Z]/.test(name[0]) || (/[a-z]/.test(name[0]) && /[A-Z]/.test(name))) continue;
     const before = content.slice(Math.max(0, (m.index ?? 0) - 150), (m.index ?? 0));
     const after = content.slice((m.index ?? 0), Math.min((m.index ?? 0) + 150, content.length));
-    if (/ipc\.postMessage|ipc\.send|invoke\(/i.test(before + after)) {
+    if (/ipc\.postMessage|ipc\.send/i.test(before + after)) {
       add("js→native", name);
     }
   }
-  // Pattern 5: Wry/Tauri handler match — "xxx" => { ... } (within ipc context)
+  // Pattern 5: Wry handler match — "xxx" => { ... } (within ipc context)
   for (const m of content.matchAll(/["'](\w+)["']\s*=>\s*\{/g)) {
     const before = content.slice(Math.max(0, (m.index ?? 0) - 300), (m.index ?? 0));
-    if (/ipc|handler|command|invoke|match\s+\w*cmd|match\s+\w*action|match\s+\w*type/i.test(before)) {
+    if (/ipc|handler|command|match\s+\w*cmd|match\s+\w*action|match\s+\w*type/i.test(before)) {
       add("js→native", m[1]);
     }
   }
-  // Pattern 6: Electron IPC
-  for (const m of content.matchAll(/ipc(?:Renderer|Main)\.(?:send|on|handle)\s*\(\s*['"](\w+)['"]/g)) {
-    add("js→native", m[1]);
-  }
-  // Pattern 7: window.chrome.webview.postMessage
-  for (const m of content.matchAll(/window\.chrome\.webview\.postMessage\s*\(\s*(?:JSON\.stringify\s*\(\s*)?['"]?(\w+)/g)) {
-    add("js→native", m[1]);
-  }
 
-  // Pattern 8: Direct ipc.postMessage("command") or ipc.postMessage("command:data")
+  // Pattern 6: Direct ipc.postMessage("command") or ipc.postMessage("command:data")
   for (const m of content.matchAll(/ipc\.postMessage\s*\(\s*['"`](\w+)/g)) {
     add("js→native", m[1]);
   }
-  // Pattern 9: ipc.postMessage with concatenation — ipc.postMessage("command:" + data)
+  // Pattern 7: ipc.postMessage with concatenation — ipc.postMessage("command:" + data)
   for (const m of content.matchAll(/ipc\.postMessage\s*\(\s*['"](\w+)['":\s]*\+/g)) {
     add("js→native", m[1]);
   }
-  // Pattern 9b: ipc.postMessage(`command:${data}`) — template literal
+  // Pattern 7b: ipc.postMessage(`command:${data}`) — template literal
   for (const m of content.matchAll(/ipc\.postMessage\s*\(\s*`(\w+)/g)) {
     add("js→native", m[1]);
   }
-  // Pattern 9c: variable then postMessage — const msg = "command:..." ; ipc.postMessage(msg)
+  // Pattern 7c: variable then postMessage — const msg = "command:..." ; ipc.postMessage(msg)
   // or: ipc.postMessage(varName) where varName is assigned "command..."
   for (const m of content.matchAll(/(?:const|let|var)\s+(\w+)\s*=\s*['"`](\w+)[:'"]/g)) {
     // Check if this variable is used with ipc.postMessage nearby
@@ -541,7 +544,7 @@ function extractIPC(content: string, filePath: string): IPCMessage[] {
       add("js→native", m[2]);
     }
   }
-  // Pattern 10: Dynamic wrapper — find functions that call ipc.postMessage, then trace calls
+  // Pattern 8: Dynamic wrapper — find functions that call ipc.postMessage, then trace calls
   const wrapperNames = new Set<string>();
   for (const m of content.matchAll(/function\s+(\w+)\s*\([^)]*\)\s*\{[^}]*ipc\.postMessage/gs)) {
     wrapperNames.add(m[1]);
@@ -775,7 +778,7 @@ export async function analyzeProject(projectPath: string): Promise<ProjectAnalys
     // Skip pattern detection for files that contain detection code (false
     // positives) — self-scan only (R9 F5, see isSelfScan above).
     const isDetector = isSelfScan && /analyze|tokenizer|symbols|export|scanner|manifest/.test(rel);   // + scanner/manifest: they name CMakeLists to DETECT it (#794)
-    const patterns = isDetector ? [] : detectPatterns(content, ext, ctx);
+    const patterns = isDetector ? [] : detectPatterns(content, ctx);
     const routes = isDetector ? [] : extractRoutes(content);
 
     // Convert tokenizer symbols → FunctionInfo (skip type-only symbols)
@@ -796,7 +799,7 @@ export async function analyzeProject(projectPath: string): Promise<ProjectAnalys
         const filteredCalls = calls.filter(c => c !== baseName && c !== s.name);
         const reads = extractReads(body);
         const writes = extractWrites(body);
-        const description = describeFn(baseName, body, s.params, reads, writes, filteredCalls);
+        const description = describeFn(baseName, body, reads, writes);
 
         functions.push({
           name: s.name,

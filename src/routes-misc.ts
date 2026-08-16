@@ -98,6 +98,9 @@ export function makeMiscRoutes(): Record<string, unknown> {
           data.projectInjectionConfigs = {};
           data.injectionConfig = {};   // no deltas = every setting on its default (#810)
           data.rejections = []; data.migrations = {};
+          // Without this, a re-sent old tag batch after a full wipe is dropped
+          // as "already-processed replay" — clear must actually mean zero.
+          data.processedBatches = [];
         });
         return Response.json({ ok: true });
       },

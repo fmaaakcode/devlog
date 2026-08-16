@@ -32,3 +32,46 @@ export function ttlCached<T>(
     }
   };
 }
+
+// Keyed companion for caches whose keys come from open-ended input (package
+// names, project paths). A plain Map with per-entry TTLs only ever grew in
+// those callers — an expired entry was skipped on read but never deleted, so
+// keys that stop being asked for (a deleted project, a package dropped from
+// every manifest) pinned their last value forever. Here expired entries are
+// actually removed: on their own read, and by a sweep over the whole map that
+// runs at most once per sweepEveryMs on any access.
+export class TtlMap<V> {
+  private entries = new Map<string, { value: V; expires: number }>();
+  private nextSweep = 0;
+  constructor(private sweepEveryMs = 60_000) {}
+
+  /** The live value for `key`; undefined when absent or expired. */
+  get(key: string): V | undefined {
+    this.sweep();
+    const e = this.entries.get(key);
+    if (!e) return undefined;
+    if (Date.now() >= e.expires) {
+      this.entries.delete(key);
+      return undefined;
+    }
+    return e.value;
+  }
+
+  set(key: string, value: V, ttlMs: number): void {
+    this.sweep();
+    this.entries.set(key, { value, expires: Date.now() + ttlMs });
+  }
+
+  get size(): number {
+    return this.entries.size;
+  }
+
+  private sweep(): void {
+    const now = Date.now();
+    if (now < this.nextSweep) return;
+    this.nextSweep = now + this.sweepEveryMs;
+    for (const [k, e] of this.entries) {
+      if (now >= e.expires) this.entries.delete(k);
+    }
+  }
+}

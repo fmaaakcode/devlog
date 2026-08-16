@@ -11,7 +11,7 @@ import { analyzeProject, type ProjectAnalysis } from "./analyze";
 import { buildMap } from "./project-map";
 import { fileWeight } from "./file-weight";
 import { resolveProjectFor } from "./project-resolve";
-import { ttlCached } from "./ttl-cache";
+import { ttlCached, TtlMap } from "./ttl-cache";
 import { obj } from "./validators";
 import { generateStackMd } from "./export";
 import { appendAudit } from "./audit";
@@ -25,16 +25,33 @@ type ApiReq = Bun.BunRequest;
 // Five minutes is short enough that the map can't go stale within a session's
 // own edits in any way that matters, and long enough to cover a burst.
 const MAP_TTL_MS = 5 * 60 * 1000;
-const analysisCaches = new Map<string, () => Promise<ProjectAnalysis>>();
+// The closures live in a TtlMap well above the value TTL: this expiry is about
+// LIFETIME, not freshness — a deleted/renamed project's entry must not pin its
+// last analysis in memory forever (audit 2026-08-14 E3). ttlCached inside
+// still owns the 5-minute value window; an actively-asked project merely
+// re-creates its closure (one extra walk) twice an hour.
+const ANALYSIS_ENTRY_TTL_MS = 30 * 60 * 1000;
+const analysisCaches = new TtlMap<() => Promise<ProjectAnalysis>>();
 function cachedAnalysis(path: string): Promise<ProjectAnalysis> {
   let get = analysisCaches.get(path);
   if (!get) {
     // Never cache an empty walk: an unreadable/half-mounted project would
     // otherwise serve "this project has no files" for the whole window.
     get = ttlCached(MAP_TTL_MS, () => analyzeProject(path), a => a.files.length > 0);
-    analysisCaches.set(path, get);
+    analysisCaches.set(path, get, ANALYSIS_ENTRY_TTL_MS);
   }
   return get();
+}
+
+/** Fire-and-forget warm-up of the analysis cache (audit 2026-08-14 B1). The
+ *  demolition gate's /api/file-weight probe aborts at 4s while a COLD
+ *  analyzeProject walk can take tens of seconds on a large repo — so the gate
+ *  failed open on exactly the projects with the most load-bearing walls.
+ *  SessionStart kicks the same cache the gate reads, off the request path;
+ *  by the session's first Write the result is usually already sitting there.
+ *  Advisory by design: a failed warm-up just means a cold first probe. */
+export function warmAnalysis(path: string): void {
+  cachedAnalysis(path).catch(() => { /* fail-open — the gate itself also fails open */ });
 }
 
 /** Build the stack-map / tree route group. Spread into server.ts's routeDefs. */

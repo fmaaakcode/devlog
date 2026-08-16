@@ -12,7 +12,7 @@ import type { DevLogData, TagEntry } from "./types";
 import type { ProjectAnalysis } from "./analyze";
 import { computeImportedBy } from "./analyze";
 import { fileMatches, isNoisePath } from "./file-story";
-import { SECURITY_OPEN_TAGS, openBugs, openSecurity } from "./open-items";
+import { isReport, openBugs, openSecurity } from "./open-items";
 
 export interface FileWeight {
   /** Project-relative path as the analysis knows it, when it knows it. */
@@ -27,7 +27,6 @@ export interface FileWeight {
   unknown: boolean;
 }
 
-const isReport = (tag: string) => tag === "bug found" || SECURITY_OPEN_TAGS.has(tag);
 
 /**
  * Weigh `file` inside `project`.

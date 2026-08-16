@@ -6,10 +6,11 @@
  * Conservative regex replace — preserves formatting, comments, ordering.
  * Returns the list of files actually updated.
  */
-import { readFile, writeFile, rename } from "node:fs/promises";
+import { readFile, open, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { resolveWorkspaceMemberDirs } from "./cargo-workspace";
+import { withLockRetry } from "./fs-retry";
 
 export interface VersionUpdate {
   file: string;
@@ -135,10 +136,23 @@ export async function readManifestVersion(projectPath: string): Promise<string |
 async function atomicWrite(path: string, content: string): Promise<void> {
   // Real atomicity: write a temp file then rename over the target. rename is
   // atomic on the same filesystem, so a crash leaves the original manifest
-  // intact (matches data.ts). Bun.write would truncate the target first.
+  // intact (matches data.ts's atomicWrite). Bun.write would truncate the
+  // target first. fsync before the rename: without it the content can sit in
+  // the page cache while the rename's metadata lands first — a power cut then
+  // leaves a truncated manifest.
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tmp, content, "utf8");
-  await rename(tmp, path);
+  const fh = await open(tmp, "w");
+  try {
+    await fh.writeFile(content);
+    await fh.sync();
+  } finally {
+    await fh.close();
+  }
+  // The rename is where a transient Windows lock lands (#781 — AV briefly
+  // holding the fresh file). Without the retry, one EPERM dropped the version
+  // bump: the caller's catch logged it and the release shipped with a stale
+  // manifest.
+  await withLockRetry(() => rename(tmp, path));
 }
 
 // Build metadata (`+meta`) carries no precedence (semver §10): a manifest at
@@ -150,9 +164,10 @@ const sameIgnoringBuildMeta = (a: string, b: string): boolean =>
 
 async function bumpPackageJson(filePath: string, newVersion: string, allowDowngrade = false): Promise<VersionUpdate | VersionReject | null> {
   const raw = await readFile(filePath, "utf8");
-  // Match: "version": "X.Y.Z" with flexible whitespace. Top-level only —
-  // first occurrence at depth 0. JSON has no nested "version" siblings
-  // typically; the first hit is the package version.
+  // Matches the FIRST "version" key in the file — the regex has NO depth
+  // awareness. Safe while the root version precedes any nested object holding
+  // its own "version" (package.json convention; .claude-plugin/plugin.json
+  // today). A manifest that breaks that ordering gets its nested field bumped.
   const m = raw.match(/("version"\s*:\s*")([^"]+)(")/);
   if (!m) return null;
   const from = m[2];
@@ -298,20 +313,25 @@ async function syncCargoLock(projectPath: string, newVersion: string): Promise<V
   return { file: lockPath, from: firstFrom, to: newVersion };
 }
 
-// `rejected` is an optional out-collector: refused downgrades are pushed there
-// so the caller can surface them, while the return value stays the list of
-// applied updates (the contract every existing caller already relies on).
-export async function bumpManifests(
+// The one manifest-writing sequence both public entry points share:
+// package.json → Cargo.toml (with Cargo.lock kept in sync after a real bump)
+// → .claude-plugin/plugin.json. The two callers differ only in direction:
+// a release bump enforces the downgrade guard and surfaces rejections into
+// `rejected`; the rollback restore bypasses the guard (`rejected` null) and —
+// as it always has — drops the rejections a bypass can still produce
+// (Cargo's unsupported-layout). `label` prefixes error logs ("restore ").
+async function writeManifestVersions(
   projectPath: string,
-  releaseContent: string,
-  rejected: VersionReject[] = [],
+  version: string,
+  allowDowngrade: boolean,
+  rejected: VersionReject[] | null,
+  label: string,
 ): Promise<VersionUpdate[]> {
-  const version = extractVersion(releaseContent);
-  if (!version) return [];
   const out: VersionUpdate[] = [];
   const classify = (r: VersionUpdate | VersionReject | null) => {
     if (!r) return;
     if ("reason" in r) {
+      if (!rejected) return;
       rejected.push(r);
       console.error(r.reason === "downgrade"
         ? `[version-writer] refusing downgrade in ${r.file}: ${r.current} → ${r.attempted}`
@@ -323,23 +343,23 @@ export async function bumpManifests(
   const pkg = join(projectPath, "package.json");
   if (existsSync(pkg)) {
     try {
-      classify(await bumpPackageJson(pkg, version));
-    } catch (e) { console.error(`[version-writer] package.json error: ${(e as Error).message}`); }
+      classify(await bumpPackageJson(pkg, version, allowDowngrade));
+    } catch (e) { console.error(`[version-writer] ${label}package.json error: ${(e as Error).message}`); }
   }
   const cargo = join(projectPath, "Cargo.toml");
   if (existsSync(cargo)) {
     try {
-      const r = await bumpCargoToml(cargo, version);
+      const r = await bumpCargoToml(cargo, version, allowDowngrade);
       classify(r);
-      // After a real Cargo.toml bump, sync the crate's own line in Cargo.lock so
+      // After a real Cargo.toml write, sync the crate's own line in Cargo.lock so
       // `cargo build --locked` doesn't fail on the first CI build after release.
       if (r && !("reason" in r)) {
         try {
           const lockUpdate = await syncCargoLock(projectPath, version);
           if (lockUpdate) out.push(lockUpdate);
-        } catch (e) { console.error(`[version-writer] Cargo.lock sync error: ${(e as Error).message}`); }
+        } catch (e) { console.error(`[version-writer] ${label}Cargo.lock sync error: ${(e as Error).message}`); }
       }
-    } catch (e) { console.error(`[version-writer] Cargo.toml error: ${(e as Error).message}`); }
+    } catch (e) { console.error(`[version-writer] ${label}Cargo.toml error: ${(e as Error).message}`); }
   }
   // Claude Code plugin manifest: keep `.claude-plugin/plugin.json` version in
   // sync on release. Plugin updates are gated on this field (users only see a
@@ -349,10 +369,23 @@ export async function bumpManifests(
   const pluginManifest = join(projectPath, ".claude-plugin", "plugin.json");
   if (existsSync(pluginManifest)) {
     try {
-      classify(await bumpPackageJson(pluginManifest, version));
-    } catch (e) { console.error(`[version-writer] plugin.json error: ${(e as Error).message}`); }
+      classify(await bumpPackageJson(pluginManifest, version, allowDowngrade));
+    } catch (e) { console.error(`[version-writer] ${label}plugin.json error: ${(e as Error).message}`); }
   }
   return out;
+}
+
+// `rejected` is an optional out-collector: refused downgrades are pushed there
+// so the caller can surface them, while the return value stays the list of
+// applied updates (the contract every existing caller already relies on).
+export async function bumpManifests(
+  projectPath: string,
+  releaseContent: string,
+  rejected: VersionReject[] = [],
+): Promise<VersionUpdate[]> {
+  const version = extractVersion(releaseContent);
+  if (!version) return [];
+  return writeManifestVersions(projectPath, version, false, rejected, "");
 }
 
 /**
@@ -361,33 +394,5 @@ export async function bumpManifests(
  * previous release IS an intentional downgrade. Returns the files updated.
  */
 export async function restoreManifestVersion(projectPath: string, version: string): Promise<VersionUpdate[]> {
-  const out: VersionUpdate[] = [];
-  const pkg = join(projectPath, "package.json");
-  if (existsSync(pkg)) {
-    try {
-      const r = await bumpPackageJson(pkg, version, true);
-      if (r && !("reason" in r)) out.push(r);
-    } catch (e) { console.error(`[version-writer] restore package.json error: ${(e as Error).message}`); }
-  }
-  const cargo = join(projectPath, "Cargo.toml");
-  if (existsSync(cargo)) {
-    try {
-      const r = await bumpCargoToml(cargo, version, true);
-      if (r && !("reason" in r)) {
-        out.push(r);
-        try {
-          const lockUpdate = await syncCargoLock(projectPath, version);
-          if (lockUpdate) out.push(lockUpdate);
-        } catch (e) { console.error(`[version-writer] restore Cargo.lock sync error: ${(e as Error).message}`); }
-      }
-    } catch (e) { console.error(`[version-writer] restore Cargo.toml error: ${(e as Error).message}`); }
-  }
-  const pluginManifest = join(projectPath, ".claude-plugin", "plugin.json");
-  if (existsSync(pluginManifest)) {
-    try {
-      const r = await bumpPackageJson(pluginManifest, version, true);
-      if (r && !("reason" in r)) out.push(r);
-    } catch (e) { console.error(`[version-writer] restore plugin.json error: ${(e as Error).message}`); }
-  }
-  return out;
+  return writeManifestVersions(projectPath, version, true, null, "restore ");
 }

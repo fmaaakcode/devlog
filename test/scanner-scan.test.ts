@@ -101,6 +101,35 @@ describe("detectPackages (manifest → framework + libraries)", () => {
     });
   });
 
+  // ج‑4 (audit 2026-08-13): pyproject.toml used to be fallback-only, so a
+  // multi-language repo lost its Python deps — including from the OSV scan.
+  test("multi-language repo: package.json + pyproject.toml both contribute", async () => {
+    await withTmp(async dir => {
+      await writeFile(join(dir, "package.json"), JSON.stringify({
+        name: "demo", dependencies: { vite: "^6.0.0" },
+      }));
+      await writeFile(join(dir, "pyproject.toml"),
+        `[project]\nname = "x"\ndependencies = ["requests>=2.0"]\n`);
+      const { libraries } = await detectPackages(dir);
+      const eco = new Map(libraries.map(l => [l.name, l.eco]));
+      expect(eco.get("vite")).toBe("npm");
+      expect(eco.get("requests")).toBe("pypi");
+    });
+  });
+
+  test("requirements.txt + pyproject.toml: same package not duplicated", async () => {
+    await withTmp(async dir => {
+      await writeFile(join(dir, "requirements.txt"), `requests==2.31.0\n`);
+      await writeFile(join(dir, "pyproject.toml"),
+        `[project]\nname = "x"\ndependencies = ["requests>=2.0", "flask==3.0"]\n`);
+      const { libraries } = await detectPackages(dir);
+      const reqs = libraries.filter(l => l.name === "requests");
+      expect(reqs).toHaveLength(1);
+      expect(reqs[0].version).toBe("2.31.0"); // first manifest wins
+      expect(libraries.map(l => l.name)).toContain("flask");
+    });
+  });
+
   test("Python requirements.txt: comments skipped, versions parsed", async () => {
     await withTmp(async dir => {
       await writeFile(join(dir, "requirements.txt"), `# deps\nrequests==2.31.0\nflask>=3.0\n`);

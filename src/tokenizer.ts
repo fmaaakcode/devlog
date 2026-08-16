@@ -199,7 +199,14 @@ export function tokenize(source: string, ext: string): Token[] {
       if (ch === "0" && i + 1 < len && (source[i + 1] === "x" || source[i + 1] === "X" || source[i + 1] === "b" || source[i + 1] === "o")) {
         i += 2; // 0x, 0b, 0o prefix
       }
-      while (i < len && /[0-9a-fA-F_.eEpP+\-xu]/.test(source[i])) i++;
+      // A sign continues the number ONLY straight after an exponent marker
+      // (1e-5, 0x1.8p+3); accepting it anywhere glued "1+2" into one token.
+      while (i < len) {
+        const c = source[i];
+        if (/[0-9a-fA-F_.eEpPxu]/.test(c)) { i++; continue; }
+        if ((c === "+" || c === "-") && /[eEpP]/.test(source[i - 1] || "")) { i++; continue; }
+        break;
+      }
       tokens.push({ type: TokenType.Number, value: source.slice(start, i), line });
       continue;
     }

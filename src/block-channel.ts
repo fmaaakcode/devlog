@@ -32,6 +32,7 @@ export const BLOCK_RULES = {
   // line and a counter can never disagree about which guard spoke.
   "release-guard": "release-guard",           // local pre-check: open items block a release
   "feature-nudge": "feature-nudge",           // a release with work tags but zero features
+  "story-nudge": "story-nudge",               // a closing batch/release with no -(story) (narrative layer P2)
   "release-downgrade": "release-downgrade",   // the computed version would go backwards
   "release-intent": "release-intent",         // a type tag carrying an explicit version
   "release-blocked": "release-blocked",       // the server's own open-items refusal
@@ -44,21 +45,22 @@ export const BLOCK_RULES = {
   // Delivery — not recorded.
   // `serve`: the release result, a standards pull, an -(ask:*) answer.
   serve: null,
-  // `guard-own`: the six turn guards in hook-guards.ts record themselves by name
+  // `guard-own`: the five turn guards in hook-guards.ts record themselves by name
   // (P1) before they block. Recording again here would double every count.
   "guard-own": null,
 } as const;
 
 export type BlockKey = keyof typeof BLOCK_RULES;
 
-/** The six turn guards (src/hook-guards.ts), which record themselves rather than
+/** The five turn guards (src/hook-guards.ts), which record themselves rather than
  *  going through the table above. Listed here so that "every countable rule on
  *  the `turn` gate" has ONE home: a reader with only the observed records cannot
  *  tell a guard that never spoke from a guard that does not exist, and the
  *  silence is the most valuable half of the signal. Pinned against the source in
- *  test/guard-telemetry.test.ts. */
+ *  test/guard-telemetry.test.ts. ("standards-check" was deleted 2026-08-13 —
+ *  disabled since 2026-06-24, its counter never fired.) */
 export const GUARD_RULES = [
-  "near-miss", "backtick-nudge", "standards-check", "dep-freshness", "untagged-guard", "root-cause",
+  "near-miss", "backtick-nudge", "dep-freshness", "untagged-guard", "root-cause",
 ] as const;
 
 /** Every rule name the `turn` gate can carry: the guards plus the counted block
@@ -101,7 +103,11 @@ export function makeBlockChannel(server: string, cwdOf: () => string, finalize: 
   async function flushBlock(key: BlockKey): Promise<never> {
     await recordBlock(server, cwdOf(), key);
     await finalize();
-    process.stdout.write(JSON.stringify({ decision: "block", reason: feedback.join("\n") }));
+    // Wait for the write callback before exiting: process.exit does not flush
+    // a buffered pipe, and a truncated payload here isn't a lost log line —
+    // it breaks the hook protocol (Claude Code parses this JSON).
+    const payload = JSON.stringify({ decision: "block", reason: feedback.join("\n") });
+    await new Promise<void>((resolve) => process.stdout.write(payload, () => resolve()));
     process.exit(0);
   }
   async function blockContinue(text: string, key: BlockKey): Promise<never> {

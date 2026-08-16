@@ -5,7 +5,7 @@
 // observed directly.
 
 import { test, expect, describe } from "bun:test";
-import { ttlCached } from "../src/ttl-cache";
+import { ttlCached, TtlMap } from "../src/ttl-cache";
 
 describe("ttlCached", () => {
   test("concurrent callers coalesce into one in-flight execution", async () => {
@@ -61,5 +61,45 @@ describe("ttlCached", () => {
     expect(results.map(r => (r as PromiseRejectedResult).reason.message)).toEqual(["wmi hung", "wmi hung"]);
     expect(await get()).toBe("ok");        // next call retried
     expect(runs).toBe(2);
+  });
+});
+
+// TtlMap — the keyed companion (registry caches, analysis cache). The contract
+// beyond a plain Map is DELETION: an expired entry disappears from memory, not
+// just from reads.
+describe("TtlMap", () => {
+  test("serves a live entry and honors per-entry TTLs", async () => {
+    const m = new TtlMap<string>();
+    m.set("slow", "a", 1000);
+    m.set("fast", "b", 20);
+    expect(m.get("slow")).toBe("a");
+    expect(m.get("fast")).toBe("b");
+    await Bun.sleep(40);
+    expect(m.get("fast")).toBeUndefined();  // expired
+    expect(m.get("slow")).toBe("a");        // its own longer TTL still live
+  });
+
+  test("an expired entry is deleted on its own read", async () => {
+    const m = new TtlMap<string>(60_000);   // sweep interval far away — read path must delete
+    m.set("k", "v", 20);
+    await Bun.sleep(40);
+    expect(m.get("k")).toBeUndefined();
+    expect(m.size).toBe(0);
+  });
+
+  test("the sweep evicts expired entries nobody reads again", async () => {
+    const m = new TtlMap<string>(0);        // sweep on every access
+    m.set("dead-project", "analysis", 20);
+    await Bun.sleep(40);
+    m.set("live-project", "analysis", 1000); // unrelated access triggers the sweep
+    expect(m.size).toBe(1);
+  });
+
+  test("set on an existing key refreshes both value and expiry", async () => {
+    const m = new TtlMap<string>();
+    m.set("k", "old", 20);
+    m.set("k", "new", 1000);
+    await Bun.sleep(40);
+    expect(m.get("k")).toBe("new");
   });
 });

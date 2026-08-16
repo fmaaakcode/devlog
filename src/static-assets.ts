@@ -23,6 +23,12 @@ import dashboardPanelsJs from "../assets/dashboard-panels.js" with { type: "text
 import dashboardTreeWsJs from "../assets/dashboard-tree-ws.js" with { type: "text" };
 import dashboardDocsCardJs from "../assets/dashboard-docs-card.js" with { type: "text" };
 import dashboardTrendsJs from "../assets/dashboard-trends.js" with { type: "text" };
+// Stateless HTML-safety primitives (audit C2) — the single esc()/safeHref()
+// copy every page imports.
+import domSafeJs from "../assets/dom-safe.js" with { type: "text" };
+// Token resolution for spots CSS var() can't reach — canvas, alpha concat,
+// popup documents (audit C1).
+import themeJs from "../assets/theme.js" with { type: "text" };
 import stackMapJs from "../assets/stack-map.js" with { type: "text" };
 import depsJs from "../assets/deps.js" with { type: "text" };
 // i18n dictionary + the static-page applier (#700/#708): every dashboard page
@@ -53,6 +59,8 @@ export const STATIC_ASSETS: Record<string, Asset> = {
   "dashboard-tree-ws.js": { text: dashboardTreeWsJs, mime: "application/javascript; charset=utf-8" },
   "dashboard-docs-card.js": { text: dashboardDocsCardJs, mime: "application/javascript; charset=utf-8" },
   "dashboard-trends.js": { text: dashboardTrendsJs, mime: "application/javascript; charset=utf-8" },
+  "dom-safe.js": { text: domSafeJs, mime: "application/javascript; charset=utf-8" },
+  "theme.js": { text: themeJs, mime: "application/javascript; charset=utf-8" },
   "stack-map.js": { text: stackMapJs, mime: "application/javascript; charset=utf-8" },
   "deps.js": { text: depsJs, mime: "application/javascript; charset=utf-8" },
   "dashboard-i18n.js": { text: dashboardI18nJs, mime: "application/javascript; charset=utf-8" },

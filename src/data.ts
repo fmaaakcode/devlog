@@ -33,7 +33,7 @@ import { isStepClosed, normalizeTagContent, NUMBERED_TAGS } from "./open-items";
 // Tag semantics moved to ./open-items (file-size ratchet); re-exported so the
 // ~40 existing `from "./data"` call sites stay valid.
 export {
-  normalizeTagContent, SECURITY_OPEN_TAGS, CLOSER_FOR, CLOSER_KINDS, OPENER_TO_CLOSER,
+  normalizeTagContent, SECURITY_OPEN_TAGS, isReport, CLOSER_FOR, CLOSER_KINDS, OPENER_TO_CLOSER,
   NUMBERED_OPENABLE, NUMBERED_TAGS, CLOSURE_TAGS, leadingNums, singleHashNum, closedNums,
   latestCloserTs, openTodos, openBugs, openSecurity, isStepClosed, openPlanSteps,
   openOutdatedLibs, inflightClosures,
@@ -128,6 +128,16 @@ export function resolvePort(raw: string | undefined, fallback = 7777): number {
 export const PORT = resolvePort(process.env.DEVLOG_PORT);
 
 let cache: DevLogData | null = null;
+
+/**
+ * Drop the in-memory store cache so the next reader reloads from disk. For the
+ * top-level uncaughtException/unhandledRejection handlers: an error that never
+ * passed through withData's catch leaves the shared object half-mutated, and
+ * the next successful save would persist that state with no trace.
+ */
+export function dropCache(): void {
+  cache = null;
+}
 let loadPromise: Promise<DevLogData> | null = null;
 
 async function readJsonOr<T>(path: string, fallback: T): Promise<T> {
@@ -192,6 +202,7 @@ async function readFromDisk(): Promise<DevLogData> {
       events,
       plans,
       worklog: meta.worklog || [],
+      prompts: meta.prompts || [],
       injections: meta.injections || [],
       injectionConfig: injectionOverrides(meta.injectionConfig),
       projectInjectionConfigs: meta.projectInjectionConfigs || {},
@@ -201,16 +212,20 @@ async function readFromDisk(): Promise<DevLogData> {
       processedBatches: meta.processedBatches || [],
     };
   }
-  // Legacy fallback + migration.
+  // Legacy fallback + migration. Same armored read as the split stores: a
+  // corrupt data.json quarantines (with retry on transient locks) instead of
+  // throwing the whole boot — the split path already got this care, the
+  // migration path never did.
   const legacy = Bun.file(DATA_FILE);
   if (await legacy.exists()) {
-    const raw = await legacy.json();
+    const raw = await readJsonOr<Partial<DevLogData> & { changes?: DevLogData["events"] }>(DATA_FILE, {});
     const data: DevLogData = {
       projects: raw.projects || {},
       events: raw.events || raw.changes || [],
       tags: raw.tags || [],
       plans: raw.plans || [],
       worklog: raw.worklog || [],
+      prompts: raw.prompts || [],
       injections: raw.injections || [],
       injectionConfig: injectionOverrides(raw.injectionConfig),
       projectInjectionConfigs: raw.projectInjectionConfigs || {},
@@ -223,7 +238,7 @@ async function readFromDisk(): Promise<DevLogData> {
     return data;
   }
   return {
-    projects: {}, events: [], tags: [], plans: [], worklog: [],
+    projects: {}, events: [], tags: [], plans: [], worklog: [], prompts: [],
     injections: [], injectionConfig: {}, projectInjectionConfigs: {},
     descendants: [],
     rejections: [],
@@ -288,6 +303,7 @@ async function writeAllSplit(data: DevLogData) {
     plans:    JSON.stringify(data.plans),
     meta:     JSON.stringify({
       worklog: data.worklog,
+      prompts: data.prompts || [],
       injections: data.injections,
       injectionConfig: injectionOverrides(data.injectionConfig),
       projectInjectionConfigs: data.projectInjectionConfigs,
@@ -362,7 +378,13 @@ export async function cleanupMissingProjects(data: DevLogData): Promise<boolean>
 let writing = false;
 let pendingWrite: DevLogData | null = null;
 
-export async function saveData(data: DevLogData) {
+// NOT exported (audit 2026-08-13, هـ‑2): when a write is in flight this
+// coalesces into pendingWrite and returns BEFORE anything hits the disk — an
+// awaiting caller that then reads the file sees old bytes. Every caller must go
+// through withData, whose FIFO lock is what actually upholds the
+// "awaited means persisted" contract; exporting this left the trap open to the
+// first new caller.
+async function saveData(data: DevLogData) {
   cache = data;
   if (writing) {
     pendingWrite = data;
@@ -440,37 +462,40 @@ export function isMalformedPkgDescriptor(content: string): boolean {
   return false;
 }
 
+// Shared engine of the two one-time cleanups below: splice out every tag of
+// one kind whose content is a malformed package descriptor, gated on v1/v2
+// migration flags (both flags are stamped so a store that never ran v1 skips
+// straight past it). Splicing rather than emitting a fix tag keeps the record
+// clean: these were scanner artifacts, and a phantom incident shouldn't appear
+// in release notes as "vulnerability resolved". Idempotent; returns the number
+// of tags removed.
+function cleanupMalformedTags(data: DevLogData, tag: string, v1Key: string, v2Key: string): number {
+  if (!data.migrations) data.migrations = {};
+  if (data.migrations[v2Key]) return 0;
+  const before = data.tags.length;
+  data.tags = data.tags.filter(t => !(t.tag === tag && isMalformedPkgDescriptor(t.content)));
+  const removed = before - data.tags.length;
+  data.migrations[v1Key] = true;
+  data.migrations[v2Key] = true;
+  return removed;
+}
+
 /**
  * One-time cleanup: delete malformed `security` tags created by older
  * Vuln API versions (pre-v0.5.1-beta) that returned bogus results for
  * unscannable inputs (vendored / undefined / null / unknown packages).
- *
- * These were never real vulnerabilities — they were scanner artifacts.
- * We splice them out entirely (rather than emitting `security fix`) so
- * the project's security record stays clean: a phantom incident shouldn't
- * appear in release notes as "vulnerability resolved".
  *
  * Strict pattern: name AND/OR version is one of `undefined`, `null`,
  * `unknown`, `system`, `bundled`, or starts with `vendored-`. Only `tag`
  * === "security" is touched (not `security:own` / `security:dep` — those
  * are user-authored and more sensitive).
  *
- * Idempotent via `data.migrations.cleanup_malformed_security_v1`. Returns
- * the number of tags removed.
+ * v2 re-runs to catch a second source of the same content shape: a runtime
+ * check that hit a 4xx response and produced `undefined  — undefined`. The
+ * root cause is fixed at the call site, so this is purely retrospective.
  */
 export function cleanupMalformedSecurityTags(data: DevLogData): number {
-  if (!data.migrations) data.migrations = {};
-  // v2 re-runs to catch a second source of the same content shape: a runtime
-  // check that hit a 4xx response and produced `undefined  — undefined`. The
-  // root cause is fixed at the call site, so this is purely retrospective.
-  if (data.migrations.cleanup_malformed_security_v2) return 0;
-
-  const before = data.tags.length;
-  data.tags = data.tags.filter(t => !(t.tag === "security" && isMalformedPkgDescriptor(t.content)));
-  const removed = before - data.tags.length;
-  data.migrations.cleanup_malformed_security_v1 = true;
-  data.migrations.cleanup_malformed_security_v2 = true;
-  return removed;
+  return cleanupMalformedTags(data, "security", "cleanup_malformed_security_v1", "cleanup_malformed_security_v2");
 }
 
 /**
@@ -478,21 +503,13 @@ export function cleanupMalformedSecurityTags(data: DevLogData): number {
  * Vuln API versions cross-matched a vendored/undefined package against an
  * unrelated registry entry and reported a bogus latest version (e.g.
  * `rnnoise@vendored-unknown — احدث: 0.1.8`). Same shape detection as the
- * security cleanup. Idempotent via `cleanup_malformed_outdated_v1` flag.
+ * security cleanup.
+ *
+ * v2 re-runs because the regex was fixed to keep hyphens inside the version
+ * capture (so `vendored-unknown` isn't truncated to `vendored` and skipped).
  */
 export function cleanupMalformedOutdatedTags(data: DevLogData): number {
-  if (!data.migrations) data.migrations = {};
-  // v2: regex was fixed to keep hyphens inside the version capture (so
-  // `vendored-unknown` isn't truncated to `vendored` and skipped). Re-run
-  // once more to catch entries the v1 regex missed.
-  if (data.migrations.cleanup_malformed_outdated_v2) return 0;
-
-  const before = data.tags.length;
-  data.tags = data.tags.filter(t => !(t.tag === "outdated" && isMalformedPkgDescriptor(t.content)));
-  const removed = before - data.tags.length;
-  data.migrations.cleanup_malformed_outdated_v1 = true;
-  data.migrations.cleanup_malformed_outdated_v2 = true;
-  return removed;
+  return cleanupMalformedTags(data, "outdated", "cleanup_malformed_outdated_v1", "cleanup_malformed_outdated_v2");
 }
 
 /**
@@ -566,7 +583,10 @@ export function backfillNums(data: DevLogData): boolean {
  */
 export function assignNum(data: DevLogData, project: string): number {
   const profile = data.projects[project];
-  if (!profile) return 1;
+  // Throw, never a plausible-looking number: every silent `return 1` hands two
+  // items the same #N, and closure matches by number alone — one -(done) #1
+  // would close both. All callers guard on data.projects[project] first.
+  if (!profile) throw new Error(`assignNum: unknown project "${project}"`);
 
   // The persisted counter is untrustworthy on its own: applyPreservedScan used
   // to drop it, and restoring projects.json from a .bak rewinds it while

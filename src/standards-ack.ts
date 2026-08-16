@@ -12,6 +12,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { currentLang } from "./i18n";
+
+// i18n policy (#906): ack messages ride the same rule-command channel as
+// standards.ts — English default, DEVLOG_LANG=ar for Arabic.
+const L = <T>(en: T, ar: T): T => (currentLang() === "ar" ? ar : en);
 
 export const ENFORCE_MARKER = "standards-off";
 
@@ -67,20 +72,24 @@ export interface AckResult { ok: boolean; message: string; }
  *  dedup). Creates `.devlog` at cwd when no project root is found yet. */
 export async function addAck(cwd: string, key: string): Promise<AckResult> {
   const k = (key || "").trim();
-  if (!k) return { ok: false, message: "مفتاح ack فارغ." };
+  if (!k) return { ok: false, message: L("empty ack key.", "مفتاح ack فارغ.") };
   const dl = findDevlogDir(cwd) ?? join(cwd, ".devlog");
   await mkdir(dl, { recursive: true });
   const file = join(dl, ACK_MARKER);
   let lines: string[] = [];
   try { lines = (await readFile(file, "utf-8")).split("\n").map(s => s.trim()).filter(Boolean); } catch { /* new file */ }
-  if (lines.some(l => l.toLowerCase() === k.toLowerCase())) return { ok: true, message: `موجود مسبقاً: ${k}` };
+  if (lines.some(l => l.toLowerCase() === k.toLowerCase())) return { ok: true, message: L(`already present: ${k}`, `موجود مسبقاً: ${k}`) };
   lines.push(k);
   await writeFile(file, `${lines.join("\n")}\n`, "utf-8");
-  return { ok: true, message: `أُكّد كمتعمّد (لن يُحجب بعد الآن في هذا المشروع): ${k}` };
+  return { ok: true, message: L(
+    `acknowledged as intentional (no longer blocked in this project): ${k}`,
+    `أُكّد كمتعمّد (لن يُحجب بعد الآن في هذا المشروع): ${k}`) };
 }
 
 /** Human-readable list of the project's acks (for -(rule:acks)). */
 export function listAcks(cwd: string): string {
   const acks = readAcks(cwd);
-  return acks.length ? `مؤكَّدات هذا المشروع:\n${acks.map(a => `· ${a}`).join("\n")}` : "لا مؤكَّدات في هذا المشروع.";
+  return acks.length
+    ? `${L("this project's acks", "مؤكَّدات هذا المشروع")}:\n${acks.map(a => `· ${a}`).join("\n")}`
+    : L("no acks in this project.", "لا مؤكَّدات في هذا المشروع.");
 }

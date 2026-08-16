@@ -17,7 +17,9 @@
 
         const W = 280, H = 120, PAD_L = 26, PAD_R = 8, PAD_T = 6, PAD_B = 16;
 
-        const escXml = (s) => String(s).replace(/[&<>"']/g, c => ({
+        // `?? ""` matches the other five client-side escapers: a bare String(s)
+        // would render null/undefined as literal text inside the SVG.
+        const escXml = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({
             '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
         }[c] ?? c));
 

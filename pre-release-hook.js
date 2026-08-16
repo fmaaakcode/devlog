@@ -27,6 +27,10 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const PORT = parseInt(process.env.DEVLOG_PORT || "7777", 10);
+// #893: guard messages follow DEVLOG_LANG (same inline resolution as
+// pre-install-hook.js — hooks stay standalone, no src/i18n import).
+const LANG = (process.env.DEVLOG_LANG || "").trim().toLowerCase().startsWith("ar") ? "ar" : "en";
+const L = (en, ar) => (LANG === "ar" ? ar : en);
 const LOG_DIR = join(import.meta.dir, ".devlog");
 const ACK_DIR = join(LOG_DIR, "release-ack");
 const ACK_TTL_MS = 10 * 60 * 1000;
@@ -69,7 +73,7 @@ if (!isRelease) process.exit(0);
 // project dir outranks the payload cwd, which follows the shell's `cd` drift.
 const cwd = process.env.CLAUDE_PROJECT_DIR || body.cwd || process.cwd();
 const sessionId = body.session_id || "";
-await log(`fire: tool=${tool} cmd=${cmd.slice(0, 120)} cwd=${cwd}`);
+log(`fire: tool=${tool} cmd=${cmd.slice(0, 120)} cwd=${cwd}`);
 
 // Ack check: if this session already saw the briefing recently, let it pass.
 const ackFile = join(ACK_DIR, `${encodeURIComponent(sessionId || "no-session")}-${encodeURIComponent(cwd)}.txt`);
@@ -77,7 +81,7 @@ if (existsSync(ackFile)) {
   try {
     const stat = await readFile(ackFile, "utf8");
     if (Date.now() - parseInt(stat, 10) < ACK_TTL_MS) {
-      await log(`ack-pass: ${ackFile}`);
+      log(`ack-pass: ${ackFile}`);
       process.exit(0);
     }
   } catch { /* unreadable ack file — treat as no ack */ }
@@ -102,11 +106,11 @@ let changelogCount = 0;
     grab(`${base}/api/changelog/since-last-release?cwd=${q}`).then(r => (r.ok ? r.json() : null)),
   ]);
   if (oi.status === "fulfilled") openItems = oi.value?.items || [];
-  else await log(`open-items fetch error: ${oi.reason?.message}`);
+  else log(`open-items fetch error: ${oi.reason?.message}`);
   if (md.status === "fulfilled") changelogMd = md.value || "";
-  else await log(`changelog fetch error: ${md.reason?.message}`);
+  else log(`changelog fetch error: ${md.reason?.message}`);
   if (cnt.status === "fulfilled") changelogCount = cnt.value?.count || 0;
-  else await log(`changelog count fetch error: ${cnt.reason?.message}`);
+  else log(`changelog count fetch error: ${cnt.reason?.message}`);
 }
 
 // Run doctor in JSON mode (8s cap — see the #771 budget above).
@@ -116,14 +120,14 @@ try {
   const r = spawnSync("bun", [scriptPath, "--json", cwd], { encoding: "utf8", timeout: 8000 });
   if (r.stdout) doctorReport = JSON.parse(r.stdout);
 } catch (e) {
-  await log(`doctor error: ${e.message}`);
+  log(`doctor error: ${e.message}`);
 }
 
 // Compose feedback to Claude.
 const out = [];
 out.push("════════ DevLog Release Guard ════════");
-out.push(`الأمر: ${cmd.slice(0, 200)}`);
-out.push(`المشروع: ${cwd}`);
+out.push(`${L("Command", "الأمر")}: ${cmd.slice(0, 200)}`);
+out.push(`${L("Project", "المشروع")}: ${cwd}`);
 out.push("");
 
 // Strict block: ANY open item refuses the release.
@@ -133,47 +137,65 @@ if (openItems.length > 0) {
     byTag[it.tag] ||= [];
     byTag[it.tag].push(it);
   }
-  out.push(`🛑 ${openItems.length} مهمة مفتوحة — لا يجوز إصدار release بوجود أي مهمة مفتوحة:`);
+  out.push(L(
+    `🛑 ${openItems.length} open items — a release must not ship while any item is open:`,
+    `🛑 ${openItems.length} مهمة مفتوحة — لا يجوز إصدار release بوجود أي مهمة مفتوحة:`,
+  ));
   for (const [tag, arr] of Object.entries(byTag)) {
     out.push(`  ${tag} (${arr.length}):`);
     for (const it of arr.slice(0, 20)) {
       const plan = it.planTitle ? ` [plan: ${it.planTitle}]` : "";
       out.push(`    · #${it.num} ${(it.content || "").slice(0, 80)}${plan}`);
     }
-    if (arr.length > 20) out.push(`    ... +${arr.length - 20} أخرى`);
+    if (arr.length > 20) out.push(`    ... +${arr.length - 20} ${L("more", "أخرى")}`);
   }
   out.push("");
-  out.push("الإصلاح: أَغلق كل #N أعلاه بـ -(done) / -(dropped) / -(bug fix) / -(security fix) أولاً.");
+  out.push(L(
+    "The fix: first close every #N above with -(done) / -(dropped) / -(bug fix) / -(security fix).",
+    "الإصلاح: أَغلق كل #N أعلاه بـ -(done) / -(dropped) / -(bug fix) / -(security fix) أولاً.",
+  ));
   out.push("");
 }
 
 if (doctorReport?.findings?.length) {
   const med = doctorReport.findings.filter(f => f.severity === "medium");
   if (med.length) {
-    out.push(`⚠ ${med.length} تحذيرات متوسطة من doctor:`);
+    out.push(L(`⚠ ${med.length} medium doctor warnings:`, `⚠ ${med.length} تحذيرات متوسطة من doctor:`));
     for (const f of med) out.push(`  • [${f.code}] ${f.title}`);
     out.push("");
   }
 }
 
 if (changelogCount > 0) {
-  out.push(`📋 changelog منذ آخر release (${changelogCount} عنصر):`);
+  out.push(L(`📋 changelog since the last release (${changelogCount} items):`, `📋 changelog منذ آخر release (${changelogCount} عنصر):`));
   out.push("");
   out.push(changelogMd);
   out.push("");
   out.push("──────────────");
-  out.push("استخدم القائمة أعلاه في الـcommit message أو release body. لا تختصرها إلى جملة واحدة مثل 'security hotfix'.");
+  out.push(L(
+    "Use the list above in the commit message or release body. Don't compress it into a single line like 'security hotfix'.",
+    "استخدم القائمة أعلاه في الـcommit message أو release body. لا تختصرها إلى جملة واحدة مثل 'security hotfix'.",
+  ));
 } else if (changelogCount === 0) {
-  out.push("⚠ لا توجد تاقات (built/done/fix) منذ آخر release. هل أنت متأكد من هذا الإصدار؟");
+  out.push(L(
+    "⚠ No tags (built/done/fix) since the last release. Are you sure about this release?",
+    "⚠ لا توجد تاقات (built/done/fix) منذ آخر release. هل أنت متأكد من هذا الإصدار؟",
+  ));
 }
 
 out.push("");
 const hasHigh = doctorReport?.findings?.some(f => f.severity === "high");
 const blocked = openItems.length > 0 || hasHigh;
 if (blocked) {
-  out.push("✗ مرفوض: لا يجوز إصدار release بوجود مهام مفتوحة أو مشاكل حرجة.");
+  out.push(L(
+    "✗ Refused: a release must not ship with open items or critical findings.",
+    "✗ مرفوض: لا يجوز إصدار release بوجود مهام مفتوحة أو مشاكل حرجة.",
+  ));
 } else {
-  out.push("ℹ️ اقرأ الـchangelog أعلاه ثم أعد تنفيذ الأمر — سيمر هذه المرة (TTL 10 دقائق).");
+  out.push(L(
+    "ℹ️ Read the changelog above, then re-issue the command — it will pass this time (10-minute TTL).",
+    "ℹ️ اقرأ الـchangelog أعلاه ثم أعد تنفيذ الأمر — سيمر هذه المرة (TTL 10 دقائق).",
+  ));
   try { await writeFile(ackFile, String(Date.now()), "utf8"); } catch { /* ack is best-effort; worst case the briefing repeats */ }
 }
 out.push("══════════════════════════════════════");

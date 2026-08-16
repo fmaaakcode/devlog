@@ -26,7 +26,7 @@ import { sanitizeRuleRecord, RULE_GATES, type RuleTelemetryRecord } from "../src
 import { ruleStats, ruleEffect, turnGateSummary } from "../src/rule-effect";
 import { rootCauseGuard, untaggedSessionGuard, type GuardCtx } from "../src/hook-guards";
 import { ASK_ROWS, type AskCtx } from "../src/hook-ask-rows";
-import { BLOCK_RULES, ruleForBlock, recordBlock, GUARD_RULES, TURN_RULES, type BlockKey } from "../src/block-channel";
+import { BLOCK_RULES, ruleForBlock, recordBlock, makeBlockChannel, GUARD_RULES, TURN_RULES, type BlockKey } from "../src/block-channel";
 
 const GUARDS_SRC = join(import.meta.dir, "..", "src", "hook-guards.ts");
 const PARSE_TAGS_SRC = join(import.meta.dir, "..", "parse-tags.ts");
@@ -74,7 +74,7 @@ function ledgerWith(session: Partial<GuardCtx["ledger"]["session"]> = {}): Guard
   return {
     session: {
       hintedVerify: false, hintedRegression: false, hintedSweep: false, hintedUntagged: false,
-      servedSignatures: [], envDriftChecked: false, ...session,
+      hintedDemolitionWhy: false, servedSignatures: [], envDriftChecked: false, ...session,
     },
     turn: { turnId: "t1", postedKeys: [], servedCommands: [] },
   };
@@ -184,9 +184,39 @@ describe("no guard can block without a counter", () => {
     const src = readFileSync(GUARDS_SRC, "utf-8");
     // The runner's labels ARE the telemetry keys — the point of reusing them is
     // that the log line and the counter can never name a guard differently.
-    for (const name of ["near-miss", "backtick-nudge", "standards-check", "dep-freshness", "untagged-guard", "root-cause"]) {
+    for (const name of ["near-miss", "backtick-nudge", "dep-freshness", "untagged-guard", "root-cause"]) {
       expect(src).toContain(`blockRecorded(ctx, "${name}"`);
     }
+  });
+});
+
+describe("makeBlockChannel (the exit path, exercised with exit/stdout stubbed)", () => {
+  test("blockContinue: finalize first, then ONE flushed JSON payload holding the accrued feedback, then exit(0)", async () => {
+    const order: string[] = [];
+    let payload = "";
+    const realExit = process.exit;
+    const realWrite = process.stdout.write;
+    // eslint-disable-next-line no-global-assign
+    process.exit = ((code?: number) => { order.push(`exit:${code}`); throw new Error("EXIT_SENTINEL"); }) as never;
+    process.stdout.write = ((chunk: unknown, cb?: (err?: Error) => void) => {
+      payload = String(chunk); order.push("write");
+      if (typeof cb === "function") cb(); // the channel awaits this callback — a payload truncated by exit breaks the hook protocol
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      const ch = makeBlockChannel("http://127.0.0.1:1", () => "D:/proj", async () => { order.push("finalize"); });
+      ch.feedback.push("informational note from earlier in the run");
+      // "serve" is a delivery key: recordBlock is a no-op, so the test needs no sink.
+      await expect(ch.blockContinue("the blocking message", "serve")).rejects.toThrow("EXIT_SENTINEL");
+    } finally {
+      process.exit = realExit;
+      process.stdout.write = realWrite;
+    }
+    expect(JSON.parse(payload)).toEqual({
+      decision: "block",
+      reason: "informational note from earlier in the run\nthe blocking message",
+    });
+    expect(order).toEqual(["finalize", "write", "exit:0"]);
   });
 });
 
@@ -206,14 +236,33 @@ describe("delivery is never counted as enforcement", () => {
       .split("\n")
       .filter(l => { const t = l.trim(); return t && !t.startsWith("//") && !t.startsWith("*"); });
     const calls = code.filter(l => /(?:blockContinue|flushBlock)\(/.test(l) && !/^(?:async )?function/.test(l.trim()));
-    expect(calls.length).toBeGreaterThan(8);         // the real sites, not a stub
+    // #897 moved the 15 response blocks into hook-response-rows.ts; what stays
+    // in the hook file are the pre-POST guards, the closure-check flush, the
+    // serve wrappers and the channel destructure.
+    expect(calls.length).toBeGreaterThan(4);         // the real sites, not a stub
     const keys = Object.keys(BLOCK_RULES);
     for (const call of calls) {
       // Either it passes a known key, or it is one of the two definitions /
-      // the two ctx wrappers that forward a key.
-      const named = keys.some(k => call.includes(`"${k}"`)) || /return flushBlock\(key\)|blockContinue\(text, "/.test(call);
+      // the ctx wrappers that forward a key / the row-engine handoff (whose
+      // keys are checked structurally in the next test).
+      const named = keys.some(k => call.includes(`"${k}"`))
+        || /return flushBlock\(key\)|blockContinue\(text, "/.test(call)
+        || /runResponseRows|makeBlockChannel|blockContinue, flushBlock/.test(call);
       expect(named).toBe(true);
     }
+  });
+
+  test("every blocking response row names an enforcement-table key (#897)", async () => {
+    const { RESPONSE_ROWS } = await import("../src/hook-response-rows");
+    const keys = new Set(Object.keys(BLOCK_RULES));
+    const blockRows = RESPONSE_ROWS.filter(r => r.deliver === "block");
+    expect(blockRows.length).toBeGreaterThan(4);     // downgrade, intent, blocked, mismatch, feature-ref, release
+    for (const r of blockRows) expect(keys.has(r.blockKey as string)).toBe(true);
+    // The two escalating info rows forward table keys too.
+    const up = RESPONSE_ROWS.find(r => r.key === "upcomingChanges");
+    expect(up?.flushKey?.({ upcomingChanges: [{ kind: "no-match" }] })).toBe("upcoming");
+    const div = RESPONSE_ROWS.find(r => r.key === "closureTextWarnings");
+    expect(div?.flushKey?.({ closureTextWarnings: [{ num: 1, openerText: "x" }], closureHints: [] })).toBe("closure-divergence");
   });
 });
 

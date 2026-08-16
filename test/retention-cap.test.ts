@@ -2,9 +2,10 @@
 // the global FIFO ring in pushEvent. The old ring let a busy project (the one
 // Claude works in) evict quiet projects' events entirely, so their dashboard
 // event card flickered then emptied. These pin the fairness + ordering contract.
+// Plus pushEvent's archive-before-evict contract (audit 2026-08-13, هـ‑3).
 
 import { describe, test, expect } from "bun:test";
-import { capEventsPerProject } from "../src/retention";
+import { capEventsPerProject, pushEvent } from "../src/retention";
 import type { EventEntry } from "../src/types";
 
 function ev(project: string, n: number): EventEntry {
@@ -52,5 +53,44 @@ describe("capEventsPerProject", () => {
     const out = capEventsPerProject(events, 0);
     expect(out).toEqual(events);
     expect(out).not.toBe(events); // new array, not mutated
+  });
+});
+
+// The module's real caps: per-project 200, global 10000, deferral slack 1000.
+const PER_PROJECT = 200;
+const GLOBAL_CAP = 10000;
+
+describe("pushEvent — archive BEFORE evict, eviction deferred a cycle on failure (هـ‑3)", () => {
+  test("archive succeeds → the over-cap batch leaves the hot store and reaches the archive", async () => {
+    const events: EventEntry[] = [];
+    for (let i = 1; i <= PER_PROJECT; i++) events.push(ev("a", i));
+    const archived: EventEntry[][] = [];
+    await pushEvent(events, ev("a", PER_PROJECT + 1), async batch => { archived.push(batch); return true; });
+    expect(events.length).toBe(PER_PROJECT);
+    expect(events[0].id).toBe("a-2"); // the oldest was evicted…
+    expect(archived.flat().map(e => e.id)).toEqual(["a-1"]); // …into the archive
+  });
+
+  test("archive fails → NOTHING evicted; the next successful cycle collects the whole debt", async () => {
+    const events: EventEntry[] = [];
+    for (let i = 1; i <= PER_PROJECT; i++) events.push(ev("a", i));
+    await pushEvent(events, ev("a", PER_PROJECT + 1), async () => false);
+    expect(events.length).toBe(PER_PROJECT + 1);       // deferred: cap is soft this cycle
+    expect(events[0].id).toBe("a-1");                  // the batch is NOT lost
+
+    const archived: EventEntry[][] = [];
+    await pushEvent(events, ev("a", PER_PROJECT + 2), async batch => { archived.push(batch); return true; });
+    expect(events.length).toBe(PER_PROJECT);
+    expect(archived.flat().map(e => e.id)).toEqual(["a-1", "a-2"]); // last cycle's debt + this one
+  });
+
+  test("past the global cap + slack, memory wins: eviction proceeds even unarchived", async () => {
+    const events: EventEntry[] = [];
+    const projects = Math.ceil((GLOBAL_CAP + 1200) / PER_PROJECT);
+    for (let p = 0; p < projects; p++) {
+      for (let i = 1; i <= PER_PROJECT; i++) events.push(ev(`p${p}`, i));
+    }
+    await pushEvent(events, ev("p0", PER_PROJECT + 1), async () => false);
+    expect(events.length).toBe(GLOBAL_CAP); // the backstop refused to defer past the slack
   });
 });

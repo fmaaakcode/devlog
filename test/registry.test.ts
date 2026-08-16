@@ -5,7 +5,7 @@
 // installed version is older than the registry's latest.
 
 import { describe, test, expect } from "bun:test";
-import { isVersionBehind, synthesizeStatus, encodePkgPath, encodeGoModulePath, latestEditionFor } from "../src/registry";
+import { isVersionBehind, synthesizeStatus, encodePkgPath, encodeGoModulePath, latestEditionFor, retryDelayMs, RETRY_AFTER_CAP_MS } from "../src/registry";
 
 describe("isVersionBehind (outdated gate)", () => {
   test("strictly-newer latest reads as behind", () => {
@@ -126,5 +126,37 @@ describe("synthesizeStatus (native scan: separates 'unknown' from 'up-to-date') 
     const missing = synthesizeStatus("1.0.0", undefined);
     expect(missing.status).toBe("indeterminate");
     expect(missing.isLatest).toBeUndefined();
+  });
+});
+
+describe("retryDelayMs — Retry-After honored on 429/503, capped, else linear backoff", () => {
+  const resp = (status: number, retryAfter: string | null) =>
+    ({ status, headers: { get: (n: string) => (n.toLowerCase() === "retry-after" ? retryAfter : null) } });
+
+  test("429 with delta-seconds waits what the limiter asked", () => {
+    expect(retryDelayMs(resp(429, "3"), 0)).toBe(3000);
+    expect(retryDelayMs(resp(503, "1"), 0)).toBe(1000);
+  });
+
+  test("an external header can never park the daemon: capped", () => {
+    expect(retryDelayMs(resp(429, "3600"), 0)).toBe(RETRY_AFTER_CAP_MS);
+  });
+
+  test("HTTP-date form: waits until that moment (capped)", () => {
+    const inFive = new Date(Date.now() + 5000).toUTCString();
+    const d = retryDelayMs(resp(429, inFive), 0);
+    expect(d).toBeGreaterThan(2000);
+    expect(d).toBeLessThanOrEqual(RETRY_AFTER_CAP_MS);
+  });
+
+  test("past date, garbage, or no header → plain linear backoff", () => {
+    const past = new Date(Date.now() - 5000).toUTCString();
+    expect(retryDelayMs(resp(429, past), 0)).toBe(250);
+    expect(retryDelayMs(resp(429, "soon"), 1)).toBe(500);
+    expect(retryDelayMs(resp(429, null), 0)).toBe(250);
+  });
+
+  test("other statuses ignore the header entirely", () => {
+    expect(retryDelayMs(resp(500, "3600"), 1)).toBe(500);
   });
 });

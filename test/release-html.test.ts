@@ -1,8 +1,24 @@
-import { test, expect, describe } from "bun:test";
+import { test, expect, describe, beforeAll } from "bun:test";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isRealVersion, generateManifest, generateProjectIndex, generateReleaseHtml, collectRelease, renderReleaseHtml, writeReleaseHtml } from "../src/release-html";
+
+// The page bakes in the language active at render time (#891). These
+// assertions were written against the Arabic output — pin it explicitly,
+// since CI runs without DEVLOG_LANG and would otherwise render English.
+beforeAll(() => { process.env.DEVLOG_LANG = "ar"; });
+
+/** Run `fn` under a specific DEVLOG_LANG (undefined = unset), restoring after. */
+function withLang(lang: string | undefined, fn: () => void): void {
+  const saved = process.env.DEVLOG_LANG;
+  if (lang === undefined) delete process.env.DEVLOG_LANG;
+  else process.env.DEVLOG_LANG = lang;
+  try { fn(); } finally {
+    if (saved === undefined) delete process.env.DEVLOG_LANG;
+    else process.env.DEVLOG_LANG = saved;
+  }
+}
 
 describe("isRealVersion", () => {
   test("accepts semantic versions", () => {
@@ -453,5 +469,72 @@ describe("writeReleaseHtml regeneration guard", () => {
       expect(html).toContain("src/fresh.ts");
       expect(html).not.toContain("stale.ts");
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+// #891: the page renders in the language DEVLOG_LANG resolves to — English by
+// default, Arabic on ar — including shell direction, section titles, labels,
+// and count phrases (English needs no one/two/few/many split).
+describe("i18n (#891)", () => {
+  const baseProject: any = {
+    name: "p", path: "/x", description: "", about: "some about text", language: "TS",
+    blueprint: [], libraries: [], files: {}, directories: [], totalFiles: 3, lastScan: "",
+  };
+  const target: any = { tag: "release", project: "p", content: "v1.0.0", timestamp: "2026-04-03T00:00:00Z" };
+  const data: any = {
+    projects: { p: baseProject },
+    tags: [
+      target,
+      { tag: "built", project: "p", content: "f1", session_id: "s1", timestamp: "2026-04-01T05:00:00Z" },
+      { tag: "built", project: "p", content: "f2", session_id: "s2", timestamp: "2026-04-02T05:00:00Z" },
+      { tag: "todo", project: "p", content: "deferred thing", num: 7, upcoming: true, timestamp: "2026-04-01T06:00:00Z" },
+    ],
+    plans: [],
+    events: [{ project: "p", type: "change", file_path: "/x/src/a.ts", lines_added: 4, lines_removed: 1, timestamp: "2026-04-01T07:00:00Z" }],
+  };
+
+  test("unset DEVLOG_LANG renders the English ltr page", () => {
+    withLang(undefined, () => {
+      const html = generateReleaseHtml(data, "p", target);
+      expect(html).toContain(`<html lang="en" dir="ltr">`);
+      expect(html).toContain("Additions &amp; features"); // section title vocabulary (esc'd)
+      expect(html).toContain("Code changes");
+      expect(html).toContain("Context");
+      expect(html).toContain("2 sessions");             // plain English plural
+      expect(html).toContain("Upcoming");
+      expect(html).toContain("deferred since");
+      expect(html).not.toMatch(/[؀-ۿ]/);      // no Arabic leaks into the English page
+    });
+  });
+
+  test("English project index carries English labels and ltr shell", () => {
+    withLang("en", () => {
+      const html = generateProjectIndex(data, "p");
+      expect(html).toContain(`<html lang="en" dir="ltr">`);
+      expect(html).toContain("About the project");
+      expect(html).toContain("Releases");
+      expect(html).toContain("Activity stats");
+      expect(html).not.toMatch(/[؀-ۿ]/);
+    });
+  });
+
+  test("ar keeps the Arabic rtl page byte-compatible with the old output", () => {
+    withLang("ar", () => {
+      const html = generateReleaseHtml(data, "p", target);
+      expect(html).toContain(`<html lang="ar" dir="rtl">`);
+      expect(html).toContain("إضافات وميزات");
+      expect(html).toContain("جلستين");
+      expect(html).toContain("مؤجَّل منذ");
+    });
+  });
+
+  test("shim CSS uses logical inline properties so one sheet serves both directions", () => {
+    withLang("en", () => {
+      const html = generateReleaseHtml(data, "p", target);
+      expect(html).toContain("border-inline-start");
+      expect(html).toContain("padding-inline-start");
+      expect(html).not.toContain("border-right:");
+      expect(html).not.toContain("padding-right:");
+    });
   });
 });

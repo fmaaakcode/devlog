@@ -314,7 +314,7 @@
                 <span class="framework-badge" id="hdr-framework" style="background:#04201a;color:var(--emerald);${p.framework ? '' : 'display:none'}">${esc(p.framework || '')}</span>
                 <span id="hdr-runtime" style="font-size:0.7em;padding:2px 8px;border-radius:4px;background:#1a1a2e;color:#7c8cf5;font-weight:600;${p.runtime ? '' : 'display:none'}">${p.runtime ? `${esc(p.runtime.name || '')}${p.runtime.version ? ` ${esc(p.runtime.version)}` : ''}${p.runtime.edition ? ` · ${esc(p.runtime.edition)}` : ''}` : ''}</span>
                 ${gitBadgeHtml(p)}
-                <span id="hdr-sessions" data-action="open-sessions" data-project="${esc(p.name)}" style="display:none;font-size:0.7em;padding:2px 8px;border-radius:4px;background:#0d2e1f;color:#06d6a0;font-weight:600;cursor:pointer" title="${tr("hdr.sessionsTitle")}"></span>
+                <span id="hdr-sessions" data-action="open-sessions" data-project="${esc(p.name)}" style="display:none;font-size:0.7em;padding:2px 8px;border-radius:4px;background:#0d2e1f;color:var(--emerald);font-weight:600;cursor:pointer" title="${tr("hdr.sessionsTitle")}"></span>
             `;
             document.getElementById("topbar").classList.add("has-project");
 
@@ -484,12 +484,12 @@
 
             // Determine overall status
             let status = 'unknown';
-            const anyScanned = libs.some(l => { const v = vulns[l.name]; return v && (v.status !== "unscannable" && v.status !== "unknown"); });
+            const anyScanned = libs.some(l => { const v = vulns[l.name]; return v && v.status !== "indeterminate"; });
             if (anyScanned) {
                 status = 'safe';
                 for (const l of libs) {
                     const v = vulns[l.name];
-                    if (!v || (v.status === "unscannable" || v.status === "unknown")) continue;
+                    if (!v || v.status === "indeterminate") continue;
                     if (v.icon === 'warning' || v.icon === 'x') { status = 'danger'; break; }
                     if (v.isLatest === false && l.version !== 'latest') status = 'warn';
                 }
@@ -512,8 +512,8 @@
             const rank = (l) => {
                 const v = vulns[l.name];
                 if (v && (v.icon === 'warning' || v.icon === 'x')) return 0;
-                if (v && (v.status !== 'unscannable' && v.status !== 'unknown') && v.isLatest === false && l.version !== 'latest') return 1;
-                if (v && (v.status !== 'unscannable' && v.status !== 'unknown')) return 2;
+                if (v && v.status !== 'indeterminate' && v.isLatest === false && l.version !== 'latest') return 1;
+                if (v && v.status !== 'indeterminate') return 2;
                 return 3;
             };
             const sorted = [...libs].sort((a, b) => rank(a) - rank(b));
@@ -526,7 +526,7 @@
                 const v = vulns[l.name];
                 let cls = 'unknown';
                 let target = '';
-                if (v && (v.status !== 'unscannable' && v.status !== 'unknown')) {
+                if (v && v.status !== 'indeterminate') {
                     if (v.icon === 'warning' || v.icon === 'x') {
                         cls = 'danger';
                         target = v.fixVersion || v.latestVersion || '';

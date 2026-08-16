@@ -6,6 +6,12 @@ import { join } from "node:path";
 // before the dynamic import below.
 const TMP = join(import.meta.dir, ".tmp-standards");
 process.env.DEVLOG_STANDARDS_DIR = TMP;
+// Messages went bilingual (#906) and currentLang() reads the env per call.
+// The assertions here pin the ARABIC variants, so pin the language too —
+// locally DEVLOG_LANG=ar happens to be set, but CI has no DEVLOG_LANG and
+// would get the English variants. Restored in afterAll.
+const PREV_LANG = process.env.DEVLOG_LANG;
+process.env.DEVLOG_LANG = "ar";
 const std = await import("../src/standards");
 
 async function seed() {
@@ -30,10 +36,15 @@ beforeEach(async () => {
   // Re-assert per test: bun shares the process across files, and standardsDir()
   // now reads the env live, so another standards test must not leak its dir here.
   process.env.DEVLOG_STANDARDS_DIR = TMP;
+  process.env.DEVLOG_LANG = "ar";
   await rm(TMP, { recursive: true, force: true });
   await seed();
 });
-afterAll(async () => { await rm(TMP, { recursive: true, force: true }); });
+afterAll(async () => {
+  await rm(TMP, { recursive: true, force: true });
+  if (PREV_LANG === undefined) delete process.env.DEVLOG_LANG;
+  else process.env.DEVLOG_LANG = PREV_LANG;
+});
 
 describe("parseRuleCommands", () => {
   test("returns empty for a message with no commands", () => {
@@ -311,63 +322,6 @@ describe("removeRule", () => {
   });
 });
 
-describe("shouldEnforceStandards (relevance-aware gate)", () => {
-  const base = { catalogCount: 3, relevantUncovered: 2, stopHookActive: false };
-  test("blocks when a relevant category is uncovered", () => {
-    expect(std.shouldEnforceStandards(base)).toBe(true);
-  });
-  test("does not block when nothing relevant is uncovered (covered or C++-with-no-cpp)", () => {
-    expect(std.shouldEnforceStandards({ ...base, relevantUncovered: 0 })).toBe(false);
-  });
-  test("does not block when the catalog is empty", () => {
-    expect(std.shouldEnforceStandards({ ...base, catalogCount: 0 })).toBe(false);
-  });
-  test("never loops on its own forced continuation", () => {
-    expect(std.shouldEnforceStandards({ ...base, stopHookActive: true })).toBe(false);
-  });
-});
-
-describe("coveredCategories", () => {
-  test("extracts categories from ask:rules command keys", () => {
-    expect(std.coveredCategories(["ask:rules|rust windows desktop-gui|"]).sort())
-      .toEqual(["desktop-gui", "rust", "windows"]);
-  });
-  test("extracts categories from auto-served markers", () => {
-    expect(std.coveredCategories(["auto-served|rust", "auto-served|security"]).sort())
-      .toEqual(["rust", "security"]);
-  });
-  test("merges both sources and dedups, ignoring unrelated keys", () => {
-    expect(std.coveredCategories(["ask:rules|rust|", "auto-served|rust", "dep-fresh|x", "rule:add|c|نص"]).sort())
-      .toEqual(["rust"]);
-  });
-  test("empty state → no categories", () => {
-    expect(std.coveredCategories([])).toEqual([]);
-  });
-});
-
-describe("gateWriteDecision (category-aware PreToolUse gate)", () => {
-  test("blocks and serves the needed categories when nothing is covered", () => {
-    expect(std.gateWriteDecision({ isCode: true, needed: ["rust", "security"], covered: [] }))
-      .toEqual({ block: true, serve: ["rust", "security"] });
-  });
-  test("serves only the uncovered subset (per-category)", () => {
-    expect(std.gateWriteDecision({ isCode: true, needed: ["go", "security"], covered: ["rust", "security"] }))
-      .toEqual({ block: true, serve: ["go"] });
-  });
-  test("allows when every needed category is already covered", () => {
-    expect(std.gateWriteDecision({ isCode: true, needed: ["rust", "security"], covered: ["rust", "security"] }))
-      .toEqual({ block: false, serve: [] });
-  });
-  test("allows non-code writes regardless of categories", () => {
-    expect(std.gateWriteDecision({ isCode: false, needed: ["rust"], covered: [] }))
-      .toEqual({ block: false, serve: [] });
-  });
-  test("allows when nothing applies (empty needed, e.g. unknown ext + empty catalog)", () => {
-    expect(std.gateWriteDecision({ isCode: true, needed: [], covered: [] }))
-      .toEqual({ block: false, serve: [] });
-  });
-});
-
 describe("isCodeWrite", () => {
   test("counts source files", () => {
     expect(std.isCodeWrite("D:/test/src/main.rs")).toBe(true);
@@ -416,60 +370,6 @@ describe("langForFile", () => {
   });
   test("a dot in a folder name does not fool the extension parse", () => {
     expect(std.langForFile("my.app/src/README")).toBe(null);
-  });
-});
-
-describe("inferCategories", () => {
-  const avail = ["rust", "typescript", "windows", "desktop-gui", "security", "dependencies"];
-  test("picks the language for a code file, intersected with the catalog", () => {
-    expect(std.inferCategories("src/main.rs", avail)).toEqual(["rust", "security"]);
-  });
-  test("adds platform and app-type hints when present in the catalog", () => {
-    expect(std.inferCategories("src/main.rs", avail, { platform: "windows", appType: "desktop-gui" }))
-      .toEqual(["rust", "windows", "desktop-gui", "security"]);
-  });
-  test("never suggests a category that is not in the catalog", () => {
-    expect(std.inferCategories("a.go", avail)).toEqual(["security"]); // no go.md available
-    expect(std.inferCategories("src/main.rs", avail, { platform: "linux" }))
-      .toEqual(["rust", "security"]); // linux not in catalog → dropped
-  });
-  test("unknown extension still yields the always-include cross-cutting", () => {
-    expect(std.inferCategories("data.bin", avail)).toEqual(["security"]);
-  });
-  test("respects a custom alwaysInclude set and dedups", () => {
-    expect(std.inferCategories("app.ts", avail, { alwaysInclude: ["dependencies", "security"] }))
-      .toEqual(["typescript", "dependencies", "security"]);
-  });
-  test("empty catalog → no categories", () => {
-    expect(std.inferCategories("src/main.rs", [])).toEqual([]);
-  });
-
-  test("pulls framework categories from manifest deps (intersected with catalog)", () => {
-    const a = ["typescript", "design", "astro", "vite", "react", "security"];
-    expect(std.inferCategories("src/pages/index.astro", a, { deps: ["astro", "vite"] }))
-      .toEqual(["design", "astro", "vite", "security"]); // .astro → design + deps
-    expect(std.inferCategories("src/app.ts", a, { deps: ["react", "react-dom"] }))
-      .toEqual(["typescript", "react", "security"]); // react-dom dedups to react
-  });
-
-  test("adds the runtime category when present", () => {
-    expect(std.inferCategories("src/app.ts", ["typescript", "bun", "security"], { runtime: "bun" }))
-      .toEqual(["typescript", "bun", "security"]);
-  });
-
-  test("framework deps not in the catalog are dropped", () => {
-    expect(std.inferCategories("src/app.ts", ["typescript", "security"], { deps: ["astro", "vite"] }))
-      .toEqual(["typescript", "security"]); // no astro/vite category → nothing added
-  });
-});
-
-describe("frameworkCategoriesFromDeps", () => {
-  test("maps known deps and dedups aliases", () => {
-    expect(std.frameworkCategoriesFromDeps(["react", "react-dom", "vite", "tailwindcss"]))
-      .toEqual(["react", "vite", "tailwind"]);
-  });
-  test("ignores unknown deps", () => {
-    expect(std.frameworkCategoriesFromDeps(["lodash", "zod"])).toEqual([]);
   });
 });
 

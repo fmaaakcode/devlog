@@ -10,6 +10,16 @@
 // goes to the `undone` archive stream first, and a failed archive write refuses the
 // removal outright (a refusal the user sees: it rides the rejections channel into
 // the next SessionStart). Read them back via GET /api/undone.
+//
+// CONTRACT BOUNDARY (audit 2026-08-14 C3): archive-before-delete covers rows a
+// HUMAN authored. Two deliberate exemptions exist and are the ONLY ones:
+//   1. Machine-derived rows the next scan re-derives from scratch — the
+//      scanner's `outdated` tags (vuln-scan.ts) and the one-time
+//      malformed-tag/orphan-closure migrations (data.ts, orphan-closures.ts).
+//   2. Explicit project purges, where archiving would defeat the purge
+//      (purgeProjectData — see event-archive.ts's non-goals note).
+// A new bare splice/filter on data.tags outside these two classes is a bug,
+// not a third exemption.
 
 import type { DevLogData } from "./types";
 import { singleHashNum } from "./data";

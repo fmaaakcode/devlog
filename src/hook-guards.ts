@@ -1,11 +1,11 @@
-// The Stop hook's turn guards: six checks that inspect what just happened and,
+// The Stop hook's turn guards: five checks that inspect what just happened and,
 // when something needs saying, block the turn so Claude reads it while it can
 // still act. Extracted from parse-tags.ts (the size ratchet) — they used to sit
 // inline as ~260 lines of straight-line code, untestable except through the
 // full hook.
 //
 // They are deliberately NOT a table, unlike the pull commands next door. Those
-// eleven were the same operation with different arguments; these six differ in
+// eleven were the same operation with different arguments; these five differ in
 // what they read (the response text, the session's file writes, the manifest),
 // in their dedup scope (per head, per line, per session signature, once per
 // session), and in what they cost (two of them fetch, three don't). One
@@ -115,7 +115,7 @@ async function recordGuard(
  * of it. Two guards have that signal today — root-cause (the number now carries
  * a cause) and untagged (the response now carries tags).
  *
- * The other four (near-miss, backtick, dep-freshness, standards-check) get NO
+ * The other three (near-miss, backtick, dep-freshness) get NO
  * pass records, deliberately: their triggers vanish for reasons other than
  * compliance (a typo'd line simply not repeated, a manifest reverted), so a pass
  * there would be a guess dressed as a measurement. Their absent pass count means
@@ -206,70 +206,12 @@ export async function backtickGuard(ctx: GuardCtx): Promise<void> {
     { detail: `${fresh.length} line(s)` });
 }
 
-// DISABLED (user directive 2026-06-24): the system no longer nags Claude at Stop
-// time for "wrote code without pulling a standard". Enforcement now happens ONLY
-// at write time via the rust edition/version checker (pre-standards.js). The
-// body below stays INTACT — flip this to true to restore the retrospective nag.
-export const STANDARDS_PULL_ENFORCEMENT = false;
-
-/**
- * Standards pull enforcement: code was written this session without pulling the
- * applicable standard. Relevance-aware — only the catalog categories the
- * written files actually NEED (language/design/cross-cutting ∩ catalog), so a
- * C++-only session in a repo with no `cpp` category yields ∅ and never nags.
- */
-export async function standardsPullGuard(ctx: GuardCtx): Promise<void> {
-  if (!STANDARDS_PULL_ENFORCEMENT || !ctx.cwd || !ctx.sessionId || envOff("DEVLOG_STANDARDS_CHECK")) return;
-  const { scanCatalog, shouldEnforceStandards, isCodeWrite, isEnforcementDisabled, inferCategories, coveredCategories } =
-    await import("./standards");
-  // Per-project opt-out (dashboard injection window writes .devlog/standards-off).
-  const disabled = isEnforcementDisabled(ctx.cwd);
-  if (disabled) await ctx.log("standards-check: disabled for this project");
-  const catalog = await scanCatalog(ctx.cwd);
-  // NOTE: since #413, -(ask:rules) pulls are deduped per turn, so no
-  // session-wide "covered" list exists anymore. Moot while this is DISABLED; if
-  // it is ever re-enabled, persist covered categories in ledger.session.
-  const served: string[] = [];
-
-  let codeWrites: ChangeItem[] = [];
-  // Only pay for the session-changes query when a block is otherwise possible.
-  if (!disabled && catalog.length && !ctx.stopHookActive) {
-    try {
-      const { items } = await sessionChanges(ctx);
-      codeWrites = items.filter(it => isCodeWrite(it.file_path || ""));
-    } catch (e) { await ctx.log(`standards-check changes error: ${(e as Error).message}`); }
-  }
-
-  const names = catalog.map((c: { category: string }) => c.category);
-  const covered = new Set(coveredCategories(served).map((c: string) => c.toLowerCase()));
-  const relevant = new Set<string>();
-  for (const it of codeWrites) {
-    for (const cat of inferCategories(it.file_path || "", names)) {
-      if (!covered.has(cat.toLowerCase())) relevant.add(cat.toLowerCase());
-    }
-  }
-
-  if (!shouldEnforceStandards({ catalogCount: catalog.length, relevantUncovered: relevant.size, stopHookActive: ctx.stopHookActive })) return;
-  const L = ctx.L;
-  const need = [...relevant].join(" ");
-  const out = [
-    "════════ DevLog Standards Check ════════",
-    L(`🛑 Code was written this session (${codeWrites.length} file(s)) without pulling the applicable standard.`,
-      `🛑 كُتب كود في هذي الجلسة (${codeWrites.length} ملف) دون سحب المعيار المنطبق عليه.`),
-    "",
-    L(`Applicable uncovered categories: ${need}`, `التصنيفات المنطبقة غير المُغطّاة: ${need}`),
-    L(`Do now: -(ask:rules) ${need}, review the code against them, and apply what's needed before finishing.`,
-      `افعل الآن: -(ask:rules) ${need}، راجع الكود ضدّها، وطبّق ما يلزم قبل الإنهاء.`),
-    L("(disable once: DEVLOG_STANDARDS_CHECK=0)", "(تعطيل لمرة واحدة: DEVLOG_STANDARDS_CHECK=0)"),
-    "════════════════════════════════════════",
-  ].join("\n");
-  // NOTE: unreachable while STANDARDS_PULL_ENFORCEMENT is false. Its counter
-  // will read zero forever — that zero means DISABLED, not "code always pulled
-  // its standard". Read it with this line, not without it.
-  await blockRecorded(ctx, "standards-check",
-    `standards-check BLOCKED: code_writes=${codeWrites.length}, relevantUncovered=${[...relevant].join(",")}`,
-    `\n${out}\n`, { detail: need });
-}
+// The retrospective standards-pull nag (standardsPullGuard, "standards-check")
+// was disabled by user directive 2026-06-24 and DELETED in the 2026-08-13 audit:
+// it depended on the per-session rules-state dir that the turn ledger replaced,
+// so the preserved body could never have worked if re-enabled. Standards
+// enforcement happens at write time only (pre-standards.js WRITE_CHECKERS).
+// Git history keeps the body.
 
 const MANIFEST = /(?:^|[\\/])(Cargo\.toml|package\.json|go\.mod|pyproject\.toml|requirements\.txt|composer\.json)$/i;
 
@@ -508,7 +450,6 @@ export async function runTurnGuards(ctx: GuardCtx): Promise<void> {
   const guards: [string, (c: GuardCtx) => Promise<void>][] = [
     ["near-miss", nearMissGuard],
     ["backtick-nudge", backtickGuard],
-    ["standards-check", standardsPullGuard],
     ["dep-freshness", depFreshnessGuard],
     ["untagged-guard", untaggedSessionGuard],
     // Last: it asks for MORE writing, so everything that reports a mistake in

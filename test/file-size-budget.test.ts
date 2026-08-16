@@ -34,8 +34,10 @@ const GRANDFATHERED: Record<string, number> = {
   // header was unaddable without this. data.ts took the other route in the same
   // pass — it was split (tag semantics → open-items.ts) and needed no raise,
   // which is the preferred move whenever the file has a real seam.
-  "analyze.ts": 934,   // ratcheted 984 → 934: describeFile moved to file-purpose.ts beside the header extractor that now precedes it
-  "export.ts": 858,    // ratcheted 860 → 858: the pattern-guessed project description died with #791
+  "analyze.ts": 940,   // 934 → 940 for #906: L(en, ar) pairs on describeFn/threads — zero new logic (same disclosed exception as export.ts/release-html.ts below)
+  "export.ts": 880,    // raised 858 → 880 for #892: every DEVLOG_STATUS/GITHUB label now carries an en+ar pair via L() — second-language strings, zero new logic
+  // release-html.ts graduated 2026-08-14: the C5 dl-theme extraction dropped it
+  // to 724, back under DEFAULT_MAX — its #891 raise (800 → 820) is retired.
 };
 
 // R3 #5: the dashboard JS was outside the budget and quietly re-ran the
@@ -50,9 +52,10 @@ const GRANDFATHERED_ASSETS: Record<string, number> = {
 // H4: the repo's biggest file lived at the ROOT, outside every suite — the
 // scope was src/ + assets/ only. Root .ts/.js (the hook entrypoints) now
 // ratchet like everything else.
-const GRANDFATHERED_ROOT: Record<string, number> = {
-  "parse-tags.ts": 1017,         // ratcheted 1872 → 1269 (pull commands → hook-asks.ts + hook-ask-rows.ts) → 1017 (the five turn guards → hook-guards.ts). What's left is the tag pipeline itself; decompose that before adding to this file again.
-};
+// parse-tags.ts GRADUATED (#897): 1872 → 1269 (pull commands → hook-asks.ts +
+// hook-ask-rows.ts) → 1017 (the five turn guards → hook-guards.ts) → 674 (the
+// 15 response blocks → hook-response-rows.ts) — now under the default ceiling.
+const GRANDFATHERED_ROOT: Record<string, number> = {};
 
 const lineCount = (dir: string, file: string) => readFileSync(join(dir, file), "utf8").split("\n").length;
 

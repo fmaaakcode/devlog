@@ -1,7 +1,19 @@
 // ES module since the i18n extraction (#708): UI strings come from the shared
 // dictionary; stack-map.html loads this with type="module".
 import { t as tr, applyI18n } from './dashboard-i18n.js';
+// HTML-escape untrusted strings before innerHTML — DEVLOG_STACK.md is
+// project-controlled (security audit R2 #1 / defense D2). Shared single copy
+// since audit C2.
+import { esc } from './dom-safe.js';
+// Canvas colors can't use var() syntax — resolve the page's :root tokens once
+// at load (audit C1); the fallbacks mirror stack-map.html's definitions.
+import { cssVar } from './theme.js';
 applyI18n();
+
+const C_BG = cssVar('--bg', '#161718');
+const C_BG2 = cssVar('--bg2', '#1B1C1D');
+const C_TEXT = cssVar('--text', '#EEEEEE');
+const C_GOLD = cssVar('--gold', '#ffd166');
 
 const params = new URLSearchParams(location.search);
 const project = params.get('project');
@@ -127,7 +139,7 @@ function sizeFor(importance) {
 function nodeColors(n, dim) {
   const alpha = dim ? '55' : 'ff';
   const hue = clusterColors.get(n.group) || CLUSTER_OTHER;
-  return { border: hue + alpha, bg: `#1B1C1D${alpha}`, text: `#EEEEEE${alpha}` };
+  return { border: hue + alpha, bg: `${C_BG2}${alpha}`, text: `${C_TEXT}${alpha}` };
 }
 
 // BFS from the entry points; nodes the walk never reaches live in the side
@@ -737,7 +749,7 @@ function drawNodeDot(n, dim) {
   ctx.fill();
   ctx.restore();
   if (isMatch || n === focusRoot || n === hovered) {
-    ctx.strokeStyle = isMatch ? '#ffd166' : '#ffffff';
+    ctx.strokeStyle = isMatch ? C_GOLD : '#ffffff';
     ctx.lineWidth = 2 / view.k;
     ctx.beginPath();
     ctx.arc(n.x, n.y, r + 2 / view.k, 0, Math.PI * 2);
@@ -745,7 +757,7 @@ function drawNodeDot(n, dim) {
   }
   const named = view.k >= DOTS_K && dotLabelSet.has(n);
   if ((named || isMatch) && !dim) {
-    ctx.fillStyle = isMatch ? '#ffd166' : '#c9c9c9';
+    ctx.fillStyle = isMatch ? C_GOLD : '#c9c9c9';
     ctx.font = `${11 / view.k}px Segoe UI, Tahoma, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
@@ -755,7 +767,7 @@ function drawNodeDot(n, dim) {
 
 function render() {
   const rect = canvas.getBoundingClientRect();
-  ctx.fillStyle = '#161718';
+  ctx.fillStyle = C_BG;
   ctx.fillRect(0, 0, rect.width, rect.height);
 
   ctx.save();
@@ -829,11 +841,11 @@ function render() {
     if (isMatch) {
       // Search glow (#390) — gold, distinct from the green activity glow and
       // every cluster hue.
-      ctx.shadowColor = '#ffd166';
+      ctx.shadowColor = C_GOLD;
       ctx.shadowBlur = 16;
     }
     ctx.fillStyle = isHover ? '#242526' : c.bg;
-    ctx.strokeStyle = (isHover || n === focusRoot) ? '#ffffff' : (isMatch ? '#ffd166' : c.border);
+    ctx.strokeStyle = (isHover || n === focusRoot) ? '#ffffff' : (isMatch ? C_GOLD : c.border);
     ctx.lineWidth = (isHover || n === focusRoot || isMatch) ? 1.8 : 1.2;
     ctx.beginPath();
     if (ctx.roundRect) ctx.roundRect(x, y, w, h, 7);
@@ -862,7 +874,7 @@ function render() {
       if (ctx.roundRect) ctx.roundRect(bx, by, tw, 14, 7);
       else ctx.rect(bx, by, tw, 14);
       ctx.fill();
-      ctx.fillStyle = '#161718';
+      ctx.fillStyle = C_BG;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(txt, n.x, by + 7);
@@ -885,14 +897,6 @@ function pickNode(mx, my) {
 function getMouse(e) {
   const rect = canvas.getBoundingClientRect();
   return { x: e.clientX - rect.left, y: e.clientY - rect.top };
-}
-
-// HTML-escape untrusted strings before innerHTML. DEVLOG_STACK.md is
-// project-controlled, so a malicious repo could ship an <img onerror> payload
-// in a file path/description (security audit R2 #1 / defense D2).
-function esc(s) {
-  return String(s ?? "").replace(/[&<>"']/g, c =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
 // Screen (CSS px) → world coordinates, accounting for pan/zoom.

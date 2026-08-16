@@ -154,6 +154,9 @@ export interface TagEntry {
    *  release bumped it. Lets a rollback restore the previous version even when
    *  no earlier release tag exists (QA #2). */
   prevVersion?: string;
+  /** Story tags only (narrative layer P2): the item numbers the SAME batch
+   *  closed — the work this story narrates. */
+  relatedNums?: number[];
   /** Problem reports only (#556): the CLOSED report this one likely reopens —
    *  a fix that didn't hold, detected at ingest (reopen.ts) and stored so
    *  recurrence is queryable data (retro ⟲, dashboard badge). Advisory. */
@@ -282,12 +285,28 @@ export interface DescendantProcess {
   orphaned: boolean;
 }
 
+// Narrative layer P1: the user's own words that opened a captured turn — the
+// "why" the work tags never carry. One row per capture batch (never per tag);
+// `tagIds` links it to the tags that batch stored. Verbatim but CAPPED at the
+// hook (700 chars) and re-capped at storage; only type:"text" user blocks are
+// ever extracted, so tool results and attachments can't ride in. Lives in the
+// meta store like worklog, FIFO-capped — see routes-tags.ts MAX_PROMPTS.
+export interface PromptEntry {
+  id: string;
+  project: string;
+  session_id?: string;
+  text: string;
+  tagIds: string[];
+  timestamp: string;
+}
+
 export interface DevLogData {
   projects: Record<string, ProjectProfile>;
   events: EventEntry[];
   tags: TagEntry[];
   plans: PlanEntry[];
   worklog: WorklogEntry[];
+  prompts?: PromptEntry[];
   injections: InjectionEntry[];
   /** Global injection settings — stored as DELTAS from DEFAULT_INJECTION_CONFIG
    *  (#810), never the merged blob: an absent key follows the code default and

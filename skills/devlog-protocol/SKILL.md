@@ -42,6 +42,7 @@ These hooks enforce the rules mechanically — you don't need to remember, the h
 | `-(note)` | Observation worth keeping |
 | `-(decision)` | Architectural decision + rationale — name the rejected alternative and why it lost; a wider trade-off study belongs in `-(doc:comparison)` |
 | `-(insight)` | Root-cause finding from investigation |
+| `-(story)` | The closing batch's narrative — TURNING POINTS only (a failed approach, a change of direction, a deliberate deferral), never a re-list of the tags. One per batch, ≤1200 chars. A soft nudge asks for it once after a batch that closes ≥2 items or ships a release; it is stamped with an evidence verdict against the whole session trace and linked (`relatedNums`) to the items the batch closed. Surfaces: release page, `ask:why` dossier, `ask:recent`. |
 | `-(undo) <text>` | Delete the most recent tag whose content includes `<text>` |
 | `-(release) summary` | Release — DevLog auto-detects the bump type **and** computes the number. Force a type with `-(release:patch\|minor\|major)`, or a number with `-(release) vX.Y.Z` — never both: a type tag whose reason starts with a version is rejected wholesale. **Only when the user explicitly asks.** |
 | `-(doc:TYPE) name\n<markdown>` | Generate `.md` + `.html` (see Doc tags) |
@@ -52,7 +53,7 @@ Token-saving: if SessionStart context already shows `desc:` or `about: yes`, don
 
 One concept per tag. Headline-style tags (`todo`, `done`, `dropped`, `bug found`, `bug fix`, `security`, `security fix`, `note`) take a single ≤120-char line.
 
-**Forbidden inside any tag content:** nested bullets (`\n- `), headings (`\n##`), questions (`?`), trailing planning prose. Multiple items → multiple tags. Need to ask the user → ask in the response, never inside a tag. Multi-line *body* is OK only for: `built`, `refactor`, `update`, `decision`, `insight`, `about`, `doc:*`.
+**Forbidden inside any tag content:** nested bullets (`\n- `), headings (`\n##`), questions (`?`), trailing planning prose. Multiple items → multiple tags. Need to ask the user → ask in the response, never inside a tag. Multi-line *body* is OK only for: `built`, `refactor`, `update`, `decision`, `insight`, `story`, `about`, `doc:*`.
 
 ## Closure is mandatory
 
@@ -236,6 +237,18 @@ Backfill: when `ask:deps` lists libraries with no purpose, draft one line each, 
 ## Recall (`ask:search`)
 
 The log answers back: lexical search (BM25, Arabic+English normalization) over every stored tag — decisions, insights, notes, builds, closed bugs *with their fixes*. Prefer it over re-deriving a past decision or re-investigating a solved problem. Reply comes back in the same turn; NOT logged as a tag.
+
+## The time door (`ask:recent`)
+
+Every other pull asks by *subject* (a file, a question, an inventory); this one asks by *time*: "what happened last?". It serves the previous session(s)' digest — tags in order, files touched with edit sizes, commands run and which failed — with the **asking session always excluded** (its work is already in your context). Use it when picking up earlier work or returning after a gap, instead of reading raw store data. Reply comes back in the same turn; NOT logged as a tag.
+
+| Command | Window |
+|---|---|
+| `-(ask:recent)` | The last session |
+| `-(ask:recent) 3` | The last 3 sessions (max 10) |
+| `-(ask:recent) 7d` | Sessions of the last 7 days (max 90d, 10 sessions) |
+
+It is a digest, not a dump: per session at most 20 tags and 15 files are listed, with `+N` overflow counts, and a footer points to `-(ask:why)` / `-(ask:search)` for depth.
 
 | Command | Use |
 |---|---|

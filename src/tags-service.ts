@@ -13,6 +13,7 @@ import type { DevLogData, PlanStep, TagEntry } from "./types";
 import {
   normalizeTagContent, assignNum, openTodos, openBugs, openSecurity, openPlanSteps,
   CLOSER_KINDS, OPENER_TO_CLOSER, NUMBERED_OPENABLE, singleHashNum, leadingNums, isStepClosed, inflightClosures,
+  latestCloserTs,
 } from "./data";
 import { appendDoc, writeDoc, applyTaskCompletion, applyTaskDrop, extractCheckboxes } from "./doc-store";
 import { writeReleaseHtml, parseVersion, parseVersionMarker, isRealVersion } from "./release-html";
@@ -123,7 +124,10 @@ export async function handleDocTag(
 // One source with the parser (#486/#487 duplicate): the same tags the parser
 // cuts at end-of-line are the ones ingest collapses to a single capped line.
 const HEADLINE_TAGS = SINGLE_LINE_TAGS;
-const BODY_TAGS = new Set(["built", "refactor", "decision", "insight", "about"]);
+const BODY_TAGS = new Set(["built", "refactor", "decision", "insight", "about", "story"]);
+// Narrative layer P2: a story is the batch's turning points, not a report — the
+// cap is what keeps it a story instead of a second changelog.
+const STORY_MAX = 1200;
 
 /**
  * Headline tags collapse to a single ≤120-char line (everything after the first
@@ -132,12 +136,13 @@ const BODY_TAGS = new Set(["built", "refactor", "decision", "insight", "about"])
  */
 export function enforceAtomicContent(tag: string, content: string): string {
   if (HEADLINE_TAGS.has(tag)) {
-    const firstLine = content.split(/\r?\n/)[0].trim();
-    return firstLine !== content ? firstLine.slice(0, 120) : content;
+    return content.split(/\r?\n/)[0].trim().slice(0, 120);
   }
   if (BODY_TAGS.has(tag) && tag !== "about") {
     const m = content.match(/\r?\n[ \t]*(?:-[ \t]|#{1,6}[ \t])/);
-    if (m && typeof m.index === "number") return content.slice(0, m.index).trimEnd();
+    let out = m && typeof m.index === "number" ? content.slice(0, m.index).trimEnd() : content;
+    if (tag === "story" && out.length > STORY_MAX) out = `${out.slice(0, STORY_MAX).trimEnd()}…`;
+    return out;
   }
   return content;
 }
@@ -180,21 +185,18 @@ export function resolveClosureNumber(tag: string, content: string, data: DevLogD
   if (!closerOpeners) return content;
   const num = singleClosureNum(content);
   if (num === null) return content;
-  const fixedTexts = new Set(
-    data.tags
-      .filter(t => t.project === project && (
-        (tag === "done" || tag === "dropped") ? t.tag === "done" || t.tag === "dropped" :
-        tag === "bug fix" ? t.tag === "bug fix" :
-        tag === "security fix" ? t.tag === "security fix" : false
-      ))
-      .map(t => normalizeTagContent(t.content)),
-  );
-  const found = data.tags.find(t =>
-    t.project === project &&
-    typeof t.num === "number" && t.num === num &&
-    closerOpeners.includes(t.tag) &&
-    !fixedTexts.has(normalizeTagContent(t.content)),
-  );
+  // Order-aware like open-items (#743): a closer only shadows openers at or
+  // before its own timestamp, so a re-reported item after its fix stays
+  // resolvable by its fresh number instead of being born closed.
+  const closers = (tag === "done" || tag === "dropped") ? ["done", "dropped"]
+    : tag === "bug fix" ? ["bug fix"]
+    : tag === "security fix" ? ["security fix"] : [];
+  const closedAt = latestCloserTs(data.tags.filter(t => t.project === project), closers);
+  const found = data.tags.find(t => {
+    if (t.project !== project || typeof t.num !== "number" || t.num !== num || !closerOpeners.includes(t.tag)) return false;
+    const ts = closedAt.get(normalizeTagContent(t.content));
+    return ts === undefined || ts < (t.timestamp || "");
+  });
   if (found) return found.content;
   if (tag === "done" || tag === "dropped") {
     for (const plan of data.plans) {
@@ -767,12 +769,15 @@ export async function syncPlanSteps(tag: string, content: string, data: DevLogDa
     let touched = 0;
     for (const step of [...targets]) {
       try {
+        // Same isDocPlan guard as mode 1: a native ~/.claude/plans file must
+        // never reach applyDocMutation — it only failed by accident before
+        // (access() on a non-.devlog path), not by design.
         if (tag === "done") {
           step.completed = true;
-          await applyTaskCompletion(projectPath, project, plan.file_path, step.text, true);
+          if (isDocPlan) await applyTaskCompletion(projectPath, project, plan.file_path, step.text, true);
         } else {
           step.dropped = true;  // archive in place, don't splice (#410)
-          await applyTaskDrop(projectPath, project, plan.file_path, step.text);
+          if (isDocPlan) await applyTaskDrop(projectPath, project, plan.file_path, step.text);
         }
         touched++;
         phaseClosed.push({ ...(typeof step.num === "number" ? { num: step.num } : {}), text: step.text });

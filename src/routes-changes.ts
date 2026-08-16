@@ -12,6 +12,7 @@ import { isPathInside, makeAbsenceJudge, normalizeSlashes } from "./path-utils";
 import { diskExists } from "./disk-probe";
 import { buildFileStory, fileMatches } from "./file-story";
 import { buildFileWhy } from "./file-why";
+import { buildRecent } from "./recent";
 import { resolveProjectFor } from "./project-resolve";
 import { filePurposeFromHeader } from "./file-purpose";
 import { listArchiveMonths, readArchiveMonth } from "./event-archive";
@@ -100,9 +101,19 @@ export function makeChangesRoutes(): Record<string, unknown> {
           }
           archived.reverse();
         }
+        // Narrative layer P1: each tag row carries the user prompt of the batch
+        // that stored it, when one was captured — the story modal's "why".
+        const promptByTagId = new Map<string, string>();
+        for (const p of data.prompts || []) {
+          if (p.project !== project) continue;
+          for (const tid of p.tagIds) promptByTagId.set(tid, p.text);
+        }
         return Response.json({
           file: story.file,
-          tags: story.tags,
+          tags: story.tags.map(t => {
+            const prompt = promptByTagId.get(t.id);
+            return prompt ? { ...t, prompt } : t;
+          }),
           events: story.events.map(summarizeChange),
           archived: archived.map(summarizeChange),
         });
@@ -156,6 +167,26 @@ export function makeChangesRoutes(): Record<string, unknown> {
       },
     },
 
+    // `ask:recent` (plan narrative-layer P3) — the time door: the previous
+    // session(s)' digest. Every other pull asks by subject; this one asks by
+    // time. `exclude` is the ASKING session, so a mid-session ask never gets
+    // its own work back as "the last session".
+    // GET /api/recent?cwd=X[&sessions=N|&days=N][&exclude=sid]
+    "/api/recent": {
+      async GET(req: ApiReq) {
+        const url = new URL(req.url);
+        const named = url.searchParams.get("project") || "";
+        const cwd = url.searchParams.get("cwd") || "";
+        if (!named && !cwd) return Response.json({ error: "project or cwd required" }, { status: 400 });
+        const data = await loadData();
+        const project = named || resolveProjectFor(data, cwd).name;
+        const sessions = Number(url.searchParams.get("sessions")) || undefined;
+        const days = Number(url.searchParams.get("days")) || undefined;
+        const excludeSession = url.searchParams.get("exclude") || undefined;
+        return Response.json(buildRecent(data, project, { sessions, days, excludeSession }));
+      },
+    },
+
     // GET /api/changes/last?project=X&n=5
     "/api/changes/last": {
       async GET(req: ApiReq) {
@@ -206,8 +237,16 @@ export function makeChangesRoutes(): Record<string, unknown> {
         // Session tag count rides along for the Stop hook's untagged-session
         // guard — one call answers both "what was written" and "was any of it
         // ever declared", instead of a second session-state endpoint.
-        const tagCount = (data.tags || []).filter(t => t.session_id === sessionId).length;
-        return Response.json({ items, count: items.length, tagCount });
+        // knowledgeTags (narrative layer P4): how many of them carry a WHY
+        // (decision/insight/story) — the demolition-why whisper keys on zero.
+        const KNOWLEDGE = new Set(["decision", "insight", "story"]);
+        let tagCount = 0, knowledgeTags = 0;
+        for (const t of data.tags || []) {
+          if (t.session_id !== sessionId) continue;
+          tagCount++;
+          if (KNOWLEDGE.has(t.tag)) knowledgeTags++;
+        }
+        return Response.json({ items, count: items.length, tagCount, knowledgeTags });
       },
     },
   };

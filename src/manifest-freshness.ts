@@ -53,11 +53,17 @@ export async function firstChangedSince(
   statMs: (path: string) => Promise<number | null>,
 ): Promise<string | null> {
   if (!Number.isFinite(sinceMs)) return null;
+  // Stats fan out WITHIN a directory (audit 2026-08-14 E6): one folder's ~16
+  // candidate files stat concurrently instead of one-by-one, while directories
+  // stay sequential to keep the early exit — a hit in the root (the common
+  // case) skips the eight nested-layout folders entirely. The returned culprit
+  // is still the first changed file in FRESHNESS_FILES order.
   for (const dir of freshnessDirs(root)) {
-    for (const f of FRESHNESS_FILES) {
-      const p = join(dir, f);
-      const m = await statMs(p);
-      if (m !== null && m > sinceMs) return p;
+    const paths = FRESHNESS_FILES.map(f => join(dir, f));
+    const mtimes = await Promise.all(paths.map(p => statMs(p)));
+    for (let i = 0; i < paths.length; i++) {
+      const m = mtimes[i];
+      if (m !== null && m > sinceMs) return paths[i];
     }
   }
   return null;

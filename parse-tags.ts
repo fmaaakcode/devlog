@@ -2,13 +2,14 @@
 // DevLog Stop Hook - parses tags from response + syncs plan files
 import { readdir, readFile, appendFile, mkdir, stat, rename } from "node:fs/promises";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { parseTags } from "./src/tag-parser.ts";
-import { entryKey, loadLedger, saveLedger, sweepTurnState } from "./src/turn-ledger.ts";
+import { claudeConfigDir } from "./src/path-utils.ts";
+import { entryKey, loadLedger, saveLedger, sweepAckDirs, sweepLegacyStateDirs, sweepTurnState } from "./src/turn-ledger.ts";
 import { makeTagQueue, isPermanentReject } from "./src/tag-queue.ts";
 import { ASK_ROWS, serveAsks } from "./src/hook-ask-rows.ts";
 import { runTurnGuards } from "./src/hook-guards.ts";
 import { makeBlockChannel } from "./src/block-channel.ts";
+import { runResponseRows } from "./src/hook-response-rows.ts";
 
 // Single source for the server base — follows DEVLOG_PORT like data.ts /
 // doctor.ts / pre-release-hook.js instead of hardcoding 7777 in six places (R3 P5).
@@ -32,7 +33,7 @@ const TURN_STATE_DIR = join(LOG_DIR, "turn-state");
 await mkdir(LOG_DIR, { recursive: true });
 await mkdir(QUEUE_DIR, { recursive: true });
 await mkdir(TURN_STATE_DIR, { recursive: true });
-await sweepTurnState(TURN_STATE_DIR);
+await Promise.all([sweepTurnState(TURN_STATE_DIR), sweepLegacyStateDirs(LOG_DIR), sweepAckDirs(LOG_DIR)]);
 
 // Debug logging is OFF by default (#devops-F2): it ran on EVERY Stop hook with
 // no gate and no rotation, so parse-tags.debug.log crept to 4+MB unbounded.
@@ -95,13 +96,17 @@ try {
 // stored as a second tag; same #486/#487 class the single-line cut fixed for
 // headline tags). Callers parse tags per segment and join only for line-anchored
 // command scans (ask:*/audit), which a segment boundary can't split.
-async function readTurnFromTranscript(transcriptPath: string): Promise<{ text: string; turnId: string; segments: { text: string; model: string }[] }> {
-  if (!transcriptPath) return { text: "", turnId: "", segments: [] };
+async function readTurnFromTranscript(transcriptPath: string): Promise<{ text: string; turnId: string; segments: { text: string; model: string }[]; userPrompt: string }> {
+  if (!transcriptPath) return { text: "", turnId: "", segments: [], userPrompt: "" };
   try {
     const content = await readFile(transcriptPath, "utf-8");
     const lines = content.split("\n").filter(Boolean);
     let segments: { text: string; model: string }[] = [];
     let turnId = "";
+    // Narrative layer P1: the user's verbatim words that opened this turn — the
+    // stored "why" the work tags never carry. Only type:"text" blocks are read
+    // (the same filter as below), so tool results and attachments can't ride in.
+    let userPrompt = "";
     for (const line of lines) {
       let obj: any;
       try { obj = JSON.parse(line); } catch { continue; }
@@ -134,6 +139,7 @@ async function readTurnFromTranscript(transcriptPath: string): Promise<{ text: s
           }
           const hashed = userText ? `h${Bun.hash(userText).toString(36)}` : "";
           turnId = String(obj.uuid || obj.timestamp || hashed || turnId || "");
+          if (userText.trim()) userPrompt = userText.trim();
         }
         continue;
       }
@@ -149,14 +155,14 @@ async function readTurnFromTranscript(transcriptPath: string): Promise<{ text: s
       if (seg.trim()) segments.push({ text: seg.trim(), model: String(obj.message?.model || "") });
     }
     // #760: BLANK-line join — command bodies capture until a blank line, so a \n join glued continuation prose onto a prior segment's trailing body (grown ledger key → duplicate rule:add).
-    return { text: segments.map(s => s.text).join("\n\n").trim(), turnId, segments };
+    return { text: segments.map(s => s.text).join("\n\n").trim(), turnId, segments, userPrompt };
   } catch (e) {
     await log(`transcript read error: ${(e as Error).message}`);
-    return { text: "", turnId: "", segments: [] };
+    return { text: "", turnId: "", segments: [], userPrompt: "" };
   }
 }
 
-const { text: transcriptMsg, turnId, segments } = await readTurnFromTranscript(data.transcript_path);
+const { text: transcriptMsg, turnId, segments, userPrompt } = await readTurnFromTranscript(data.transcript_path);
 const msg = transcriptMsg || data.last_assistant_message || "";
 // Tag extraction runs per assistant message (fallback: the whole msg when the
 // transcript wasn't readable) — see readTurnFromTranscript on why a tag body
@@ -437,6 +443,38 @@ if (msg) {
       }
     }
 
+    // Story nudge (plan narrative-layer P2, same shape as the feature nudge):
+    // a batch that closes a RUN of items (≥2) is a chapter ending, and the tags
+    // alone record WHAT happened, never the turning points between them. One
+    // soft block asks for the -(story); re-emitting the same lines plus (or
+    // without) it passes. Closers-only on purpose: a bare -(release) narrates
+    // nothing itself (its work batches were nudged already), and blocking every
+    // release broke the whole release flow's one-block contract.
+    // Mute: DEVLOG_STORY_NUDGE=0.
+    const STORY_CLOSERS = new Set(["done", "bug fix", "bug fix:interim", "security fix"]);
+    const storyCloserCount = entries.filter(e => STORY_CLOSERS.has(e.tag)).length;
+    if (cwd && process.env.DEVLOG_STORY_NUDGE !== "0"
+        && storyCloserCount >= 2
+        && !entries.some(e => e.tag === "story")
+        && await shouldServeAsk("story-nudge")) {
+      await markAskServed("story-nudge");
+      const out = [
+        "════════ DevLog Story Nudge ════════",
+        L(`This batch ${releaseEntry ? "ships a release" : `closes ${storyCloserCount} item(s)`} — the tags say WHAT, nothing says HOW it went.`,
+          `هذه الدفعة ${releaseEntry ? "تشحن إصدارًا" : `تغلق ${storyCloserCount} عناصر`} — التاقات تقول «ماذا»، ولا شيء يقول «كيف جرت».`),
+        L("If the road had turning points worth keeping — an approach that failed, a change of direction, a deliberate deferral — record them now as ONE story (≤1200 chars, turning points only, never a re-list of the tags):",
+          "إن كان للطريق منعطفات تستحق الحفظ — نهج فشل، تغيير اتجاه، تأجيل متعمد — سجّلها الآن قصةً واحدة (≤1200 حرف، المنعطفات فقط، لا إعادة سرد للتاقات):"),
+        "  -(story) <النص>",
+        L("then re-emit the same closing lines. A straight road with no turns? Just re-emit them without a story.",
+          "ثم أعد أسطر الإغلاق نفسها. طريق مستقيم بلا منعطفات؟ أعد الأسطر كما هي بلا قصة."),
+        L("(Nothing was recorded yet. This whisper fires once per turn — it never blocks twice.)",
+          "(لم يُسجَّل شيء بعد. هذه الهمسة تظهر مرة واحدة في الدور — لا تعيق مرتين.)"),
+        "════════════════════════════════════",
+      ].join("\n");
+      await log(`story-nudge BLOCKED once: closers=${storyCloserCount}, release=${!!releaseEntry}`);
+      await blockContinue(`\n${out}\n`, "story-nudge");
+    }
+
     // The POST itself is unconditional (an all-echo continuation sends an empty
     // batch — a server-side no-op) so the queue drain, response handling and
     // broadcast cadence stay byte-identical to the pre-ledger hook.
@@ -450,7 +488,14 @@ if (msg) {
     // NEVER-applied queued batch still derives its version from the live log at
     // drain time (#592) — the fingerprint only suppresses true replays.
     const batchId = `b${Bun.hash(JSON.stringify([sessionId, turnId, freshEntries.map(e => [e.tag, e.content, e.breaking ?? false])])).toString(36)}`;
-    const body = JSON.stringify({ cwd, session_id: sessionId, entries: freshEntries, batch_id: batchId });
+    // Narrative layer P1: the turn-opening user words ride the batch — stored
+    // ONCE per batch server-side (never per tag). Head-capped: a prompt's ask
+    // is at its start, unlike tag context whose summary sits at the tail.
+    // Opt out with DEVLOG_PROMPT_CAPTURE=0.
+    const PROMPT_MAX = 700;
+    const prompt = process.env.DEVLOG_PROMPT_CAPTURE === "0" ? "" :
+      (userPrompt.length > PROMPT_MAX ? `${userPrompt.slice(0, PROMPT_MAX)}…` : userPrompt);
+    const body = JSON.stringify({ cwd, session_id: sessionId, entries: freshEntries, batch_id: batchId, ...(prompt ? { user_prompt: prompt } : {}) });
     // Drain any prior queued tags first (preserves chronological order).
     await flushTagQueue();
     try {
@@ -462,7 +507,6 @@ if (msg) {
       });
       const respBody = await r.text();
       await log(`POST result: ${r.status} ${respBody.slice(0, 200)}`);
-      // #768: a definitive 4xx must not enter the queue — that's how poison got in.
       // #768: a definitive 4xx must not enter the QUEUE — that's how poison got
       // in. But dropping it outright (#862) left no copy anywhere and told
       // nobody: the response announced work the log never received. So park it
@@ -480,362 +524,18 @@ if (msg) {
         // can continue post-release steps (e.g. build) WITHOUT stopping to ask
         // the user. The server only returns a result for a newly-stored release
         // tag — a re-emit dedups to null, so this block fires once (no loop).
+        // The 15-handler response-block chain that lived here is now the
+        // RESPONSE_ROWS table in src/hook-response-rows.ts (#897): texts
+        // transferred verbatim (pinned by test/response-blocks-pin.test.ts
+        // and the #898 replay), order preserved — a blocking row exits the
+        // process, so info rows pushed before it ride out with the block.
         try {
           const resp = JSON.parse(respBody);
-          // Release downgrade rejected wholesale: the release was NOT NEWER than
-          // the latest one (older = typo, equal = duplicate tag that splits the
-          // range material, #567), so the server stored nothing (no
-          // tag/HTML/index/bump). Tell Claude with a block so it re-issues a
-          // correct version.
-          if (resp.releaseDowngrade) {
-            const dg = resp.releaseDowngrade;
-            const out = [
-              "════════ DevLog Release Rejected ════════",
-              L(`🛑 Version ${dg.version} is not newer than the latest release (${dg.latest}) — rejected entirely.`,
-                `🛑 الإصدار ${dg.version} ليس أحدث من آخر إصدار (${dg.latest}) — رُفض بالكامل.`),
-              L("Nothing was recorded: no tag, no HTML, no index, no version bump.",
-                "لم يُسجَّل أي شيء: لا وسم، لا HTML، لا index، ولا رفع نسخة."),
-              "",
-              L(`Release a version newer than ${dg.latest}, or double-check the number.`,
-                `أصدر نسخة أحدث من ${dg.latest}، أو تأكّد من الرقم.`),
-              "═════════════════════════════════════════",
-            ].join("\n");
-            await log(`release-downgrade rejected: ${dg.version} <= ${dg.latest}`);
-            await blockContinue(`\n${out}\n`, "release-downgrade");
-          }
-          // Type+number conflict: -(release:minor) v1.102.0 — the intent tag
-          // treats the whole reason as prose, so the number would be silently
-          // swallowed and a DIFFERENT version recorded (field incident: user
-          // wrote v1.102.0, DevLog recorded v1.104.0, rollback needed). The
-          // server stored nothing; block so Claude re-emits ONE valid form.
-          if (resp.releaseIntentConflict) {
-            const c = resp.releaseIntentConflict;
-            const out = [
-              "════════ DevLog Release Rejected ════════",
-              L(`🛑 -(release:${c.declared}) starts with an explicit version (${c.version}) — a type tag never accepts a number and would silently ignore it. Nothing was recorded.`,
-                `🛑 -(release:${c.declared}) يبدأ برقم نسخة صريح (${c.version}) — تاق النوع لا يقبل رقمًا وكان سيتجاهله بصمت. لم يُسجَّل أي شيء.`),
-              "",
-              L("Re-emit exactly ONE of the two forms:", "أعد الإصدار بإحدى الصيغتين فقط:"),
-              `  -(release:${c.declared}) <reason>${L("      → DevLog computes the next number", "      → DevLog يحسب الرقم التالي")}`,
-              `  -(release) ${c.version} — <reason>${L("  → your number is honored", "  → رقمك يُنفَّذ")}`,
-              "═════════════════════════════════════════",
-            ].join("\n");
-            await log(`release-intent-conflict rejected: ${c.declared} + ${c.version}`);
-            await blockContinue(`\n${out}\n`, "release-intent");
-          }
-          // Open-items guard fired on the SERVER (defense in depth). Reached when
-          // the pre-send guard above was bypassed — server unreachable at pre-check
-          // (fail-open), un-numbered open items, or the hook not wired. The server
-          // stored nothing; tell Claude to close the items, then re-release.
-          if (resp.releaseBlocked) {
-            const items = resp.releaseBlocked.openItems || [];
-            const byTag: Record<string, any[]> = {};
-            for (const it of items) {
-              byTag[it.tag] ||= [];
-              byTag[it.tag].push(it);
-            }
-            const out = ["════════ DevLog Release Blocked ════════",
-              L(`🛑 ${items.length} open item(s) — the release was NOT recorded (no tag, no HTML, no version bump):`,
-                `🛑 ${items.length} مهمة مفتوحة — لم يُسجَّل الإصدار (لا وسم، لا HTML، لا رفع نسخة):`)];
-            for (const [tag, arr] of Object.entries(byTag)) {
-              out.push(`  ${tag} (${arr.length}):`);
-              for (const it of arr.slice(0, 20)) {
-                const ref = typeof it.num === "number" ? `#${it.num}` : `«${(it.content || "").slice(0, 40)}»`;
-                const plan = it.planTitle ? ` [plan: ${it.planTitle}]` : "";
-                out.push(`    · ${ref} ${(it.content || "").slice(0, 80)}${plan}`);
-              }
-              if (arr.length > 20) out.push(L(`    ... +${arr.length - 20} more`, `    ... +${arr.length - 20} أخرى`));
-            }
-            out.push("", L("Close every item with -(done)/-(dropped)/-(bug fix)/-(security fix) (by number, or by text for items with no #N),",
-              "أَغلِق كل عنصر بـ -(done)/-(dropped)/-(bug fix)/-(security fix) (بالرقم، أو بالنص للعناصر بلا #N)،"),
-              L("then re-emit -(release). Or bypass with DEVLOG_RELEASE_GUARD=0.",
-                "ثم أعد إصدار -(release). أو تجاوز بـ DEVLOG_RELEASE_GUARD=0."),
-              "═════════════════════════════════════════");
-            await log(`release-blocked (server): open_items=${items.length}`);
-            await blockContinue(`\n${out.join("\n")}\n`, "release-blocked");
-          }
-          // Release rollback outcome (QA #2): undoing a release reverses its
-          // effects; report them so the manifest state is never silently out of
-          // sync. Informational — no block.
-          if (resp.rollback) {
-            const rb = resp.rollback;
-            const manifest = rb.restoredTo
-              ? L(`manifest restored to ${rb.restoredTo}`, `استُرجِع المانيفست إلى ${rb.restoredTo}`)
-              : L("manifest not restored (no prior reference) — check manually if needed",
-                  "لم يُسترجَع المانيفست (لا مرجع سابق) — تحقّق يدوياً إن لزم");
-            feedback.push(
-              `\n[devlog rollback]\n${L(`↩ Release ${rb.version} removed`, `↩ أُزيل الإصدار ${rb.version}`)}: ${manifest}` +
-              `${rb.htmlDeleted ? L(", page deleted", "، حُذِفت الصفحة") : ""}${rb.indexRebuilt ? L(", index rebuilt", "، أُعيد بناء الفهرس") : ""}.\n`);
-            await log(`rollback: ${rb.version} restoredTo=${rb.restoredTo}`);
-          }
-          // Positive closure confirmation (#228): echo what each `#N` closure
-          // actually closed, text included. Informational only — no block, so
-          // it never forces an extra turn; it just surfaces alongside any other
-          // feedback. The text lets Claude catch a wrong-but-compatible number
-          // (closed #229 when #228 was meant — a slip the mismatch check can't
-          // see because both are open todos).
-          if (Array.isArray(resp.closed) && resp.closed.length) {
-            const lines = resp.closed.map((c: any) => L(`✓ closed #${c.num} — ${c.text}`, `✓ أُغلق #${c.num} — ${c.text}`));
-            feedback.push(`\n[devlog closure]\n${lines.join("\n")}\n`);
-            await log(`closure-confirm: ${resp.closed.map((c: any) => c.num).join(", ")}`);
-          }
-          // Same-response pairing echo (#633): a closer that resolved to nothing
-          // was paired with the single work item opened in this same response.
-          // Informational, no block — the closure already applied; the echo just
-          // keeps the wrong guess (or the number-less form) visible.
-          if (Array.isArray(resp.repairedClosures) && resp.repairedClosures.length) {
-            const lines = resp.repairedClosures.map((r: any) =>
-              r.from != null
-                ? L(`🔗 #${r.from} matches nothing — auto-paired with #${r.num}, the item you opened in this same response (next time close same-response items with NO number).`,
-                    `🔗 #${r.from} لا يطابق شيئاً — قُرن تلقائياً بـ#${r.num}، العنصر الذي فتحتَه في هذا الرد نفسه (المرة القادمة أغلق عناصر نفس الرد بلا رقم).`)
-                : L(`🔗 number-less closure paired with #${r.num}, the item opened in this same response.`,
-                    `🔗 إغلاق بلا رقم قُرن بـ#${r.num}، العنصر المفتوح في هذا الرد نفسه.`));
-            feedback.push(`\n[devlog closure-pair]\n${lines.join("\n")}\n`);
-            await log(`closure-pair: ${resp.repairedClosures.map((r: any) => r.num).join(", ")}`);
-          }
-          // Reopen linkage (#556): a stored problem report matched a CLOSED one
-          // — the fix didn't hold. Informational only, no block: the relation
-          // is already stored; Claude just learns the history exists.
-          if (Array.isArray(resp.reopenHints) && resp.reopenHints.length) {
-            const day = (s: string) => String(s).slice(0, 10);
-            const lines = resp.reopenHints.map((h: any) => {
-              const when = h.closedAt
-                ? L(` (closed ${day(h.closedAt)})`, ` (أُغلق ${day(h.closedAt)})`)
-                : "";
-              return L(
-                `⟲ #${h.reportNum} likely REOPENS #${h.num}${when} — ${String(h.text).slice(0, 80)}. Check whether the old fix regressed before treating it as new.`,
-                `⟲ ‏#${h.reportNum} يبدو إعادة فتح لـ#${h.num}${when} — ${String(h.text).slice(0, 80)}. افحص هل انتكس الإصلاح القديم قبل معالجته كجديد.`);
-            });
-            feedback.push(`\n[devlog reopen]\n${lines.join("\n")}\n`);
-            await log(`reopen: ${resp.reopenHints.map((h: any) => `#${h.reportNum}→#${h.num}`).join(", ")}`);
-          }
-          // «قادمة» outcomes: echo what -(upcoming) / a `-(todo) #N` promotion
-          // actually did. Successes are informational; a no-match or a refused
-          // security deferral blocks once so Claude corrects the number instead
-          // of believing a conversion that never happened.
-          if (Array.isArray(resp.upcomingChanges) && resp.upcomingChanges.length) {
-            const fmt = (c: any) => {
-              const t = c.text ? ` — ${String(c.text).slice(0, 80)}` : "";
-              switch (c.kind) {
-                case "created":          return L(`☾ #${c.num} recorded as upcoming${t}`, `☾ سُجّل #${c.num} ضمن القادمة${t}`);
-                case "deferred":         return L(`☾ #${c.num} moved to upcoming${t}`, `☾ صار #${c.num} من القادمة${t}`);
-                case "promoted":         return L(`⬆ #${c.num} promoted to a tracked todo${t}`, `⬆ رُقّي #${c.num} لالتزام حالي${t}`);
-                case "plan-deferred":    return L(`☾ whole plan «${c.text}» moved to upcoming (via #${c.num})`, `☾ خطة «${c.text}» كاملة صارت قادمة (عبر #${c.num})`);
-                case "plan-promoted":    return L(`⬆ plan «${c.text}» is current again (via #${c.num})`, `⬆ خطة «${c.text}» عادت حالية (عبر #${c.num})`);
-                case "security-refused": return L(`✗ #${c.num} is a security item — security is never deferred; close it with -(security fix)${t}`, `✗ #${c.num} عنصر أمني — الأمن لا يؤجَّل؛ أغلقه بـ-(security fix)${t}`);
-                case "duplicate":        return L(`· identical to OPEN item ${c.num != null ? `#${c.num}` : "(unnumbered)"} — nothing new stored; to defer that one use -(upcoming) ${c.num != null ? `#${c.num}` : "#N"}`, `· مطابق للعنصر المفتوح ${c.num != null ? `#${c.num}` : "(بلا رقم)"} — لم يُخزَّن جديد؛ لتأجيله استخدم -(upcoming) ${c.num != null ? `#${c.num}` : "#N"}`);
-                default:                 return L(`✗ #${c.num} matches no open item — nothing was deferred; check the number`, `✗ #${c.num} لا يطابق أي عنصر مفتوح — لم يُؤجَّل شيء؛ تحقّق من الرقم`);
-              }
-            };
-            const bad = resp.upcomingChanges.some((c: any) => c.kind === "no-match" || c.kind === "security-refused");
-            feedback.push(`\n[devlog upcoming]\n${resp.upcomingChanges.map(fmt).join("\n")}\n`);
-            await log(`upcoming: ${resp.upcomingChanges.map((c: any) => `${c.kind}#${c.num ?? "?"}`).join(", ")}${bad ? " (blocking)" : ""}`);
-            if (bad) await flushBlock("upcoming");
-          }
-          // Optional verify nudge (#232): closed something without running tests
-          // this session. Informational only — never blocks. Mute
-          // with DEVLOG_VERIFY_HINT=0.
-          if (resp.verifyHint && Array.isArray(resp.verifyHint.closers) && resp.verifyHint.closers.length
-              && process.env.DEVLOG_VERIFY_HINT !== "0") {
-            // Once-per-session gate: a nudge is a reminder, not a nag. Emitting it
-            // on every closing turn is what let an unsatisfiable detector spin into
-            // a loop; after the first surface we stay quiet for the rest of the
-            // session even if more closures land. Session-scope → ledger.session.
-            if (!ledger.session.hintedVerify) {
-              const verbs = [...new Set(resp.verifyHint.closers.map((c: any) => c.tag))].join("/");
-              // Reason-aware since verify-hint v2: say WHAT evidence is missing
-              // (none / last run failed / all runs predate the edits) instead of
-              // the generic line a failing or stale run used to satisfy.
-              const msg = resp.verifyHint.reason === "failing-tests"
-                ? L(`💡 You closed (${verbs}) but the last test run AFTER your edits FAILED — that's closing over red. Make it pass, or reopen.`,
-                    `💡 أغلقتَ (${verbs}) وآخر تشغيل اختبار بعد تعديلاتك فاشل — هذا إغلاق فوق أحمر. اجعله ينجح أو تراجع عن الإغلاق.`)
-                : resp.verifyHint.reason === "stale-tests"
-                ? L(`💡 You closed (${verbs}) but every test run predates your last code edit — it proves nothing about it. Re-run the tests now.`,
-                    `💡 أغلقتَ (${verbs}) وكل تشغيلات الاختبار سبقت آخر تعديل كود — لا تثبت عنه شيئًا. أعد تشغيل الاختبارات الآن.`)
-                : L(`💡 You closed (${verbs}) without running any test this session. "Verified" = observed evidence (a passing test in the conversation), not reading the code. Run the test to confirm.`,
-                    `💡 أغلقتَ (${verbs}) بلا تشغيل أي اختبار في هذه الجلسة. «التحقّق» = دليل مُلاحَظ (اختبار ناجح في المحادثة)، لا قراءة الكود. شغّل الاختبار للتأكيد.`);
-              feedback.push(`\n[devlog verify]\n${msg}\n`);
-              ledger.session.hintedVerify = true;
-              await saveLedger(ledgerFile, ledger);
-              await log(`verify-hint: ${resp.verifyHint.closers.length} closer(s), reason=${resp.verifyHint.reason}`);
-            } else {
-              await log(`verify-hint: suppressed (already hinted this session)`);
-            }
-          }
-          // Regression-test nudge (#683): a bug fix / security fix closed, tests
-          // ran green, but the session never wrote a test file — the fix shipped
-          // without a regression test (the retro's 3/41 stat). Informational
-          // only, once per session. Mute with DEVLOG_REGRESSION_HINT=0.
-          if (resp.regressionHint && Array.isArray(resp.regressionHint.closers) && resp.regressionHint.closers.length
-              && process.env.DEVLOG_REGRESSION_HINT !== "0") {
-            if (!ledger.session.hintedRegression) {
-              const verbs = [...new Set(resp.regressionHint.closers.map((c: any) => c.tag))].join("/");
-              feedback.push(`\n[devlog regression]\n${L(
-                `💡 You closed (${verbs}) but this session never touched a test file — a fix without a regression test can silently break again. Add a test that pins the fix.`,
-                `💡 أغلقتَ (${verbs}) وهذه الجلسة لم تلمس أي ملف اختبار — إصلاح بلا اختبار انحدار قد يعود دون أن ينتبه أحد. أضِف اختبارًا يثبّت الإصلاح.`)}\n`);
-              ledger.session.hintedRegression = true;
-              await saveLedger(ledgerFile, ledger);
-              await log(`regression-hint: ${resp.regressionHint.closers.length} fix closer(s), no test file written`);
-            } else {
-              await log(`regression-hint: suppressed (already hinted this session)`);
-            }
-          }
-          // Pattern-sweep nudge (#682): the bug just fixed resembles previously
-          // closed bugs — a recurring pattern family (the retro counted the same
-          // defect re-fixed module by module three times). Push a same-pattern
-          // sweep across the rest of the code while the fix is fresh. Once per
-          // session; mute with DEVLOG_SWEEP_HINT=0.
-          if (resp.sweepHint && Array.isArray(resp.sweepHint.similar) && resp.sweepHint.similar.length
-              && process.env.DEVLOG_SWEEP_HINT !== "0") {
-            if (!ledger.session.hintedSweep) {
-              const sibs = resp.sweepHint.similar.map((s: any) =>
-                `· ${s.num != null ? `#${s.num} ` : ""}«${s.text}»${s.closerFiles?.length ? ` — ${s.closerFiles.join(" · ")}` : ""}`);
-              feedback.push(`\n[devlog sweep]\n${L(
-                `🔁 The bug you fixed (#${resp.sweepHint.num}) resembles previously closed bugs — a recurring pattern:`,
-                `🔁 العلة التي أصلحتها (#${resp.sweepHint.num}) تشبه عللًا مغلقة سابقًا — نمط متكرر:`)}\n${sibs.join("\n")}\n${L(
-                "Sweep the same pattern across the OTHER modules now, while the fix is fresh — the log shows this class of bug returns elsewhere.",
-                "امسح نفس النمط في بقية الوحدات الآن والإصلاح طازج — السجل يُظهر أن هذا الصنف من العلل يعود في مواضع أخرى.")}\n`);
-              ledger.session.hintedSweep = true;
-              await saveLedger(ledgerFile, ledger);
-              await log(`sweep-hint: #${resp.sweepHint.num} ~ ${resp.sweepHint.similar.length} sibling(s)`);
-            } else {
-              await log(`sweep-hint: suppressed (already hinted this session)`);
-            }
-          }
-          // Closure text divergence (#315): the closure APPLIED (valid number +
-          // verb), but the trailing description shares no token with the item #N
-          // is about — a likely wrong-but-compatible number (the #310/#311 slip).
-          // Objection, not a skip: verify you closed the intended item, then undo
-          // + re-close if wrong. Fires once (the item is now closed, so a correct
-          // re-run won't retrigger). Mute with DEVLOG_CLOSURE_TEXT_CHECK=0.
-          if (Array.isArray(resp.closureTextWarnings) && resp.closureTextWarnings.length
-              && process.env.DEVLOG_CLOSURE_TEXT_CHECK !== "0") {
-            const lines = resp.closureTextWarnings.map((w: any) =>
-              L(`· #${w.num} is about: «${w.openerText}» — your closure text is unrelated. Did you mean a different number?`,
-                `· #${w.num} موضوعه: «${w.openerText}» — نص إغلاقك لا يمتّ له بصلة. هل قصدتَ رقماً آخر؟`));
-            const out = [
-              "════════ DevLog Closure Text Divergence ════════",
-              L(`⚠ ${resp.closureTextWarnings.length} closure(s) applied, but the text diverges from the item:`,
-                `⚠ ${resp.closureTextWarnings.length} إغلاق طُبِّق، لكن نصّه يتنافر مع العنصر:`),
-              ...lines,
-              "",
-              L("If the number is wrong: -(undo) #N to reopen, then close the intended item.",
-                "إن كان الرقم خاطئاً: -(undo) #N لإعادة الفتح، ثم أغلِق العنصر المقصود."),
-              "═════════════════════════════════════════════════",
-            ].join("\n");
-            feedback.push(`\n${out}\n`);
-            await log(`closure-text-divergence: ${resp.closureTextWarnings.map((w: any) => w.num).join(", ")}`);
-            // Only self-flush when there's no harder closure mismatch below (that
-            // one blocks too, flushing this along with it); avoid double handling.
-            if (!(Array.isArray(resp.closureHints) && resp.closureHints.length)) await flushBlock("closure-divergence");
-          }
-          // Closure mismatch: Claude closed an item that won't actually close —
-          // wrong verb for an open item (`-(done)` on a bug), or a #N matching no
-          // open item (typo'd / already-closed number). The server skipped the
-          // junk tag; tell Claude how to fix it. Fires once — a correct closure
-          // produces no hint next turn (no loop). Checked before release so
-          // closures get fixed first (the release-guard would block anyway).
-          if (Array.isArray(resp.closureHints) && resp.closureHints.length) {
-            const lines = resp.closureHints.map((h: any) =>
-              h.kind === "no-match"
-                ? L(`· #${h.num} matches no open item — check the number (closure not applied).`,
-                    `· #${h.num} لا يطابق أي عنصر مفتوح — تحقّق من الرقم (الإغلاق لم يُطبَّق).`)
-              : h.kind === "already-closed-wrong-verb"
-                ? L(`· #${h.num} is already closed (a «${h.openerTag}») and -(${h.usedCloser}) can't close that type anyway — you likely meant a different OPEN item; check the number.`,
-                    `· #${h.num} مغلق سابقاً (نوعه «${h.openerTag}») و-(${h.usedCloser}) لا يُغلِق هذا النوع أصلاً — على الأرجح قصدت عنصراً مفتوحاً آخر؛ تحقّق من الرقم.`)
-                : L(`· #${h.num} is a «${h.openerTag}» — close it with -(${h.suggested}) #${h.num}, not -(${h.usedCloser}).`,
-                    `· #${h.num} نوعه «${h.openerTag}» — أغلِقه بـ-(${h.suggested}) #${h.num}، لا -(${h.usedCloser}).`));
-            // #632: the live open list rides the rejection itself — fixing the
-            // number no longer costs an -(ask:open) round-trip (the Mac field
-            // test burned two extra turns exactly here).
-            const snapshot: string[] = [];
-            if (Array.isArray(resp.openSnapshot) && resp.openSnapshot.length) {
-              snapshot.push("", L("Currently open:", "المفتوح حالياً:"));
-              for (const it of resp.openSnapshot) {
-                const up = it.upcoming ? L(" [deferred]", " [مؤجَّل]") : "";
-                snapshot.push(`  #${it.num} (${it.tag}) ${it.content}${up}`);
-              }
-            } else if (Array.isArray(resp.openSnapshot)) {
-              snapshot.push("", L("Nothing is open right now — the item may already be closed; check with -(ask:closed) #N.",
-                                  "لا شيء مفتوح الآن — قد يكون العنصر مغلقاً أصلاً؛ تحقّق بـ-(ask:closed) #N."));
-            }
-            const out = [
-              "════════ DevLog Closure Mismatch ════════",
-              L(`⚠ ${resp.closureHints.length} closure(s) not recorded (closed nothing):`,
-                `⚠ ${resp.closureHints.length} إغلاق لم يُسجَّل (لم يُغلِق شيئاً):`),
-              ...lines,
-              ...snapshot,
-              "",
-              L("Fix the number or the verb above, then re-close.",
-                "صحّح الرقم أو الـverb أعلاه ثم أعد الإغلاق."),
-              "═════════════════════════════════════════",
-            ].join("\n");
-            await log(`closure-mismatch: served ${resp.closureHints.length}`);
-            await blockContinue(`\n${out}\n`, "closure-mismatch");
-          }
-          // Feature-reference problems: a -(feature update)/-(feature removed)
-          // whose #N points at no recorded feature (or lost its ref/text). The
-          // server skipped the junk tag; tell Claude so it corrects the number
-          // instead of believing an update that never applied. Fires once — a
-          // corrected reference produces no hint next turn.
-          if (Array.isArray(resp.featureHints) && resp.featureHints.length) {
-            const lines = resp.featureHints.map((h: any) =>
-              h.kind === "no-ref"
-                ? L(`· -(${h.tag}) needs a leading #N naming the feature it targets.`,
-                    `· -(${h.tag}) يحتاج #N في البداية يحدد القدرة المستهدفة.`)
-              : h.kind === "no-text"
-                ? L(`· -(feature update) #${h.num} carries no new text — nothing to update to.`,
-                    `· -(feature update) #${h.num} بلا نص جديد — لا شيء يُحدَّث إليه.`)
-              : h.kind === "already-removed"
-                ? L(`· feature #${h.num} is already removed — check the number.`,
-                    `· القدرة #${h.num} أُزيلت سابقًا — تحقّق من الرقم.`)
-                : L(`· #${h.num} matches no recorded feature — check the number (nothing stored). Pull the list with -(ask:features).`,
-                    `· #${h.num} لا يطابق أي قدرة مسجّلة — تحقّق من الرقم (لم يُخزَّن شيء). اسحب القائمة بـ-(ask:features).`));
-            const out = [
-              "════════ DevLog Feature Reference ════════",
-              L(`⚠ ${resp.featureHints.length} feature tag(s) not recorded:`,
-                `⚠ ${resp.featureHints.length} وسم قدرات لم يُسجَّل:`),
-              ...lines,
-              "",
-              L("Fix the reference above, then re-emit.", "صحّح المرجع أعلاه ثم أعد الإصدار."),
-              "══════════════════════════════════════════",
-            ].join("\n");
-            await log(`feature-hints: served ${resp.featureHints.length}`);
-            await blockContinue(`\n${out}\n`, "feature-hints");
-          }
-          if (resp.release) {
-            const rel = resp.release;
-            const intent = resp.releaseIntent;   // present when the version was computed from -(release:type)
-            const sep = L(", ", "، ");
-            const bumps = (rel.bumped || []).map((u: any) => `${u.file} ${u.from}→${u.to}`).join(sep) || L("no manifest to bump", "لا مانيفست لرفعه");
-            // Entries without a reason predate the field → they are downgrades.
-            const downgrades = (rel.rejected || []).filter((u: any) => u.reason !== "unsupported-layout")
-              .map((u: any) => `${u.file} ${u.current}→${u.attempted}`).join(sep);
-            const unsupported = (rel.rejected || []).filter((u: any) => u.reason === "unsupported-layout")
-              .map((u: any) => u.file).join(sep);
-            const out = [
-              "════════ DevLog Release ════════",
-              L(`✓ Release ${rel.version} recorded in DevLog.`, `✓ الإصدار ${rel.version} سُجِّل في DevLog.`),
-              ...(intent ? [L(`Computed: ${intent.auto ? "auto-detected " : ""}${intent.bump} bump (${intent.from} → ${intent.version})`,
-                              `محسوب: ${intent.auto ? "نوع تلقائي، " : ""}ترقية ${intent.bump} (${intent.from} → ${intent.version})`)] : []),
-              L(`Version bump: ${bumps}`, `رفع النسخة: ${bumps}`),
-              ...(downgrades ? [L(`⚠ Downgrade refused (manifest is newer): ${downgrades}`, `⚠ رُفض تنزيل النسخة (المانيفست أحدث): ${downgrades}`)] : []),
-              ...(unsupported ? [L(
-                `⚠ Manifest NOT bumped — unsupported layout (no literal version in [package]/[workspace.package]): ${unsupported}. Update it manually if needed.`,
-                `⚠ لم يُرفع المانيفست — تخطيط غير مدعوم (لا version صريح في [package]/[workspace.package]): ${unsupported}. حدّثه يدويًا إن لزم.`)] : []),
-              `HTML/changelog: ${rel.htmlGenerated ? L("generated ✓", "أُنشئ ✓") : L("not generated", "لم يُنشأ")}`,
-              ...(intent?.warning ? ["", L(
-                `⚠ Your accrued changes look ${intent.warning.suggested}-level but you declared ${intent.bump}. Consider -(release:${intent.warning.suggested}) next time.`,
-                `⚠ تغييراتك المتراكمة تبدو بمستوى ${intent.warning.suggested} لكنك أعلنت ${intent.bump}. فكّر بـ-(release:${intent.warning.suggested}) في المرة القادمة.`)] : []),
-              "",
-              L("Continue post-release steps (e.g. building the output) without waiting for the user.",
-                "تابع خطوات ما بعد الإصدار (مثل بناء الناتج) بدون انتظار المستخدم."),
-              "════════════════════════════════",
-            ].join("\n");
-            await log(`release-response: served ${rel.version}`);
-            // Delivery: it hands back the version the -(release) tag asked for.
-            await blockContinue(`\n${out}\n`, "serve");
-          }
+          await runResponseRows(resp, {
+            L, log, feedback, blockContinue, flushBlock,
+            session: ledger.session,
+            persistLedger: () => saveLedger(ledgerFile, ledger),
+          });
         } catch (e) { await log(`release-response parse error: ${(e as Error).message}`); }
       }
     } catch (e) {
@@ -935,12 +635,64 @@ if (msg) {
 //
 // Fenced + inline code blanked ONCE for every command scanner: a command shown
 // as an EXAMPLE inside code must never trigger a real serve (#407).
+// ── Targeted "why" (plan narrative-layer P4) ─────────────────────────────────
+// This session overrode the demolition gate (re-issued an edit to a
+// load-bearing file) and has recorded NO decision/insight/story anywhere — the
+// rebuild happened, its reason lives nowhere. ONE soft whisper per session on
+// the non-blocking channel (never a block: the blanket "justify every edit"
+// was rejected — compelled prose is filler; a rare, targeted ask gets real
+// answers). Fail-open at every step. Rides DEVLOG_DEMOLITION_GATE=0's switch.
+if (sessionId && cwd && !ledger.session.hintedDemolitionWhy
+    && process.env.DEVLOG_DEMOLITION_GATE !== "0"
+    // A why-tag in THIS turn silences it locally; earlier turns' are counted
+    // server-side (knowledgeTags below — the batch was already POSTed above).
+    && !/^[ \t]*-[ \t]*\((?:decision|insight|story)!?\)/m.test(msg)) {
+  try {
+    const norm = (p: string) => p.replace(/\\/g, "/").toLowerCase();
+    const ackDir = join(LOG_DIR, "demolition-ack");
+    const safeSid = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const acked: string[] = [];
+    for (const name of await readdir(ackDir).catch(() => [] as string[])) {
+      if (!name.startsWith(`${safeSid}-`)) continue;
+      try {
+        const j = JSON.parse(await readFile(join(ackDir, name), "utf-8")) as { file?: string };
+        if (j?.file) acked.push(j.file);
+      } catch { /* pre-P4 ack (bare timestamp) — no path to name, skip */ }
+    }
+    if (acked.length) {
+      const r = await fetch(`${SERVER}/api/changes/session?session_id=${encodeURIComponent(sessionId)}`,
+        { signal: AbortSignal.timeout(3000) });
+      if (r.ok) {
+        const { items = [], knowledgeTags = 0 } = await r.json() as
+          { items?: Array<{ file_path?: string }>; knowledgeTags?: number };
+        const edited = new Set(items.map(i => norm(i.file_path || "")));
+        const overridden = acked.filter(f => edited.has(norm(f)));
+        if (overridden.length && knowledgeTags === 0) {
+          ledger.session.hintedDemolitionWhy = true;
+          await saveLedger(ledgerFile, ledger);
+          const names = overridden.map(f => f.split(/[\\/]/).pop() || f).slice(0, 3).join("، ");
+          feedback.push(`\n[devlog demolition-why]\n${L(
+            `You overrode the load-bearing notice and edited ${names} — and the session records no reason anywhere. If the rebuild had a why (an approach that failed, a constraint), keep it: -(decision) or -(insight). One whisper, no block.`,
+            `تجاوزت تنبيه الجدار الحامل وعدّلت ${names} — والجلسة لا تسجّل السبب في أي مكان. إن كان لإعادة البناء «ليش» (نهج فشل، قيد فرض نفسه) فاحفظه: -(decision) أو -(insight). همسة واحدة، بلا حجب.`)}\n`);
+          try {
+            const { postRuleTelemetry } = await import("./src/telemetry-client.ts");
+            await postRuleTelemetry(SERVER, cwd, [{ gate: "turn", action: "fire", rule: "demolition-why", file: overridden[0], detail: "soft" }]);
+          } catch { /* telemetry never breaks the whisper */ }
+          await log(`demolition-why whispered once: ${overridden.length} overridden file(s), knowledgeTags=0`);
+        }
+      }
+    }
+  } catch (e) {
+    await log(`demolition-why error: ${(e as Error).message}`);
+  }
+}
+
 const strippedMsg = msg
   .replace(/```[\s\S]*?```/g, (s: string) => " ".repeat(s.length))
   .replace(/`[^`\n]*`/g, (s: string) => " ".repeat(s.length));
 
 await serveAsks(ASK_ROWS, {
-  msg, strippedMsg, cwd, server: SERVER, lang: LANG,
+  msg, strippedMsg, cwd, sessionId, server: SERVER, lang: LANG,
   // An -(ask:*) answer is delivery: the block channel is how it arrives.
   L, log, shouldServeAsk, markAskServed, feedback,
   blockContinue: (text: string) => blockContinue(text, "serve"),
@@ -993,7 +745,8 @@ async function finalizeTurn(): Promise<void> {
     }
   }
   // Part 3: plan-file sync — parallel POSTs, short timeout (N×5s freeze, QA #1).
-  const plansDir = join(homedir(), ".claude", "plans");
+  // claudeConfigDir honors CLAUDE_CONFIG_DIR — hardcoded ~/.claude broke plan sync after a config-root move.
+  const plansDir = join(claudeConfigDir(), "plans");
   try {
     const files = await readdir(plansDir);
     const mdFiles = files.filter(f => f.endsWith(".md"));

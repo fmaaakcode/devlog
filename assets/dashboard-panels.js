@@ -133,7 +133,7 @@
                 if (active) text += ` · ${tr("sess.bgCount", { n: active })}`;
                 if (orphans) text += ` · ⚠️ ${tr("sess.orphanCount", { n: orphans })}`;
                 const newBg = orphans ? '#2e0d0d' : '#0d2e1f';
-                const newColor = orphans ? '#ef476f' : '#06d6a0';
+                const newColor = orphans ? 'var(--pink)' : 'var(--emerald)';
                 if (el.textContent !== text) {
                     el.textContent = text;
                     el.style.background = newBg;
@@ -156,7 +156,7 @@
 
             const sessionRows = sessions.map(s => `
                 <div style="padding:8px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;background:var(--bg2)">
-                    <div style="font-weight:600;color:#06d6a0">PID ${s.pid} · claude.exe</div>
+                    <div style="font-weight:600;color:var(--emerald)">PID ${s.pid} · claude.exe</div>
                     <div style="font-size:0.75em;color:var(--text2);margin-top:3px">
                         session: ${esc((s.sessionId || '').slice(0, 8))}... · ${tr("sess.startedAt", { date: new Date(s.startedAt).toLocaleString(locale()) })}
                     </div>
@@ -169,10 +169,10 @@
             const procRow = (p) => `
                 <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;margin-bottom:4px;background:var(--bg2);font-size:0.8em">
                     <div style="flex:1;min-width:0">
-                        <div style="font-weight:600;color:${p.orphaned ? '#ef476f' : '#ffd166'}">PID ${p.pid} · ${esc(p.name || '')}</div>
+                        <div style="font-weight:600;color:${p.orphaned ? 'var(--pink)' : 'var(--gold)'}">PID ${p.pid} · ${esc(p.name || '')}</div>
                         <div style="font-size:0.9em;color:var(--text2);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.command || '')}">${esc((p.command || '').slice(0, 120))}</div>
                     </div>
-                    <button data-action="kill-pid" data-pid="${p.pid}" data-project="${esc(projectName)}" style="padding:4px 10px;background:#ef476f;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.85em">${tr("sess.kill")}</button>
+                    <button data-action="kill-pid" data-pid="${p.pid}" data-project="${esc(projectName)}" style="padding:4px 10px;background:var(--pink);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.85em">${tr("sess.kill")}</button>
                 </div>
             `;
 
@@ -190,11 +190,11 @@
                         <h3 style="margin:0">${tr("sess.title", { name: esc(projectName) })}</h3>
                         <button data-action="close-sessions-modal" style="background:none;border:none;color:var(--text);font-size:1.5em;cursor:pointer">×</button>
                     </div>
-                    <h4 style="margin:12px 0 8px;color:#06d6a0">${tr("sess.claudeActive", { n: sessions.length })}</h4>
+                    <h4 style="margin:12px 0 8px;color:var(--emerald)">${tr("sess.claudeActive", { n: sessions.length })}</h4>
                     ${sessionRows}
-                    <h4 style="margin:15px 0 8px;color:#ffd166">${tr("sess.bgActive", { n: activeProcs.length })}</h4>
+                    <h4 style="margin:15px 0 8px;color:var(--gold)">${tr("sess.bgActive", { n: activeProcs.length })}</h4>
                     ${activeProcs.length ? activeProcs.map(procRow).join('') : `<div style="color:var(--text2);font-size:0.85em">${tr("sess.noneShort")}</div>`}
-                    ${orphanProcs.length ? `<h4 style="margin:15px 0 8px;color:#ef476f">${tr("sess.orphaned", { n: orphanProcs.length })}</h4>${orphanProcs.map(procRow).join('')}` : ''}
+                    ${orphanProcs.length ? `<h4 style="margin:15px 0 8px;color:var(--pink)">${tr("sess.orphaned", { n: orphanProcs.length })}</h4>${orphanProcs.map(procRow).join('')}` : ''}
                     <div style="margin-top:15px;text-align:left">
                         <button data-action="refresh-processes" data-project="${esc(projectName)}" style="padding:6px 14px;background:var(--border);color:var(--text);border:none;border-radius:4px;cursor:pointer">${tr("sess.refresh")}</button>
                     </div>
@@ -219,8 +219,8 @@
                     <td>${m.reportsOpened}</td>
                     <td>${m.closures}</td>
                     <td>${m.fixes}</td>
-                    <td style="color:${m.reopened ? '#ef476f' : 'var(--text2)'}">${m.reopened}</td>
-                    <td style="color:${m.fixesWithoutTest ? '#ffd166' : 'var(--text2)'}">${m.fixesJudged ? `${m.fixesWithoutTest}/${m.fixesJudged}` : '—'}</td>
+                    <td style="color:${m.reopened ? 'var(--pink)' : 'var(--text2)'}">${m.reopened}</td>
+                    <td style="color:${m.fixesWithoutTest ? 'var(--gold)' : 'var(--text2)'}">${m.fixesJudged ? `${m.fixesWithoutTest}/${m.fixesJudged}` : '—'}</td>
                     <td>${num(m.avgCloseDays)}</td>
                 </tr>`).join('');
 
@@ -594,6 +594,7 @@
                             <span style="color:var(--text2);font-size:0.75em">${esc(timeStr(t.timestamp))}</span>
                         </div>
                         <div style="color:var(--text);font-size:0.9em;margin-top:2px">${esc(t.content)}</div>
+                        ${t.prompt ? `<div style="color:var(--text2);font-size:0.8em;margin-top:3px">» «${esc(t.prompt)}»</div>` : ''}
                     </div>`).join('') || `<div style="color:var(--text2);padding:10px;font-size:0.9em">${tr("story.noTags")}</div>`;
                 const evs = [...(s.events || []), ...(s.archived || [])];
                 const evRows = evs.map(e => `
@@ -725,7 +726,7 @@
 
         export const extIcons = {
             ts: "#3178c6", js: "#f7df1e", py: "#3776ab", rs: "#dea584",
-            go: "#00add8", html: "#e34f26", css: "#1572b6", json: "#ffd166",
+            go: "#00add8", html: "#e34f26", css: "#1572b6", json: "var(--gold)",
             md: "#777777", sh: "#4eaa25", toml: "#9c4121", yaml: "#cb171e",
             yml: "#cb171e", sql: "#336791", vue: "#42b883", svelte: "#ff3e00",
         };

@@ -59,6 +59,13 @@ export function normalizeTagContent(s: string): string {
 /** Open security tags — `security`, `security:own`, `security:dep` all count. */
 export const SECURITY_OPEN_TAGS = new Set(["security", "security:own", "security:dep"]);
 
+/** Is this tag a problem REPORT (bug/security opener)? Openers only — a
+ *  `startsWith("security")` variant also matched the CLOSER `security fix`,
+ *  inflating report counts by every security closure. Four modules carried
+ *  private copies of this predicate and one had drifted to exactly that bug
+ *  (audit 2026-08-14 C6); one definition, imported everywhere. */
+export const isReport = (tag: string): boolean => tag === "bug found" || SECURITY_OPEN_TAGS.has(tag);
+
 // ─── Closure vocabulary (single source of truth, #409) ──────────────────────
 // The entire closure grammar derives from ONE table: each OPENER tag → the
 // closer verb(s) that legitimately close it (type-matched). tags-service and

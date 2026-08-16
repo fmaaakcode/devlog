@@ -97,6 +97,74 @@ export function commandOutcome(resp: unknown, command: string): { exit_code?: nu
   return {};
 }
 
+// Classification tables — one entry per event kind instead of twelve chained
+// ifs. Each builder returns the fields to lay over `base` (so anything not
+// named keeps base's value — Edit stays type "change" on purpose). Two tables
+// because the payload is keyed twice: PostToolUse events classify by TOOL name,
+// everything else by the hook event name itself.
+type EventPatch = (body: HookBody) => Partial<EventEntry>;
+
+// Bash / PowerShell share one builder (both are shell-command tools; Windows
+// sessions run tests via PowerShell, so missing it breaks verify hints and recall).
+const shellCommand: EventPatch = body => {
+  const command = body.tool_input?.command || "";
+  const outcome = commandOutcome(body.tool_response, command);
+  return {
+    tool: body.tool_name || "", type: "command", command,
+    description: body.tool_input?.description || "",
+    ...(outcome.exit_code !== undefined && { exit_code: outcome.exit_code }),
+    ...(outcome.ok !== undefined && { ok: outcome.ok }),
+  };
+};
+
+const TOOL_EVENTS: Record<string, EventPatch> = {
+  Write: body => {
+    const file_path = body.tool_input?.file_path || "";
+    return {
+      tool: "Create", type: "create", file_path,
+      content: isSensitivePath(file_path)
+        ? "[redacted: sensitive path]"
+        : capContent(body.tool_input?.content),
+    };
+  },
+  Edit: body => {
+    const file_path = body.tool_input?.file_path || "";
+    const redacted = isSensitivePath(file_path);
+    return {
+      tool: "Edit", file_path,
+      old_string: redacted ? "[redacted: sensitive path]" : capContent(body.tool_input?.old_string),
+      new_string: redacted ? "[redacted: sensitive path]" : capContent(body.tool_input?.new_string),
+    };
+  },
+  Read: body => ({ tool: "Read", type: "read", file_path: body.tool_input?.file_path || "" }),
+  Bash: shellCommand,
+  PowerShell: shellCommand,
+  Agent: body => ({
+    tool: "Agent", type: "agent",
+    description: body.tool_input?.prompt || body.tool_input?.description || "",
+    agent_type: body.tool_input?.subagent_type || "",
+  }),
+  // Plan-mode descriptions are English on purpose (audit C4): the description
+  // is STORED on the event, so a hardcoded Arabic string leaked past the i18n
+  // policy into every log — and no later language switch could fix it.
+  EnterPlanMode: () => ({ tool: "Plan", type: "plan", description: "Entered plan mode" }),
+  ExitPlanMode: () => ({ tool: "Plan", type: "plan", description: "Exited plan mode" }),
+};
+
+const LIFECYCLE_EVENTS: Record<string, EventPatch> = {
+  SessionStart: body => ({ type: "session", event: "SessionStart", description: body.source || "startup" }),
+  Stop: () => ({ type: "session", event: "Stop" }),
+  SubagentStart: body => ({
+    type: "agent", event: "SubagentStart",
+    agent_type: body.agent_type || "",
+    agent_id: body.agent_id || "",
+    description: body.tool_input?.description || body.tool_input?.prompt || "",
+  }),
+  SubagentStop: body => ({ type: "agent", event: "SubagentStop", agent_id: body.agent_id || "" }),
+  TaskCreated: body => ({ type: "task", event: "TaskCreated", description: body.tool_input?.subject || body.tool_input?.description || "" }),
+  TaskCompleted: body => ({ type: "task", event: "TaskCompleted", description: body.tool_input?.subject || "" }),
+};
+
 export function parseHookEvent(body: HookBody): EventEntry {
   const hookEvent = body.hook_event_name || "";
   const toolName = body.tool_name || "";
@@ -116,127 +184,17 @@ export function parseHookEvent(body: HookBody): EventEntry {
   // lean) so the event log can rebuild name→path if the registry is lost.
   if (hookEvent === "SessionStart" && cwd) base.cwd = cwd;
 
-  // PostToolUse: Write (create new file)
-  if (hookEvent === "PostToolUse" && toolName === "Write") {
-    base.tool = "Create";
-    base.type = "create";
-    base.file_path = body.tool_input?.file_path || "";
-    base.content = isSensitivePath(base.file_path)
-      ? "[redacted: sensitive path]"
-      : capContent(body.tool_input?.content);
-    return base;
-  }
+  // Object.hasOwn so a hostile key riding the payload ("toString",
+  // "constructor") can't resolve to an inherited function and corrupt the event.
+  const [table, key] = hookEvent === "PostToolUse"
+    ? [TOOL_EVENTS, toolName] : [LIFECYCLE_EVENTS, hookEvent];
+  if (Object.hasOwn(table, key)) return Object.assign(base, table[key](body));
 
-  // PostToolUse: Edit
-  if (hookEvent === "PostToolUse" && toolName === "Edit") {
-    base.tool = "Edit";
-    base.file_path = body.tool_input?.file_path || "";
-    if (isSensitivePath(base.file_path)) {
-      base.old_string = "[redacted: sensitive path]";
-      base.new_string = "[redacted: sensitive path]";
-    } else {
-      base.old_string = capContent(body.tool_input?.old_string);
-      base.new_string = capContent(body.tool_input?.new_string);
-    }
-    return base;
-  }
-
-  // PostToolUse: Read
-  if (hookEvent === "PostToolUse" && toolName === "Read") {
-    base.tool = "Read";
-    base.type = "read";
-    base.file_path = body.tool_input?.file_path || "";
-    return base;
-  }
-
-  // PostToolUse: Bash / PowerShell (both are shell-command tools; Windows sessions
-  // run tests via PowerShell, so missing it breaks verify hints and recall)
-  if (hookEvent === "PostToolUse" && (toolName === "Bash" || toolName === "PowerShell")) {
-    base.tool = toolName;
-    base.type = "command";
-    base.command = body.tool_input?.command || "";
-    base.description = body.tool_input?.description || "";
-    const outcome = commandOutcome(body.tool_response, base.command);
-    if (outcome.exit_code !== undefined) base.exit_code = outcome.exit_code;
-    if (outcome.ok !== undefined) base.ok = outcome.ok;
-    return base;
-  }
-
-  // PostToolUse: Agent
-  if (hookEvent === "PostToolUse" && toolName === "Agent") {
-    base.tool = "Agent";
-    base.type = "agent";
-    base.description = body.tool_input?.prompt || body.tool_input?.description || "";
-    base.agent_type = body.tool_input?.subagent_type || "";
-    return base;
-  }
-
-  // PostToolUse: EnterPlanMode
-  if (hookEvent === "PostToolUse" && toolName === "EnterPlanMode") {
-    base.tool = "Plan";
-    base.type = "plan";
-    base.description = "دخل وضع الخطة";
-    return base;
-  }
-
-  // PostToolUse: ExitPlanMode
-  if (hookEvent === "PostToolUse" && toolName === "ExitPlanMode") {
-    base.tool = "Plan";
-    base.type = "plan";
-    base.description = "خرج من وضع الخطة";
-    return base;
-  }
-
-  // SessionStart
-  if (hookEvent === "SessionStart") {
-    base.type = "session";
-    base.event = "SessionStart";
-    base.description = body.source || "startup";
-    return base;
-  }
-
-  // Stop
-  if (hookEvent === "Stop") {
-    base.type = "session";
-    base.event = "Stop";
-    return base;
-  }
-
-  // SubagentStart
-  if (hookEvent === "SubagentStart") {
-    base.type = "agent";
-    base.event = "SubagentStart";
-    base.agent_type = body.agent_type || "";
-    base.agent_id = body.agent_id || "";
-    base.description = body.tool_input?.description || body.tool_input?.prompt || "";
-    return base;
-  }
-
-  // SubagentStop
-  if (hookEvent === "SubagentStop") {
-    base.type = "agent";
-    base.event = "SubagentStop";
-    base.agent_id = body.agent_id || "";
-    return base;
-  }
-
-  // TaskCreated
-  if (hookEvent === "TaskCreated") {
-    base.type = "task";
-    base.event = "TaskCreated";
-    base.description = body.tool_input?.subject || body.tool_input?.description || "";
-    return base;
-  }
-
-  // TaskCompleted
-  if (hookEvent === "TaskCompleted") {
-    base.type = "task";
-    base.event = "TaskCompleted";
-    base.description = body.tool_input?.subject || "";
-    return base;
-  }
-
-  // Fallback
+  // Fallback. Must NOT inherit the initial "change": an unmatched lifecycle
+  // event (UserPromptSubmit, Notification, …) stamped as "change" lives on the
+  // 30-day code-diff retention schedule, competes for the per-project event
+  // cap, and matches /api/classify's `type === "change"` overwrite filter.
+  base.type = "session";
   base.tool = toolName;
   base.event = hookEvent || "unknown";
   return base;

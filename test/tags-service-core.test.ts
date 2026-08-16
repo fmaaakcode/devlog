@@ -98,6 +98,9 @@ describe("enforceAtomicContent", () => {
   test("a plain single-line headline is returned unchanged", () => {
     expect(enforceAtomicContent("note", "just one line")).toBe("just one line");
   });
+  test("a single OVER-LONG line is capped at 120 too — the cap is the contract, not a side effect of collapsing", () => {
+    expect(enforceAtomicContent("todo", "x".repeat(200)).length).toBe(120);
+  });
 });
 
 describe("resolveClosureNumber", () => {

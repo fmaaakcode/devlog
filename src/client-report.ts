@@ -19,6 +19,7 @@ import { openTodos, openBugs, openSecurity, openPlanSteps, openOutdatedLibs } fr
 import { featureList, type FeatureItem } from "./features";
 import { isRealVersion, parseVersion } from "./release-html";
 import { currentLang } from "./i18n";
+import { DL_THEME_ROOT } from "./dl-theme";
 
 const L = (en: string, ar: string): string => (currentLang() === "ar" ? ar : en);
 
@@ -115,15 +116,14 @@ export function collectClientReport(data: DevLogData, project: string): ClientRe
 }
 
 // Dark, screen-first document — theme-matched to the in-team release pages and
-// dashboard (user directive 2026-07-08, reversing the earlier white-paper take):
-// same #161718 canvas, #363737 borders, #EEEEEE/#9A9A9A ink and the #ffd166
-// version accent, so the client report reads as one surface with the rest.
+// dashboard (user directive 2026-07-08, reversing the earlier white-paper take)
+// via the shared dl-theme tokens, so the client report reads as one surface
+// with the rest. The local ink/accent names predate the shared theme; they
+// alias onto it instead of re-stating hex.
 function reportCss(): string {
   return `
-  :root {
-    --bg:#161718; --bg2:#1B1C1D; --border:#363737;
-    --ink:#EEEEEE; --ink2:#9A9A9A; --accent:#ffd166;
-  }
+  ${DL_THEME_ROOT}
+  :root { --ink:var(--text); --ink2:var(--text2); --accent:var(--c-update); }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--ink); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Tahoma,Arial,sans-serif; line-height:1.7; }
   #cr-root { max-width:820px; margin:0 auto; padding:48px 28px 64px; }
@@ -142,16 +142,16 @@ function reportCss(): string {
   .cr-gh { margin:0 0 6px; font-size:0.95em; font-weight:normal; display:flex; align-items:center; gap:10px; }
   .cr-gdate { color:var(--ink2); font-size:0.78em; }
   .cr-gnext { color:var(--accent); font-size:0.85em; }
-  .cr-fact { background:var(--bg2); border:1px solid var(--border); border-radius:8px; padding:12px 16px; }
+  .cr-fact { background:var(--bg3); border:1px solid var(--border); border-radius:8px; padding:12px 16px; }
   .cr-chips { display:flex; gap:8px; flex-wrap:wrap; }
-  .cr-chip { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:4px 10px; font-size:0.82em; }
+  .cr-chip { background:var(--bg3); border:1px solid var(--border); border-radius:6px; padding:4px 10px; font-size:0.82em; }
   .cr-chip b { color:var(--accent); }
   footer.cr-foot { color:var(--ink2); font-size:0.75em; border-top:1px solid var(--border); padding-top:12px; margin-top:36px; }
   /* Browsers skip background paint by default, so the dark screen theme would
      print as near-white ink on white paper. Flip the variables to paper values;
      the screen look (user directive 2026-07-08) is untouched. */
   @media print {
-    :root { --bg:#ffffff; --bg2:#f4f4f4; --border:#c9c9c9; --ink:#111111; --ink2:#555555; --accent:#8a6d1a; }
+    :root { --bg:#ffffff; --bg3:#f4f4f4; --border:#c9c9c9; --text:#111111; --text2:#555555; --c-update:#8a6d1a; }
   }
   `.trim();
 }

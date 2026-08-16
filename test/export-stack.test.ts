@@ -5,12 +5,21 @@
 // runtime-qualifier branches. Structural assertions (headers/keywords), not a
 // byte snapshot, since ranks/line-counts are analysis-dependent.
 
-import { test, expect, describe } from "bun:test";
+import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateStackMd } from "../src/export";
 import type { ProjectProfile } from "../src/types";
+
+// Section-heading assertions pin the Arabic variants (#906 made the generator
+// bilingual; CI has no DEVLOG_LANG and would emit English). Restored below.
+const PREV_LANG = process.env.DEVLOG_LANG;
+beforeAll(() => { process.env.DEVLOG_LANG = "ar"; });
+afterAll(() => {
+  if (PREV_LANG === undefined) delete process.env.DEVLOG_LANG;
+  else process.env.DEVLOG_LANG = PREV_LANG;
+});
 
 function mkProject(dir: string, over: Partial<ProjectProfile> = {}): ProjectProfile {
   return {

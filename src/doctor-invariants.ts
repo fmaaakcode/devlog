@@ -29,6 +29,8 @@ import { SINGLE_LINE_TAGS } from "./tag-parser";
 import type { DevLogData, TagEntry, PlanEntry } from "./types";
 import { currentLang } from "./i18n";
 
+const L = (en: string, ar: string): string => (currentLang() === "ar" ? ar : en);
+
 export interface Finding {
   severity: "high" | "medium" | "low";
   code: string;
@@ -96,15 +98,24 @@ export function duplicateReleases(tags: TagEntry[]): Finding | null {
     if (textCopies) dups.push(`«${(releases[i].content || "").slice(0, 60)}» ×${textCopies + 1} (${Math.round(lastDt / 1000)}s apart)`);
     if (reasonTwin !== null) {
       const dt = ms(releases[reasonTwin].timestamp) - ms(releases[i].timestamp);
-      dups.push(`«${(releases[i].content || "").slice(0, 40)}» و«${(releases[reasonTwin].content || "").slice(0, 40)}» — نفس السبب بنسختين (${Math.round(dt / 1000)}s apart)`);
+      dups.push(L(
+        `«${(releases[i].content || "").slice(0, 40)}» and «${(releases[reasonTwin].content || "").slice(0, 40)}» — same reason, two versions (${Math.round(dt / 1000)}s apart)`,
+        `«${(releases[i].content || "").slice(0, 40)}» و«${(releases[reasonTwin].content || "").slice(0, 40)}» — نفس السبب بنسختين (${Math.round(dt / 1000)}s apart)`,
+      ));
     }
   }
   if (!dups.length) return null;
   return {
     severity: "high",
     code: "DUPLICATE_RELEASES",
-    title: `${dups.length} إصدار مخزَّن مرتين — نص متطابق أو نفس السبب بنسختين متقاربتي الطوابع`,
-    detail: "إعادة إرسال من الـhook خزّنت الإصدار مرتين (وقد تسك النسخة الثانية رقمًا أعلى) — الثاني يقسّم مادة الـchangelog ويصطدم بحارس «ليس أحدث». احذف التوأم بـ-(undo).",
+    title: L(
+      `${dups.length} releases stored twice — identical text, or the same reason under two close-stamped versions`,
+      `${dups.length} إصدار مخزَّن مرتين — نص متطابق أو نفس السبب بنسختين متقاربتي الطوابع`,
+    ),
+    detail: L(
+      "A hook re-post stored the release twice (the second copy may mint a higher number) — it splits the changelog material and hits the not-newer guard. Delete the twin with -(undo).",
+      "إعادة إرسال من الـhook خزّنت الإصدار مرتين (وقد تسك النسخة الثانية رقمًا أعلى) — الثاني يقسّم مادة الـchangelog ويصطدم بحارس «ليس أحدث». احذف التوأم بـ-(undo).",
+    ),
     items: dups.slice(0, 10),
   };
 }
@@ -156,8 +167,14 @@ export function duplicateTags(tags: TagEntry[]): Finding | null {
   return {
     severity: "medium",
     code: "DUPLICATE_TAGS",
-    title: `${dups.length} تاق مخزَّن مرتين بنص متطابق خلال دقائق`,
-    detail: "إعادة إرسال من الـhook: حدث واحد خلّف صفين. لا أثر على القرص كتكرار الإصدار، لكن الصف المكرر يتضاعف في مجاميع الدراسة ويُطبع مرتين في صفحة الإصدار. احذف الزائدة بـ-(undo).",
+    title: L(
+      `${dups.length} tags stored twice with identical text minutes apart`,
+      `${dups.length} تاق مخزَّن مرتين بنص متطابق خلال دقائق`,
+    ),
+    detail: L(
+      "A hook re-post: one event left two rows. No on-disk fallout like a duplicate release, but the extra row doubles study aggregates and prints twice on the release page. Delete the extra with -(undo).",
+      "إعادة إرسال من الـhook: حدث واحد خلّف صفين. لا أثر على القرص كتكرار الإصدار، لكن الصف المكرر يتضاعف في مجاميع الدراسة ويُطبع مرتين في صفحة الإصدار. احذف الزائدة بـ-(undo).",
+    ),
     items: dups.slice(0, 10),
   };
 }
@@ -184,15 +201,24 @@ export function bloatedTwins(tags: TagEntry[]): Finding | null {
       if (b.tag !== a.tag) continue;
       const bn = norm(b.content);
       if (an === bn || !bn.startsWith(an)) continue;  // identical isn't a twin; only growth
-      twins.push(`[${a.tag}] «${(a.content || "").slice(0, 40)}…» ثم نسخة أطول بـ${bn.length - an.length} حرفًا`);
+      twins.push(L(
+        `[${a.tag}] «${(a.content || "").slice(0, 40)}…» then a copy ${bn.length - an.length} chars longer`,
+        `[${a.tag}] «${(a.content || "").slice(0, 40)}…» ثم نسخة أطول بـ${bn.length - an.length} حرفًا`,
+      ));
     }
   }
   if (!twins.length) return null;
   return {
     severity: "high",
     code: "BLOATED_TWINS",
-    title: `${twins.length} توأم متضخّم — نفس التاق مخزَّن مرتين خلال دقائق، الثانية امتداد نصّي للأولى`,
-    detail: "إما ذيل مبتلَع من إعادة قراءة الدور (#486/#487)، وإما إعادة إصدار بصياغة أوسع في متابعة (تتجاوز فلتر التكرار لأن النص تغيّر). في الحالتين: مدخلتان لحدث واحد. اقرأ الزوج واحذف الزائدة بـ-(undo).",
+    title: L(
+      `${twins.length} bloated twins — the same tag stored twice within minutes, the second a textual extension of the first`,
+      `${twins.length} توأم متضخّم — نفس التاق مخزَّن مرتين خلال دقائق، الثانية امتداد نصّي للأولى`,
+    ),
+    detail: L(
+      "Either a tail swallowed by a turn re-read (#486/#487), or a re-emit with fuller wording in a continuation (which slips the dedup filter because the text changed). Either way: two entries for one event. Read the pair and delete the extra with -(undo).",
+      "إما ذيل مبتلَع من إعادة قراءة الدور (#486/#487)، وإما إعادة إصدار بصياغة أوسع في متابعة (تتجاوز فلتر التكرار لأن النص تغيّر). في الحالتين: مدخلتان لحدث واحد. اقرأ الزوج واحذف الزائدة بـ-(undo).",
+    ),
     items: twins.slice(0, 10),
   };
 }
@@ -204,9 +230,15 @@ export function multilineHeadlines(tags: TagEntry[]): Finding | null {
   return {
     severity: "medium",
     code: "MULTILINE_HEADLINE_TAGS",
-    title: `${bad.length} تاق أحادي السطر بحكم البروتوكول مخزَّن بمحتوى متعدد الأسطر`,
-    detail: "أثر تسريب قديم من البارسر (يُقصّ عند السطر الأول الآن). المحتوى بعد السطر الأول ليس جزءًا من التاق — نقّه أو أعد إصداره.",
-    items: bad.slice(0, 10).map(t => `${typeof t.num === "number" ? `#${t.num} ` : ""}[${t.tag}] ${(t.content || "").split(/\r?\n/)[0].slice(0, 60)}… (+${(t.content.match(/\r?\n/g) || []).length} سطر)`),
+    title: L(
+      `${bad.length} single-line-by-protocol tags stored with multi-line content`,
+      `${bad.length} تاق أحادي السطر بحكم البروتوكول مخزَّن بمحتوى متعدد الأسطر`,
+    ),
+    detail: L(
+      "Residue of an old parser leak (it now cuts at the first line). Content past the first line is not part of the tag — clean it or re-emit.",
+      "أثر تسريب قديم من البارسر (يُقصّ عند السطر الأول الآن). المحتوى بعد السطر الأول ليس جزءًا من التاق — نقّه أو أعد إصداره.",
+    ),
+    items: bad.slice(0, 10).map(t => `${typeof t.num === "number" ? `#${t.num} ` : ""}[${t.tag}] ${(t.content || "").split(/\r?\n/)[0].slice(0, 60)}… (+${(t.content.match(/\r?\n/g) || []).length} ${L("lines", "سطر")})`),
   };
 }
 
@@ -233,8 +265,14 @@ export function numberGaps(tags: TagEntry[], plans: PlanEntry[]): Finding | null
   return {
     severity: "low",
     code: "ITEM_NUMBER_GAPS",
-    title: `${gaps.length} رقم عنصر لا يحمله أي عنصر (من #1 إلى #${max})`,
-    detail: "غالبًا حميد: -(undo) حذف تاقًا فبقي رقمه شاغرًا. يصير مقلقًا لو تزامن مع كتابات ضائعة — قارنه بسجل الأحداث.",
+    title: L(
+      `${gaps.length} item numbers carried by no item (from #1 to #${max})`,
+      `${gaps.length} رقم عنصر لا يحمله أي عنصر (من #1 إلى #${max})`,
+    ),
+    detail: L(
+      "Usually benign: an -(undo) removed a tag and left its number vacant. It turns worrying alongside lost writes — compare against the events log.",
+      "غالبًا حميد: -(undo) حذف تاقًا فبقي رقمه شاغرًا. يصير مقلقًا لو تزامن مع كتابات ضائعة — قارنه بسجل الأحداث.",
+    ),
     items: runs.slice(0, 15),
   };
 }
