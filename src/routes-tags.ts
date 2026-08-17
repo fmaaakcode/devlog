@@ -17,6 +17,7 @@ import { resolveProjectFor } from "./project-resolve";
 import { exportStatusMd } from "./export";
 import { verifyHintFor, regressionHintFor } from "./verify-hint";
 import { closedItems } from "./closed-items";
+import { CLOSURE_TAGS } from "./open-items";
 import { runEntryBatch, type EntryBatchCtx, type TagInput } from "./tags-entry-stages";
 import { sessionTouchedFiles, sessionCommandCount } from "./file-story";
 import { searchTags, patternSiblings, type SimilarBug } from "./recall";
@@ -192,6 +193,17 @@ export function makeTagsRoutes(): Record<string, unknown> {
               releaseDowngrade: null, releaseBlocked: null, rollback: null,
             };
             await runEntryBatch(batch, ctx);
+            // Closure confirmation reached Claude? A LIVE Stop-hook POST echoes
+            // every `closed` row back the same turn («✓ أُغلق #N»), so stamp the
+            // stored closers `confirmed` — the UserPromptSubmit sibling reminder
+            // then lists what is still open WITHOUT re-announcing the closure
+            // (one closure was surfacing three times in the session viewer). A
+            // queue-drained batch (X-DevLog-Queued) shows nobody its response,
+            // so its closers stay unstamped and the reminder keeps reporting them.
+            if (ctx.closed.length && req.headers.get("X-DevLog-Queued") !== "1") {
+              const ids = new Set(ctx.storedEntries.filter(e => CLOSURE_TAGS.has(e.tag) && e.id).map(e => e.id));
+              for (const t of data.tags) if (t.id && ids.has(t.id)) t.confirmed = true;
+            }
             // Record the fingerprint only for batches that carried entries — an
             // all-echo continuation posts an empty batch whose id is worthless.
             // Recorded on the same withData save as the entries themselves, so a

@@ -431,9 +431,19 @@ export function buildContext(
     if (wantReminder) {
       const summary = formatOpenSummary(data, project, config.upcomingItems);
       if (summary.length) {
-        parts.push(closures.length > 0
-          ? L(`✓ ${closures.length} item(s) closed since the last reminder`,
-              `✓ أُغلق ${closures.length} عنصر منذ آخر تذكير`)
+        // Closures the Stop hook already confirmed to Claude («✓ أُغلق #N»)
+        // are NOT news — re-announcing them made one closure surface three
+        // times in the session viewer (tag → Stop confirm → this line). The
+        // list of what is still open is the reminder's real value, so it
+        // still rides; only the count line changes framing. Unconfirmed
+        // closures (queue-drained batches, pre-`confirmed` history) keep
+        // the original announcement — for them this IS the first report.
+        const unconfirmed = closures.filter(t => !t.confirmed);
+        parts.push(unconfirmed.length > 0
+          ? L(`✓ ${unconfirmed.length} item(s) closed since the last reminder`,
+              `✓ أُغلق ${unconfirmed.length} عنصر منذ آخر تذكير`)
+          : closures.length > 0
+          ? L("Still open after your last closure:", "الباقي مفتوحًا بعد إغلاقك الأخير:")
           : L(`⚠ ${builtSince.length} \`-(built)\` without any closure since the last reminder — check whether some close an open #N.`,
               `⚠ ${builtSince.length} \`-(built)\` بدون أيّ إغلاق منذ آخر تذكير — تحقَّق هل بعضها يُغلِق #N من المفتوح.`));
         parts.push(...summary);

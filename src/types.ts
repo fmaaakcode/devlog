@@ -161,6 +161,13 @@ export interface TagEntry {
    *  a fix that didn't hold, detected at ingest (reopen.ts) and stored so
    *  recurrence is queryable data (retro ⟲, dashboard badge). Advisory. */
   relatedTo?: number;
+  /** Closers only: the Stop hook echoed this closure back to Claude in the
+   *  same turn («✓ أُغلق #N — text», live POST). The UserPromptSubmit sibling
+   *  reminder must NOT announce it a second time — one closure was reaching
+   *  the session viewer three times (tag → Stop confirm → prompt reminder).
+   *  Absent on queue-drained batches (their confirmation never reached
+   *  Claude, so the reminder is the only report) and on all older history. */
+  confirmed?: true;
   /** #855 — claim-vs-trace verdict, stamped at capture and never recomputed:
    *  "supported" (the window recorded edits), "unsupported" (none, and no command
    *  channel that could hide them), "unverifiable" (commands ran, so absence

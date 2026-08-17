@@ -35,7 +35,10 @@ export function makeTagQueue(queueDir: string, server: string, log: (s: string) 
           const body = await readFile(fp, "utf-8");
           const r = await fetch(`${server}/api/tags`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            // Drained batches never show their response to Claude — the closure
+            // confirms in it are lost, so the server must NOT stamp `confirmed`
+            // (the prompt reminder stays the only report for these closures).
+            headers: { "Content-Type": "application/json", "X-DevLog-Queued": "1" },
             body,
             signal: AbortSignal.timeout(5000),
           });

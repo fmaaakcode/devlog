@@ -388,6 +388,33 @@ describe("buildContext — UserPromptSubmit security alerts", () => {
     expect(out.indexOf(ALERT_HEADER)).toBeLessThan(out.indexOf(REMINDER));
   });
 
+  // The triple-announcement (2026-08-17): tag → Stop confirm «✓ أُغلق #N» →
+  // «✓ أُغلق 1 عنصر منذ آخر تذكير» on the next prompt. A closer the Stop hook
+  // already confirmed (`confirmed: true`) is not news — the reminder still
+  // lists what is open, but frames it as "still open", never as a closure count.
+  test("confirmed closure: reminder still rides, but does NOT re-announce the closure", () => {
+    const d = secData();
+    d.tags = [
+      { id: "c1", project: PROJ, tag: "dropped", content: "#1", timestamp: AFTER, confirmed: true },
+      { id: "t1", project: PROJ, tag: "todo", content: "باقية", timestamp: WATERMARK, num: 9 },
+    ];
+    const out = ctx(d);
+    expect(out).not.toContain(REMINDER);
+    expect(out).toContain("الباقي مفتوحًا بعد إغلاقك الأخير");
+    expect(out).toContain("#9");
+  });
+
+  test("unconfirmed closure (queue-drained / older history) keeps the count announcement — its first report", () => {
+    const d = secData();
+    d.tags = [
+      { id: "c1", project: PROJ, tag: "dropped", content: "#1", timestamp: AFTER, confirmed: true },
+      { id: "c2", project: PROJ, tag: "done", content: "#2", timestamp: AFTER },
+      { id: "t1", project: PROJ, tag: "todo", content: "باقية", timestamp: WATERMARK, num: 9 },
+    ];
+    const out = ctx(d);
+    expect(out).toContain("✓ أُغلق 1 عنصر منذ آخر تذكير");   // counts ONLY the unconfirmed one
+  });
+
   test("userPromptSubmit toggle OFF: the alert still fires, the reminder does not smuggle in", () => {
     const d = secData();
     d.injectionConfig.userPromptSubmit = false;
