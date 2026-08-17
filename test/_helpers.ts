@@ -27,11 +27,15 @@ export async function asJson<T = Record<string, any>>(r: Response): Promise<T> {
  *  server that registered a project with a manifest fired a real OSV scan,
  *  shipping the dev machine's package list to api.osv.dev on each test run).
  *  Tests OF those checks inject fetchImpl or spawn their own server instead. */
-export function startServer(dataDir: string, port: number): Subprocess {
+export function startServer(dataDir: string, port: number, extraEnv: Record<string, string> = {}): Subprocess {
   return spawn({
     cmd: ["bun", join("src", "server.ts")],
     cwd: PROJECT_ROOT,
-    env: { ...process.env, DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(port), DEVLOG_VERSION_CHECK_DISABLED: "1", DEVLOG_VULN_CHECK_DISABLED: "1", DEVLOG_REGISTRY_CHECK_DISABLED: "1" },
+    // DEVLOG_LANG pinned to "en" like runHook: the dev machine carries
+    // DEVLOG_LANG=ar user-wide, so a test asserting Arabic server strings passed
+    // locally and went red on CI (v3.46.0, closure-confirmed-e2e). Tests OF the
+    // Arabic surface opt in via extraEnv.
+    env: { ...process.env, DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(port), DEVLOG_LANG: "en", DEVLOG_VERSION_CHECK_DISABLED: "1", DEVLOG_VULN_CHECK_DISABLED: "1", DEVLOG_REGISTRY_CHECK_DISABLED: "1", ...extraEnv },
     stdout: "pipe", stderr: "pipe",
   });
 }

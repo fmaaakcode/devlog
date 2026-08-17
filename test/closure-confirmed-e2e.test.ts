@@ -64,8 +64,8 @@ describe("closure `confirmed` stamp — live vs queued", () => {
     expect(resp.closed.map(c => c.num)).toContain(num);          // Stop hook WILL echo it
     expect((await closerEntry("تُغلق مباشرة"))?.confirmed).toBe(true);
     const ctx = await inject();
-    expect(ctx).not.toContain("منذ آخر تذكير");
-    expect(ctx).toContain("الباقي مفتوحًا بعد إغلاقك الأخير");
+    expect(ctx).not.toContain("since the last reminder");
+    expect(ctx).toContain("Still open after your last closure:");
   });
 
   test("QUEUED batch (X-DevLog-Queued): closer NOT stamped, reminder announces the closure count", async () => {
@@ -76,6 +76,6 @@ describe("closure `confirmed` stamp — live vs queued", () => {
     await tags([{ tag: "dropped", content: `#${num} من الطابور` }], { "X-DevLog-Queued": "1" });
     expect((await closerEntry("من الطابور"))?.confirmed).toBeUndefined();
     const ctx = await inject();
-    expect(ctx).toContain("✓ أُغلق 1 عنصر منذ آخر تذكير");
+    expect(ctx).toContain("✓ 1 item(s) closed since the last reminder");
   });
 });
