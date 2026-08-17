@@ -2,3 +2,9 @@
 # test/_isolation.preload.ts for why data isolation must happen there.
 [test]
 preload = ["./test/_isolation.preload.ts"]
+
+# Same rule DevLog enforces on every other project through ask:lib / the
+# install gate (newest stable >= 7 days old): bun's own installer refuses
+# releases younger than a week here too. 604800 s = 7 days.
+[install]
+minimumReleaseAge = 604800

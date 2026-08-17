@@ -394,8 +394,21 @@ async function readMdFiles(dir: string): Promise<MemoryFile[]> {
         const text = await Bun.file(join(dir, name)).text();
         const fm = text.match(/^---\s*\n([\s\S]*?)\n---\s*\n?/);
         if (!fm) continue;
-        const get = (key: string) => fm[1].match(new RegExp(`^${key}:\\s*(.+)`, "m"))?.[1]?.trim() || "";
         const body = text.slice(fm[0].length).trim().slice(0, 3000);
+        // Real YAML first: covers both the nested `metadata.type` layout (what
+        // Claude Code writes today) and the flat `type:` layout. Frontmatter that
+        // is not strict YAML (e.g. an unquoted `: ` inside `description`) falls
+        // back to line-regex extraction rather than being dropped — a real memory
+        // must not vanish from the dashboard over a quoting nit.
+        let y: Record<string, unknown> | null = null;
+        try {
+          const parsed: unknown = Bun.YAML.parse(fm[1]);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) y = parsed as Record<string, unknown>;
+        } catch { /* non-strict YAML → regex fallback below */ }
+        const fallback = (key: string) => fm[1].match(new RegExp(`^\\s*${key}:\\s*(.+)`, "m"))?.[1]?.trim() || "";
+        const str = (v: unknown) => (typeof v === "string" ? v.trim() : v == null ? "" : String(v));
+        const meta = y?.metadata && typeof y.metadata === "object" ? (y.metadata as Record<string, unknown>) : null;
+        const get = (key: string) => (y ? str(meta?.[key] ?? y[key]) : fallback(key));
         // Whitelist `type` to the known memory kinds — defense-in-depth at the
         // source so a forged/injected frontmatter value can't reach the dashboard
         // sink as raw HTML (R4 deep-audit F1). Sink also escapes; this is layer 2.

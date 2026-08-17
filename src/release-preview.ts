@@ -12,6 +12,7 @@
 // that could drift into a lying preview.
 
 import type { DevLogData, TagEntry } from "./types";
+import { esc } from "./html-escape";
 import { collectRelease, renderReleaseHtml, type ReleaseFacts } from "./release-html";
 import {
   resolveReleaseIntent, detectReleaseOpenItems,
@@ -24,9 +25,6 @@ export interface ReleasePreview {
   intent: ReleaseIntent;
   blockers: ReleaseOpenItem[];
 }
-
-const esc = (s: string): string =>
-  String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] ?? c));
 
 const BUMP_AR: Record<string, string> = { patch: "ترقيعي", minor: "فرعي", major: "رئيسي" };
 

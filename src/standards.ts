@@ -22,6 +22,7 @@ import { join } from "node:path";
 import { normalizeSlashes } from "./path-utils";
 import { homedir } from "node:os";
 import { currentLang } from "./i18n";
+import { escapeRegex } from "./regex-escape";
 
 // i18n policy (#906): this was the widest all-Arabic surface left — every
 // -(ask:rules) answer and rule-command error. i18n.ts is env-only, so the
@@ -150,9 +151,9 @@ function findCategory(catalog: CatalogEntry[], cat: string): CatalogEntry | unde
  * The body runs until the next `-(...)` at line start or end-of-message, which
  * lets `-(rule:add)` carry a multi-line rule.
  */
-// Vanilla regex escaper — avoids the Stage-3 `RegExp.escape` (not yet standard JS)
-// so a Bun change can't silently break rule-command parsing.
-const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// escapeRegex (shared, src/regex-escape.ts): not `RegExp.escape` — the spec
+// hex-encodes a leading alphanumeric (`\x61…`), which would break the string
+// comparisons/alternations built on the escaped text.
 
 export function parseRuleCommands(msg: string): RuleCommand[] {
   if (!msg) return [];

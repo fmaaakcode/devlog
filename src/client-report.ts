@@ -20,12 +20,9 @@ import { featureList, type FeatureItem } from "./features";
 import { isRealVersion, parseVersion } from "./release-html";
 import { currentLang } from "./i18n";
 import { DL_THEME_ROOT } from "./dl-theme";
+import { esc } from "./html-escape";
 
 const L = (en: string, ar: string): string => (currentLang() === "ar" ? ar : en);
-
-function esc(s: string): string {
-  return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] ?? c));
-}
 
 function fmtDate(iso: string): string {
   try {

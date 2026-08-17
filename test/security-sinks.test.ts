@@ -21,6 +21,26 @@ test("dom-safe.js holds the single esc()/safeHref() copy (C2)", async () => {
   }
 });
 
+test("src/html-escape.ts holds the single server-side esc() copy (#964)", async () => {
+  // Server twin of C2: the four HTML-emitting modules (client report, release
+  // page, release preview, markdown renderer) used to each carry their own
+  // esc(); they now import the one in src/html-escape.ts. A re-grown local
+  // copy — or a `.replace(/[&<>"']/g` outside the module — is the drift back.
+  const mod = await Bun.file(join(ROOT, "src", "html-escape.ts")).text();
+  expect(mod).toMatch(/export function esc\(/);
+  for (const f of ["client-report.ts", "release-html.ts", "release-preview.ts", "md-render.ts"]) {
+    const ts = await Bun.file(join(ROOT, "src", f)).text();
+    expect(ts, `${f} must import esc from ./html-escape`).toContain('from "./html-escape"');
+    expect(ts, `${f} re-grew a local esc()/escapeHtml()`).not.toMatch(/function esc\(|const esc =|function escapeHtml\(/);
+    expect(ts, `${f} re-grew an inline HTML-escape table`).not.toContain(`/[&<>"']/g`);
+  }
+  // Behavior pinned: null-safe (blank, not throw) and all five characters covered.
+  const { esc } = await import("../src/html-escape");
+  expect(esc(null)).toBe("");
+  expect(esc(undefined)).toBe("");
+  expect(esc(`<a href="x" title='y'>&</a>`)).toBe("&lt;a href=&quot;x&quot; title=&#39;y&#39;&gt;&amp;&lt;/a&gt;");
+});
+
 test("stack-map.js escapes untrusted tooltip fields (D2)", async () => {
   // The stack-map script was extracted from stack-map.html to an external file
   // (report #5) so CSP can drop script-src 'unsafe-inline'; the escaping guard

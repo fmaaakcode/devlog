@@ -2,6 +2,8 @@
 // future server-side validation. Pulling it out of parse-tags.js so it can
 // be unit-tested without spawning Bun-as-stdin.
 
+import { escapeRegex } from "./regex-escape";
+
 export const ALLOWED_TAGS = [
   "desc", "about", "plan", "built", "todo", "upcoming", "done", "dropped", "undo",
   "bug found", "bug fix", "bug fix:interim", "security fix", "security",
@@ -61,10 +63,9 @@ const FAKE_VERSION = /^v\d+(\.\d+)+\s*$/i;
 // inline-code span is real content, not strip residue.
 const SUSPICIOUS_START = /^(?:\||>|\*(?!\*))/;
 
-// Vanilla regex escaper. Avoids depending on the Stage-3 `RegExp.escape`, which
-// isn't part of the JS standard yet — if a Bun release changed or dropped it,
-// every Stop hook would crash and no tags would be captured at all.
-const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// escapeRegex (shared, src/regex-escape.ts): not `RegExp.escape` — the spec
+// hex-encodes a leading alphanumeric (`RegExp.escape("bug fix")` → `\x62ug\x20fix`),
+// so the escaped tag names would no longer be plain text to splice and compare.
 
 /**
  * Is the text between a bullet and its `(` a real tag head in the ORIGINAL

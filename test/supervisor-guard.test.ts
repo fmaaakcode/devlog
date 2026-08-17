@@ -13,7 +13,7 @@ describe("supervisor log preservation + failure visibility (#770)", () => {
   test("both channels are preserved before the truncating start", async () => {
     const src = await Bun.file(PS1).text();
     expect(src).toContain('foreach ($f in @($log, "$log.err"))');   // .err included
-    expect(src).toContain('Add-Content -Path "$f.1"');              // preserve, not drop
+    expect(src).toContain('Add-Content -LiteralPath "$f.1"');       // preserve, not drop (-LiteralPath: #968)
   });
 
   test("a failed daemon start is logged, not silently swallowed", async () => {

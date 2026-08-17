@@ -11,6 +11,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { resolveWorkspaceMemberDirs } from "./cargo-workspace";
 import { withLockRetry } from "./fs-retry";
+import { escapeRegex } from "./regex-escape";
 
 export interface VersionUpdate {
   file: string;
@@ -255,7 +256,7 @@ function cargoPackageName(cargoRaw: string): string | null {
 // lock in sync. Pure (exported for tests). Null when the crate entry is absent or
 // already matches.
 export function syncCargoLockContent(raw: string, packageName: string, newVersion: string): { content: string; from: string } | null {
-  const esc = packageName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const esc = escapeRegex(packageName);
   // Cargo emits `[[package]]\nname = "…"\nversion = "…"` in that fixed order.
   const re = new RegExp(`(\\[\\[package\\]\\]\\s*\\nname\\s*=\\s*"${esc}"\\s*\\nversion\\s*=\\s*")([^"]+)(")`);
   const m = raw.match(re);

@@ -36,11 +36,13 @@ if (-not $alive) {
   # BOTH channels' previous contents into the `.1` generation BEFORE the
   # truncating start; the archive is capped at ~20MB (oldest dropped wholesale).
   foreach ($f in @($log, "$log.err")) {
-    if ((Test-Path "$f.1") -and ((Get-Item "$f.1").Length -gt 20000000)) {
-      Remove-Item -Force "$f.1"
+    # -LiteralPath: $dir is the user's project path and may contain PowerShell
+    # wildcard characters ([ ] * ?) that -Path would try to expand.
+    if ((Test-Path -LiteralPath "$f.1") -and ((Get-Item -LiteralPath "$f.1").Length -gt 20000000)) {
+      Remove-Item -Force -LiteralPath "$f.1"
     }
-    if ((Test-Path $f) -and ((Get-Item $f).Length -gt 0)) {
-      Add-Content -Path "$f.1" -Value (Get-Content -Raw $f)
+    if ((Test-Path -LiteralPath $f) -and ((Get-Item -LiteralPath $f).Length -gt 0)) {
+      Add-Content -LiteralPath "$f.1" -Value (Get-Content -Raw -LiteralPath $f)
     }
   }
   # bun may be off PATH in a Scheduled Task context — same ~/.bun/bin fallback

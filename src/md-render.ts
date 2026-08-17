@@ -11,11 +11,13 @@
 // Everything else is rendered as escaped text. The output is sanitized: no
 // raw <script>, no on* handlers, no javascript: URLs.
 
+import { esc } from "./html-escape";
+
 const ALLOWED_PROTO = /^(https?:|mailto:|#|\/|\.\/|\.\.\/)/i;
 
-export function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] ?? c));
-}
+// Kept under its historical name for callers; the implementation is the shared
+// server escaper (#964).
+export const escapeHtml = esc;
 
 function safeUrl(raw: string): string {
   const u = raw.trim();

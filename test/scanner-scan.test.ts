@@ -174,3 +174,44 @@ describe("scanFreshProfile (full pipeline → ProjectProfile)", () => {
     });
   });
 });
+
+describe("memory frontmatter (#962/#963: real YAML, both layouts, non-strict fallback)", () => {
+  test("nested metadata.type + flat type + broken YAML → all three surface, none throw", async () => {
+    await withTmp(async root => {
+      // Project dir + a fake CLAUDE_CONFIG_DIR holding its memory folder.
+      const proj = join(root, "proj");
+      const cfg = join(root, "cfg");
+      const { claudeProjectSlug } = await import("../src/path-utils");
+      const mem = join(cfg, "projects", claudeProjectSlug(proj), "memory");
+      await mkdir(proj, { recursive: true });
+      await mkdir(mem, { recursive: true });
+      await writeFile(join(proj, "a.ts"), "export const a = 1;");
+      await writeFile(join(mem, "nested.md"),
+        "---\nname: nested-one\ndescription: nested layout\nmetadata:\n  node_type: memory\n  type: feedback\n---\n\nbody nested\n");
+      await writeFile(join(mem, "flat.md"),
+        "---\nname: flat-one\ndescription: flat layout\ntype: reference\n---\n\nbody flat\n");
+      // Not strict YAML: unquoted `: ` inside description makes Bun.YAML.parse
+      // throw. The scanner must neither crash nor drop the file — the line
+      // regex fallback recovers name/description/type (indented type included).
+      await writeFile(join(mem, "loose.md"),
+        "---\nname: loose-one\ndescription: has a colon: right here\nmetadata:\n  type: project\n---\n\nbody loose\n");
+      // Wrong/forged type → whitelist blanks it, file still listed.
+      await writeFile(join(mem, "forged.md"),
+        "---\nname: forged\ndescription: x\nmetadata:\n  type: <img src=x onerror=alert(1)>\n---\n\nbody\n");
+      const prev = process.env.CLAUDE_CONFIG_DIR;
+      process.env.CLAUDE_CONFIG_DIR = cfg;
+      try {
+        const profile = await scanFreshProfile(proj);
+        const byFile = Object.fromEntries((profile.memoryFiles ?? []).map(f => [f.file, f]));
+        expect(Object.keys(byFile).sort()).toEqual(["flat.md", "forged.md", "loose.md", "nested.md"]);
+        expect(byFile["nested.md"]).toMatchObject({ name: "nested-one", description: "nested layout", type: "feedback" });
+        expect(byFile["flat.md"]).toMatchObject({ name: "flat-one", description: "flat layout", type: "reference" });
+        expect(byFile["loose.md"]).toMatchObject({ name: "loose-one", description: "has a colon: right here", type: "project" });
+        expect(byFile["forged.md"].type).toBe("");
+        expect(byFile["nested.md"].body).toBe("body nested");
+      } finally {
+        if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev;
+      }
+    });
+  });
+});

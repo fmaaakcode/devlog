@@ -6,6 +6,7 @@ import { diskExists } from "./disk-probe";
 import { isStepClosed, leadingNums, normalizeTagContent, openTodos, openBugs } from "./data";
 import { currentLang } from "./i18n";
 import { DL_THEME_ROOT } from "./dl-theme";
+import { esc } from "./html-escape";
 
 // DEVLOG_HTML_SPEC v1.0 implementation.
 // Output: each project gets `.devlog/releases/{manifest.json, index.html, vX.Y.Z.html}`.
@@ -19,10 +20,6 @@ const SPEC_VERSION = "1.0";
 
 export function releasesDirFor(projectPath: string): string {
   return join(projectPath, ".devlog", "releases");
-}
-
-function esc(s: string): string {
-  return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] ?? c));
 }
 
 function fmtDate(iso: string): string {
