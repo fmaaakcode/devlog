@@ -102,6 +102,23 @@ describe("parseRuleCommands", () => {
   });
 });
 
+describe("parseRuleCommands keeps inline code intact (rules were stored blanked)", () => {
+  test("backtick spans survive in the body — rust #3 lost both command names", () => {
+    const [c] = std.parseRuleCommands("-(rule:add) rust\nشغّل `cargo fmt` (أو `cargo fmt --all`) قبل التسليم");
+    expect(c.body).toBe("شغّل `cargo fmt` (أو `cargo fmt --all`) قبل التسليم");
+    expect(c.body).not.toMatch(/ {3,}/);
+  });
+
+  test("backtick spans survive on the arg line too", () => {
+    const [c] = std.parseRuleCommands("-(rule:add) rust `cargo clippy` قبل الدمج");
+    expect(c.argLine).toBe("rust `cargo clippy` قبل الدمج");
+  });
+
+  test("a command inside a fence is still NOT captured (stripping stays a detection aid)", () => {
+    expect(std.parseRuleCommands("```\n-(rule:add) rust\nقاعدة داخل سياج\n```")).toEqual([]);
+  });
+});
+
 describe("scanCatalog", () => {
   test("finds category files and excludes README / _TEMPLATE", async () => {
     const cats = (await std.scanCatalog()).map(c => c.category).sort();
@@ -245,6 +262,17 @@ describe("addRule", () => {
     expect(count).toBe(1);
   });
 
+  test("a glued confirmation tail does not defeat dedup (design #2/#3, security #6/#7)", async () => {
+    // The assistant's own "تمّت الإضافة…" prose landing in the body made the
+    // full-text comparison miss the existing first line → second copy WITH tail.
+    const r = await std.addRule("rust", "لا unwrap في كود الإنتاج\nتمّت الإضافة: القاعدة الآن ضمن تصنيف rust رقم #2.");
+    expect(r.ok).toBe(true);
+    expect(r.message).toContain("موجودة مسبقاً");
+    const file = await readFile(join(TMP, "languages", "rust.md"), "utf-8");
+    expect((file.match(/لا unwrap في كود الإنتاج/g) || []).length).toBe(1);
+    expect(file).not.toContain("تمّت الإضافة");
+  });
+
   test("a rule added AFTER a multi-line rule lands below its whole block (#769)", async () => {
     // Pre-fix, insertAt sat right after the last bullet's FIRST line — the new
     // rule split the old multi-line rule and glued its body onto itself.
@@ -273,6 +301,23 @@ describe("addRule", () => {
     const r = await std.addRule("nonexistent", "x");
     expect(r.ok).toBe(false);
     expect(r.message).toContain("rule:new");
+  });
+});
+
+describe("listCatalog flags categories still carrying the template placeholder", () => {
+  test("lists them under a ⚠ line; filled categories are not named", async () => {
+    await std.createCategory("languages", "zig");   // template → placeholder present
+    const out = await std.listCatalog();
+    expect(out).toContain("⚠ بلا شرط تطبيق");
+    expect(out).toMatch(/⚠[^\n]*zig/);
+    expect(out).not.toMatch(/⚠[^\n]*rust/);
+    expect(std.lacksWhenApplies("## متى تنطبق\n\n(اشرح بسطر متى يسحب كلود هذا التصنيف.)\n")).toBe(true);
+    expect(std.lacksWhenApplies("## When it applies\n\n(One line: when should Claude pull this category.)\n")).toBe(true);
+    expect(std.lacksWhenApplies("## متى تنطبق\n\nأي مشروع Rust.\n")).toBe(false);
+  });
+
+  test("no ⚠ line when every category has its line", async () => {
+    expect(await std.listCatalog()).not.toContain("⚠");
   });
 });
 

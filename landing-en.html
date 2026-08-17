@@ -4,11 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>DevLog — automatic memory for everything Claude builds</title>
-<meta name="description" content="Automatic development tracker for Claude Code sessions: every feature built, every task opened, every vulnerability closed — on a live local dashboard, without writing any of it yourself.">
+<meta name="description" content="The memory that doesn't live in the repo: rejected decisions, closed bugs with their causes, and closure/release/install guards — captured automatically from Claude Code sessions on a local, zero-telemetry dashboard.">
 <link rel="canonical" href="https://fmaaakcode.github.io/devlog/landing-en.html">
 <meta property="og:type" content="website">
 <meta property="og:title" content="DevLog — automatic memory for everything Claude builds">
-<meta property="og:description" content="Automatic development tracker for Claude Code: every feature built, task opened, and vulnerability closed — on a live, local, zero-telemetry dashboard.">
+<meta property="og:description" content="The memory that doesn't live in the repo + guards that stop Claude at the moments that matter — local, zero telemetry.">
 <meta property="og:image" content="https://fmaaakcode.github.io/devlog/assets/dashboard.jpeg">
 <meta property="og:url" content="https://fmaaakcode.github.io/devlog/landing-en.html">
 <meta name="twitter:card" content="summary_large_image">
@@ -259,9 +259,11 @@ footer a:hover { color: var(--emerald); }
     <div class="wrap">
         <h1>Claude codes.<br><span class="accent">DevLog remembers.</span></h1>
         <p class="sub">
-            Every Claude Code session ends and takes its memory with it. DevLog turns your work
-            into a living history: every feature built, every task opened, every vulnerability
-            closed — on a local dashboard, without you writing a single line of it yourself.
+            Every Claude Code session ends and forgets: which approach you rejected and why, which
+            bug was fixed and how, where the work stopped. DevLog captures it from three short lines
+            at the end of each response, hands it back to Claude before it repeats a mistake, and stops
+            it at the moments that matter — no release with open work behind it, no dependency
+            installed unchecked. On a local dashboard, without you writing a line of it.
         </p>
         <div class="cta-row">
             <a class="btn btn-primary" href="#install">Install in two commands</a>
@@ -277,7 +279,7 @@ footer a:hover { color: var(--emerald); }
                 <span class="claude-line">… Finished building the login screen and wiring it to the API.</span>
                 <span class="tag-line"><span class="t">-(built)</span> <span class="c">login screen with field validation</span></span>
                 <span class="tag-line"><span class="t gold">-(todo)</span> <span class="c">add a "forgot password" flow</span></span>
-                <span class="tag-line"><span class="t pink">-(bug fix)</span> <span class="c">#12</span></span>
+                <span class="tag-line"><span class="t pink">-(bug fix)</span> <span class="c">#12 — token check ran before the cookie was parsed</span></span>
             </div>
             <div class="term-caption">
                 Three lines at the end of a response — <b>DevLog captures them silently</b> and your dashboard updates live
@@ -306,6 +308,11 @@ footer a:hover { color: var(--emerald); }
                 <div class="icon">🚢</div>
                 <h3>A release ships with open work behind it</h3>
                 <p>A discovered bug left unfixed, a plan step never finished — and the release went out because nothing stood in its way.</p>
+            </div>
+            <div class="card">
+                <div class="icon">🔁</div>
+                <h3>"It proposed the fix we rejected last month"</h3>
+                <p>Claude wasn't in the conversation that settled the decision; it only reads the code — and the reason isn't in the code.</p>
             </div>
         </div>
     </div>
@@ -339,7 +346,7 @@ footer a:hover { color: var(--emerald); }
     <div class="wrap reveal">
         <div class="kicker">The real difference</div>
         <h2>Not a logger that writes and stays quiet — an accountability system that refuses</h2>
-        <p class="lead">Ordinary trackers record and watch. DevLog enforces discipline on Claude itself — and that's what you won't find anywhere else.</p>
+        <p class="lead">Ordinary trackers record and watch. DevLog enforces discipline on Claude itself — 18 guards that refuse instead of warn; here are three of them.</p>
         <div class="enforce">
             <div class="shell">
                 <div class="shell-head red">Closure Discipline</div>
@@ -430,6 +437,38 @@ footer a:hover { color: var(--emerald); }
             <div class="feat">
                 <h3><span class="b" style="background:var(--blue)"></span>A standards library that grows with you</h3>
                 <p>Rules captured from your corrections and pulled on demand by language or app type — so Claude never repeats the same mistake in another project.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--emerald)"></span>The file's dossier before touching it</h3>
+                <p><code>-(ask:why)</code> hands Claude a file's full history — its purpose, the decisions that shaped it, every bug that touched it and how it ended — before any big edit. <code>-(ask:map)</code> ranks files by how much depends on them.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--gold)"></span>The load-bearing wall gate</h3>
+                <p>The first time Claude touches a file five or more files depend on, it's stopped once: "this is a load-bearing wall — here's what sits on it." It doesn't prevent demolition; it prevents <em>unaware</em> demolition.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--blue)"></span>"What happened last?"</h3>
+                <p><code>-(ask:recent)</code> summarizes past sessions by time: their tags, files, commands and which failed. And your literal request is stored with every batch — so "why was this asked for?" is answered in your words.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--emerald)"></span>The session's story — turning points only</h3>
+                <p>After a batch that closes items, one nudge asks for the turning points: an approach that failed, a change of direction, a deliberate deferral — stamped by an evidence check: a claim with no trace in the session is marked <em>unsupported</em>.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--gold)"></span>"Why this library?"</h3>
+                <p>A page for every dependency in your project: why it's there, its official description, its security status. Overriding a warning is recorded as an open security item — it doesn't vanish.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--blue)"></span>Model comparison from your record</h3>
+                <p>Which model opens more bugs, whose fixes hold, who ships without tests — numbers from your real work; every tag carries the name of the model that wrote it.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--emerald)"></span>The tool measures itself</h3>
+                <p>Before/after effect of every rule, a hit counter per guard (a silent guard vs a dead one), and a "backed / no trace" stamp on every "I did X" claim — with no built-in AI.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--gold)"></span>Nothing gets deleted</h3>
+                <p>Old data is archived compressed, undo keeps a copy first — and if the copy can't be written the deletion is refused. Export any project as one file and import it on another machine.</p>
             </div>
         </div>
     </div>

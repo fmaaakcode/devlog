@@ -113,6 +113,18 @@ export async function unservedMatches(
 ): Promise<AskHit[]> {
   const out: AskHit[] = [];
   const seen = new Set<string>();
+  // Detection runs over the stripped copy, but the ARGUMENTS the rows read
+  // (m[1]…) must come from the original text — an argument written in
+  // backticks (`-(ask:why) \`src/x.ts\``, an ask:search query quoting an
+  // identifier) arrived here as spaces and the ask ran empty or off-target.
+  // Same defect family as tag-parser's content slice and standards' rule body:
+  // stripping is a detection aid, never the extraction source. Re-running the
+  // row's regex STICKY on the original at the same offset (blanking preserves
+  // length 1:1) yields the groups as written; projecting group offsets would
+  // not — a fully-backticked argument is all spaces here, so the group
+  // boundaries themselves land wrong. m[0] stays the stripped text (the head
+  // check below wants its `(` offset).
+  const reSticky = new RegExp(re.source, `${re.flags.replace(/[gy]/g, "")}y`);
   for (const m of ctx.strippedMsg.matchAll(re)) {
     // The head must be a head in the ORIGINAL text (#805, third site found by
     // sweeping): blanking a code span leaves SPACES, so "- `#793` (ask:open)"
@@ -122,6 +134,13 @@ export async function unservedMatches(
     const parenAt = m[0].indexOf("(");
     if (m.index !== undefined && parenAt >= 0
         && !isRealTagHead(ctx.msg, m.index, m.index + parenAt)) continue;
+    if (m.index !== undefined) {
+      reSticky.lastIndex = m.index;
+      const orig = reSticky.exec(ctx.msg);
+      // The backticks themselves are formatting, not argument: `\`src/x.ts\``
+      // must reach /api/file-why as src/x.ts.
+      if (orig) for (let g = 1; g < m.length; g++) m[g] = orig[g]?.replace(/`/g, "") as string;
+    }
     const cmd = toCmd(m);
     if (seen.has(cmd)) continue;
     seen.add(cmd);

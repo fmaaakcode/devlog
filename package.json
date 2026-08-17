@@ -1,7 +1,7 @@
 {
   "name": "devlog",
-  "version": "3.42.0",
-  "description": "Automatic dev tracking for Claude Code via hooks and tags",
+  "version": "3.44.0",
+  "description": "Project memory and guardrails for Claude Code via hooks and tags: rejected decisions, closed bugs with causes, release/install gates — local dashboard, zero telemetry",
   "type": "module",
   "private": true,
   "scripts": {

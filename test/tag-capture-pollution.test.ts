@@ -105,6 +105,24 @@ describe("#805 sweep — every scanner reads the head from the original text", (
     expect(await unservedMatches(ctx("- (ask:open)"), row.re, () => "ask:open")).toHaveLength(1);
   });
 
+  test("an ask ARGUMENT written in backticks reaches the row intact (fourth site of the strip-then-extract defect)", async () => {
+    // Detection runs over the stripped copy, but rows read m[1] as the
+    // argument — a backticked path/query arrived as spaces and the ask ran
+    // empty. Groups are now projected back onto the original text.
+    const row = ASK_ROWS.find(r => String(r.re).includes("ask:why"));
+    if (!row) throw new Error("ask:why row not found");
+    const ctx = (msg: string) => ({
+      msg,
+      strippedMsg: msg.replace(/`[^`\n]*`/g, m => " ".repeat(m.length)),
+      shouldServeAsk: async () => true,
+    }) as unknown as AskCtx;
+    const hits = await unservedMatches(ctx("-(ask:why) `src/standards.ts`"), row.re, m => `ask:why ${(m[1] || "").trim()}`);
+    expect(hits).toHaveLength(1);
+    // Backticks are formatting, not argument — the path reaches the API bare.
+    expect(hits[0].m[1].trim()).toBe("src/standards.ts");
+    expect(hits[0].cmd).toBe("ask:why src/standards.ts");
+  });
+
   test("isRealTagHead itself: whitespace-only gaps pass, anything else fails", () => {
     expect(isRealTagHead("-(todo) x", 0, 1)).toBe(true);
     expect(isRealTagHead("- (todo) x", 0, 2)).toBe(true);

@@ -1,25 +1,158 @@
 # DevLog
 
-[![test](https://github.com/fmaaakcode/devlog/actions/workflows/test.yml/badge.svg)](https://github.com/fmaaakcode/devlog/actions/workflows/test.yml) · **[Live demo →](https://fmaaakcode.github.io/devlog/)** · [Install](#install-claude-code-plugin--recommended)
+[![test](https://github.com/fmaaakcode/devlog/actions/workflows/test.yml/badge.svg)](https://github.com/fmaaakcode/devlog/actions/workflows/test.yml) · **[Live demo →](https://fmaaakcode.github.io/devlog/)** · [Install](#install-claude-code-plugin--recommended) · [API](./API.md) · [Security](./SECURITY.md)
 
 <img src="./assets/dashboard.jpeg" alt="DevLog Dashboard" style="border-radius: 12px;" />
 
-Automatic development tracker for Claude Code projects. Claude emits short `-(tag)` markers in its responses; a Stop hook captures them and feeds a local dashboard with per-project activity, plans, releases, and security findings — without polluting any repo or filling Claude's context window.
+**The memory that doesn't live in the repo — with guardrails.**
 
-## What you get
+Every Claude Code session ends and forgets: which approach you rejected and why, which bug was fixed and how, where the work stopped. DevLog captures that from a few short `-(tag)` lines Claude writes at the end of each response, hands it back to Claude *before* it repeats a mistake, and stops it at the moments that matter — no release with open work behind it, no dependency installed unchecked, no bug closed without a root cause.
 
-- A local web dashboard at `http://127.0.0.1:7777` showing every project Claude touches: built features, open todos, bugs, security findings, recent activity.
-- Trackable plans (`doc:plan`) that Claude updates across sessions — checkboxes flip, progress bars move, all from chat.
-- Auto-generated release reports grouping built/fixed/security tags by version.
-- Generated `.md` + `.html` documents (reports, analyses, comparisons) without Claude writing HTML by hand.
-- Lightweight context injection at session start so Claude knows what's already been done.
+Local dashboard, zero telemetry, zero runtime dependencies (pure Bun). Arabic and English UI.
 
-Zero npm dependencies — pure Bun + Node built-ins.
+## The whole idea in two lines
 
-## Requirements
+Claude ends a response with tags like `-(built)`, `-(bug fix)`, `-(decision)`; a Stop hook captures them into a live per-project record — tasks, bugs, releases, decisions, all numbered and dated.
 
-- [Bun](https://bun.sh/) 1.3.14+ (server runtime)
-- [Claude Code](https://claude.com/claude-code) (any recent version with hooks support)
+On top of the record: **guards** that block mistakes before they land, a **memory** that answers "have we been here before?", and a **dashboard** that shows it all. Everything runs on your machine — no cloud, no accounts, no external libraries.
+
+```
+… finished the login screen and wired it to the API.
+-(built) login screen with field validation
+-(todo) add a "forgot password" flow
+-(bug fix) #12 — the token check ran before the session cookie was parsed
+```
+
+## Guards — 18 checks that refuse instead of warn
+
+A guard is an automatic check that stops a mistake before it enters your record. Fifteen run on Claude's response before it closes; three sit on other gates. Every guard has a hit counter, so a silent guard is distinguishable from a dead one.
+
+**Closure & honesty (5)** — so "done" means done
+
+| Guard | What it stops |
+|---|---|
+| Empty closure | "Closed #12" when nothing is #12 — rejected, with the real open list |
+| Mismatched closure | Right number, wrong item — rejected so the wrong item never closes |
+| Work without closure | Finished an open task and forgot to close it by number — nudged before moving on |
+| Root cause required | A bug can't be closed with a bare number; Claude must name *why* it happened. A knowingly temporary fix is recorded as visible debt (`bug fix:interim`) |
+| Silent session | Wrote code and documented nothing — one reminder |
+
+**Release (5)** — so you never ship a half-finished version
+
+| Guard | What it stops |
+|---|---|
+| Open items block shipping | `-(release)` with open todos/bugs/security → refused until closed |
+| Version never goes back | A version ≤ current is rejected; no duplicate release ever |
+| Release syntax | Mixing a bump type with an explicit version in one tag → rejected with both correct forms |
+| Feature reminder | A release with work but no client-visible `-(feature)` line → one soft reminder, never blocks |
+| Server-side refusal | A second layer on the server itself, even if the local check is bypassed |
+
+**Record hygiene (5)** — so the log stays clean
+
+| Guard | What it stops |
+|---|---|
+| Typo'd tag | Not dropped silently — Claude gets the nearest valid tag and re-emits |
+| Formatting trap | Tag written inside a code fence (treated as an example) → immediate hint to re-emit as a raw line |
+| Disciplined deferral | Items can move to an "upcoming" tier that never blocks a release — but security is never deferrable |
+| Phantom feature update | Updating/removing a feature by a number that matches nothing → stopped, shown the right list |
+| Outdated libraries | Automatic warning at session start, before you ask |
+
+**Three more gates**
+
+| Gate | What it does |
+|---|---|
+| **Install gate** (PreToolUse) | Any `bun add X` / `npm i X` / `cargo add X` / `pip install X` without a pinned version is **blocked** before it runs — with the version DevLog recommends (newest stable ≥ 7 days old, clean in OSV.dev). Re-issue with the pin and it passes. `DEVLOG_INSTALL_GATE=strict` blocks when the check itself fails (offline) instead of silently allowing |
+| **Write gate** (PreToolUse on Write/Edit) | Checks config files as they're written (toolchain versions, etc.) against the standards library; a violation stops and needs a deliberate confirm |
+| **Load-bearing wall gate** | The first time Claude touches a file that ≥ 5 other files depend on, it's stopped once: "this is a load-bearing wall — here's what sits on it." Doesn't prevent demolition; prevents *unaware* demolition. If Claude proceeds without recording a reason (`decision`/`insight` in the same session), one non-blocking nudge asks for it |
+
+Bypass knobs for emergencies: `DEVLOG_RELEASE_GUARD=0`, `DEVLOG_CLOSURE_CHECK=0`, `DEVLOG_ROOTCAUSE_CHECK=0`, `DEVLOG_DEMOLITION_GATE=0`, `DEVLOG_STANDARDS_CHECK=0`. Every bypass is deliberate — nothing slips through by oversight.
+
+## Libraries — safety first
+
+| | |
+|---|---|
+| **No blind installs** | See the install gate above. Not advice — an actual block |
+| **Version advisor** | Before any new dependency Claude emits `-(ask:lib) <name>` and gets the exact version to install: newest stable at least 7 days old and clean in [OSV.dev](https://osv.dev). No guessing, no `@latest` |
+| **Vulnerability scan** | The full dependency tree — direct *and* transitive — against OSV.dev, for npm, Rust, Python, Go, PHP, and mixed projects (e.g. Tauri). On demand via `-(audit)`; dismiss inapplicable advisories with `audit.toml` (Rust) or `.devlog/vuln-ignore` |
+| **Same-session alert** | A severe advisory appears for a library installed in *this* session? The warning reaches Claude on the next message, not tomorrow |
+| **Outdated report** | Session start lists libraries that fell behind their official registry (npm, crates.io, PyPI, Go, Packagist) |
+| **"Why this library?" page** | `/deps.html`: every dependency with the purpose Claude recorded (`-(lib) name — purpose`), its official description, and its security status. Overriding a warning is recorded as an open security item — it doesn't vanish |
+
+## Tasks, bugs, plans
+
+Everything open gets a `#N` that follows you across sessions — open today, close next week.
+
+- **Tasks** open with `-(todo)`, close with `-(done) #N` or withdraw with `-(dropped) #N`. Live list any time with `-(ask:open)`.
+- **Bugs** open with `-(bug found)`, close with a root cause. A bug that comes back after its "fix" is flagged automatically with ⟲ — regressions don't pass quietly.
+- **Security** items have their own lane: never deferrable, never shipped open.
+- **Plans** (`-(doc:plan)`) are checkbox documents whose boxes flip themselves as steps close — see [Plans](#plans--two-distinct-things-similar-names).
+- **Upcoming tier** — deferred ideas in their own tab; kept, but they never block a release.
+- **Test nudge** — fixed a bug without touching a test file? One reminder to pin the fix.
+
+## Memory — "have we been here before?"
+
+Your record becomes something you can ask, so you don't re-open an old debate or repeat a solved mistake.
+
+| Ask | What you get |
+|---|---|
+| `-(ask:search) <question>` | Best-matching stored tags — decisions, insights, closed bugs with their fixes — served in the same turn. `all:` prefix searches every tracked project |
+| *(automatic)* | Opened a bug that resembles a closed one? The old fix, its number and files arrive without being asked |
+| *(automatic)* | Claude opens a file with history? A short brief arrives first: what happened here, what was fixed, which decisions shaped it |
+| `-(ask:why) <path>` | The full dossier for one file: purpose, decisions, every bug that touched it and how it ended (⟲ if the fix didn't hold), latest work. Pull it **before** rewriting a wired-in file, so Claude doesn't propose a solution the project already rejected |
+| `-(ask:map) [focus]` | The code map: files ranked by how much the rest depends on them, each with the purpose its own header states. Use before grepping an unfamiliar area |
+| `-(decision)` | Every architectural decision is stored *with the rejected alternative and why it lost* — "why didn't we pick X?" has a documented answer |
+| *(stored)* | Each fix keeps the model's reasoning at the time; ask a year later and it's still there, even if the session files are gone |
+| *(stored)* | Every tag carries the name of the model that wrote it — "who made fix #N?" has an answer |
+
+## The narrative layer — what happened, and why it was asked
+
+The record used to store *what* was done, not *why it was requested* or *what happened along the way*. Three pieces close that gap:
+
+- **`-(ask:recent) [N | Nd]`** — the time door. A summary of the last session (its tags in order, files touched with edit sizes, commands and which failed, its story if any). `3` = last 3 sessions, `7d` = last week. Pull it when picking up old work instead of digging through raw data.
+- **Your literal request** — with every documentation batch, the user's own prompt (≤ 700 chars) is stored and linked to its tags. It shows in file dossiers and session summaries, so "why was this asked for?" is answered in your words, not the model's interpretation.
+- **`-(story)`** — after a batch that closes two or more items, one nudge asks Claude for the *turning points only*: an approach that failed, a change of direction, a deliberate deferral (≤ 1200 chars, one per batch, no re-telling of tags). Linked to the closed numbers and stamped by an evidence check: a claim like "we tried X and it failed" with no trace in the session's events is marked *unsupported*.
+
+## Session-start briefing
+
+Every new session, Claude receives a compact briefing so it never starts from zero: the project's identity and stack, the last five things built, open items with their numbers, alerts (outdated libraries, vulnerabilities, record damage, a stale server), and which standards it can pull — all under an enforced size cap so the start never bloats. Preview the exact block at `GET /api/inject/preview`.
+
+## Standards library
+
+Rules captured from your corrections, pulled on demand by language or app type (`-(ask:rules) typescript security`), added with `-(rule:add)`. Each rule gets a before/after effect measurement (see below), so you know which rules actually changed anything.
+
+## Dashboard — everything above, live
+
+`http://127.0.0.1:7777`, updated over WebSocket without a refresh:
+
+- **Per-project panels** — tasks, bugs, security, releases, memory, and a "most broken" section showing which files keep failing.
+- **Stack map** — an interactive picture of the code's structure and who depends on whom.
+- **Change viewer** — every edit Claude made, as an inline diff per file or per session.
+- **Release pages** — a static HTML page generated for every release with its changes.
+- **Client report** — one button: a report you can send to a client — capabilities and latest release, no internals, no security details.
+- **Model comparison** — which model opens more bugs, whose fixes hold, who ships without tests — from your real record.
+- **Trends** — monthly curves of opened, closed and released across the whole history.
+- **Studies** — `-(ask:study)` generates a deep study from the entire history; each study builds on the previous one.
+- **Arabic / English** — the 🌐 button flips the whole UI and remembers your choice.
+
+## Releases — one command
+
+Emit `-(release) <reason>` and DevLog does the rest: detects the bump type, computes the version, writes the changelog, generates the release page, and patches the version field in `package.json` / `Cargo.toml` in place (atomic, anchored regex — nothing else in the file is touched). Every client-visible capability declared with `-(feature)` accumulates in a features registry, backfillable to past releases.
+
+## Your data doesn't get lost
+
+- **Archive, never delete** — old events roll into monthly compressed archives; every `undo` keeps a copy first, and if the copy can't be written the deletion is refused.
+- **Daily backups** of project settings.
+- **Move between machines** — export any project's history as one JSON bundle and import it elsewhere with duplicate-skipping merge.
+- **Doctor** — `bun run doctor [path] [--json]` finds corruption, duplicates, stale items, abandoned plans, releases shipped past open bugs; recent findings also surface at session start.
+- **`-(ask:record)`** — audits the record itself for entries captured wrongly (swallowed prose, fragments, drifted shape); fixes only with your approval, entry by entry, archiving the original first.
+
+## Self-measurement
+
+The tool measures itself — by counting and comparing, no built-in AI (the mind reading the numbers is Claude):
+
+- **Rule effectiveness** — added a rule? Bugs before vs after: helped / no change / worse / not enough data yet.
+- **Guard counters** — how often each guard blocked, how often it was deliberately overridden, and which silent one needs a check.
+- **Backed or talk?** — every "I did X" claim is stamped: real file traces = *backed*; none = *no trace*.
 
 ## Install (Claude Code plugin — recommended)
 
@@ -35,248 +168,63 @@ That's the whole install. The plugin bundles everything:
 - **Hooks** ship inside the plugin (`hooks/hooks.json`) — no editing `settings.json`, no absolute paths.
 - **The tag protocol** arrives as a compact SessionStart primer plus an on-demand `devlog-protocol` skill — nothing gets copied into your global `~/.claude/CLAUDE.md`.
 - **The local server** auto-starts on first use (bundled `ensure-server.sh`); open the dashboard at `http://127.0.0.1:7777`.
-- **Your data** lives in `~/.devlog/` — outside the plugin cache, so it survives every `/plugin marketplace update`.
+- **Your data** lives in `~/.devlog/data/` — outside the plugin cache, so it survives every `/plugin marketplace update`.
 
-Requires [Bun](https://bun.sh/) on your `PATH` (the plugin prints the one-line install command if it's missing). Update later with `/plugin marketplace update` — Claude Code handles it.
+Requires [Bun](https://bun.sh/) 1.3.14+ on your `PATH` (the plugin prints the one-line install command if it's missing). Update later with `/plugin marketplace update`. Set `DEVLOG_LANG=ar` for Arabic protocol messages.
 
 ## Manual install (from a clone)
-
-Prefer running from a checkout? Clone and start the server yourself:
 
 ```bash
 git clone https://github.com/fmaaakcode/devlog.git
 cd devlog
-bun start
+bun start            # or: bun dev  (auto-reload)
 ```
 
-The server listens on `http://127.0.0.1:7777`. Open it in a browser to see the dashboard. (Empty until you wire the hooks below.)
+The server listens on `http://127.0.0.1:7777`; data lives in `<repo>/.devlog-data/` (gitignored). Then wire the hooks: copy the entries from [`hooks/hooks.json`](./hooks/hooks.json) into `~/.claude/settings.json` (or a project's `.claude/settings.json`), replacing `${CLAUDE_PLUGIN_ROOT}` with your clone path (forward slashes on Windows under Git Bash, e.g. `/d/code/devlog`). The set is:
 
-To run with auto-reload during development: `bun dev`.
+| Event | Hook | Role |
+|---|---|---|
+| `SessionStart`, `UserPromptSubmit` | `ensure-server.sh --plugin` | keeps the server alive, injects the briefing |
+| `PreToolUse` · `Bash\|PowerShell` | `pre-release-hook.sh`, `pre-install-hook.sh` | release guard, install gate |
+| `PreToolUse` · `Write\|Edit` | `pre-standards.sh` | write gate |
+| `PreToolUse` · `Read` | `curl … /api/inject` | file brief before Claude reads a file with history |
+| `PostToolUse`, `Stop`, `Subagent*`, `Task*` | `curl … /api/hook` | event capture (changes, commands, sessions) |
+| `Stop` | `parse-tags.sh` | tag capture + all response guards |
 
-## Wire the hooks
+> **Do not set `"async": true` on the Stop hook.** Async fires-and-forgets, so nothing can block — the guards would print warnings nobody reads. The 200–500 ms at the end of each turn is the price of real enforcement.
 
-Two hooks together give you the full system: **Stop** captures tags + enforces closure discipline + blocks `-(release)` while work is open. **PreToolUse** intercepts `gh release create` / `git tag -a v*` / `git push --tags` / `npm publish` / `cargo publish` to inject the changelog and refuse the command if any task is open.
+Manual installs also need the protocol: paste [`skills/devlog-protocol/SKILL.md`](./skills/devlog-protocol/SKILL.md) (or its relevant parts) into your `~/.claude/CLAUDE.md`. Plugin users skip this.
 
-Add this to your Claude Code settings (`~/.claude/settings.json` or per-project `.claude/settings.json`):
+### Verify
 
-```json
-{
-  "hooks": {
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          { "type": "command", "command": "bash /absolute/path/to/devlog/parse-tags.sh", "timeout": 15 }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          { "type": "command", "command": "bash /absolute/path/to/devlog/pre-release-hook.sh", "timeout": 15 }
-        ]
-      }
-    ]
-  }
-}
-```
+1. Server running, dashboard loads (empty is fine).
+2. End a Claude turn with a raw line: `-(note) testing DevLog setup`
+3. Refresh — the note appears under that project.
 
-Replace `/absolute/path/to/devlog/` with the path where you cloned this repo. On Windows under Git Bash use the forward-slash form (e.g. `/d/code/devlog/parse-tags.sh`).
-
-> **Do not set `"async": true` on the Stop hook.** Async fires-and-forgets, so the closure-check and release-guard can't actually block — they'd print warnings nobody reads. The 200–500 ms cost at the end of each turn is the price of real enforcement.
-
-> **Why bash?** Claude Code passes the hook payload on stdin. The shell wrapper just hands it off to `bun *.js` — fully cross-platform.
-
-After saving the settings, restart Claude Code. From now on, every response is scanned for `-(tag)` markers and every Bash release-ish command is gated.
-
-### Upgrading from v2.3.x or earlier
-
-If you already had DevLog wired and are pulling v2.4+, two changes to `~/.claude/settings.json` are required for the new enforcement system to actually block:
-
-1. **Remove `"async": true`** from the Stop hook entry that runs `parse-tags.sh`. Async hooks fire-and-forget — they can't block the turn, so the new closure-check and release-guard would silently warn instead of enforcing.
-2. **Add the PreToolUse entry** for `pre-release-hook.sh` (full snippet above). Without it, `gh release create` / `git tag -a v*` / `git push --tags` aren't intercepted, and a release can ship with open items via a Bash command path.
-
-After editing, restart Claude Code. The dashboard's behavior is unchanged; only the enforcement layer activates.
-
-### Disable / bypass
-
-| Env var | Effect |
-|---|---|
-| `DEVLOG_CLOSURE_CHECK=0` | Stop hook still records tags but skips the closure fuzzy-match check. |
-| `DEVLOG_RELEASE_GUARD=0` | Stop + PreToolUse stop refusing releases while items are open. Use for emergency hotfixes only. |
-| `DEVLOG_INJECT_OFF=1` | Disables SessionStart / UserPromptSubmit context injection (independent of the enforcement above). |
-
-### Diagnose
-
-```bash
-bun run doctor                  # checks current project
-bun run doctor /path/to/other   # checks any project
-bun run doctor --json /path     # machine-readable; exits 2 on critical findings
-```
-
-Runs the same checks the hooks use: stale open items, abandoned plans, git tags without `-(release)`, missing release notes, bugs/security shipped past a release, thin release commits, misleading plan names.
-
-## Verify your setup
-
-A quick sanity check after wiring the hook:
-
-1. Make sure the server is running (`bun start`) and the dashboard at `http://127.0.0.1:7777` loads (empty is fine).
-2. In any Claude Code session, finish a turn with a tag at the very end:
-   ```
-   -(note) testing DevLog setup
-   ```
-3. Refresh the dashboard within a couple of seconds — the note should appear under that project's recent activity.
-
-If nothing shows up, set `DEVLOG_DEBUG=1` and retry, then look at `.devlog/parse-tags.debug.log` next to `parse-tags.ts` (debug logging is off by default and the log is only written while the flag is set). Common causes: server not running on port 7777, hook path is wrong in `settings.json`, or `bun` isn't on PATH inside the bash environment Claude Code uses.
-
-## Teach Claude the tag vocabulary
-
-> **Plugin users:** skip this section. The plugin delivers the protocol automatically — a compact SessionStart primer teaches the core vocabulary, and the bundled `devlog-protocol` skill carries the full reference on demand. Nothing to copy.
-
-**Manual install only.** The canonical tag protocol lives in [`skills/devlog-protocol/SKILL.md`](./skills/devlog-protocol/SKILL.md). Paste its content (or the relevant parts) into your `~/.claude/CLAUDE.md`. Without that, Claude won't know which tags to emit.
-
-The minimum vocabulary is one line per concept:
-
-```
--(built) added X
--(bug fix) X
--(todo) Y
--(done) Y
--(release) v1.0.0 — first cut
-```
-
-See the global instructions for the full set (plans, doc generation, security tracking, release workflow).
+Nothing? Set `DEVLOG_DEBUG=1`, retry, and read `.devlog/parse-tags.debug.log` next to `parse-tags.ts`. Usual causes: server not on 7777, wrong hook path, `bun` not on PATH inside the bash Claude Code uses.
 
 ## Plans — two distinct things, similar names
 
-Two unrelated mechanisms in this codebase share the word "plan". Don't confuse them.
+- **`-(plan)`** — a free-text note. Not trackable, not closeable. Like `-(note)` with a "starting this" hint.
+- **`-(doc:plan) <name>`** followed by markdown with `### P0 — …` phases and `- [ ] step` lines — a **trackable** plan. Generates `.md` + `.html` under `<project>/.devlog/docs/` and registers every step. Close from chat with `-(done) <step text>` (exact, case/whitespace-tolerant) or `-(done) P1` (whole phase); `-(dropped) <step>` removes the line. Re-emitting the same name updates the plan and preserves completed steps.
+- Claude Code's own *Exit Plan Mode* output (`~/.claude/plans/*.md`) is ingested too, by a separate parser (`src/plans.ts`), and shows in the same widget.
 
-### `-(plan)` — a free-text note
-
-A plain tag whose content is a one-line description of what you intend to do. **Not trackable, not parsed, not closeable.** Treat it like `-(note)` with a "this is a plan I'm starting" hint.
-
-```
--(plan) build login screen, then wire API, then settings
-```
-
-Stored as a tag, shown in the activity log, never grows checkboxes.
-
-### `-(doc:plan)` — a trackable plan with GFM checkboxes
-
-Generates a markdown + HTML document under `<project>/.devlog/docs/` and registers every `- [ ] step` as a tracked step. Steps are closeable from chat by emitting `-(done) <step text>` or `-(done) Pn` for a whole phase.
-
-```
--(doc:plan) login-feature
-# Login feature
-### P0 — UI
-- [ ] login page
-- [ ] form validation
-### P1 — Auth
-- [ ] POST /api/login
-- [ ] JWT issuance
-```
-
-Closing later:
-
-```
--(done) login page         # closes one step (exact-text match)
--(done) P1                 # closes every open [ ] under "### P1 — ..."
--(dropped) JWT issuance    # removes the line entirely
-```
-
-**Behavior worth knowing:**
-
-- Re-emitting `-(doc:plan)` with the same name **updates** the existing plan (preserves completion state for steps that already existed).
-- `-(done)` flips `[ ]` → `[x]` in the `.md` file and re-renders the `.html`.
-- `-(dropped)` deletes the line from the `.md` (cancellation, not unchecking).
-- Step matching is case-insensitive and whitespace-tolerant; inline backticks in the tag content are ignored before comparing.
-- Phase syntax (`-(done) P3`) only matches `### P3 — ...` headings literally — `### P3.1 — …` is a separate target.
-
-For the full tag/closure rules, see the [`devlog-protocol` skill](./skills/devlog-protocol/SKILL.md) — the "Plans" and "Closure is mandatory" sections.
-
-> **There is also a third "plan" concept:** Claude Code's own *Exit Plan Mode* output (saved at `~/.claude/plans/*.md` using `### 1.` numbered headings). DevLog's Stop hook ingests these too, via a separate parser (`src/plans.ts`). They appear in the "Active plan" widget alongside `-(doc:plan)` plans.
-
-## Files
-
-| File / dir | What it is |
-|---|---|
-| `src/server.ts` | HTTP + WebSocket server (port 7777) |
-| `src/scanner.ts` | Project metadata scanner (langs, frameworks, files) |
-| `src/tag-parser.ts` | Extracts `-(tag) content` blocks from Claude's response |
-| `src/doc-store.ts` | `.md`/`.html` writer for `-(doc:*)` tags + GFM checkbox parser for trackable `-(doc:plan)` |
-| `src/inject.ts` | Builds the SessionStart context block |
-| `src/plans.ts` | Parses Claude Code's `~/.claude/plans/*.md` (Exit Plan Mode output, `### N.` style) — **not** for `-(doc:plan)` |
-| `src/release-html.ts` | Per-release static HTML report |
-| `src/data.ts` | JSON file storage with mutation lock |
-| `parse-tags.ts` | Stop hook entry — parses stdin, posts to `/api/tags`, runs closure-check + release-guard |
-| `parse-tags.sh` | Shell wrapper for the Stop hook |
-| `pre-release-hook.js` | PreToolUse hook — intercepts release-ish Bash commands, runs doctor + changelog briefing |
-| `pre-release-hook.sh` | Shell wrapper for the PreToolUse hook |
-| `src/doctor.ts` | Diagnostic CLI: stale items, abandoned plans, missing release notes, etc. |
-| `src/closure-check.ts` | Fuzzy match between `-(built)`/`-(refactor)` content and open `#N` items |
-| `src/version-writer.ts` | Auto-bumps `package.json` / `Cargo.toml` `version` field when `-(release) vX.Y.Z` arrives |
-| `dashboard.html` | Single-file dashboard UI |
-| `stack-map.html` | Cross-project tech-stack overview |
-
-Runtime data lives in `.devlog-data/` (created on first run, gitignored).
-
-## Auto-bumped manifests on release
-
-When Claude emits `-(release) vX.Y.Z — …`, the server scans the project root for a manifest file and patches the version field in place:
-
-| File | Field patched |
-|---|---|
-| `package.json` | `"version": "X.Y.Z"` (Bun / Node / npm / yarn / pnpm) |
-| `Cargo.toml` | `version = "X.Y.Z"` under `[package]` (Rust) |
-
-The write is atomic and uses an anchored regex — comments, formatting, key order, and unrelated `version =` lines under other sections (e.g. `[dependencies]`) are untouched. If no matching manifest exists, the release tag still goes through; only the bump is skipped. Same cwd-match guard as `doc:*` tags applies, so a release with a mismatched path can't patch a foreign repo.
-
-## Library & vulnerability scanning
-
-The "فحص أمني" / Scan button does two things, both built in — no external service, no API key, no extra process:
-
-- **Outdated versions** — each dependency is checked against its ecosystem's official registry (npm, crates.io, PyPI, Go, Packagist), showing the latest version, its release date, and a ⏳ warning for releases newer than 7 days.
-- **Known vulnerabilities (CVEs)** — each dependency, direct **and** transitive, is checked against [OSV.dev](https://osv.dev), reporting the advisory id, severity (CVSS computed from the vector), fix version, and summary. Run a full on-demand tree scan any time with the `-(audit)` tag; dismiss inapplicable advisories via `audit.toml` (Rust) or `.devlog/vuln-ignore`.
-
-> An earlier build used an *optional external* Vuln API for CVE data. Since v2.9.6 vulnerability scanning is **native via OSV**, so setup stays a single process with no API key.
-
-## Advanced features
-
-Beyond tag capture and the dashboard basics, DevLog ships a set of deeper capabilities that aren't obvious from the main view. They're exposed over the local HTTP API (and surfaced in the dashboard via buttons/popups), all running inside the single Bun server — no extra process, no external service.
-
-| Feature | What it does | Entry point |
-|---|---|---|
-| **Static code analysis** | A multi-language tokenizer + symbol extractor (`tokenizer.ts`, `symbols.ts`) feeds a project analyzer that maps HTTP routes, a function **call graph**, a module **dependency graph**, threads, IPC messages, data types, and security-sensitive patterns. It has no endpoint of its own — it runs inside `DEVLOG_STACK.md` generation. | `src/analyze.ts`, via `POST /api/stack/:project/regenerate` |
-| **Live process monitoring** | Lists active Claude Code sessions and builds the descendant **process tree** (Windows), so you can see — and kill — runaway PIDs from the dashboard. | `GET /api/processes`, `POST /api/kill-pid/:pid`, `src/sessions.ts` |
-| **File-change tracking with diffs** | Records `old_string`/`new_string` for every edit Claude makes and renders an **inline diff** per change, per file, or per session. | `GET /api/changes`, `/api/changes/by-id/:id`, `/api/changes/session` |
-| **Cross-project stack map** | A bird's-eye view of every project's languages, frameworks, and libraries, with a saveable layout. | `stack-map.html`, `GET /api/stack/:project`, `/api/stack/:project/layout` |
-| **File-tree browser** | Walks a project tree to a given depth for in-dashboard browsing. | `GET /api/tree/:project`, `src/tree.ts` |
-| **Export** | Regenerates one project's `.devlog/DEVLOG_STATUS.md` (or every project's) on demand. The portable **JSON bundle** that moves a project's history between machines is the separate project-export/import pair. | `POST /api/export/:project`, `POST /api/export-all`; bundle: `GET /api/project-export/:project`, `POST /api/project-import` |
-| **Injection preview & history** | Preview the exact SessionStart context block before it's injected, and inspect past injections. | `GET /api/inject/preview`, `/api/injections` |
-| **Event retention** | Prunes old events under a retention policy while protecting closure-relevant items. | `src/retention.ts` |
-| **Live updates** | The dashboard subscribes over WebSocket, so tags, builds, and process changes appear without a refresh. | `src/broadcast.ts` |
-
-A visual tour of these lives in [`features.html`](./features.html) — open it in a browser, or serve it from the running server.
+Full rules: the [`devlog-protocol` skill](./skills/devlog-protocol/SKILL.md).
 
 ## Privacy
 
-All your data stays local — the server only listens on `127.0.0.1`, and **no telemetry** is ever sent. The only outbound requests are **opt-out** dependency/vulnerability lookups (package names + versions → npm/crates.io/PyPI/Go/Packagist and [OSV.dev](https://osv.dev)) and an update check to GitHub Releases — metadata only, never your code or history. Turn them off with `DEVLOG_VULN_CHECK_DISABLED=1` (OSV queries) and `DEVLOG_VERSION_CHECK_DISABLED=1` (update check); `DEVLOG_REGISTRY_CHECK_DISABLED=1` switches off the package-registry sweep entirely (latest-version + outdated-libs lookups). Your activity history in `.devlog-data/` / `.devlog/` is git-ignored by the bundled `.gitignore` — keep it that way. See [SECURITY.md](./SECURITY.md) for the full threat model.
+All data stays local — the server listens on `127.0.0.1` only, and **no telemetry** is ever sent. The only outbound requests are **opt-out** lookups of package names + versions (npm / crates.io / PyPI / Go / Packagist and OSV.dev) and an update check against GitHub Releases — metadata only, never your code or history. Switch off with `DEVLOG_VULN_CHECK_DISABLED=1`, `DEVLOG_REGISTRY_CHECK_DISABLED=1`, `DEVLOG_VERSION_CHECK_DISABLED=1`. Full threat model: [SECURITY.md](./SECURITY.md).
 
 ## Development
 
-Environment variables for test isolation (no need to set in normal use):
-
-| Variable           | Default                  | Purpose                                       |
-| ------------------ | ------------------------ | --------------------------------------------- |
-| `DEVLOG_DATA_DIR`  | `<repo>/.devlog-data`    | Override `.devlog-data` location (used by tests) |
-| `DEVLOG_PORT`      | `7777`                   | Override server port (used by tests)             |
-
-Run the test suite:
-
 ```bash
-bun test
+bun test              # suite (isolated: DEVLOG_DATA_DIR + DEVLOG_PORT forced via preload)
+bun run lint          # Biome
+bun run typecheck
+bun run doctor [path]
 ```
+
+Code map: [`API.md`](./API.md) (every HTTP route by module) · [`CONTRIBUTING.md`](./CONTRIBUTING.md) (red lines, language policy) · `stack-map.html` (live dependency map).
 
 ## License
 

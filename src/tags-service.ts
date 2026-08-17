@@ -130,13 +130,13 @@ const BODY_TAGS = new Set(["built", "refactor", "decision", "insight", "about", 
 const STORY_MAX = 1200;
 
 /**
- * Headline tags collapse to a single ≤120-char line (everything after the first
+ * Headline tags collapse to a single ≤200-char line (everything after the first
  * newline is dropped so each item earns its own tag + #N). Body tags keep their
  * body but truncate at the first nested bullet / heading. `about` is exempt.
  */
 export function enforceAtomicContent(tag: string, content: string): string {
   if (HEADLINE_TAGS.has(tag)) {
-    return content.split(/\r?\n/)[0].trim().slice(0, 120);
+    return content.split(/\r?\n/)[0].trim().slice(0, 200);
   }
   if (BODY_TAGS.has(tag) && tag !== "about") {
     const m = content.match(/\r?\n[ \t]*(?:-[ \t]|#{1,6}[ \t])/);

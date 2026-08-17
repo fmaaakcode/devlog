@@ -4,11 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>DevLog — ذاكرة تلقائية لكل ما يبنيه كلود</title>
-<meta name="description" content="متتبّع تطوير تلقائي لجلسات Claude Code: كل ميزة بُنيت، كل مهمة فُتحت، كل ثغرة أُغلقت — في لوحة محلية حية، بدون أن تكتب شيئاً بنفسك.">
+<meta name="description" content="الذاكرة التي لا تعيش في المستودع: قرارات مرفوضة، أخطاء مغلقة بأسبابها، وحرّاس إغلاق وإصدار وتثبيت — تُلتقط تلقائياً من جلسات Claude Code في لوحة محلية بلا تتبّع.">
 <link rel="canonical" href="https://fmaaakcode.github.io/devlog/landing.html">
 <meta property="og:type" content="website">
 <meta property="og:title" content="DevLog — ذاكرة تلقائية لكل ما يبنيه كلود">
-<meta property="og:description" content="متتبّع تطوير تلقائي لجلسات Claude Code: كل ميزة، مهمة، وثغرة — في لوحة محلية حية بلا تتبّع.">
+<meta property="og:description" content="الذاكرة التي لا تعيش في المستودع + حرّاس يوقفون كلود عند اللحظات المهمة — محلي، بلا تتبّع.">
 <meta property="og:image" content="https://fmaaakcode.github.io/devlog/assets/dashboard.jpeg">
 <meta property="og:url" content="https://fmaaakcode.github.io/devlog/landing.html">
 <meta property="og:locale" content="ar_AR">
@@ -270,9 +270,10 @@ footer a:hover { color: var(--emerald); }
     <div class="wrap">
         <h1>كلود يبرمج.<br><span class="accent">DevLog يتذكّر.</span></h1>
         <p class="sub">
-            كل جلسة Claude Code تنتهي وتأخذ ذاكرتها معها. DevLog يحوّلها إلى تاريخ حي:
-            كل ميزة بُنيت، كل مهمة فُتحت، كل ثغرة أُغلقت — في لوحة محلية على جهازك،
-            بدون أن تكتب سطراً واحداً بنفسك.
+            كل جلسة Claude Code تنتهي وتنسى: أي حل رفضناه ولماذا، أي خطأ أُصلح وكيف، وأين وقف العمل.
+            DevLog يلتقط ذلك من ثلاثة أسطر في نهاية الرد، ويردّه لكلود قبل أن يكرّر الخطأ نفسه،
+            ويوقفه عند اللحظات المهمة: لا إصدار وخلفه عمل مفتوح، ولا مكتبة تُثبَّت بلا فحص —
+            في لوحة محلية على جهازك، بدون سطر تكتبه بنفسك.
         </p>
         <div class="cta-row">
             <a class="btn btn-primary" href="#install">ثبّته بأمرين</a>
@@ -288,7 +289,7 @@ footer a:hover { color: var(--emerald); }
                 <span class="claude-line">… انتهيت من بناء شاشة تسجيل الدخول وربطها بالـAPI.</span>
                 <span class="tag-line"><span class="t">-(built)</span> <span class="c">شاشة تسجيل الدخول مع تحقق الحقول</span></span>
                 <span class="tag-line"><span class="t gold">-(todo)</span> <span class="c">إضافة "نسيت كلمة المرور"</span></span>
-                <span class="tag-line"><span class="t pink">-(bug fix)</span> <span class="c">#12</span></span>
+                <span class="tag-line"><span class="t pink">-(bug fix)</span> <span class="c">#12 — فحص التوكن كان يسبق قراءة الكوكي</span></span>
             </div>
             <div class="term-caption">
                 ثلاثة أسطر في نهاية الرد — <b>يلتقطها DevLog بصمت</b> وتظهر في لوحتك لحظياً
@@ -317,6 +318,11 @@ footer a:hover { color: var(--emerald); }
                 <div class="icon">🚢</div>
                 <h3>إصدار يطلع وخلفه شغل مفتوح</h3>
                 <p>بق مكتشف لم يُصلَّح، خطوة خطة لم تكتمل — والإصدار خرج للناس لأن لا شيء اعترض طريقه.</p>
+            </div>
+            <div class="card">
+                <div class="icon">🔁</div>
+                <h3>«اقترح الحل الذي رفضناه الشهر الماضي»</h3>
+                <p>كلود لم يحضر النقاش الذي حسم القرار؛ يقرأ الكود فقط — والسبب ليس في الكود.</p>
             </div>
         </div>
     </div>
@@ -350,7 +356,7 @@ footer a:hover { color: var(--emerald); }
     <div class="wrap reveal">
         <div class="kicker">الفرق الجوهري</div>
         <h2>ليس سجلاً يكتب ويسكت — نظام محاسبة يرفض</h2>
-        <p class="lead">أدوات التتبع المعتادة تدوّن وتتفرج. DevLog يفرض الانضباط على كلود نفسه — وهذا ما لا تجده في غيره.</p>
+        <p class="lead">أدوات التتبع المعتادة تدوّن وتتفرج. DevLog يفرض الانضباط على كلود نفسه — ١٨ حارساً يرفضون بدل أن يحذّروا؛ هذه ثلاثة منها.</p>
         <div class="enforce">
             <div class="shell">
                 <div class="shell-head red">انضباط الإغلاق — Closure Discipline</div>
@@ -441,6 +447,38 @@ footer a:hover { color: var(--emerald); }
             <div class="feat">
                 <h3><span class="b" style="background:var(--blue)"></span>مكتبة معايير تنمو معك</h3>
                 <p>قواعد تُلتقط من تصحيحاتك وتُسحب عند الحاجة حسب اللغة أو نوع التطبيق — فلا يعيد كلود الخطأ نفسه في مشروع آخر.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--emerald)"></span>دوسيه الملف قبل لمسه</h3>
+                <p><code>-(ask:why)</code> يعطي كلود تاريخ الملف كاملاً — غرضه، القرارات التي شكّلته، كل بق مسّه وكيف انتهى — قبل أي تعديل كبير. و<code>-(ask:map)</code> يرتّب الملفات حسب من يعتمد عليها.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--gold)"></span>بوابة الجدار الحامل</h3>
+                <p>أول ما يلمس كلود ملفاً يعتمد عليه خمسة ملفات فأكثر يُستوقف مرة: «هذا جدار حامل — هذا ما فوقه». لا تمنع الهدم؛ تمنع الهدم بلا وعي.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--blue)"></span>وش صار آخر شي؟</h3>
+                <p><code>-(ask:recent)</code> خلاصة الجلسات السابقة بالزمن: تاقاتها، ملفاتها، أوامرها وما فشل منها. ومع كل دفعة يُحفظ طلبك الحرفي، فـ«ليش انطلب هذا؟» له جواب من كلامك أنت.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--emerald)"></span>قصة الجلسة بمنعطفاتها</h3>
+                <p>بعد دفعة تغلق عناصر، همسة واحدة تطلب المنعطفات فقط: نهج فشل، اتجاه تغيّر، تأجيل متعمد — وتُختم بختم الدليل: ادعاء بلا أثر في الجلسة يوسم «بلا سند».</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--gold)"></span>«ليش هالمكتبة؟»</h3>
+                <p>صفحة لكل مكتبة في مشروعك: لماذا هي هنا، وصفها الرسمي، وحالتها الأمنية. تجاوز أي تحذير يُسجَّل بند أمان مفتوح — لا يُمحى.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--blue)"></span>مقارنة النماذج من سجلك</h3>
+                <p>أي نموذج يفتح أخطاء أكثر، وأيهم إصلاحاته تثبت، ومن يسلّم بلا اختبار — أرقام من عملك الحقيقي، وكل تاق يحمل اسم من كتبه.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--emerald)"></span>الأداة تقيس نفسها</h3>
+                <p>فاعلية كل قاعدة قبل/بعد، عدّاد صدّ لكل حارس (يفرّق الساكت عن الميت)، وختم «مسنود/بلا أثر» على كل ادعاء «سويت» — بلا أي ذكاء اصطناعي مدمج.</p>
+            </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--gold)"></span>لا شيء يُمحى</h3>
+                <p>القديم يُؤرشف مضغوطاً، والتراجع يحفظ نسخة أولاً — وإن تعذّر الحفظ رُفض الحذف. صدّر أي مشروع ملفاً واحداً واستورده على جهاز آخر.</p>
             </div>
         </div>
     </div>

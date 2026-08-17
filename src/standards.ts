@@ -156,6 +156,13 @@ const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 export function parseRuleCommands(msg: string): RuleCommand[] {
   if (!msg) return [];
+  // Code stripping is a DETECTION aid only (a command mentioned inside a fence
+  // must not fire). The replacement preserves length, so every offset in
+  // `stripped` maps 1:1 onto `msg`: match against `stripped`, slice the arg
+  // line + body from `msg`. Extracting from the stripped copy blanked every
+  // inline-code span out of stored rules (rust #3 lost both command names,
+  // security #7 / design #3 lost the category name) — the same defect
+  // tag-parser fixed for 288 tags, left unpatched on this parallel copy.
   const stripped = msg
     .replace(/```[\s\S]*?```/g, m => " ".repeat(m.length))
     .replace(/`[^`\n]*`/g, m => " ".repeat(m.length));
@@ -167,13 +174,15 @@ export function parseRuleCommands(msg: string): RuleCommand[] {
   // swallowed into the rule. It also keeps back-to-back commands separate.
   const pattern = new RegExp(
     `(?:^|\\n)[ \\t]*-\\s*\\((${alt})\\)[ \\t]*([^\\n]*)((?:\\n(?![ \\t]*-\\s*\\()[ \\t]*\\S[^\\n]*)*)`,
-    "g",
+    "gd",
   );
   const out: RuleCommand[] = [];
   for (const m of stripped.matchAll(pattern)) {
     const cmd = m[1] as RuleCommandName;
-    const argLine = (m[2] || "").trim();
-    const body = (m[3] || "").trim();
+    const idx = (m as RegExpMatchArray & { indices?: Array<[number, number] | undefined> }).indices;
+    const sliceOf = (g: number) => { const r = idx?.[g]; return r ? msg.slice(r[0], r[1]) : ""; };
+    const argLine = sliceOf(2).trim();
+    const body = sliceOf(3).trim();
     // Ledger key from the FIRST body line only (#760): keying the full body let
     // a body that GREW between two reads of the same turn (a continuation's
     // prose gluing onto it) mint a fresh key and re-execute the command — the
@@ -318,8 +327,13 @@ export async function addRule(cat: string, text: string): Promise<AddResult> {
   const lines = raw.split("\n");
   const { headingIdx, bullets } = locateRules(lines);
 
-  // Dedup: identical (normalized) rule already present → no-op.
-  const needle = normRule(ruleText);
+  // Dedup on the FIRST line only, both sides: `bullets[].text` is each stored
+  // rule's bullet line, so comparing the whole incoming text against it let any
+  // glued tail (the assistant's own "تمّت الإضافة…" confirmation prose landing
+  // in the body) defeat the check and append a second copy WITH its tail —
+  // design #2/#3, security #6/#7. Same family as #760 (body growth minting a
+  // new identity); the first line is the rule's identity here as it is there.
+  const needle = normRule(ruleText.split("\n")[0]);
   if (bullets.some(b => normRule(b.text) === needle)) {
     return { ok: true, message: L(
       `already present in "${entry.category}" — no duplicate added.`,
@@ -452,7 +466,24 @@ export async function listCatalog(cwd?: string): Promise<string> {
   const projectCats = catalog.filter(e => e.scope === "project");
   let out = `${L("catalog", "الكتالوج")} (${catalog.length} ${L("categories", "تصنيف")}):\n${formatCatalogNames(globalCats)}`;
   if (projectCats.length) out += `\n${L("project-local", "خاص بالمشروع")} (.devlog/standards): ${formatCatalogNames(projectCats)}`;
+  const unfilled: string[] = [];
+  for (const e of catalog) {
+    let raw = "";
+    try { raw = await readFile(e.path, "utf-8"); } catch { continue; }
+    if (lacksWhenApplies(raw)) unfilled.push(e.category);
+  }
+  if (unfilled.length) out += `\n${L(
+    `⚠ no "when it applies" line yet (template text still there): ${unfilled.join(", ")} — fill the line under "## When it applies" in the file, one sentence.`,
+    `⚠ بلا شرط تطبيق بعد (نص القالب ما زال فيها): ${unfilled.join(", ")} — عبّئ السطر تحت «## متى تنطبق» في الملف بجملة واحدة.`)}`;
   return out;
+}
+
+// The "when it applies" placeholder rule:new writes (both languages — files
+// outlive the env that created them). A category still carrying it gives Claude
+// nothing to decide the pull with; rules:list flags it so the gap is visible.
+const WHEN_PLACEHOLDER_RE = /\((?:One line: when should Claude pull this category\.|اشرح بسطر متى يسحب كلود هذا التصنيف\.)\)/;
+export function lacksWhenApplies(content: string): boolean {
+  return WHEN_PLACEHOLDER_RE.test(content);
 }
 
 // ── Per-project markers (exemption + acks) — extracted to standards-ack.ts ───

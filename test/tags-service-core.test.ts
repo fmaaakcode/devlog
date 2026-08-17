@@ -83,10 +83,10 @@ describe("registerPlan", () => {
 });
 
 describe("enforceAtomicContent", () => {
-  test("headline tag collapses to the first line (≤120)", () => {
+  test("headline tag collapses to the first line (≤200)", () => {
     expect(enforceAtomicContent("todo", "first line\nsecond line")).toBe("first line");
-    // The 120-cap applies while collapsing a multi-line headline to its first line.
-    expect(enforceAtomicContent("done", `${"y".repeat(200)}\nsecond`).length).toBe(120);
+    // The 200-cap applies while collapsing a multi-line headline to its first line.
+    expect(enforceAtomicContent("done", `${"y".repeat(260)}\nsecond`).length).toBe(200);
   });
   test("body tag truncates at the first nested bullet/heading", () => {
     expect(enforceAtomicContent("built", "summary here\n- nested bullet")).toBe("summary here");
@@ -98,8 +98,8 @@ describe("enforceAtomicContent", () => {
   test("a plain single-line headline is returned unchanged", () => {
     expect(enforceAtomicContent("note", "just one line")).toBe("just one line");
   });
-  test("a single OVER-LONG line is capped at 120 too — the cap is the contract, not a side effect of collapsing", () => {
-    expect(enforceAtomicContent("todo", "x".repeat(200)).length).toBe(120);
+  test("a single OVER-LONG line is capped at 200 too — the cap is the contract, not a side effect of collapsing", () => {
+    expect(enforceAtomicContent("todo", "x".repeat(260)).length).toBe(200);
   });
 });
 
