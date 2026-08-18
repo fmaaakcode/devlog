@@ -80,7 +80,7 @@ export function parseLibNames(raw: string): LibRequest[] {
 export interface LibAdviceItem {
   name: string;
   eco: string;
-  verdict: "ok" | "ok-unverified" | "no-clean" | "no-mature" | "not-found" | "unsupported-eco" | "invalid-name" | "need-full-path";
+  verdict: "ok" | "ok-unverified" | "no-clean" | "no-mature" | "not-found" | "unsupported-eco" | "invalid-name" | "need-full-path" | "registry-disabled";
   /** The exact version to install (ok / ok-unverified only). */
   suggest?: string;
   suggestAgeDays?: number | null;
@@ -105,7 +105,19 @@ export interface AdvisorDeps {
   history: (eco: string, name: string) => Promise<VersionEntry[]>;
   osvCheck: (osvEco: string, name: string, version: string) => Promise<PkgVuln>;
   now?: Date;
+  /** DEVLOG_REGISTRY_CHECK_DISABLED: no version-history lookup at all — every
+   *  name that would need one gets `registry-disabled` (the network-free
+   *  refusals — bad charset, unsupported eco, short Go path — still apply). */
+  registryDisabled?: boolean;
+  /** DEVLOG_VULN_CHECK_DISABLED: no OSV round-trip — picks stay maturity-only
+   *  (`ok-unverified`), pins get no vulnerability verdict. */
+  osvDisabled?: boolean;
 }
+
+const OSV_SILENT: PkgVuln = {
+  ok: false, version: "", vulns: 0, notices: 0, status: "indeterminate", icon: "",
+  message: "", severity: "none", topVuln: null, fixVersion: "", detailsUrl: "", advisories: [],
+};
 
 async function defaultOsvCheck(osvEco: string, name: string, version: string): Promise<PkgVuln> {
   const m = await scanPackages(osvEco, [{ name, version }]);
@@ -121,7 +133,9 @@ export async function adviseLibraries(
   deps: Partial<AdvisorDeps> = {},
 ): Promise<LibAdviceItem[]> {
   const history = deps.history ?? versionHistory;
-  const osvCheck = deps.osvCheck ?? defaultOsvCheck;
+  const osvCheck = deps.osvDisabled
+    ? async (_e: string, _n: string, version: string) => ({ ...OSV_SILENT, version })
+    : (deps.osvCheck ?? defaultOsvCheck);
   const now = deps.now ?? new Date();
 
   const out: LibAdviceItem[] = [];
@@ -134,6 +148,9 @@ export async function adviseLibraries(
     // a short name (`pgx`) is refused explicitly rather than searched-and-
     // guessed (#674's recorded call: name guessing is typo-squatting territory).
     if (eco === "go" && !GO_MODULE_RE.test(req.name)) { out.push({ ...base, verdict: "need-full-path" }); continue; }
+    // Kill switch: everything past this line is a network lookup. Say so —
+    // never fall through to `not-found`, which reads as "no such package".
+    if (deps.registryDisabled) { out.push({ ...base, verdict: "registry-disabled" }); continue; }
 
     // Exact name only — a near-miss suggestion is a typo-squatting foot-gun, so a
     // miss stays a miss. [] also covers a transient lookup failure; the message

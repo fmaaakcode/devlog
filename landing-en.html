@@ -331,7 +331,7 @@ footer a:hover { color: var(--emerald); }
             </div>
             <div class="step">
                 <h3>The hook captures them silently</h3>
-                <p>At the end of every response, DevLog reads the tags and posts them to the local server. Zero noise in your conversation context, zero files in your repo.</p>
+                <p>At the end of every response, DevLog reads the tags and posts them to the local server. Zero noise in your conversation context; your history lives in DevLog's own data directory, not in your repo.</p>
             </div>
             <div class="step">
                 <h3>The dashboard updates live</h3>
@@ -490,11 +490,11 @@ footer a:hover { color: var(--emerald); }
             </div>
             <div class="priv">
                 <h3>No telemetry, no accounts</h3>
-                <p>No sign-up, no tracking, no cloud. The only external calls: asking the official registries about vulnerabilities — if you want to.</p>
+                <p>No sign-up, no tracking, no cloud. The only outbound calls are dependency lookups — package names and versions to the official registries and OSV.dev, plus an update check to GitHub Releases. Metadata only, never your code or history; each one has its own off switch.</p>
             </div>
             <div class="priv">
                 <h3>Production-grade security</h3>
-                <p>Built-in defenses against DNS rebinding, XSS and path traversal — covered by 1,300+ automated tests.</p>
+                <p>Built-in defenses against DNS rebinding, XSS and path traversal — covered by 2,500+ automated tests.</p>
             </div>
         </div>
     </div>
@@ -532,7 +532,7 @@ footer a:hover { color: var(--emerald); }
         <div class="faq">
             <details>
                 <summary>Does it add files to my repos or pollute them?</summary>
-                <p>No. Tags are captured straight from Claude's responses, and all data is stored in DevLog's own directory outside your projects. Your repo stays untouched.</p>
+                <p>Almost none. Tags are captured straight from Claude's responses and the history is stored in DevLog's own directory (<code>~/.devlog/data</code>) outside your projects. What DevLog does write into a project is one <code>.devlog/</code> folder — generated docs, release pages, the <code>DEVLOG_STATUS.md</code> mirror — and only when those features are used. Add it to <code>.gitignore</code> or commit it; nothing else in your tree is touched.</p>
             </details>
             <details>
                 <summary>Does it eat Claude's context or slow it down?</summary>
@@ -540,7 +540,7 @@ footer a:hover { color: var(--emerald); }
             </details>
             <details>
                 <summary>Does it need an internet connection?</summary>
-                <p>No, except in one case: the security-scan button queries the OSV.dev database and the official registries for vulnerabilities and versions. Everything else works offline.</p>
+                <p>Not for its core work — capture, dashboard, guards and recall all run offline. Three things go online, all opt-out: the dependency freshness/vulnerability check (official registries + OSV.dev, package names and versions only), the library advisor behind <code>-(ask:lib)</code> and the install gate, and an hourly update check against GitHub Releases. Kill switches: <code>DEVLOG_REGISTRY_CHECK_DISABLED=1</code>, <code>DEVLOG_VULN_CHECK_DISABLED=1</code>, <code>DEVLOG_VERSION_CHECK_DISABLED=1</code>.</p>
             </details>
             <details>
                 <summary>What if I need an emergency release while items are still open?</summary>

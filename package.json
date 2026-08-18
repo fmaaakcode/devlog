@@ -1,6 +1,6 @@
 {
   "name": "devlog",
-  "version": "3.47.0",
+  "version": "3.48.0",
   "description": "Project memory and guardrails for Claude Code via hooks and tags: rejected decisions, closed bugs with causes, release/install gates — local dashboard, zero telemetry",
   "type": "module",
   "private": true,

@@ -198,6 +198,8 @@ export const ASK_ROWS: AskRow[] = [
             return `  ${it.name} — ${L("Go needs the FULL module path (e.g. go:github.com/jackc/pgx/v5) — the proxy knows no short names, and guessing one is typo-squatting territory. Re-ask with the import path.", "Go يتطلب مسار الوحدة الكامل (مثل go:github.com/jackc/pgx/v5) — البروكسي لا يعرف الأسماء القصيرة، وتخمينها باب typo-squatting. أعد السؤال بمسار الاستيراد.")}`;
           case "invalid-name":
             return `  ${it.name} — ${L("invalid package name — refused", "اسم حزمة غير صالح — مرفوض")}`;
+          case "registry-disabled":
+            return `  ${it.name} — ${L("not looked up: registry checks are disabled on this DevLog (DEVLOG_REGISTRY_CHECK_DISABLED=1). Pick the version yourself.", "لم يُستعلَم عنها: فحوصات السجل معطّلة في هذا الـDevLog (DEVLOG_REGISTRY_CHECK_DISABLED=1). اختر النسخة بنفسك.")}`;
           default:
             return `  ${it.name} — ${L("not found under this EXACT name (or lookup failed). Verify the name yourself — no near-miss suggestions (typo-squatting).", "غير موجودة بهذا الاسم الحرفي (أو فشل الاستعلام). تحقق من الاسم بنفسك — لا اقتراح أسماء مشابهة (typo-squatting).")}`;
         }

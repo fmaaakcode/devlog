@@ -22,7 +22,8 @@ before public disclosure.
 Even though it's loopback-only, DevLog defends against the realistic browser-based
 attacks against a localhost service:
 
-- **Loopback bind** — the server listens on `127.0.0.1` only, never `0.0.0.0`.
+- **Loopback bind** — the server listens on `127.0.0.1` and `::1` only (both
+  loopback), never `0.0.0.0` or `::`.
 - **DNS-rebinding defense** — every request's `Host` header is checked against an
   allow-list (`127.0.0.1`/`localhost`/`[::1]` : port); a rebinding `Host: evil.com`
   is rejected with `403`.
@@ -38,13 +39,19 @@ attacks against a localhost service:
 - **Zero runtime dependencies** — pure Bun + Node built-ins, so there is no
   third-party supply-chain surface at runtime.
 - **No telemetry.** The only outbound requests are **opt-out** dependency/vuln
-  lookups (package names + versions → npm/crates.io/PyPI/Go/Packagist and
-  [OSV.dev](https://osv.dev)) and an update check to the GitHub Releases API. They
-  send **metadata only — never your code, diffs, or activity history**. Disable
-  with `DEVLOG_VULN_CHECK_DISABLED=1` (OSV queries) and
-  `DEVLOG_VERSION_CHECK_DISABLED=1` (update check);
-  `DEVLOG_REGISTRY_CHECK_DISABLED=1` switches off the package-registry sweep
-  entirely (latest-version + outdated-libs lookups).
+  lookups and an update check. They send **metadata only — never your code, diffs,
+  or activity history**. The complete list of hosts, and which switch covers each:
+
+  | Host | Feature | Payload | Off switch |
+  |---|---|---|---|
+  | `registry.npmjs.org`, `crates.io`, `pypi.org`, `proxy.golang.org`, `repo.packagist.org`, `raw.githubusercontent.com` (vcpkg ports) | dependency freshness sweep, `-(ask:lib)` advisor, install gate | package name (+ version) | `DEVLOG_REGISTRY_CHECK_DISABLED=1` |
+  | `go.dev`, `nodejs.org`, `api.github.com/repos/rust-lang/rust`, `registry.npmjs.org/typescript` | latest-toolchain lookup for the standards write gate | language name only | `DEVLOG_REGISTRY_CHECK_DISABLED=1` |
+  | `api.osv.dev` | vulnerability check (sweep, `-(audit)`, advisor, install gate) | package name + version | `DEVLOG_VULN_CHECK_DISABLED=1` |
+  | `api.github.com/repos/fmaaakcode/{devlog,vuln}/releases/latest` | hourly update check | nothing (GET) | `DEVLOG_VERSION_CHECK_DISABLED=1` |
+
+  With all three set, DevLog makes **no** outbound request; the advisor then answers
+  `registry-disabled`, the install gate passes silently, and toolchain checks fall
+  back to a textual pointer.
 
 ## Known & accepted limitations
 

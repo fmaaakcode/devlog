@@ -227,6 +227,11 @@ export function decideGate(pkgs: InstallPkg[], advice: GateAdvice[], lang: "ar" 
         "الوضع الصارم — المستشار لم يُرجع جواباً عن هذا الاسم، فلم يُتحقق من شيء.")}`);
       continue;
     }
+    // The user switched registry lookups off (DEVLOG_REGISTRY_CHECK_DISABLED):
+    // nothing was checked, and that is their explicit choice — the gate has no
+    // standing to block or nag, strict or not. Pass silently (the hook log
+    // records it); a warn here would interrupt every install they run.
+    if (a.verdict === "registry-disabled") continue;
     if (UNRESOLVED_VERDICTS.has(a.verdict)) {
       if (strict) blocks.push(`⛔ ${pkg.name}: ${L(
         `strict mode — could not verify (${a.verdict}); if this is a private/internal package, re-issue the same command verbatim to override.`,

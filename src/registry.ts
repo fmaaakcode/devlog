@@ -4,6 +4,7 @@
 // private server, so version checking works fully offline of any DevLog backend.
 
 import { TtlMap } from "./ttl-cache";
+import { registryCheckDisabled } from "./check-flags";
 
 export interface VersionInfo {
   version: string | null;
@@ -26,7 +27,7 @@ const NEG_TTL_MS = 60 * 1000; // 60s
 
 // crates.io rejects requests without a descriptive User-Agent; the others accept
 // it fine, so we send one everywhere.
-const UA = "devlog-version-check (https://github.com/devlog/devlog)";
+const UA = "devlog-version-check (https://github.com/fmaaakcode/devlog)";
 
 // One transient failure must not mark a package "up-to-date". crates.io in
 // particular resets connections (ECONNRESET) under concurrent load, and a
@@ -529,6 +530,11 @@ async function queryToolchain(lang: string): Promise<ToolchainInfo> {
 const TC_CACHE = new TtlMap<ToolchainInfo>();
 
 export async function latestToolchain(lang: string): Promise<ToolchainInfo> {
+  // The registry kill switch covers toolchain lookups too (go.dev, nodejs.org,
+  // GitHub, npm) — the docs promise "no outbound calls" under it, and this path
+  // is reached from hook processes (pre-standards.js, parse-tags.ts) that never
+  // passed through the server-side gates. Read live: hook env, not import env.
+  if (registryCheckDisabled()) return { version: null, edition: null };
   const key = (lang || "").toLowerCase();
   const cached = TC_CACHE.get(key);
   if (cached) return cached;

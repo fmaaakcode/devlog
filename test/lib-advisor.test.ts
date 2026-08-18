@@ -132,6 +132,37 @@ describe("adviseLibraries — the maturity + security pick", () => {
   });
 });
 
+// The kill switches (DEVLOG_REGISTRY_CHECK_DISABLED / DEVLOG_VULN_CHECK_DISABLED)
+// used to stop at the scan routes; the advisor was the one outbound path they
+// missed (readiness audit 2026-08-18). Contract: no lookup call is made, and the
+// verdict SAYS "disabled" — never masquerades as not-found or as a clean pick.
+describe("adviseLibraries — kill switches", () => {
+  test("registryDisabled: no history call, verdict registry-disabled; network-free refusals still apply", async () => {
+    let historyCalls = 0;
+    const deps = {
+      ...fakeDeps({ astro: hist(["7.0.7", 30]) }, (_n, v) => clean(v)),
+      history: async () => { historyCalls++; return hist(["7.0.7", 30]); },
+      registryDisabled: true,
+    };
+    const items = await adviseLibraries("npm", [{ name: "astro" }, { name: "b@d!" }, { eco: "go", name: "pgx" }], deps);
+    expect(items.map(i => i.verdict)).toEqual(["registry-disabled", "invalid-name", "need-full-path"]);
+    expect(historyCalls).toBe(0);
+  });
+
+  test("osvDisabled: history still consulted, no OSV call, pick is ok-unverified (maturity only)", async () => {
+    let osvCalls = 0;
+    const deps = {
+      ...fakeDeps({ zod: hist(["4.1.0", 40]) }, (_n, v) => { osvCalls++; return clean(v); }),
+      osvDisabled: true,
+    };
+    const [it] = await adviseLibraries("npm", [{ name: "zod", pin: "4.1.0" }], deps);
+    expect(it.verdict).toBe("ok-unverified");
+    expect(it.suggest).toBe("4.1.0");
+    expect(it.pin).toBeUndefined();  // an unverifiable pin reads as unknown, never as clean
+    expect(osvCalls).toBe(0);
+  });
+});
+
 describe("parseLibNames", () => {
   test("splits on whitespace and reads eco prefixes", () => {
     expect(parseLibNames("astro crates:serde pypi:requests")).toEqual([

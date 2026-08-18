@@ -175,6 +175,23 @@ describe("queryToolchain — per-language authoritative source", () => {
     mock(u => u.includes("nodejs.org/dist") ? { body: [{ version: "v25.0.0" }] } : null);
     expect(await latestToolchain("node")).toEqual({ version: "25.0.0", edition: null });
   });
+
+  test("DEVLOG_REGISTRY_CHECK_DISABLED=1: no fetch at all, unknown toolchain (pointer fallback)", async () => {
+    // Read live (not at import): the hook processes that reach this — pre-standards.js,
+    // parse-tags.ts — carry the user's env, and the docs promise zero outbound calls.
+    let calls = 0;
+    mock(() => { calls++; return { body: { tag_name: "1.99.0" } }; });
+    const prev = process.env.DEVLOG_REGISTRY_CHECK_DISABLED;
+    process.env.DEVLOG_REGISTRY_CHECK_DISABLED = "1";
+    try {
+      // rust was cached as 1.99.0 by the test above — the switch must win over
+      // the cache too, so the answer is "unknown", not the cached literal.
+      expect(await latestToolchain("rust")).toEqual({ version: null, edition: null });
+      expect(calls).toBe(0);
+    } finally {
+      if (prev === undefined) delete process.env.DEVLOG_REGISTRY_CHECK_DISABLED; else process.env.DEVLOG_REGISTRY_CHECK_DISABLED = prev;
+    }
+  });
 });
 
 describe("bulk lookups (bounded-concurrency workers)", () => {

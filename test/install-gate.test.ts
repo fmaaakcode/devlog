@@ -262,5 +262,14 @@ describe("decideGate", () => {
       expect(decideGate([pkg("ghost", "2.0.0")], advice).blocks).toHaveLength(0);
       expect(strict([pkg("ghost", "2.0.0")], advice).blocks).toHaveLength(1);
     });
+
+    test("registry-disabled is the user's own switch — passes silently even in strict mode", () => {
+      const advice = [{ name: "hono", verdict: "registry-disabled" }];
+      for (const p of [pkg("hono"), pkg("hono", "4.0.0")]) {
+        const d = strict([p], advice);
+        expect(d.blocks).toHaveLength(0);
+        expect(d.warns).toHaveLength(0);
+      }
+    });
   });
 });

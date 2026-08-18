@@ -1,14 +1,21 @@
 # DevLog
 
-[![test](https://github.com/fmaaakcode/devlog/actions/workflows/test.yml/badge.svg)](https://github.com/fmaaakcode/devlog/actions/workflows/test.yml) · **[Live demo →](https://fmaaakcode.github.io/devlog/)** · [Install](#install-claude-code-plugin--recommended) · [API](./API.md) · [Security](./SECURITY.md)
+[![test](https://github.com/fmaaakcode/devlog/actions/workflows/test.yml/badge.svg)](https://github.com/fmaaakcode/devlog/actions/workflows/test.yml) · **[Website →](https://fmaaakcode.github.io/devlog/)** · [Install](#install-claude-code-plugin--recommended) · [API](./API.md) · [Security](./SECURITY.md) · [Uninstall](#uninstall)
 
 <img src="./assets/dashboard.jpeg" alt="DevLog Dashboard" style="border-radius: 12px;" />
 
-**The memory that doesn't live in the repo — with guardrails.**
+**A Claude Code plugin: the memory that doesn't live in the repo — with guardrails.**
 
 Every Claude Code session ends and forgets: which approach you rejected and why, which bug was fixed and how, where the work stopped. DevLog captures that from a few short `-(tag)` lines Claude writes at the end of each response, hands it back to Claude *before* it repeats a mistake, and stops it at the moments that matter — no release with open work behind it, no dependency installed unchecked, no bug closed without a root cause.
 
 Local dashboard, zero telemetry, zero runtime dependencies (pure Bun). Arabic and English UI.
+
+```
+/plugin marketplace add fmaaakcode/devlog
+/plugin install devlog
+```
+
+That's the whole install (needs [Bun](https://bun.sh/) 1.3.14+ on your `PATH`). Details, manual install and uninstall are [below](#install-claude-code-plugin--recommended).
 
 ## The whole idea in two lines
 
@@ -180,7 +187,18 @@ cd devlog
 bun start            # or: bun dev  (auto-reload)
 ```
 
-The server listens on `http://127.0.0.1:7777`; data lives in `<repo>/.devlog-data/` (gitignored). Then wire the hooks: copy the entries from [`hooks/hooks.json`](./hooks/hooks.json) into `~/.claude/settings.json` (or a project's `.claude/settings.json`), replacing `${CLAUDE_PLUGIN_ROOT}` with your clone path (forward slashes on Windows under Git Bash, e.g. `/d/code/devlog`). The set is:
+The server listens on `http://127.0.0.1:7777`; data lives in `<repo>/.devlog-data/` (gitignored). Then wire the hooks: copy the entries from [`hooks/hooks.json`](./hooks/hooks.json) into `~/.claude/settings.json` (or a project's `.claude/settings.json`), replacing `${CLAUDE_PLUGIN_ROOT}` with your clone path (forward slashes on Windows under Git Bash, e.g. `/d/code/devlog`). Minimal shape — the two hooks that make everything else work — with `/d/code/devlog` standing in for your clone:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "bash \"/d/code/devlog/ensure-server.sh\" --plugin", "timeout": 20 }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "bash \"/d/code/devlog/parse-tags.sh\"", "timeout": 30 }] }]
+  }
+}
+```
+
+Add the rest from `hooks/hooks.json` the same way. The full set is:
 
 | Event | Hook | Role |
 |---|---|---|
@@ -203,6 +221,16 @@ Manual installs also need the protocol: paste [`skills/devlog-protocol/SKILL.md`
 
 Nothing? Set `DEVLOG_DEBUG=1`, retry, and read `.devlog/parse-tags.debug.log` next to `parse-tags.ts`. Usual causes: server not on 7777, wrong hook path, `bun` not on PATH inside the bash Claude Code uses.
 
+## Uninstall
+
+Removing the plugin does not stop the server or delete your data — those are deliberate (data outlives plugin updates), so removal is three explicit steps:
+
+1. **Plugin** — inside Claude Code: `/plugin uninstall devlog` (manual installs: delete the hook entries from `settings.json` and the protocol from `CLAUDE.md`).
+2. **Server** — it keeps running until stopped: `curl -X POST http://127.0.0.1:7777/api/server/stop` (or `-H "X-DevLog-Token: …"` if you enabled `DEVLOG_REQUIRE_TOKEN`), or just kill the `bun src/server.ts` process. If you registered the optional Windows supervisor task: `schtasks /delete /tn DevLogGuard /f`.
+3. **Data** — the whole record lives in **`~/.devlog/`** (plugin mode) or `<repo>/.devlog-data/` (manual clone). Delete that directory and it is gone — nothing is stored anywhere else on your machine, and nothing was ever sent off it. Per project, DevLog may also have written a `<project>/.devlog/` folder (generated docs, release pages, `DEVLOG_STATUS.md`); delete it if you don't want to keep them.
+
+Environment variables you set yourself (`DEVLOG_LANG`, `DEVLOG_DATA_DIR`, `DEVLOG_PORT`, the `*_DISABLED` switches) are yours to unset; DevLog never writes to your shell profile or the registry.
+
 ## Plans — two distinct things, similar names
 
 - **`-(plan)`** — a free-text note. Not trackable, not closeable. Like `-(note)` with a "starting this" hint.
@@ -213,7 +241,7 @@ Full rules: the [`devlog-protocol` skill](./skills/devlog-protocol/SKILL.md).
 
 ## Privacy
 
-All data stays local — the server listens on `127.0.0.1` only, and **no telemetry** is ever sent. The only outbound requests are **opt-out** lookups of package names + versions (npm / crates.io / PyPI / Go / Packagist and OSV.dev) and an update check against GitHub Releases — metadata only, never your code or history. Switch off with `DEVLOG_VULN_CHECK_DISABLED=1`, `DEVLOG_REGISTRY_CHECK_DISABLED=1`, `DEVLOG_VERSION_CHECK_DISABLED=1`. Full threat model: [SECURITY.md](./SECURITY.md).
+All data stays local — the server listens on loopback only (`127.0.0.1` / `::1`), and **no telemetry** is ever sent. The only outbound requests are **opt-out** lookups of package names + versions (npm / crates.io / PyPI / Go / Packagist and OSV.dev — the dependency sweep, the `-(ask:lib)` advisor, the install gate, and the standards gate's toolchain check) and an hourly update check against GitHub Releases — metadata only, never your code or history. Switch off with `DEVLOG_VULN_CHECK_DISABLED=1`, `DEVLOG_REGISTRY_CHECK_DISABLED=1`, `DEVLOG_VERSION_CHECK_DISABLED=1` — with all three set, nothing leaves your machine. Host-by-host table and full threat model: [SECURITY.md](./SECURITY.md). Removing everything: [Uninstall](#uninstall).
 
 ## Development
 

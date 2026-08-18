@@ -350,7 +350,7 @@ export function summarizeVulns(rawVulns: OsvVuln[], name: string, installed: str
 }
 
 // ── Network ──────────────────────────────────────────────────────────────────
-const OSV_UA = "devlog-vuln-check (https://github.com/devlog/devlog)";
+const OSV_UA = "devlog-vuln-check (https://github.com/fmaaakcode/devlog)";
 
 function backoff(attempt: number): Promise<void> {
   return new Promise(r => setTimeout(r, 250 * (attempt + 1)));

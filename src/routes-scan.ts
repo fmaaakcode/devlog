@@ -14,6 +14,7 @@ import { softFail } from "./soft-fail";
 import { resolveProjectFor } from "./project-resolve";
 import { ecoMap } from "./eco-map";
 import { adviseLibraries, parseLibNames, installCmd, defaultEcoFor } from "./lib-advisor";
+import { REGISTRY_CHECK_DISABLED, VULN_CHECK_DISABLED } from "./check-flags";
 import type { ProjectProfile } from "./types";
 
 type ApiReq = Bun.BunRequest;
@@ -64,9 +65,12 @@ export function makeScanRoutes({ checkAndRescanIfStale }: ScanRouteDeps): Record
           const data = await loadData();
           const { name: project } = resolveProjectFor(data, cwd);
           const defaultEco = defaultEcoFor(data.projects[project], ecoMap);
-          const items = (await adviseLibraries(defaultEco, requests)).map(it =>
+          // Same kill switches as the scan/audit routes (audit 2026-08-18): the
+          // advisor is the one outbound path the flags used to miss.
+          const flags = { registryDisabled: REGISTRY_CHECK_DISABLED, osvDisabled: VULN_CHECK_DISABLED };
+          const items = (await adviseLibraries(defaultEco, requests, flags)).map(it =>
             it.suggest ? { ...it, installCmd: installCmd(it.eco, it.name, it.suggest) } : it);
-          return Response.json({ project, items });
+          return Response.json({ project, items, ...(REGISTRY_CHECK_DISABLED ? { disabled: "registry" } : {}) });
         } catch { return Response.json({ error: "Failed" }, { status: 500 }); }
       },
     },

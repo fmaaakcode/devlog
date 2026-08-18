@@ -29,10 +29,13 @@ If you want any of the above, DevLog probably isn't the right base — and that'
 
 ## Language policy
 
-The split is deliberate, not accidental: **user-facing dashboard text (labels,
-buttons, confirms, alerts) is Arabic**; **code, comments, commit messages, and the
-public docs (README, API.md, SECURITY.md) are English**. Injection/protocol messages
-follow `DEVLOG_LANG`. Keep new strings on the side their surface already uses.
+The split is deliberate, not accidental: **user-facing dashboard text is bilingual**
+— every string lives in `assets/dashboard-i18n.js` (Arabic + English, picked by the
+🌐 toggle, defaulting to `DEVLOG_LANG`), and a guard test fails on any string added
+elsewhere; **code, comments, commit messages, and the public docs (README, API.md,
+SECURITY.md) are English**. Injection/protocol/hook messages follow `DEVLOG_LANG`
+via the `L(en, ar)` helper — always ship both. Keep new strings on the side their
+surface already uses.
 
 ## Good contributions
 
