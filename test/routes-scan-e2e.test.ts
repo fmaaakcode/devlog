@@ -1,4 +1,4 @@
-// End-to-end proof for the routes-scan extraction (plan fable/round2 task 3.1:
+// End-to-end proof for the routes-scan extraction (plan review-round-2 task 3.1:
 // the scan/vuln group moved out of server.ts into ./routes-scan, with the
 // server-local checkAndRescanIfStale injected via deps). Drives the group through
 // the real subprocess server — the check-stale 200 proves the injected dep is

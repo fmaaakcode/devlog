@@ -1,4 +1,4 @@
-// End-to-end proof for the routes-events extraction (plan fable/round2 task 3.1:
+// End-to-end proof for the routes-events extraction (plan review-round-2 task 3.1:
 // the hook write hot-path + session-summary moved out of server.ts into
 // ./routes-events, with pushEvent/scheduleRescan/isRealCwd/MANIFEST_FILES injected
 // via deps). Drives the group through the real subprocess server, incl. the

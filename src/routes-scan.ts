@@ -1,4 +1,4 @@
-// Scan / vuln routes, extracted from server.ts (plan fable/round2 task 3.1). The
+// Scan / vuln routes, extracted from server.ts (plan review-round-2 task 3.1). The
 // "scan a project" domain: run an on-demand vuln scan, a smart staleness check,
 // and a full manual rescan (rescan → stack-md → status export → vuln). Everything
 // is a shared import except checkAndRescanIfStale, which stays server-local (it's

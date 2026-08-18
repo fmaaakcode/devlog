@@ -1,5 +1,5 @@
 // The backtick-wrapped command nudge, unit + E2E. Found live 2026-07-28
-// (project sitechecker): the docs render every tag/command as inline code, a
+// (a user project): the docs render every tag/command as inline code, a
 // formatting-faithful model emitted `-(ask:deps)` / `-(ask:lib) …` wrapped in
 // backticks, and the example policy (code spans never execute) answered with
 // total silence — read by the user as "the DevLog server is not responding".
@@ -93,7 +93,7 @@ describe("backtick nudge (E2E through the real Stop hook)", () => {
   });
 
   test("backticked asks nudge once with every offending line, then the continuation stays suppressed", async () => {
-    // The sitechecker shape verbatim: two commands, each a whole backticked line.
+    // The live shape verbatim: two commands, each a whole backticked line.
     const tx = writeTranscript(projDir, "B1", [
       "pulling the inventory.\n\n`-(ask:deps)`\n`-(ask:lib) crates:scraper crates:reqwest`",
     ]);

@@ -1,4 +1,4 @@
-// Golden coverage for the symbol extractor (report fable/index.html #6: symbols.ts
+// Golden coverage for the symbol extractor (internal audit report #6: symbols.ts
 // sat at ~15% despite being the heart of static analysis). extractSymbols is pure
 // (source string + ext → symbols), so each language is pinned with a small,
 // hand-verified snippet — no fixtures, no I/O. These assert the observable

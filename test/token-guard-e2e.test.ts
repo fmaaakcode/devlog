@@ -1,4 +1,4 @@
-// End-to-end proof for the optional destructive-endpoint token (plan fable/round2
+// End-to-end proof for the optional destructive-endpoint token (plan review-round-2
 // task 4.2). Boots two servers: one with DEVLOG_REQUIRE_TOKEN unset (default —
 // destructive routes work as before) and one with it set (those routes now 401
 // without the token, 200 with it). Proves the feature is opt-in + enforced.

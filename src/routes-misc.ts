@@ -1,4 +1,4 @@
-// Misc / utility routes, extracted from server.ts (plan fable/round2 task 3.1).
+// Misc / utility routes, extracted from server.ts (plan review-round-2 task 3.1).
 // The small leftovers that don't belong to a bigger domain: the data snapshot,
 // liveness + identity probes, dashboard feature flags, upstream-update info,
 // single-event delete, the confirmed data wipe, the status.md export (one

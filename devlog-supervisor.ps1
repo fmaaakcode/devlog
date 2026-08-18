@@ -6,7 +6,7 @@
 # Register it as a Scheduled Task that runs every minute (one-time setup):
 #
 #   schtasks /create /tn DevLogGuard /sc minute /mo 1 /tr ^
-#     "pwsh -NoProfile -WindowStyle Hidden -File D:\helper\devlog-supervisor.ps1"
+#     "pwsh -NoProfile -WindowStyle Hidden -File C:\path\to\devlog\devlog-supervisor.ps1"
 #
 # Remove it with:  schtasks /delete /tn DevLogGuard /f
 #

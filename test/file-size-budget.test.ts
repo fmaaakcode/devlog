@@ -1,4 +1,4 @@
-// Anti-bloat ratchet (plan fable/round2 — the "don't repeat the mistake" guard).
+// Anti-bloat ratchet (plan review-round-2 — the "don't repeat the mistake" guard).
 // The #1 recurring debt in this repo is files silently ballooning: server.ts hit
 // 2015 lines because "add the route to the existing table" was always the path of
 // least resistance. This test makes that path FAIL: every src/ file has a line

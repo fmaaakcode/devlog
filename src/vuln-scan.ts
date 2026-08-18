@@ -1,5 +1,5 @@
 // Dependency vulnerability + freshness scan for one project, extracted from the
-// server's route layer (report fable/index.html #3) so this ~230-line pipeline is
+// server's route layer (internal audit report #3) so this ~230-line pipeline is
 // unit-testable in isolation instead of only reachable through an HTTP handler.
 //
 // Two phases, deliberately split around the mutation lock:

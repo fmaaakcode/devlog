@@ -1,5 +1,5 @@
 // Coverage for the tags-service business logic that the release-*.test.ts suites
-// don't reach (plan fable/round2 task 2.1: the module sat at 49.9% lines despite
+// don't reach (plan review-round-2 task 2.1: the module sat at 49.9% lines despite
 // nine release tests — the gaps are registerPlan, handleDocTag, atomic-content,
 // closure-number resolution, release-intent, open-items, applyRelease's bump
 // path, and native-plan step sync). Most of these are pure data functions driven

@@ -1,4 +1,4 @@
-// Parity guard for the HTTP API reference (plan fable/round2 task 4.5). Scans the
+// Parity guard for the HTTP API reference (plan review-round-2 task 4.5). Scans the
 // route tables in server.ts + every routes-*.ts for their route keys, and asserts
 // the committed API.md documents exactly that set — no more, no less. Adding a
 // route without documenting it (or leaving a stale doc line after removing one)

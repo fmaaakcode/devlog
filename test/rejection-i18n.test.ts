@@ -1,5 +1,5 @@
 // Guards the English-first policy for tags-service rejection messages (plan
-// fable/round2 task 1.3). The `undo-ambiguous` rejection used to be hard-coded
+// review-round-2 task 1.3). The `undo-ambiguous` rejection used to be hard-coded
 // Arabic, so an English user who typed an ambiguous `-(undo)` got an Arabic
 // error. It now flows through L(en, ar); this pins both branches so a future
 // hard-coding regresses a test instead of shipping.

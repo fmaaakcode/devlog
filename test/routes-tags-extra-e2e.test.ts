@@ -1,4 +1,4 @@
-// Supplemental e2e for the routes-tags extraction (plan fable/round2 task 3.1).
+// Supplemental e2e for the routes-tags extraction (plan review-round-2 task 3.1).
 // The /api/tags pipeline itself is already driven end-to-end by six existing
 // suites (closure-confirm-e2e, regression-qa-integration, release-downgrade-e2e,
 // regression-security-cwd, concurrency, parse-tags-order), so this only pins the

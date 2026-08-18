@@ -1,4 +1,4 @@
-// Process / session routes, extracted from server.ts (plan fable/round2 task 3.1:
+// Process / session routes, extracted from server.ts (plan review-round-2 task 3.1:
 // decompose the 2k-line route table). A cohesive group — active Claude sessions,
 // a project's tracked background processes/orphans, a forced descendant refresh,
 // and PID kill — that depends ONLY on already-shared modules (sessions/data/

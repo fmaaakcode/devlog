@@ -1,4 +1,4 @@
-// Pins the softFail contract (report fable/index.html #4): a no-op by default
+// Pins the softFail contract (internal audit report #4): a no-op by default
 // so best-effort catch sites stay quiet, but one diagnostic line under
 // DEVLOG_DEBUG=1 so a swallowed failure is observable when you ask for it.
 import { test, expect, describe, afterEach } from "bun:test";

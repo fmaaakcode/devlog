@@ -1,4 +1,4 @@
-// Regression test for the stray `$NAME/` folder (report fable/index.html #1):
+// Regression test for the stray `$NAME/` folder (internal audit report #1):
 // a hook whose `cwd` was never shell-expanded (a literal "$NAME") or points at
 // a path missing from disk must NOT mint a phantom project or write any
 // `.devlog/` files. The fix in src/server.ts (isRealCwd guard on doInject and

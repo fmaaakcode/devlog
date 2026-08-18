@@ -1,4 +1,4 @@
-// Optional API token for the destructive endpoints (plan fable/round2 task 4.2).
+// Optional API token for the destructive endpoints (plan review-round-2 task 4.2).
 //
 // The localhost bind + guard() (Host/Origin/Sec-Fetch + application/json) already
 // stop a browser or another origin. This closes the remaining gap in the single-

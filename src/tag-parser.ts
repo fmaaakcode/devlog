@@ -296,7 +296,7 @@ export function nearMissTags(msg: string): NearMiss[] {
  * command scanners blank code spans on purpose (a quoted example must never
  * execute); that policy is correct but SILENT, and a model that mimics the
  * docs' inline-code formatting gets no answer, no storage, no error (found
- * live 2026-07-28, project sitechecker: two backticked asks, twice, read as
+ * live 2026-07-28, a user project: two backticked asks, twice, read as
  * "the DevLog server is not responding"). This feeds the Stop hook's one-shot
  * nudge. Scope is deliberately narrow: the WHOLE line is a single `…` span —
  * a command quoted mid-sentence, a bulleted example, or anything inside a

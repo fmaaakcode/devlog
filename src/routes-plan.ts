@@ -1,4 +1,4 @@
-// Plan + changelog routes, extracted from server.ts (plan fable/round2 task 3.1).
+// Plan + changelog routes, extracted from server.ts (plan review-round-2 task 3.1).
 // Register/upsert a doc:plan's steps, hide a plan from the dashboard, and render
 // the "changelog since last release" (JSON or markdown, for the pre-release hook).
 // Depends only on shared modules, so makePlanRoutes() takes no injected server

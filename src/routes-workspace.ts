@@ -1,4 +1,4 @@
-// Workspace-mutation routes, extracted from server.ts (plan fable/round2 task
+// Workspace-mutation routes, extracted from server.ts (plan review-round-2 task
 // 3.1). Append a free-text worklog note, and toggle a project's .devignore entry
 // (file-level or whole-dir) then rescan its stats. Both use only shared imports,
 // so makeWorkspaceRoutes() takes no injected server state. Spread into routeDefs.

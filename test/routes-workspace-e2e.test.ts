@@ -1,4 +1,4 @@
-// End-to-end proof for the routes-workspace extraction (plan fable/round2 task
+// End-to-end proof for the routes-workspace extraction (plan review-round-2 task
 // 3.1: worklog + ignore moved out of server.ts into ./routes-workspace). Drives
 // the group through the real subprocess server (shapes + validation paths).
 

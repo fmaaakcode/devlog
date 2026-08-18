@@ -1,4 +1,4 @@
-// End-to-end proof for the routes-inject extraction (plan fable/round2 task 3.1:
+// End-to-end proof for the routes-inject extraction (plan review-round-2 task 3.1:
 // the injection group moved out of server.ts into ./routes-inject, with doInject +
 // MAX_INJECTIONS_LOG injected via deps since they stay server-local). Drives the
 // group through the real subprocess server — including a config write→read

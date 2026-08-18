@@ -1,4 +1,4 @@
-// Stack-map + file-tree routes, extracted from server.ts (plan fable/round2 task
+// Stack-map + file-tree routes, extracted from server.ts (plan review-round-2 task
 // 3.1). A cohesive read/render group: the parsed DEVLOG_STACK.md, saved stack-map
 // node positions (get/save/clear), and a project's file tree. Depends only on the
 // shared data layer + the stack-parser/tree renderers, so makeStackRoutes() takes

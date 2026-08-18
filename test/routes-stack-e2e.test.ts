@@ -1,4 +1,4 @@
-// End-to-end proof for the routes-stack extraction (plan fable/round2 task 3.1:
+// End-to-end proof for the routes-stack extraction (plan review-round-2 task 3.1:
 // the stack-map + file-tree read group moved out of server.ts into ./routes-stack,
 // carrying the parseStack + buildTree imports). Drives the group through the real
 // subprocess server to verify the extracted routes still mount + behave (shapes +

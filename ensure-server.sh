@@ -117,12 +117,27 @@ if ! command -v bun >/dev/null 2>&1; then
   exit 0
 fi
 
-# Health probe — short timeout, ignore body. /api/ping is a 3-byte liveness
-# response; /api/data would serialize the whole ~5MB dataset just to prove the
-# port is alive (devops R4 F3). curl exits 0 on any HTTP response (even 404),
-# so this still works against an older server that predates /api/ping.
+# Health probe — short timeout. /api/ping is a 3-byte liveness response;
+# /api/data would serialize the whole ~5MB dataset just to prove the port is
+# alive (devops R4 F3). The BODY is checked, not just "curl exited 0": curl -s
+# exits 0 on any HTTP response, so a foreign HTTP service squatting on the port
+# used to pass as a live DevLog and every hook talked to it forever, silently
+# (readiness round 2, 2026-08-18). Three outcomes: "ok" = ours; some other
+# reply = a stranger holds the port (say so, never spawn into EADDRINUSE);
+# nothing = free, spawn below.
 ALIVE=0
-curl -s -m 1 "http://127.0.0.1:$PORT/api/ping" >/dev/null 2>&1 && ALIVE=1
+PING_BODY="$(curl -s -m 1 "http://127.0.0.1:$PORT/api/ping" 2>/dev/null)"
+PING_RC=$?
+if [ "$PING_BODY" = "ok" ]; then
+  ALIVE=1
+elif [ "$PING_RC" = "0" ]; then
+  dbg "foreign service on port $PORT (ping body: $(printf '%s' "$PING_BODY" | head -c 40))"
+  case "$DEVLOG_LANG" in
+    ar*) printf '%s' "{\"systemMessage\":\"[DevLog] المنفذ $PORT مشغول بخدمة أخرى ليست DevLog — لن يبدأ الخادم. حرّر المنفذ أو اضبط DEVLOG_PORT على منفذ آخر ثم افتح جلسة جديدة.\"}" ;;
+    *)   printf '%s' "{\"systemMessage\":\"[DevLog] Port $PORT is held by another service that is not DevLog — the server will not start. Free the port or set DEVLOG_PORT to a different one, then start a new session.\"}" ;;
+  esac
+  exit 0
+fi
 
 # Plugin-update takeover: updating the plugin never restarts the daemon, so the
 # previous version keeps the port and issues OLD verdicts while the hooks (this

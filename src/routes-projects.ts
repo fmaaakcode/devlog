@@ -1,4 +1,4 @@
-// Project-lifecycle routes, extracted from server.ts (plan fable/round2 task 3.1).
+// Project-lifecycle routes, extracted from server.ts (plan review-round-2 task 3.1).
 // Delete a project (+ its tags/plans/events/worklog) and rename one — the rename
 // also renames the folder on disk and migrates Claude's memory-card dir, with the
 // fail-prone filesystem work done BEFORE any data mutation so a failure is a no-op.

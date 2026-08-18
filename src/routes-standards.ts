@@ -1,4 +1,4 @@
-// Standards / report routes, extracted from server.ts (plan fable/round2 task
+// Standards / report routes, extracted from server.ts (plan review-round-2 task
 // 3.1). A read-only reporting group: still-open numbered items (release guard),
 // the standards catalog viewer, the dependency-freshness verdict, and the
 // on-demand OSV audit report. Every collaborator is a shared import; the two

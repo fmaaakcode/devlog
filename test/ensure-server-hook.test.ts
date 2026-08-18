@@ -325,4 +325,37 @@ describe.skipIf(!BASH)("ensure-server.sh plugin-update takeover", () => {
       rmSync(join(selfRoot, "..", "..", "..", "..", ".."), { recursive: true, force: true });
     }
   }, 30000);
+
+  // Readiness round 2 (2026-08-18): a FOREIGN HTTP service on the port used to
+  // pass as a live DevLog — `curl -s` exits 0 on any response — so the hooks
+  // talked to a stranger forever and nothing was ever said. The probe now reads
+  // the body: not "ok" → a systemMessage on stdout, exit 0, no spawn attempt.
+  test("foreign HTTP service on the port → visible message, no takeover, no spawn", async () => {
+    const port = 17919;
+    const foreign = spawn({
+      cmd: ["bun", "-e", `Bun.serve({ port: ${port}, fetch() { return new Response("<html>not devlog</html>"); } });`],
+      cwd: PROJECT_ROOT, stdout: "pipe", stderr: "pipe",
+    });
+    const selfRoot = makeCacheRoot("4.0.0");
+    try {
+      await waitPing(port);
+      const { code, out, err } = await runScript({
+        env: { DEVLOG_PORT: String(port), DEVLOG_DEBUG: "1", DEVLOG_LANG: "en" },
+        args: ["--plugin", "--self-root", msysPath(selfRoot)],
+        payload: JSON.stringify({ hook_event_name: "SessionStart", session_id: "foreign-port", cwd: PROJECT_ROOT }),
+      });
+      expect(code).toBe(0);
+      const msg = JSON.parse(out.trim()) as { systemMessage?: string };
+      expect(msg.systemMessage ?? "").toContain(`Port ${port} is held by another service`);
+      expect(msg.systemMessage ?? "").toContain("DEVLOG_PORT");
+      expect(err).not.toContain("takeover: stale plugin daemon");
+      // The stranger is untouched: still answering after the script finished.
+      const r = await fetch(`http://127.0.0.1:${port}/api/ping`, { signal: AbortSignal.timeout(1000) });
+      expect(await r.text()).toContain("not devlog");
+    } finally {
+      try { foreign.kill(); } catch { /* cleanup */ }
+      await Promise.race([foreign.exited, Bun.sleep(2000)]);
+      rmSync(join(selfRoot, "..", "..", "..", "..", ".."), { recursive: true, force: true });
+    }
+  }, 30000);
 });

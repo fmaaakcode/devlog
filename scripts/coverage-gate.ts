@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// Coverage ratchet (plan fable/round2 task 2.3). Parses an lcov report and fails
+// Coverage ratchet (plan review-round-2 task 2.3). Parses an lcov report and fails
 // if src/ line coverage regresses — overall, or for any "sensitive" module whose
 // silent breakage is high-blast-radius (a vuln scan that stops finding CVEs, a
 // release path that corrupts versions, an export that ships a wrong changelog).

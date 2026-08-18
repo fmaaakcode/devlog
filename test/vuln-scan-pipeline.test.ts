@@ -1,4 +1,4 @@
-// Full-pipeline coverage for runVulnScan (plan fable/round2 task 1.1: the module
+// Full-pipeline coverage for runVulnScan (plan review-round-2 task 1.1: the module
 // that auto-generates security tags sat at 13.7% lines — its silent failure would
 // mean a false "no vulnerabilities" for every tracked project, the most dangerous
 // failure mode a security feature can have).

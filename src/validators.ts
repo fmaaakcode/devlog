@@ -1,4 +1,4 @@
-// Tiny, dependency-free request-body validators (plan fable/round2 task 3.2).
+// Tiny, dependency-free request-body validators (plan review-round-2 task 3.2).
 // The route handlers used to read an untyped `body: any` (or an `as {...}` cast
 // that lies at runtime) and reach for fields ad-hoc. These helpers turn an
 // unknown parsed body into typed, bounded access at the API boundary: each

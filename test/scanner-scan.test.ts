@@ -1,4 +1,4 @@
-// Coverage for scanner.ts's scan pipeline (report fable/index.html #6: scanner.ts
+// Coverage for scanner.ts's scan pipeline (internal audit report #6: scanner.ts
 // sat at ~45%). detectLanguage is pure; scanDirectory/detectPackages/
 // scanFreshProfile touch disk, so we build a small real project in a temp dir
 // (same pattern as scanner-tree.test.ts) and assert the observable profile.

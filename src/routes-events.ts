@@ -1,4 +1,4 @@
-// Event / session-capture routes, extracted from server.ts (plan fable/round2
+// Event / session-capture routes, extracted from server.ts (plan review-round-2
 // task 3.1). POST /api/hook is the write hot-path — every Claude tool call posts
 // here: it resolves the project, applies an off-lock fresh scan, records the
 // event, auto-completes plan steps, schedules a debounced rescan, and exports

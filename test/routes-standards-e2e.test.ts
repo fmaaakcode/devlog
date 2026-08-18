@@ -1,4 +1,4 @@
-// End-to-end proof for the routes-standards extraction (plan fable/round2 task
+// End-to-end proof for the routes-standards extraction (plan review-round-2 task
 // 3.1: the read-only report group — open-items, standards catalog, dep-freshness,
 // audit — moved out of server.ts into ./routes-standards, re-deriving the two
 // env-gate flags locally). Drives the group through the real subprocess server.

@@ -1,4 +1,4 @@
-// Unit tests for the request-body validators (plan fable/round2 task 3.2).
+// Unit tests for the request-body validators (plan review-round-2 task 3.2).
 // Pins the "never throw, always a safe fallback" contract that lets route
 // handlers drop `body: any` / `as {...}` casts without risking a 500 on a
 // malformed payload.

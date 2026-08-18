@@ -1,4 +1,4 @@
-// End-to-end proof for the routes-changes extraction (plan fable/round2 task 3.1:
+// End-to-end proof for the routes-changes extraction (plan review-round-2 task 3.1:
 // the recall/code-edit-history group moved out of server.ts into ./routes-changes,
 // carrying its private summarizeChange + countLines helpers). These routes had no
 // e2e coverage; this drives all four through the real subprocess server to verify

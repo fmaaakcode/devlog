@@ -1,4 +1,4 @@
-// End-to-end proof for the routes-projects extraction (plan fable/round2 task 3.1:
+// End-to-end proof for the routes-projects extraction (plan review-round-2 task 3.1:
 // project delete + rename moved out of server.ts into ./routes-projects, with the
 // three fs.watch helpers injected via deps). Besides the error/guard paths, this
 // drives a REAL rename — seed a project via /api/inject, rename it, and assert the

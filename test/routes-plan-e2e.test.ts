@@ -1,4 +1,4 @@
-// End-to-end proof for the routes-plan extraction (plan fable/round2 task 3.1:
+// End-to-end proof for the routes-plan extraction (plan review-round-2 task 3.1:
 // plan register/delete + changelog moved out of server.ts into ./routes-plan).
 // Drives the group through the real subprocess server — including a plan-register
 // round-trip and both changelog formats — to verify the extracted routes still

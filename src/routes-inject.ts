@@ -1,4 +1,4 @@
-// Injection routes, extracted from server.ts (plan fable/round2 task 3.1). This
+// Injection routes, extracted from server.ts (plan review-round-2 task 3.1). This
 // group owns context injection + its history + config: run an inject, preview it
 // without logging, list/delete history entries, and read/write the global +
 // per-project config. Unlike routes-processes/changes, two collaborators stay in

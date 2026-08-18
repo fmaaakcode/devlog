@@ -1,4 +1,4 @@
-// Tag-processing routes, extracted from server.ts (plan fable/round2 task 3.1).
+// Tag-processing routes, extracted from server.ts (plan review-round-2 task 3.1).
 // The heart of the protocol: POST /api/tags runs the whole per-entry pipeline
 // (release intent → doc:* → atomic content → closure diagnosis/resolution →
 // desc/about/blueprint/undo → dedup → downgrade/open-items guards → store →

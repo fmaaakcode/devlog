@@ -644,8 +644,8 @@ export const DICT = {
   "feat.rowVuln": { en: "Library scan", ar: "فحص المكتبات" },
   "feat.rowTags": { en: "Tag capture", ar: "التقاط التاقات" },
   "feat.footer": {
-    en: "DevLog — all data is local, the server listens on <code>127.0.0.1</code> only, no tracking.<br>For the full reference see the <a href=\"https://github.com/\">README</a> and <code>docs/CLAUDE.md</code> (the tag protocol).",
-    ar: "DevLog — كل البيانات محلّية، السيرفر يستمع على <code>127.0.0.1</code> فقط، بلا تتبّع.<br>للمرجع الكامل راجع <a href=\"https://github.com/\">README</a> و <code>docs/CLAUDE.md</code> (بروتوكول التاقات).",
+    en: "DevLog — all data is local, the server listens on <code>127.0.0.1</code> only, no tracking.<br>For the full reference see the <a href=\"https://github.com/fmaaakcode/devlog#readme\">README</a> and the bundled <code>devlog-protocol</code> skill (the tag protocol).",
+    ar: "DevLog — كل البيانات محلّية، السيرفر يستمع على <code>127.0.0.1</code> فقط، بلا تتبّع.<br>للمرجع الكامل راجع <a href=\"https://github.com/fmaaakcode/devlog#readme\">README</a> ومهارة <code>devlog-protocol</code> المرفقة (بروتوكول التاقات).",
   },
 };
 

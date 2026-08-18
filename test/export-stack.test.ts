@@ -1,4 +1,4 @@
-// Coverage for generateStackMd (plan fable/round2 task 2.2: export.ts sat at
+// Coverage for generateStackMd (plan review-round-2 task 2.2: export.ts sat at
 // 47% because DEVLOG_STACK.md generation — ~300 lines, 479-780 — was entirely
 // unexercised). Drives it against real temp projects so analyzeProject returns
 // files/functions/imports, then asserts the section skeleton + the language and

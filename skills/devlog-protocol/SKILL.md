@@ -75,7 +75,7 @@ Every open tag has a closure, emitted in the **same response** as the work.
 
 `-(built)` is not a closure — if work maps to a plan step, also emit `-(done) #N`. Don't fake-close security tags: if you reviewed but didn't fix, say so; don't emit `-(security fix)`.
 
-## Upcoming — the deferred tier («قادمة»)
+## Upcoming — the deferred tier
 
 Two tiers of open work: **committed** (todo/bug/plan-step — the guard enforces closure and blocks releases) and **upcoming** (recorded ambition — visible everywhere, enforced nowhere). Use upcoming for ideas worth keeping that nobody is committing to now, instead of parking them outside DevLog.
 
@@ -86,9 +86,9 @@ Two tiers of open work: **committed** (todo/bug/plan-step — the guard enforces
 | `-(todo) #N` | Promote upcoming `#N` back to a committed todo |
 | `-(done) #N` / `-(bug fix) #N` | Close an upcoming item directly — no promotion needed |
 
-Rules: a `#N` that is an open **plan step** defers/promotes that step only — its siblings stay committed (the dashboard ☾ button is what defers a whole plan). **Security items are never deferrable** — fix them or leave them open. Upcoming items don't block `-(release)`, don't trigger the closure-check, and don't count in "Open now"; they appear as one awareness line at SessionStart (toggle: لوحة الحقن → «سطر القادمة»), in the القادمة tabs on the dashboard's tasks/plans cards, in `?open` / `-(ask:open)` under their own section, and each release page snapshots them in a «قادم» section.
+Rules: a `#N` that is an open **plan step** defers/promotes that step only — its siblings stay committed (the dashboard ☾ button is what defers a whole plan). **Security items are never deferrable** — fix them or leave them open. Upcoming items don't block `-(release)`, don't trigger the closure-check, and don't count in "Open now"; they appear as one awareness line at SessionStart (toggle: Injection panel → "Upcoming line"), in the "Upcoming" tabs on the dashboard's tasks/plans cards, in `?open` / `-(ask:open)` under their own section, and each release page snapshots them in an "Upcoming" section.
 
-## Features — the capability inventory («قدرات»)
+## Features — the capability inventory
 
 Work tags record developer-language deltas; clients ask in capability language
 ("does the system support X?"). `-(feature)` declares ONE client-visible
@@ -106,12 +106,12 @@ release, never trigger closure checks, and aren't part of `ask:open`.
 | `-(ask:backfill)` | Pull the releases NO capability is attributed to, each with its summary + work material — draft one capability line per release, get the user's approval, then declare each with the `[vX.Y.Z]` marker (served in-turn, not logged) |
 
 The current list = every feature not removed; each is attributed to the first
-release cut after it landed («منذ vX.Y.Z» / unreleased) — unless its text opens
+release cut after it landed ("since vX.Y.Z" / unreleased) — unless its text opens
 with an explicit `[vX.Y.Z]` marker, which pins it to that past release (the
 backfill path for pre-feature-era history). It renders as the
-«قدرات جديدة» section of release pages, the «قدرات» header chip on the
-dashboard, and the backbone of the client report (`/api/client-report` — the
-dashboard's «تقرير العميل» button; open work appears there as a count only and
+"New capabilities" section of release pages and the backbone of the client
+report (`/api/client-report` — the dashboard's "Client report" button; open
+work appears there as a count only and
 security as a reassurance line, never details).
 
 **Soft release nudge**: a `-(release)` with work tags (`built`/`update`) accrued
@@ -152,11 +152,11 @@ first-day-to-today spine while the narrative never re-serves a studied period.
 
 Your work after the pull: analyze discipline, recurring problems, project
 trajectory and user workflow, then store the report as
-`-(doc:report) study-YYYY-MM-DD <title>` — the `study-` (or `دراسة-`) name
+`-(doc:report) study-YYYY-MM-DD <title>` — the `study-` (or `دراسة-`, Arabic mode) name
 prefix is what makes the report the NEXT study's watermark. End it with a
-«الخلاصة» section: that section is the digest the next study builds on
+"Summary" section (`الخلاصة` in Arabic): that section is the digest the next study builds on
 (confirm each earlier pattern held, or declare it broken — never re-derive a
-studied year). Stored studies appear in the dashboard's «دراسات» header chip.
+studied year). Stored studies appear in the dashboard's Docs section.
 
 ## Doc tags
 
@@ -196,7 +196,7 @@ A reusable rules library lives at `~/.claude/standards/`, organized by axis (`la
 | `-(rule:ack) <key>` | Confirm a blocked standards/dep violation as intentional for THIS project (e.g. `cargo-edition`, `cargo-edition:2021`, `dep:astro` — the exact key comes in the block message); the same write passes when re-issued |
 | `-(rule:acks)` | List this project's confirmed acks |
 
-Available category names are injected at SessionStart under "معايير متاحة (Standards)". For a rich reference standard (design tokens, tables), write the file directly at `~/.claude/standards/<axis>/<category>.md`.
+Available category names are injected at SessionStart under "Available standards" ("معايير متاحة" in Arabic mode). For a rich reference standard (design tokens, tables), write the file directly at `~/.claude/standards/<axis>/<category>.md`.
 
 ## Vuln audit
 
@@ -229,7 +229,7 @@ Every dependency raises two questions: *what is it* (the registry's official one
 
 | Command | Use |
 |---|---|
-| `-(lib) zod — التحقق من حمولات الويبهوك` | STORED: one-line purpose in the user's language, emitted right after installing (the ask:lib answer reminds you). Re-emit the same name to update — latest wins. |
+| `-(lib) zod — validating webhook payloads` | STORED: one-line purpose in the user's language, emitted right after installing (the ask:lib answer reminds you). Re-emit the same name to update — latest wins. |
 | `-(ask:deps)` | Ephemeral pull: the full inventory (purpose + official description + vuln/outdated status), uncovered libraries first, with a coverage count |
 
 Backfill: when `ask:deps` lists libraries with no purpose, draft one line each, get the **user's approval**, then emit one `-(lib)` per library. The user browses the same data from the dashboard: the `dependencies` button opens `/deps.html` (hover popup unchanged — quick vuln glance only).

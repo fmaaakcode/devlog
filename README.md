@@ -12,10 +12,10 @@ Local dashboard, zero telemetry, zero runtime dependencies (pure Bun). Arabic an
 
 ```
 /plugin marketplace add fmaaakcode/devlog
-/plugin install devlog
+/plugin install devlog@devlog
 ```
 
-That's the whole install (needs [Bun](https://bun.sh/) 1.3.14+ on your `PATH`). Details, manual install and uninstall are [below](#install-claude-code-plugin--recommended).
+That's the whole install (needs [Bun](https://bun.sh/) 1.3.14+ on your `PATH`, plus `bash` and `curl` — on Windows, Git for Windows provides both). Details, manual install and uninstall are [below](#install-claude-code-plugin--recommended).
 
 ## The whole idea in two lines
 
@@ -167,7 +167,7 @@ Inside Claude Code:
 
 ```
 /plugin marketplace add fmaaakcode/devlog
-/plugin install devlog
+/plugin install devlog@devlog
 ```
 
 That's the whole install. The plugin bundles everything:
@@ -176,8 +176,9 @@ That's the whole install. The plugin bundles everything:
 - **The tag protocol** arrives as a compact SessionStart primer plus an on-demand `devlog-protocol` skill — nothing gets copied into your global `~/.claude/CLAUDE.md`.
 - **The local server** auto-starts on first use (bundled `ensure-server.sh`); open the dashboard at `http://127.0.0.1:7777`.
 - **Your data** lives in `~/.devlog/data/` — outside the plugin cache, so it survives every `/plugin marketplace update`.
+- **One folder in your project:** the daemon keeps running in the background after Claude Code exits (stop it any time — see [Uninstall](#uninstall)), and the first captured tag creates `<project>/.devlog/` (`DEVLOG_STATUS.md`, changelog, release pages). Add `.devlog/` to your `.gitignore` if you don't want those generated files in your repo.
 
-Requires [Bun](https://bun.sh/) 1.3.14+ on your `PATH` (the plugin prints the one-line install command if it's missing). Update later with `/plugin marketplace update`. Set `DEVLOG_LANG=ar` for Arabic protocol messages.
+Requires [Bun](https://bun.sh/) 1.3.14+ on your `PATH` (the plugin prints the one-line install command if it's missing) and `bash` + `curl` for the hooks (Git for Windows ships both). Update later with `/plugin marketplace update`. Set `DEVLOG_LANG=ar` for Arabic protocol messages.
 
 ## Manual install (from a clone)
 
@@ -250,6 +251,7 @@ bun test              # suite (isolated: DEVLOG_DATA_DIR + DEVLOG_PORT forced vi
 bun run lint          # Biome
 bun run typecheck
 bun run doctor [path]
+bun run shot:hero     # regenerate assets/dashboard.jpeg from a synthetic demo project (headless Edge/Chrome)
 ```
 
 Code map: [`API.md`](./API.md) (every HTTP route by module) · [`CONTRIBUTING.md`](./CONTRIBUTING.md) (red lines, language policy) · `stack-map.html` (live dependency map).

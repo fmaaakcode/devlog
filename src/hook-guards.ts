@@ -178,7 +178,7 @@ export async function nearMissGuard(ctx: GuardCtx): Promise<void> {
  * Backtick-wrapped command lines. The docs render every tag as inline code, so
  * a formatting-faithful model emits `-(ask:deps)` — and the example policy
  * (code spans never execute) turns that into total silence: no answer, no
- * storage, no error. Found live 2026-07-28 (sitechecker): two backticked asks,
+ * storage, no error. Found live 2026-07-28 (a user project): two backticked asks,
  * twice, read by the user as "the DevLog server is not responding".
  *
  * Says "not captured, and why" ONCE. Never auto-executes — quoting a command as

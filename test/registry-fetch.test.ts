@@ -1,4 +1,4 @@
-// Network-path coverage for registry.ts (report fable/index.html #6: the module
+// Network-path coverage for registry.ts (internal audit report #6: the module
 // sat at ~0.25% because every registry query goes through the global `fetch`,
 // which the old suite never exercised). We mock globalThis.fetch and drive each
 // ecosystem branch of queryRegistry / queryHistory / queryToolchain, plus the

@@ -1,4 +1,4 @@
-// End-to-end proof for the routes-processes extraction (plan fable/round2 task
+// End-to-end proof for the routes-processes extraction (plan review-round-2 task
 // 3.1: the sessions/processes/kill-pid group moved out of server.ts into
 // ./routes-processes). These routes had no e2e coverage, so "the suite still
 // passes" only proved the route TABLE was intact — not these handlers. This

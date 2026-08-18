@@ -1,4 +1,4 @@
-// Content-pattern table for the stack analyzer (plan fable/round2 task 4.4).
+// Content-pattern table for the stack analyzer (plan review-round-2 task 4.4).
 // Separated from analyze.ts's engine so detecting a new capability/language is a
 // DATA edit here — add a row — not a code change to the scorer. Each rule maps a
 // regex over file content to a display label; `ctx` restricts a rule to server-
