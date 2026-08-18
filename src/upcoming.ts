@@ -6,15 +6,15 @@
 // where the dashboard can't see them). Extracted from tags-service.ts for the
 // file-size budget; pure mutators over `data`, no I/O.
 
-import type { DevLogData, TagEntry } from "./types";
+import type { DevLogData, PlanStep, TagEntry } from "./types";
 import {
-  assignNum, normalizeTagContent, openTodos, openBugs, openSecurity, openPlanSteps,
+  assignNum, normalizeTagContent, openTodos, openBugs, openSecurity,
   SECURITY_OPEN_TAGS, singleHashNum, leadingNums, isStepClosed,
 } from "./data";
 
 export interface UpcomingChange {
-  kind: "created" | "deferred" | "promoted" | "plan-deferred" | "plan-promoted"
-      | "no-match" | "security-refused" | "duplicate";
+  kind: "created" | "deferred" | "promoted" | "step-deferred" | "step-promoted"
+      | "plan-promoted" | "no-match" | "security-refused" | "duplicate";
   num?: number;
   text?: string;      // item text / plan title
 }
@@ -22,7 +22,8 @@ export interface UpcomingChange {
 /**
  * `-(upcoming) <text>` → create a new deferred todo (numbered, upcoming=true).
  * `-(upcoming) #N [#M …]` → defer the open todo/bug #N in place (same number,
- * history intact). A `#N` that is an open PLAN STEP defers the whole plan.
+ * history intact). A `#N` that is an open PLAN STEP defers THAT STEP only
+ * (#806 — it used to flag the whole plan, dragging unrelated siblings along).
  * Security items are refused on principle — a vulnerability is never "later".
  * Mutates `data`; returns one change record per outcome for hook feedback.
  */
@@ -68,27 +69,43 @@ export function applyUpcoming(content: string, data: DevLogData, project: string
       }
       continue;
     }
-    // An open plan step defers the whole owning plan.
-    const step = openPlanSteps(data, project).find(s => s.num === n);
+    // An open plan step defers itself only — siblings stay committed (#806).
+    const step = findOpenStep(data, project, n);
     if (step) {
-      const plan = data.plans.find(p => p.project === project && p.title === step.planTitle);
-      if (plan) { plan.upcoming = true; out.push({ kind: "plan-deferred", num: n, text: plan.title }); continue; }
+      step.upcoming = true;
+      out.push({ kind: "step-deferred", num: n, text: step.text });
+      continue;
     }
     out.push({ kind: "no-match", num: n });
   }
   return out;
 }
 
+/** The open (not completed/dropped) plan step numbered `num`, or null. */
+function findOpenStep(data: DevLogData, project: string, num: number): PlanStep | null {
+  for (const p of data.plans) {
+    if (p.project !== project) continue;
+    const s = p.steps.find(s => s.num === num && !isStepClosed(s));
+    if (s) return s;
+  }
+  return null;
+}
+
 /**
- * `-(todo) #N` — promotion: an upcoming item (or the plan owning step #N)
- * returns to the committed tier the guard tracks. Returns null when #N names
- * nothing upcoming, so the caller falls through to the normal todo path.
+ * `-(todo) #N` — promotion: an upcoming item (or plan step) returns to the
+ * committed tier the guard tracks. A step deferred on its own (`step.upcoming`)
+ * is promoted alone; a step whose whole PLAN was deferred (dashboard ☾ /
+ * legacy data) promotes the plan, since that is the flag that holds it back.
+ * Returns null when #N names nothing upcoming, so the caller falls through to
+ * the normal todo path.
  */
 export function applyTodoPromotion(content: string, data: DevLogData, project: string): UpcomingChange | null {
   const num = singleHashNum(content);
   if (num === null) return null;
   const t = data.tags.find(x => x.project === project && x.num === num && x.upcoming);
   if (t) { delete t.upcoming; return { kind: "promoted", num, text: t.content }; }
+  const step = findOpenStep(data, project, num);
+  if (step?.upcoming) { delete step.upcoming; return { kind: "step-promoted", num, text: step.text }; }
   const plan = data.plans.find(p => p.project === project && p.upcoming
     && p.steps.some(s => s.num === num && !isStepClosed(s)));
   if (plan) { delete plan.upcoming; return { kind: "plan-promoted", num, text: plan.title }; }

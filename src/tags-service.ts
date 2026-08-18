@@ -59,6 +59,9 @@ export function registerPlan(
     for (const step of steps) {
       const match = oldSteps.find(s => s.text === step.text);
       if (match?.completed) step.completed = true;
+      // The .md knows [x]/[ ] only — `dropped` / step-level `upcoming` (#806) must survive a re-register.
+      if (match?.dropped) step.dropped = true;
+      if (match?.upcoming) step.upcoming = true;
       if (match?.num) step.num = match.num;
       else if (data.projects[project]) step.num = assignNum(data, project);
     }
@@ -626,18 +629,15 @@ export function detectReleaseOpenItems(
   // «قادمة» never blocks a release — that's the whole point of the tier. The
   // release page snapshots them in its own «قادم» section instead.
   const tags = data.tags.filter(t => t.project === project);
-  // Deferring a plan STEP defers the whole owning plan (applyUpcoming's rule),
-  // so an in-flight deferral of one step must clear its siblings too.
+  // A plan STEP defers on its own (#806): in-flight `-(upcoming) #N` clears N only, siblings still gate.
   const allSteps = openPlanSteps(data, project);
-  const deferredPlanTitles = new Set(
-    allSteps.filter(s => typeof s.num === "number" && inflightDeferred.has(s.num)).map(s => s.planTitle));
   const deferred = (num: number | undefined) => typeof num === "number" && inflightDeferred.has(num);
   const out: ReleaseOpenItem[] = [];
   for (const t of openTodos(tags)) if (!t.upcoming && stillOpen(t.num, "todo") && !deferred(t.num)) out.push({ num: t.num, tag: "todo", content: t.content });
   for (const t of openBugs(tags)) if (!t.upcoming && stillOpen(t.num, "bug found") && !deferred(t.num)) out.push({ num: t.num, tag: "bug found", content: t.content });
   for (const t of openSecurity(tags)) if (stillOpen(t.num, t.tag)) out.push({ num: t.num, tag: t.tag, content: t.content });
   // Plan steps live under the todo vocabulary — closed by `-(done)`/`-(dropped)`.
-  for (const s of allSteps) if (!s.planUpcoming && stillOpen(s.num, "todo") && !deferredPlanTitles.has(s.planTitle)) out.push({ num: s.num, tag: "plan-step", content: s.text, planTitle: s.planTitle });
+  for (const s of allSteps) if (!s.planUpcoming && stillOpen(s.num, "todo") && !deferred(s.num)) out.push({ num: s.num, tag: "plan-step", content: s.text, planTitle: s.planTitle });
   return out.length ? { openItems: out } : null;
 }
 

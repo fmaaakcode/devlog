@@ -114,7 +114,7 @@ describe("detectReleaseOpenItems", () => {
     expect(r?.openItems).toEqual([{ num: 8, tag: "security", content: "token leak" }]);
   });
 
-  test("deferring one plan step clears its SIBLING steps too (whole plan defers)", () => {
+  test("deferring one plan step clears THAT step only — its sibling still blocks (#806)", () => {
     const plan: PlanEntry = {
       id: "p2", project: PROJ, title: "later", file_path: "/x/.devlog/docs/later.md",
       timestamp: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z",
@@ -123,9 +123,30 @@ describe("detectReleaseOpenItems", () => {
         { text: "step b", completed: false, num: 22 },
       ],
     };
-    expect(detectReleaseOpenItems(data([], [plan]), PROJ, [
+    const r = detectReleaseOpenItems(data([], [plan]), PROJ, [
       { tag: "upcoming", content: "#21" },
       { tag: "release", content: "v1.0.0" },
+    ]);
+    expect(r?.openItems).toEqual([{ num: 22, tag: "plan-step", content: "step b", planTitle: "later" }]);
+    // Deferring both in the same batch passes.
+    expect(detectReleaseOpenItems(data([], [plan]), PROJ, [
+      { tag: "upcoming", content: "#21 #22" },
+      { tag: "release", content: "v1.0.0" },
     ])).toBeNull();
+  });
+
+  test("a step already flagged upcoming (stored) is skipped; a plan-level ☾ still skips every step", () => {
+    const mk = (id: string, upcomingPlan: boolean): PlanEntry => ({
+      id, project: PROJ, title: `t-${id}`, file_path: `/x/.devlog/docs/${id}.md`,
+      timestamp: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z",
+      ...(upcomingPlan ? { upcoming: true } : {}),
+      steps: [
+        { text: "s1", completed: false, num: 31, upcoming: true },
+        { text: "s2", completed: false, num: 32 },
+      ],
+    });
+    expect(detectReleaseOpenItems(data([], [mk("p3", false)]), PROJ, [{ tag: "release", content: "v1.0.0" }])?.openItems)
+      .toEqual([{ num: 32, tag: "plan-step", content: "s2", planTitle: "t-p3" }]);
+    expect(detectReleaseOpenItems(data([], [mk("p4", true)]), PROJ, [{ tag: "release", content: "v1.0.0" }])).toBeNull();
   });
 });

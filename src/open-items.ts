@@ -316,7 +316,8 @@ export function openPlanSteps(data: DevLogData, project: string, opts: OpenItemO
       if (typeof s.num === "number" && closedByDone.has(s.num)) continue;
       out.push({
         num: s.num, text: s.text, phase: s.phase, planTitle: plan.title, planFile: plan.file_path,
-        ...(plan.upcoming ? { planUpcoming: true } : {}), openedAt: plan.timestamp,
+        // Deferred by the plan-level ☾ OR by `-(upcoming) #N` on this step alone (#806).
+        ...(plan.upcoming || s.upcoming ? { planUpcoming: true } : {}), openedAt: plan.timestamp,
       });
     }
   }

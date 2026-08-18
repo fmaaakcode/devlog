@@ -496,6 +496,9 @@ export function collectRelease(data: DevLogData, projectName: string, target: Ta
         const open = pl.steps.filter(s => !isStepClosed(s)).length;
         return { text: L(`Plan: ${pl.title} (${open} steps)`, `خطة: ${pl.title} (${open} خطوة)`), since: isoDay(pl.timestamp) };
       }),
+    ...(data.plans || []).filter(pl => pl.project === projectName && !pl.upcoming)  // step-level deferrals (#806)
+      .flatMap(pl => pl.steps.filter(s => s.upcoming && !isStepClosed(s))
+        .map(s => ({ ...(typeof s.num === "number" ? { num: s.num } : {}), text: L(`${s.text} (plan: ${pl.title})`, `${s.text} (خطة: ${pl.title})`), since: isoDay(pl.timestamp) }))),
   ];
 
   // «قدرات جديدة» must not list backfilled capabilities: a feature carrying an

@@ -86,7 +86,7 @@ Two tiers of open work: **committed** (todo/bug/plan-step — the guard enforces
 | `-(todo) #N` | Promote upcoming `#N` back to a committed todo |
 | `-(done) #N` / `-(bug fix) #N` | Close an upcoming item directly — no promotion needed |
 
-Rules: a `#N` that is an open **plan step** defers/promotes the whole plan. **Security items are never deferrable** — fix them or leave them open. Upcoming items don't block `-(release)`, don't trigger the closure-check, and don't count in "Open now"; they appear as one awareness line at SessionStart (toggle: لوحة الحقن → «سطر القادمة»), in the القادمة tabs on the dashboard's tasks/plans cards, in `?open` / `-(ask:open)` under their own section, and each release page snapshots them in a «قادم» section.
+Rules: a `#N` that is an open **plan step** defers/promotes that step only — its siblings stay committed (the dashboard ☾ button is what defers a whole plan). **Security items are never deferrable** — fix them or leave them open. Upcoming items don't block `-(release)`, don't trigger the closure-check, and don't count in "Open now"; they appear as one awareness line at SessionStart (toggle: لوحة الحقن → «سطر القادمة»), in the القادمة tabs on the dashboard's tasks/plans cards, in `?open` / `-(ask:open)` under their own section, and each release page snapshots them in a «قادم» section.
 
 ## Features — the capability inventory («قدرات»)
 

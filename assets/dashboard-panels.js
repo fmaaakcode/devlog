@@ -422,10 +422,14 @@
                     const numHtml = typeof s.num === "number"
                         ? `<span style="font-size:0.85em;color:var(--text2);font-family:'Cascadia Code',Consolas,monospace;flex-shrink:0;margin-top:2px">#${s.num}</span>`
                         : '';
+                    // A step deferred on its own (-(upcoming) #N, #806) sits inside a
+                    // committed plan: dimmed + ☾ so the reader sees why it doesn't gate.
+                    const stepDeferred = !s.completed && !!s.upcoming;
+                    const moonHtml = stepDeferred ? `<span title="${tr("plans.stepUpcoming")}" style="flex-shrink:0;color:var(--gold);font-size:0.9em">☾</span>` : '';
                     return `
-                    <div style="display:flex;align-items:flex-start;gap:6px;padding:3px 0;font-size:0.7em;${s.completed ? 'opacity:0.55' : ''}">
+                    <div style="display:flex;align-items:flex-start;gap:6px;padding:3px 0;font-size:0.7em;${s.completed || stepDeferred ? 'opacity:0.55' : ''}">
                         <span style="flex-shrink:0;width:11px;height:11px;border-radius:2px;margin-top:3px;${s.completed ? 'background:var(--emerald)' : 'border:1.5px solid var(--border)'}"></span>
-                        ${numHtml}
+                        ${numHtml}${moonHtml}
                         <span dir="auto" style="flex:1;${s.completed ? 'text-decoration:line-through;color:var(--text2)' : ''}">${esc(s.text)}</span>
                     </div>`;
                 }).join("") : '';

@@ -198,6 +198,12 @@ export interface PlanStep {
    *  A dropped step is closed-but-not-completed: excluded from the open set and
    *  from status/release rendering, distinct from `completed` (a `[x]`). */
   dropped?: boolean;
+  /** «قادمة» for THIS step only (#806): `-(upcoming) #N` on a step defers the
+   *  step, not its siblings — the release guard, closure nags and open counts
+   *  skip it while the rest of the plan stays committed. Cleared by
+   *  `-(todo) #N`. Complements the plan-level flag (dashboard ☾ button), which
+   *  still defers every step at once. */
+  upcoming?: boolean;
 }
 
 /**
@@ -225,9 +231,10 @@ export interface PlanEntry {
   file_path: string;
   timestamp: string;
   updatedAt: string;
-  /** Upcoming plan: its open steps don't block a release or trigger closure
-   *  nags. Toggled from the dashboard or by `-(upcoming) #N` on any of its
-   *  steps (`-(todo) #N` promotes the plan back). */
+  /** Upcoming plan: ALL its open steps don't block a release or trigger closure
+   *  nags. Toggled from the dashboard ☾ button (whole plan). A single step is
+   *  deferred by `-(upcoming) #N` → `PlanStep.upcoming` instead (#806);
+   *  `-(todo) #N` on a step of a plan-level-deferred plan promotes the plan. */
   upcoming?: boolean;
 }
 

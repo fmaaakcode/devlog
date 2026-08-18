@@ -239,6 +239,7 @@ export const DICT = {
   },
   "plans.promote": { en: "Promote to current plans", ar: "ترقية إلى الخطط الحالية" },
   "plans.completeNoDefer": { en: "Plan complete — only incomplete plans can be deferred", ar: "الخطة مكتملة — التأجيل للخطط غير المكتملة فقط" },
+  "plans.stepUpcoming": { en: "Upcoming step — deferred with -(upcoming) #N; promote with -(todo) #N", ar: "خطوة قادمة — مؤجَّلة بـ-(upcoming) #N؛ رقِّها بـ-(todo) #N" },
   "plans.defer": { en: "Defer to upcoming (doesn't block releases)", ar: "تأجيل إلى القادمة (لا توقف الإصدار)" },
   "plans.hideTitle": { en: "Hide from the dashboard (files remain)", ar: "إخفاء من الداشبورد (الملفات تبقى)" },
   "plans.hideCompleted": { en: "◂ Hide {n} completed plans", ar: "◂ إخفاء {n} خطة مكتملة" },

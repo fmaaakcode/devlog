@@ -255,7 +255,8 @@ export const RESPONSE_ROWS: ResponseRow[] = [
           case "created":          return L(`☾ #${c.num} recorded as upcoming${t}`, `☾ سُجّل #${c.num} ضمن القادمة${t}`);
           case "deferred":         return L(`☾ #${c.num} moved to upcoming${t}`, `☾ صار #${c.num} من القادمة${t}`);
           case "promoted":         return L(`⬆ #${c.num} promoted to a tracked todo${t}`, `⬆ رُقّي #${c.num} لالتزام حالي${t}`);
-          case "plan-deferred":    return L(`☾ whole plan «${c.text}» moved to upcoming (via #${c.num})`, `☾ خطة «${c.text}» كاملة صارت قادمة (عبر #${c.num})`);
+          case "step-deferred":    return L(`☾ plan step #${c.num} moved to upcoming — its siblings stay committed${t}`, `☾ خطوة الخطة #${c.num} صارت قادمة — بقية الخطوات ما زالت ملتزمة${t}`);
+          case "step-promoted":    return L(`⬆ plan step #${c.num} is current again${t}`, `⬆ خطوة الخطة #${c.num} عادت حالية${t}`);
           case "plan-promoted":    return L(`⬆ plan «${c.text}» is current again (via #${c.num})`, `⬆ خطة «${c.text}» عادت حالية (عبر #${c.num})`);
           case "security-refused": return L(`✗ #${c.num} is a security item — security is never deferred; close it with -(security fix)${t}`, `✗ #${c.num} عنصر أمني — الأمن لا يؤجَّل؛ أغلقه بـ-(security fix)${t}`);
           case "duplicate":        return L(`· identical to OPEN item ${c.num != null ? `#${c.num}` : "(unnumbered)"} — nothing new stored; to defer that one use -(upcoming) ${c.num != null ? `#${c.num}` : "#N"}`, `· مطابق للعنصر المفتوح ${c.num != null ? `#${c.num}` : "(بلا رقم)"} — لم يُخزَّن جديد؛ لتأجيله استخدم -(upcoming) ${c.num != null ? `#${c.num}` : "#N"}`);
