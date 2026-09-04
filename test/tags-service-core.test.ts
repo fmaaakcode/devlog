@@ -116,6 +116,18 @@ describe("resolveClosureNumber", () => {
     const data = mkData({ tags: [tag("todo", "x", { num: 5 })] });
     expect(resolveClosureNumber("done", "close the thing by text", data, PROJ)).toBe("close the thing by text");
   });
+  test("shadowing sees EVERY closer of the opener's type: a bug already fixed by text is not resolved by dropped / bug fix:interim (#1002 sweep)", () => {
+    // The closer list used to be hand-written: `dropped` looked only at
+    // done/dropped and `bug fix:interim` at nothing, so a bug whose text was
+    // already closed by a newer `-(bug fix)` still resolved by its stale #N.
+    const data = mkData({ tags: [
+      tag("bug found", "flaky retry", { num: 7, timestamp: "2026-06-01T00:00:00Z" }),
+      tag("bug fix", "flaky retry", { timestamp: "2026-06-02T00:00:00Z" }),
+    ] });
+    expect(resolveClosureNumber("dropped", "#7", data, PROJ)).toBe("#7");
+    expect(resolveClosureNumber("bug fix:interim", "#7", data, PROJ)).toBe("#7");
+    expect(resolveClosureNumber("bug fix", "#7", data, PROJ)).toBe("#7");
+  });
   test("falls back to an open plan-step number for done/dropped", () => {
     const data = mkData({ plans: [plan([step("do the step", { num: 9 })], "/plans/p.md")] });
     expect(resolveClosureNumber("done", "#9", data, PROJ)).toBe("do the step");

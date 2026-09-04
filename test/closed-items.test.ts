@@ -80,6 +80,21 @@ describe("closedItems resolver (src/closed-items.ts)", () => {
     expect(openTodos(fixtureTags()).map(t => t.num).sort()).toEqual([1]);
   });
 
+  test("a bug withdrawn by -(dropped) #N carries its closer + timestamp (#1002)", () => {
+    // `dropped` closes BOTH todos and bugs. The closer index used to file it
+    // under the first opener it can close (todo) only, so a dropped bug showed
+    // up closed (the open resolver agreed) but with no closer and no date.
+    const tags = [
+      tag("bug found", "not a defect after all", { num: 9 }),
+      tag("dropped", "#9 collapsed premise", { timestamp: "2026-06-08T11:00:00Z" }),
+    ];
+    const it = closedItems(baseData(tags), PROJ).find(x => x.num === 9);
+    expect(it?.kind).toBe("bug found");
+    expect(it?.closedBy).toBe("dropped");
+    expect(it?.closedAt).toBe("2026-06-08T11:00:00Z");
+    expect(it?.closerText).toBe("#9 collapsed premise");
+  });
+
   test("sorted most-recently-closed first", () => {
     const items = closedItems(baseData(fixtureTags()), PROJ).filter(it => it.closedAt);
     const times = items.map(it => it.closedAt);

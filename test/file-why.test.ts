@@ -136,6 +136,19 @@ describe("a report carries how it ended", () => {
     expect(r.fixContext).toBe("أُصلح بتغيير الترتيب");
   });
 
+  test("the closer's explicit cause and class surface beside the prose (#1007)", () => {
+    const d = data([
+      tag("bug found", "كسر", { num: 5, timestamp: opened }),
+      tag("bug fix", "#5 [شرط] الشرط كان معكوسًا", {
+        timestamp: closed, context: "اكتمل كل شيء", cause: "الشرط كان معكوسًا", failureClass: "شرط",
+      } as Partial<TagEntry>),
+    ]);
+    const [r] = buildFileWhy(d, PROJ, F).reports;
+    expect(r.cause).toBe("الشرط كان معكوسًا");
+    expect(r.failureClass).toBe("شرط");
+    expect(r.fixContext).toBe("اكتمل كل شيء");
+  });
+
   test("a report that was later re-opened is marked — the fix did not hold", () => {
     const d = data([
       tag("bug found", "كسر", { num: 5, timestamp: opened }),

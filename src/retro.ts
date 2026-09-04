@@ -22,6 +22,7 @@ export interface RetroItem {
   ageDays: number;       // opened → closed (or → now while open), whole days
   files?: string[];      // project-relative; the problem's footprint
   reopenOf?: number;     // the closed report this one reopened (#556)
+  failureClass?: string; // #998: the closer's failure class — the axis a class-scoped rule-effect measures on
 }
 
 const DAY_MS = 86_400_000;
@@ -50,6 +51,7 @@ export function retroCorpus(data: DevLogData, project: string): RetroItem[] {
     if (!isReport(c.kind) || !c.openedAt) continue;
     const files = projectRelativeFiles(c.files, root);
     out.push({
+      ...(c.failureClass ? { failureClass: c.failureClass } : {}),
       ...(typeof c.num === "number" ? { num: c.num } : {}),
       kind: c.kind, text: c.text, openedAt: c.openedAt,
       ...(c.closedAt ? { closedAt: c.closedAt } : {}),

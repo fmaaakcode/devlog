@@ -1,6 +1,6 @@
 {
   "name": "devlog",
-  "version": "3.49.0",
+  "version": "3.52.2",
   "description": "Project memory and guardrails for Claude Code via hooks and tags: rejected decisions, closed bugs with causes, release/install gates — local dashboard, zero telemetry",
   "type": "module",
   "private": true,
@@ -22,7 +22,7 @@
     "bun": ">=1.3.14"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.8",
+    "@biomejs/biome": "2.5.11",
     "bun-types": "1.3.14",
     "typescript": "7.0.2"
   }

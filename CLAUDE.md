@@ -18,7 +18,15 @@ Write the tag content in the user's language.
   not marketing prose
 - `-(built)` new code not mapping to a plan step · `-(refactor)` restructure, no behavior change · `-(update)` dependency bump
 - `-(bug found)` … / close with `-(bug fix) #N` **naming the root cause after the
-  number** (a bare number is blocked once). Alternatives: `-(bug fix:interim) #N`
+  number** (a bare number is blocked once). Optionally put a failure class in brackets
+  right after the number, from a CLOSED vocabulary: `-(bug fix) #N [شرط] السبب` —
+  `مطابق` · `شرط` · `حارس` · `بيئة` · `توقيت` · `صمت` · `بائت` · `انحراف` · `عقد` ·
+  `واجهة` · `نوع`. Pick what would have PREVENTED the defect, not what it showed up
+  as; leave it out when unsure (unclassified is an honest answer). The cause text and
+  the class are stored on the closer and shown by `-(ask:closed) #N`. The class is
+  what lets `ask:retro`/`ask:study` measure a cross-cutting rule against ITS
+  failure classes instead of every bug; old closers get a class only through the
+  reviewed backfill (`scripts/backfill-failure-class.ts`, user-approved batches). Alternatives: `-(bug fix:interim) #N`
   for a knowingly temporary stopgap (visible as debt in `ask:retro`), or
   `-(dropped) #N` to withdraw a report that turned out not to be a defect —
   never record a fix that didn't happen

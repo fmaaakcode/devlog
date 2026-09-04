@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ACK_DIRS, emptyLedger, entryKey, loadLedger, saveLedger, sweepAckDirs, sweepLegacyStateDirs, sweepTurnState } from "../src/turn-ledger";
+import { ACK_DIRS, emptyLedger, entryKey, keepLastRelease, loadLedger, saveLedger, subtractConsumed, sweepAckDirs, sweepLegacyStateDirs, sweepTurnState } from "../src/turn-ledger";
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "turn-ledger-")); });
@@ -156,5 +156,47 @@ describe("sweepAckDirs", () => {
 
   test("absent ack dirs are a silent no-op", async () => {
     await sweepAckDirs(dir);
+  });
+});
+
+describe("subtractConsumed (#1006)", () => {
+  const rel = { tag: "release", content: "ship it" };
+  const todo = { tag: "todo", content: "task A" };
+
+  test("no consumed keys → every entry is fresh", () => {
+    expect(subtractConsumed([rel, todo], [])).toEqual([rel, todo]);
+  });
+
+  test("a consumed key removes exactly ONE occurrence — a verbatim re-emit survives", () => {
+    // The release guard refused `rel` and recorded its key; on the continuation
+    // the turn text holds the refused original AND the identical re-emit.
+    const fresh = subtractConsumed([rel, todo, rel], [entryKey(rel.tag, rel.content)]);
+    expect(fresh).toEqual([todo, rel]);
+  });
+
+  test("recorded twice → both occurrences are consumed", () => {
+    const k = entryKey(rel.tag, rel.content);
+    expect(subtractConsumed([rel, rel], [k, k])).toEqual([]);
+  });
+
+  test("a breaking flag makes a different key", () => {
+    const boom = { tag: "release", content: "ship it", breaking: true };
+    expect(subtractConsumed([rel, boom], [entryKey(rel.tag, rel.content)])).toEqual([boom]);
+  });
+});
+
+describe("keepLastRelease (#1006 pattern sweep: nudges re-emit a rephrased release)", () => {
+  test("zero or one release → untouched", () => {
+    const todo = { tag: "todo", content: "x" };
+    const rel = { tag: "release", content: "ship" };
+    expect(keepLastRelease([todo])).toEqual({ kept: [todo], dropped: [] });
+    expect(keepLastRelease([todo, rel])).toEqual({ kept: [todo, rel], dropped: [] });
+  });
+
+  test("two differently-worded releases → only the LAST survives, order of the rest kept", () => {
+    const a = { tag: "release", content: "first wording" };
+    const b = { tag: "release:patch", content: "second wording" };
+    const feat = { tag: "feature", content: "f" };
+    expect(keepLastRelease([a, feat, b])).toEqual({ kept: [feat, b], dropped: [a] });
   });
 });

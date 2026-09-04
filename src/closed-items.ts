@@ -24,6 +24,7 @@ export interface ClosedItem {
   closedBy?: string;     // closer tag, or "plan-complete" for a checkbox-completed step
   closedAt?: string;     // ISO timestamp of the closure (absent for checkbox completion)
   closerText?: string;   // closer tag content
+  closerId?: string;     // the closer row id — what a failure-class backfill (#998) addresses
   planTitle?: string;    // plan-step items only
   files?: string[];      // opener ∪ closer session files (position memory #486); feeds ask:retro
   closerFiles?: string[];// the FIX's own footprint — where it was fixed, not where it was found (#585)
@@ -32,6 +33,9 @@ export interface ClosedItem {
   closerModel?: string;  // model that CLOSED it (#695) — "fix #N was done by whom?", answerable years later
   context?: string;      // contextual memory: prose around the OPENER — how the problem was described
   closerContext?: string;// prose around the CLOSER — the reasoning of the fix ("why this way?")
+  cause?: string;        // #998: what the closer wrote after `#N` — the cause itself, not prose around it
+  failureClass?: string; // #998: closed-vocabulary failure class from the closer (absent = unclassified)
+  failureClassBackfilled?: true; // #998: class assigned after the fact, never by the closer
 }
 
 // Openers and their closers partition into groups that share a closer-set
@@ -43,9 +47,13 @@ const openerGroup = (openerTag: string): string | undefined => {
   const cs = CLOSER_FOR[openerTag];
   return cs ? groupKey(cs) : undefined;
 };
-const closerGroup = (closerTag: string): string | undefined => {
-  const opener = CLOSER_KINDS[closerTag]?.[0];   // e.g. "done" → "todo" → "done|dropped"
-  return opener ? openerGroup(opener) : undefined;
+// A closer can belong to MORE than one group: `dropped` withdraws a todo
+// (done|dropped) AND a bug (bug fix|bug fix:interim|dropped). Taking only the
+// first opener filed `-(dropped) #N` under the todo group alone, so a withdrawn
+// bug came back closed but with no closer and no date (#1002).
+const closerGroups = (closerTag: string): string[] => {
+  const groups = (CLOSER_KINDS[closerTag] ?? []).map(openerGroup).filter((g): g is string => !!g);
+  return [...new Set(groups)];
 };
 
 interface CloserIndex { byText: Map<string, TagEntry>; byNum: Map<number, TagEntry>; }
@@ -61,13 +69,13 @@ function buildCloserIndex(tags: TagEntry[]): Map<string, CloserIndex> {
   const newer = (a: TagEntry | undefined, b: TagEntry) =>
     (!a || +new Date(b.timestamp) > +new Date(a.timestamp)) ? b : a;
   for (const t of tags) {
-    const g = closerGroup(t.tag);
-    if (!g) continue;
-    let e = idx.get(g);
-    if (!e) { e = { byText: new Map(), byNum: new Map() }; idx.set(g, e); }
-    const norm = normalizeTagContent(t.content);
-    e.byText.set(norm, newer(e.byText.get(norm), t));
-    for (const n of leadingNums(t.content)) e.byNum.set(n, newer(e.byNum.get(n), t));
+    for (const g of closerGroups(t.tag)) {
+      let e = idx.get(g);
+      if (!e) { e = { byText: new Map(), byNum: new Map() }; idx.set(g, e); }
+      const norm = normalizeTagContent(t.content);
+      e.byText.set(norm, newer(e.byText.get(norm), t));
+      for (const n of leadingNums(t.content)) e.byNum.set(n, newer(e.byNum.get(n), t));
+    }
   }
   return idx;
 }
@@ -112,6 +120,7 @@ export function closedItems(data: DevLogData, project: string): ClosedItem[] {
       num: typeof t.num === "number" ? t.num : undefined,
       kind: t.tag, text: t.content, openedAt: t.timestamp,
       closedBy: closer?.tag, closedAt: closer?.timestamp, closerText: closer?.content,
+      ...(closer?.id ? { closerId: closer.id } : {}),
       ...(files.length ? { files } : {}),
       ...(closerFiles.length ? { closerFiles } : {}),
       ...(typeof t.relatedTo === "number" ? { relatedTo: t.relatedTo } : {}),
@@ -119,6 +128,9 @@ export function closedItems(data: DevLogData, project: string): ClosedItem[] {
       ...(closer?.model ? { closerModel: closer.model } : {}),
       ...(t.context ? { context: t.context } : {}),
       ...(closer?.context ? { closerContext: closer.context } : {}),
+      ...(closer?.cause ? { cause: closer.cause } : {}),
+      ...(closer?.failureClass ? { failureClass: closer.failureClass } : {}),
+      ...(closer?.failureClassBackfilled ? { failureClassBackfilled: true as const } : {}),
     });
   }
 

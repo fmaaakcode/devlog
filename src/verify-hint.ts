@@ -53,13 +53,20 @@ export interface VerifyHint {
 const tsMs = (e: EventEntry): number => +new Date(e.timestamp) || 0;
 
 /** Timestamp (ms) of the session's last CODE mutation — docs/config-only edits
- *  don't reset test freshness, or a README touch after a green run would nag. */
+ *  don't reset test freshness, or a README touch after a green run would nag.
+ *  A shell command naming a code file outside a test-run segment counts too
+ *  (#1003, the mirror of #1000): a `bun -e` / sed / heredoc edit emits a
+ *  COMMAND event only, and ignoring it let a run that predates the edit pass
+ *  as fresh — a false silence, the one outcome the freshness check exists to
+ *  prevent. */
 export function lastCodeMutationMs(events: EventEntry[], sessionId: string): number {
   let last = 0;
   for (const e of events) {
     if (e.session_id !== sessionId) continue;
-    if (e.type !== "change" && e.type !== "create") continue;
-    if (!e.file_path || !isCodeWrite(e.file_path)) continue;
+    const wrote = (e.type === "change" || e.type === "create")
+      ? !!e.file_path && isCodeWrite(e.file_path)
+      : !!e.command && commandMayWrite(e.command, isCodeWrite);
+    if (!wrote) continue;
     const t = tsMs(e);
     if (t > last) last = t;
   }
@@ -84,13 +91,42 @@ export function isTestFile(path: string): boolean {
   return TEST_FILE_RE.test(path || "");
 }
 
-/** True if any write event in this session touched a test file. */
+// Path-like tokens inside a shell command (`test/a.test.ts`, `./tests/x.py`,
+// `C:\p\spec\y.rb`) — quotes are outside the class, so a path inside
+// `writeFileSync('test/a.test.ts')` is found as-is.
+const PATH_TOKEN_RE = /[\w.\-~:@]*[\\/][\w.\-\\/~@]+/g;
+const SEGMENT_SPLIT_RE = /&&|\|\||[;|\n]/;
+
+/**
+ * True when a shell command names a test file OUTSIDE a test-run segment. A
+ * test written through `bun -e`, python, sed or a heredoc emits a COMMAND
+ * event, never a change event (#1000): the trace is blind to that channel, so
+ * a test-file path in such a command reads as "may have written it" — the
+ * fail-open answer the claim-evidence rule requires — while `bun test
+ * test/a.test.ts` alone stays a run, not a write.
+ */
+export function commandMayWriteTests(command: string): boolean {
+  return commandMayWrite(command, isTestFile);
+}
+
+/** True when a non-test-run segment of the command names a path the
+ *  predicate accepts — "may have written it", never "did". */
+export function commandMayWrite(command: string, accepts: (path: string) => boolean): boolean {
+  for (const seg of (command || "").split(SEGMENT_SPLIT_RE)) {
+    if (isTestCommand(seg)) continue;
+    if ((seg.match(PATH_TOKEN_RE) || []).some(accepts)) return true;
+  }
+  return false;
+}
+
+/** True if any write event — or a command that may have written (#1000) —
+ *  in this session touched a test file. */
 export function sessionWroteTests(events: EventEntry[], sessionId: string): boolean {
   if (!sessionId) return false;
   return events.some(e =>
-    e.session_id === sessionId &&
-    (e.type === "change" || e.type === "create") &&
-    isTestFile(e.file_path || ""));
+    e.session_id === sessionId && (
+      ((e.type === "change" || e.type === "create") && isTestFile(e.file_path || ""))
+      || (!!e.command && commandMayWriteTests(e.command))));
 }
 
 const FIX_CLOSERS = new Set(["bug fix", "security fix"]);

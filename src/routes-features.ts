@@ -25,6 +25,7 @@ import { modelScorecard } from "./model-stats";
 import { studyCorpus, monthlyTrend, STUDY_NAME_RE, type PrevStudyDoc } from "./study";
 import { loadRuleTelemetry } from "./rule-telemetry";
 import { ruleStats, ruleEffect, turnGateSummary } from "./rule-effect";
+import { classBackfillCorpus, planBackfill, applyBackfill } from "./failure-class-backfill";
 import { TURN_RULES } from "./block-channel";
 
 type ApiReq = Bun.BunRequest;
@@ -178,6 +179,51 @@ export function makeFeatureRoutes({ htmlResponse }: FeatureRouteDeps): Record<st
           if (t) t.content = preview.after;
         });
         return Response.json({ applied: true, ...preview });
+      },
+    },
+
+    // Failure-class backfill (#998). GET serves the closed reports whose closer
+    // carries no class — the material Claude classifies in-context and shows
+    // the user. POST writes an approved batch under the same three refusals as
+    // record-repair (no confirm → preview only; unknown id / class outside the
+    // vocabulary / a class the closer wrote itself → the whole batch is
+    // refused; a failed archive → nothing is written). Every touched row goes
+    // to the `undone` archive stream first.
+    // GET  /api/failure-class-backfill?project=…|cwd=…[&limit=30&offset=0]
+    // POST /api/failure-class-backfill { assignments: [{ closerId, class }], confirm? }
+    "/api/failure-class-backfill": {
+      async GET(req: ApiReq) {
+        const project = await resolveParam(req);
+        if (!project) return Response.json({ project: null, total: 0, classified: 0, candidates: [], more: 0 });
+        const url = new URL(req.url);
+        const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit")) || 30));
+        const offset = Math.max(0, Number(url.searchParams.get("offset")) || 0);
+        return Response.json(classBackfillCorpus(await loadData(), project, limit, offset));
+      },
+      async POST(req: ApiReq) {
+        let body: { assignments?: unknown; confirm?: unknown };
+        try { body = obj(await req.json()); } catch { return Response.json({ error: "invalid json" }, { status: 400 }); }
+        const assignments = Array.isArray(body.assignments) ? body.assignments.map(a => obj(a)) : [];
+        if (!assignments.length || assignments.length > 100) {
+          return Response.json({ error: "assignments: 1–100 { closerId, class } entries" }, { status: 400 });
+        }
+        const snapshot = await loadData();
+        const plan = planBackfill(snapshot, assignments as Array<{ closerId: string; class: string }>);
+        if (plan.refused.length) return Response.json({ applied: false, ...plan, error: "batch refused — fix the listed rows and resend" }, { status: 422 });
+        if (body.confirm !== true) return Response.json({ applied: false, ...plan });
+
+        const ids = new Set(plan.rows.map(x => x.closerId));
+        const originals = snapshot.tags.filter(t => ids.has(t.id));
+        const archived = await archiveUndone(originals.map(entry => ({
+          undoneAt: new Date().toISOString(), project: entry.project, kind: "tag" as const, entry,
+        })));
+        if (!archived) {
+          return Response.json({ error: "archive failed — refusing to modify rows we cannot keep a copy of" }, { status: 503 });
+        }
+        await appendAudit("failure-class.backfill", req, { rows: plan.rows.length, ids: [...ids].slice(0, 100) });
+        let changed = 0;
+        await withData(async (data) => { changed = applyBackfill(data, plan); });
+        return Response.json({ applied: true, changed, ...plan });
       },
     },
 

@@ -179,6 +179,19 @@ export interface TagEntry {
    *  warnings and the "Open now" counts — recorded ambition, not tracked debt.
    *  Set by `-(upcoming)` (create or convert), cleared by `-(todo) #N`. */
   upcoming?: boolean;
+  /** Closers only (#998): the text written after the leading `#N` run — the
+   *  cause of a bug fix, the note of a done. Kept HERE because `content` is
+   *  rewritten to the opener's text at ingest (#482) and the tail was being
+   *  discarded with it — every root cause the Stop guard asked for since it
+   *  shipped was thrown away at the door. Absent when nothing was written. */
+  cause?: string;
+  /** Closers only (#998): failure class from the closed vocabulary
+   *  (src/failure-class.ts), written as `[word]` right after `#N`. Absent =
+   *  unclassified (an honest answer, counted as such). */
+  failureClass?: string;
+  /** Set when the class was assigned after the fact (a backfill session), not
+   *  by the closer at closure time — so the two are never counted as one. */
+  failureClassBackfilled?: true;
   /** Position memory (#486): files the capturing session touched since its
    *  previous tag batch (normalized absolute paths, capped). Feeds the
    *  dashboard file story and the PreToolUse "file history" injection. */

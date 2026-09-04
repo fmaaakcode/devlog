@@ -80,10 +80,41 @@ export function turnGateSummary(
 //   files — a language category (rust, typescript…): reports whose footprint
 //           contains a file of that language.
 //   kind  — the security category: security-kind reports.
-//   all   — cross-cutting categories (design, verification…): every report.
-//           The loosest scope, and the row says so — read its rates with that
-//           in mind.
-export type EffectScope = "files" | "kind" | "all";
+//   class — a cross-cutting category with a known failure-class family
+//           (#998): reports whose closer named one of those classes. This is
+//           the answer to #997 — a verification rule is measured against the
+//           matcher/condition/guard/silent reports, not against every bug.
+//           It is only as honest as the classification coverage: a window
+//           where most reports carry no class cannot be rated (see
+//           MIN_CLASS_COVERAGE), because "0 matching reports" would then mean
+//           "nobody classified", not "nothing broke".
+//   all   — cross-cutting categories with NO class family (dependencies…).
+//           There is NO report subset such a rule can honestly claim (#997):
+//           a rule measured against every bug in the project is a number with
+//           no meaning, and the live telemetry showed 9/9 adopted rules landing
+//           here — 100% of the measurement was noise. So this scope counts the
+//           reports (the window is real) but never rates them and never
+//           judges: the verdict is "unmeasurable", a first-class answer like
+//           "insufficient".
+export type EffectScope = "files" | "kind" | "class" | "all";
+
+/**
+ * Which failure classes a cross-cutting rule category claims (#998). Derived
+ * from what each category's rules are ABOUT, not from where bugs showed up:
+ * a verification rule exists to force a check, so the defects it could have
+ * prevented are the ones where a check was loose, misdrawn, missing or mute.
+ * A category absent here has no honest family and stays scope "all".
+ */
+export const CLASS_SCOPE: Readonly<Record<string, readonly string[]>> = {
+  verification: ["matcher", "condition", "missing-guard", "silent"],
+  "data-integrity": ["stale", "drift", "contract"],
+  design: ["interface"],
+};
+
+/** Share of a window's reports that carry a class before its rate is trusted.
+ *  Below this the window's count is dominated by unclassified history and
+ *  the verdict is "insufficient" — the row then says what backfill would fix. */
+export const MIN_CLASS_COVERAGE = 0.7;
 
 export interface RuleEffectRow {
   /** Category the rule was adopted into (the adopt record's rule field). */
@@ -92,6 +123,13 @@ export interface RuleEffectRow {
   detail?: string;
   adoptedAt: string;
   scope: EffectScope;
+  /** Scope "class" only: the failure classes the rule is measured against. */
+  classes?: string[];
+  /** Scope "class" only: share of ALL reports in each window that carry a
+   *  class (0–1). Under MIN_CLASS_COVERAGE the window cannot be rated. A
+   *  window with no reports at all has nothing to misclassify → 1. */
+  coverageBefore?: number;
+  coverageAfter?: number;
   /** Observed window lengths (days). Before is capped at LOOKBACK_DAYS and at
    *  the project's first report — never longer than the history can honestly
    *  support. */
@@ -99,10 +137,15 @@ export interface RuleEffectRow {
   afterDays: number;
   reportsBefore: number;
   reportsAfter: number;
-  /** Reports per 30 days; null when the window is under MIN_WINDOW_DAYS. */
+  /** Reports per 30 days; null when the window is under MIN_WINDOW_DAYS —
+   *  and always null for scope "all", which has no rate worth reading (#997). */
   beforeRatePerMonth: number | null;
   afterRatePerMonth: number | null;
-  verdict: "improved" | "worse" | "flat" | "insufficient";
+  /** "insufficient" = the windows are too young to say, or (scope "class")
+   *  too few of their reports are classified; "unmeasurable" = the scope can
+   *  never say (cross-cutting category with no class family, #997). Both are
+   *  answers. */
+  verdict: "improved" | "worse" | "flat" | "insufficient" | "unmeasurable";
 }
 
 const DAY_MS = 86_400_000;
@@ -113,12 +156,14 @@ const matcherFor = (
   category: string,
   langOf: (file: string) => string | null,
   isLang: (cat: string) => boolean,
-): { scope: EffectScope; match: (it: RetroItem) => boolean } => {
+): { scope: EffectScope; classes?: string[]; match: (it: RetroItem) => boolean } => {
   const cat = category.toLowerCase();
   if (cat === "security") return { scope: "kind", match: it => it.kind.startsWith("security") };
   // A category that names a language claims the reports touching its files.
   // langOf is path-convention only, so a report with no footprint never matches.
   if (isLang(cat)) return { scope: "files", match: it => (it.files ?? []).some(f => (langOf(f) || "").toLowerCase() === cat) };
+  const classes = CLASS_SCOPE[cat];
+  if (classes) return { scope: "class", classes: [...classes], match: it => !!it.failureClass && classes.includes(it.failureClass) };
   return { scope: "all", match: () => true };
 };
 
@@ -143,27 +188,42 @@ export function ruleEffect(
   for (const a of adopts) {
     const adoptedMs = +new Date(a.ts);
     if (!adoptedMs) continue;
-    const { scope, match } = matcherFor(a.rule, langOf, isLang);
+    const { scope, classes, match } = matcherFor(a.rule, langOf, isLang);
     const beforeStartMs = Math.max(adoptedMs - LOOKBACK_DAYS * DAY_MS, firstReportMs);
     const beforeDays = Math.max(0, Math.round((adoptedMs - beforeStartMs) / DAY_MS));
     const afterDays = Math.max(0, Math.round((now - adoptedMs) / DAY_MS));
 
     let reportsBefore = 0;
     let reportsAfter = 0;
+    // Scope "class" also needs the window totals and how many of them carry
+    // ANY class — a match count over unclassified history is a count of
+    // nothing (#998).
+    let allBefore = 0, allAfter = 0, classedBefore = 0, classedAfter = 0;
     for (const it of retro) {
-      if (!match(it)) continue;
       const t = +new Date(it.openedAt) || 0;
-      if (t >= beforeStartMs && t < adoptedMs) reportsBefore++;
-      else if (t >= adoptedMs && t <= now) reportsAfter++;
+      const inBefore = t >= beforeStartMs && t < adoptedMs;
+      const inAfter = !inBefore && t >= adoptedMs && t <= now;
+      if (!inBefore && !inAfter) continue;
+      if (inBefore) { allBefore++; if (it.failureClass) classedBefore++; }
+      else { allAfter++; if (it.failureClass) classedAfter++; }
+      if (!match(it)) continue;
+      if (inBefore) reportsBefore++; else reportsAfter++;
     }
+    const coverage = (classed: number, all: number) => (all ? Math.round((classed / all) * 100) / 100 : 1);
+    const coverageBefore = coverage(classedBefore, allBefore);
+    const coverageAfter = coverage(classedAfter, allAfter);
+    const underCovered = scope === "class" && (coverageBefore < MIN_CLASS_COVERAGE || coverageAfter < MIN_CLASS_COVERAGE);
 
     const rate = (n: number, days: number): number | null =>
       days >= MIN_WINDOW_DAYS ? Math.round((n / days) * 30 * 100) / 100 : null;
-    const beforeRate = rate(reportsBefore, beforeDays);
-    const afterRate = rate(reportsAfter, afterDays);
+    // #997: a cross-cutting scope gets counts (they are real) but no rate and
+    // no judgment — a rate over "every report" would read like a measurement.
+    const beforeRate = scope === "all" ? null : rate(reportsBefore, beforeDays);
+    const afterRate = scope === "all" ? null : rate(reportsAfter, afterDays);
 
     let verdict: RuleEffectRow["verdict"];
-    if (beforeRate === null || afterRate === null) verdict = "insufficient";
+    if (scope === "all") verdict = "unmeasurable";
+    else if (beforeRate === null || afterRate === null || underCovered) verdict = "insufficient";
     else if (beforeRate === 0 && afterRate === 0) verdict = "flat";
     else if (afterRate <= beforeRate * 0.7) verdict = "improved";
     else if (afterRate >= beforeRate * 1.3) verdict = "worse";
@@ -171,6 +231,7 @@ export function ruleEffect(
 
     rows.push({
       rule: a.rule, ...(a.detail ? { detail: a.detail } : {}), adoptedAt: a.ts, scope,
+      ...(scope === "class" ? { classes, coverageBefore, coverageAfter } : {}),
       beforeDays, afterDays, reportsBefore, reportsAfter,
       beforeRatePerMonth: beforeRate, afterRatePerMonth: afterRate, verdict,
     });

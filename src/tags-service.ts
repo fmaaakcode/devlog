@@ -12,7 +12,7 @@ import { SINGLE_LINE_TAGS } from "./tag-parser";
 import type { DevLogData, PlanStep, TagEntry } from "./types";
 import {
   normalizeTagContent, assignNum, openTodos, openBugs, openSecurity, openPlanSteps,
-  CLOSER_KINDS, OPENER_TO_CLOSER, NUMBERED_OPENABLE, singleHashNum, leadingNums, isStepClosed, inflightClosures,
+  CLOSER_KINDS, CLOSER_FOR, OPENER_TO_CLOSER, NUMBERED_OPENABLE, singleHashNum, leadingNums, isStepClosed, inflightClosures,
   latestCloserTs,
 } from "./data";
 import { appendDoc, writeDoc, applyTaskCompletion, applyTaskDrop, extractCheckboxes } from "./doc-store";
@@ -191,13 +191,13 @@ export function resolveClosureNumber(tag: string, content: string, data: DevLogD
   // Order-aware like open-items (#743): a closer only shadows openers at or
   // before its own timestamp, so a re-reported item after its fix stays
   // resolvable by its fresh number instead of being born closed.
-  const closers = (tag === "done" || tag === "dropped") ? ["done", "dropped"]
-    : tag === "bug fix" ? ["bug fix"]
-    : tag === "security fix" ? ["security fix"] : [];
-  const closedAt = latestCloserTs(data.tags.filter(t => t.project === project), closers);
-  const found = data.tags.find(t => {
-    if (t.project !== project || typeof t.num !== "number" || t.num !== num || !closerOpeners.includes(t.tag)) return false;
-    const ts = closedAt.get(normalizeTagContent(t.content));
+  // Shadow set per OPENER type from CLOSER_FOR, never hand-written: the old list
+  // knew `dropped` as a todo closer only and `bug fix:interim` as nothing (#1002).
+  const projTags = data.tags.filter(t => t.project === project);
+  const closedAtFor = new Map(closerOpeners.map(o => [o, latestCloserTs(projTags, CLOSER_FOR[o] ?? [])] as const));
+  const found = projTags.find(t => {
+    if (typeof t.num !== "number" || t.num !== num || !closerOpeners.includes(t.tag)) return false;
+    const ts = closedAtFor.get(t.tag)?.get(normalizeTagContent(t.content));
     return ts === undefined || ts < (t.timestamp || "");
   });
   if (found) return found.content;

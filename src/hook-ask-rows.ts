@@ -18,6 +18,7 @@
 import { noteAskFailure } from "./hook-asks";
 import type { AskCtx, AskData, AskHit, AskRow } from "./hook-asks";
 import { weightBar } from "./project-map";
+import { rulesLines } from "./rule-effect-lines";
 
 /** One item as the endpoints hand it back — see AskData for why this stays
  *  untyped: the daemon answering may predate the hook asking. */
@@ -119,9 +120,13 @@ export const ASK_ROWS: AskRow[] = [
           : typeof it.context === "string" && it.context
           ? { src: ctx.L("report context", "سياق البلاغ"), text: it.context } : null;
         const ctxLine = c ? `\n${c.src}: «${c.text}»` : "";
+        // #998: the closer's own words — the cause — and its class, when given.
+        const cls = it.failureClass ? ` [${it.failureClass}${it.failureClassBackfilled ? ctx.L(", backfilled", "، رجعي") : ""}]` : "";
+        const causeLine = it.cause ? ctx.L(`\nCause${cls}: ${it.cause}`, `\nالسبب${cls}: ${it.cause}`)
+          : cls ? ctx.L(`\nClass${cls}`, `\nالفئة${cls}`) : "";
         return ctx.L(
-          `#${it.num} — ${it.text}${plan}${openedLine}\nClosed: ${when(it)}${by}${closerWho}${ctxLine}`,
-          `#${it.num} — ${it.text}${plan}${openedLine}\nأُغلق: ${when(it)}${by}${closerWho}${ctxLine}`);
+          `#${it.num} — ${it.text}${plan}${openedLine}\nClosed: ${when(it)}${by}${closerWho}${causeLine}${ctxLine}`,
+          `#${it.num} — ${it.text}${plan}${openedLine}\nأُغلق: ${when(it)}${by}${closerWho}${causeLine}${ctxLine}`);
       }
       return items.length
         ? ctx.L(`Recently closed (${items.length}):`, `آخر ما أُغلق (${items.length}):`) + "\n"
@@ -365,7 +370,12 @@ export const ASK_ROWS: AskRow[] = [
           out.push(`    ${r.reopened ? "⟲ " : ""}${num}[${r.kind} · ${state}] ${r.text}`);
           // Narrative layer P1: what the USER asked when this report was born.
           if (r.prompt) out.push(L(`      ↳ asked: «${r.prompt}»`, `      ↳ الطلب: «${r.prompt}»`));
-          if (r.fixContext) out.push(L(`      ↳ fix: ${r.fixContext}`, `      ↳ الإصلاح: ${r.fixContext}`));
+          // #1007: the closer's cause (with its class) beats the prose around
+          // it; the prose is only a fallback for pre-#998 closers.
+          // A backfilled class (no cause) still rides on the prose line.
+          const cls = r.failureClass ? ` [${r.failureClass}]` : "";
+          if (r.cause) out.push(L(`      ↳ cause${cls}: ${r.cause}`, `      ↳ السبب${cls}: ${r.cause}`));
+          else if (r.fixContext) out.push(L(`      ↳ fix${cls}: ${r.fixContext}`, `      ↳ الإصلاح${cls}: ${r.fixContext}`));
         }
         if (d.reportsMore) out.push(`  ${more(d.reportsMore).trim()}`);
       }
@@ -586,7 +596,9 @@ export const ASK_ROWS: AskRow[] = [
         // ⟲: this report reopened an earlier closed one (#556) — the strongest
         // recurrence signal the corpus carries; cluster these first.
         const reopen = typeof it.reopenOf === "number" ? ` ⟲#${it.reopenOf}` : "";
-        return `  ${num}[${kind}]${reopen} ${span} ${it.text}${files}`;
+        // #998: the failure class rides the line so clustering can start from it.
+        const cls = it.failureClass ? ` [${it.failureClass}]` : "";
+        return `  ${num}[${kind}]${reopen}${cls} ${span} ${it.text}${files}`;
       };
       // «الأكثر كسرًا» header (#557): the corpus pre-clustered by file.
       const fragileLine = fragile.length
@@ -629,6 +641,10 @@ export const ASK_ROWS: AskRow[] = [
       // edit record backed them. `unmarked` is history stored before the stamp
       // existed — reported separately so the ratio never counts unjudged tags as
       // clean. Silent when nothing was ever judged: absence of data, not health.
+      // #999: rule effectiveness (#787) — computed here since 2026-08, printed
+      // for the first time now.
+      const rulesBlock = rulesLines((d as Row).rules, L);
+      const rulesLine = rulesBlock.length ? `${rulesBlock.join("\n")}\n` : "";
       const ev = (d as Row).evidence;
       const judged = ev ? (ev.supported || 0) + (ev.unsupported || 0) + (ev.unverifiable || 0) : 0;
       const evidenceLine = judged > 0
@@ -648,7 +664,7 @@ export const ASK_ROWS: AskRow[] = [
           }).join(" · ")}\n`
         : "";
       return items.length
-        ? `${fragileLine}${gapLine}${interimLine}${guardLine}${evidenceLine}${modelLine}${L(`Problem corpus (${items.length} reports, oldest first) — cluster the recurrences; codify a confirmed pattern with -(rule:add) or -(insight):`,
+        ? `${fragileLine}${gapLine}${interimLine}${guardLine}${rulesLine}${evidenceLine}${modelLine}${L(`Problem corpus (${items.length} reports, oldest first) — cluster the recurrences; codify a confirmed pattern with -(rule:add) or -(insight):`,
             `سجل المشاكل (${items.length} بلاغًا، الأقدم أولًا) — اعنقد المتكرر؛ ثبّت النمط المؤكد بـ-(rule:add) أو -(insight):`)}\n${items.map(line).join("\n")}`
         : L("No problem reports recorded for this project yet.", "لا بلاغات مسجّلة لهذا المشروع بعد.");
     },
@@ -745,6 +761,8 @@ export const ASK_ROWS: AskRow[] = [
       // came back, are two readings of the same habit).
       if (a.problems?.testGap?.judged)
         out.push(`  ${L("fixed without touching a test", "أُصلح بلا لمس اختبار")}: ${a.problems.testGap.withoutTest}/${a.problems.testGap.judged}${a.problems.testGap.unknown ? L(` (${a.problems.testGap.unknown} unknown)`, ` (${a.problems.testGap.unknown} غير معروف)`) : ""}`);
+      // #999: whole-history rule effectiveness — same rows as ask:retro.
+      for (const l of rulesLines(a.rules, L)) out.push(`  ${l.trimStart()}`);
       out.push(`  ${L("capabilities", "القدرات")}: ${a.features?.declared} (${L("backfilled", "معبأة رجعيًا")} ${a.features?.backfilled}) · ${L("uncovered releases", "إصدارات غير مغطاة")}: ${a.features?.uncoveredReleases}`);
 
       out.push(L("— Window delta —", "— دلتا النطاق —"));

@@ -80,9 +80,10 @@ beforeAll(async () => {
   ] });
   await touch();
   await post("/api/tags", { cwd: projDir, session_id: sid, entries: [
-    // `context` is the prose the pipeline keeps around a closer — the
-    // stored "why this fix" that the dossier surfaces under ↳.
-    { tag: "bug fix", content: "#1 أُصلح", context: "جدول الضريبة يُقرأ قبل تحميل البلد" },
+    // The closer's own words after `#N` are the cause (#998); `context` is the
+    // prose around it — the whole response's summary, which the dossier shows
+    // only for closers that carry no cause (#1007).
+    { tag: "bug fix", content: "#1 جدول الضريبة يُقرأ قبل تحميل البلد", context: "اكتمل كل شيء وأُودع محليًا" },
     { tag: "built", content: "جدول ضريبة لكل دولة مع اختبار للطلب المؤجل" },
   ] });
 });
@@ -102,7 +103,8 @@ describe("-(ask:why) through the real hook", () => {
     expect(out).toContain("Invoice totals and the tax table");
     expect(out).toContain("قواعد الضريبة تتغير وحدها");     // the decision
     expect(out).toContain("ضريبة السعودية تُحسب صفرًا");      // the report
-    expect(out).toContain("جدول الضريبة يُقرأ قبل تحميل البلد"); // the fix's reasoning
+    expect(out).toContain("جدول الضريبة يُقرأ قبل تحميل البلد"); // the closer's cause
+    expect(out).not.toContain("اكتمل كل شيء");                    // #1007: prose hidden when a cause exists
   });
 
   test("an absolute path resolves to the same file", async () => {

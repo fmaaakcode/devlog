@@ -4,7 +4,7 @@ import { readdir, readFile, appendFile, mkdir, stat, rename } from "node:fs/prom
 import { join } from "node:path";
 import { parseTags } from "./src/tag-parser.ts";
 import { claudeConfigDir } from "./src/path-utils.ts";
-import { entryKey, loadLedger, saveLedger, sweepAckDirs, sweepLegacyStateDirs, sweepTurnState } from "./src/turn-ledger.ts";
+import { entryKey, keepLastRelease, loadLedger, saveLedger, subtractConsumed, sweepAckDirs, sweepLegacyStateDirs, sweepTurnState } from "./src/turn-ledger.ts";
 import { makeTagQueue, isPermanentReject } from "./src/tag-queue.ts";
 import { ASK_ROWS, serveAsks } from "./src/hook-ask-rows.ts";
 import { runTurnGuards } from "./src/hook-guards.ts";
@@ -292,18 +292,36 @@ if (msg) {
     // echoes (the already-closed trap family). Zero-degree path (no turnId):
     // send everything — the server's whole-history content dedup is the
     // shield, which is exactly the pre-ledger behavior.
-    const freshEntries = turnId
-      ? entries.filter(e => !ledger.turn.postedKeys.includes(entryKey(e.tag, e.content, e.breaking)))
-      : entries;
+    // Count-aware (multiset) subtraction: one recorded key consumes ONE
+    // occurrence, so a verbatim re-emit of a consumed line still goes out
+    // (the release guard relies on this — see the guard below and #1006).
+    const { kept: freshEntries, dropped: staleReleases } = keepLastRelease(turnId
+      ? subtractConsumed(entries, ledger.turn.postedKeys)
+      : entries);
+    if (staleReleases.length) await log(`release collapsed: kept the last of ${staleReleases.length + 1} release lines in this turn (#1006 pattern sweep)`);
     // Record keys only once the batch is durably handled — POSTed ok OR written
     // to the disk queue. A network throw before either leaves them fresh, so
     // the next invocation retries (mirrors #398 for entries).
+    // Dropped duplicates count as handled too. keepLastRelease DISCARDS the
+    // earlier release lines on purpose; leaving them unrecorded made them FRESH
+    // again on the next re-read of the same turn, and a follow-up carrying no
+    // tags at all shipped one as a second version (v3.52.0 → v3.52.1).
     const recordPosted = async () => {
-      if (!turnId || !freshEntries.length) return;
-      for (const e of freshEntries) {
-        const k = entryKey(e.tag, e.content, e.breaking);
-        if (!ledger.turn.postedKeys.includes(k)) ledger.turn.postedKeys.push(k);
-      }
+      const handled = [...freshEntries, ...staleReleases];
+      if (!turnId || !handled.length) return;
+      for (const e of handled) ledger.turn.postedKeys.push(entryKey(e.tag, e.content, e.breaking));
+      await saveLedger(ledgerFile, ledger);
+    };
+
+    // Every block site that refuses an in-flight release must consume that line
+    // (#1006): the block ends this invocation before recordPosted, and each
+    // site's own instruction is "re-emit -(release)". Unconsumed, the refused
+    // line survives in the re-read turn NEXT to the re-emit — two release lines
+    // in one batch. subtractConsumed removes exactly one occurrence, so the
+    // re-emit still ships. The guard did this; the two nudges did not.
+    const consumeRefusedRelease = async () => {
+      if (!turnId || !releaseEntry) return;
+      ledger.turn.postedKeys.push(entryKey(releaseEntry.tag, releaseEntry.content, releaseEntry.breaking));
       await saveLedger(ledgerFile, ledger);
     };
 
@@ -390,6 +408,14 @@ if (msg) {
           out.push("");
           out.push(L("✗ The release tag was NOT recorded.", "✗ الـrelease tag لم يُسجَّل."));
           out.push("══════════════════════════════════════");
+          // Consume the refused line (#1006): the block ends this invocation
+          // before recordPosted, so without this the refused `-(release)` stayed
+          // fresh, and the continuation — which re-reads the whole turn text —
+          // found it AND the new release line once the item was closed, shipped
+          // both, and minted two versions 84ms apart (v3.50.0 with no HTML,
+          // then v3.50.1). The guard's own instruction is "re-emit -(release)";
+          // subtractConsumed removes one occurrence, so the re-emit survives.
+          await consumeRefusedRelease();
           await log(`release-guard BLOCKED: open_items=${items.length}`);
           await blockContinue(out.join("\n"), "release-guard");
         }
@@ -434,6 +460,7 @@ if (msg) {
                 "(الإصدار لم يُسجَّل بعد. هذا التذكير يظهر مرة واحدة — لا يعيق مرتين.)"),
               "══════════════════════════════════════",
             ].join("\n");
+            await consumeRefusedRelease();
             await log(`feature-nudge BLOCKED once: built=${sinceLastRelease.built}, features=0`);
             await blockContinue(`\n${out}\n`, "feature-nudge");
           }
@@ -471,6 +498,7 @@ if (msg) {
           "(لم يُسجَّل شيء بعد. هذه الهمسة تظهر مرة واحدة في الدور — لا تعيق مرتين.)"),
         "════════════════════════════════════",
       ].join("\n");
+      await consumeRefusedRelease();
       await log(`story-nudge BLOCKED once: closers=${storyCloserCount}, release=${!!releaseEntry}`);
       await blockContinue(`\n${out}\n`, "story-nudge");
     }

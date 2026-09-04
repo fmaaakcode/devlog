@@ -4,7 +4,7 @@
 // Pure inputs throughout — telemetry records + retro items, injected clock.
 
 import { describe, expect, test } from "bun:test";
-import { ruleStats, ruleEffect } from "../src/rule-effect";
+import { ruleStats, ruleEffect, CLASS_SCOPE, MIN_CLASS_COVERAGE } from "../src/rule-effect";
 import type { RuleTelemetryRecord } from "../src/rule-telemetry";
 import type { RetroItem } from "../src/retro";
 import { studyCorpus } from "../src/study";
@@ -18,6 +18,7 @@ const rec = (p: Partial<RuleTelemetryRecord>): RuleTelemetryRecord =>
 
 const report = (daysAgo: number, files?: string[], kind = "bug found"): RetroItem =>
   ({ kind, text: "x", openedAt: iso(daysAgo), ageDays: daysAgo, ...(files ? { files } : {}) });
+const classed = (daysAgo: number, failureClass: string): RetroItem => ({ ...report(daysAgo), failureClass });
 
 describe("ruleStats", () => {
   test("counts fire/ack/pass per gate+rule; lifecycle adopt/exempt are not counters", () => {
@@ -108,17 +109,86 @@ describe("ruleEffect", () => {
     expect(rows[0].reportsAfter).toBe(1);
   });
 
-  test("cross-cutting category matches every report; rising rate → worse", () => {
+  // #997: a cross-cutting category with no failure-class family has no honest
+  // report subset. The counts stay (the windows are real) but the row must
+  // never carry a rate or a judgment — before this fix the same input yielded
+  // "worse", a verdict over every report in the project, which is a number
+  // that means nothing.
+  test("cross-cutting category without a class family counts every report but is unmeasurable", () => {
     const rows = ruleEffect(
-      [rec({ gate: "lifecycle", action: "adopt", rule: "verification", ts: iso(40) })],
+      [rec({ gate: "lifecycle", action: "adopt", rule: "dependencies", ts: iso(40) })],
       [report(100), report(30, ["a.ts"]), report(20, undefined, "security"), report(10)],
       NOW,
     );
     const r = rows[0];
     expect(r.scope).toBe("all");
+    expect(r.classes).toBeUndefined();
     expect(r.reportsBefore).toBe(1);
     expect(r.reportsAfter).toBe(3);
-    expect(r.verdict).toBe("worse");
+    expect(r.beforeRatePerMonth).toBeNull();
+    expect(r.afterRatePerMonth).toBeNull();
+    expect(r.verdict).toBe("unmeasurable");
+  });
+
+  // #998: the class scope. A verification rule is measured against the reports
+  // whose closer named one of ITS classes — never against every report.
+  describe("class scope (#998)", () => {
+    const adopt = (rule: string, daysAgo = 40) => rec({ gate: "lifecycle", action: "adopt", rule, ts: iso(daysAgo) });
+
+    test("a category with a class family gets scope class and its class list", () => {
+      const rows = ruleEffect([adopt("verification"), adopt("data-integrity"), adopt("design")], [], NOW);
+      expect(rows.map(r => r.scope)).toEqual(["class", "class", "class"]);
+      expect(rows.find(r => r.rule === "verification")?.classes).toEqual([...CLASS_SCOPE.verification]);
+      expect(rows.find(r => r.rule === "data-integrity")?.classes).toEqual([...CLASS_SCOPE["data-integrity"]]);
+    });
+
+    test("unclassified history → insufficient with the coverage exposed, never a rate", () => {
+      // 12 reports, none classified: the exact live situation before backfill.
+      const retro = Array.from({ length: 12 }, (_, i) => report(80 - i * 6));
+      const r = ruleEffect([adopt("verification")], retro, NOW)[0];
+      expect(r.scope).toBe("class");
+      expect(r.coverageBefore).toBe(0);
+      expect(r.coverageAfter).toBe(0);
+      expect(r.verdict).toBe("insufficient");
+      expect(r.reportsBefore).toBe(0);
+      expect(r.reportsAfter).toBe(0);
+    });
+
+    test("only the rule's own classes count; other classes are in coverage but not in the match", () => {
+      const retro = [
+        classed(70, "matcher"), classed(60, "condition"), classed(50, "stale"), classed(45, "silent"),
+        classed(30, "stale"), classed(20, "drift"), classed(10, "matcher"),
+      ];
+      const r = ruleEffect([adopt("verification")], retro, NOW)[0];
+      expect(r.coverageBefore).toBe(1);
+      expect(r.coverageAfter).toBe(1);
+      expect(r.reportsBefore).toBe(3);   // matcher, condition, silent — not stale
+      expect(r.reportsAfter).toBe(1);    // matcher — not stale/drift
+      expect(r.beforeRatePerMonth).not.toBeNull();
+      expect(r.verdict).toBe("improved");
+    });
+
+    test("coverage under the threshold in either window → insufficient even with long windows", () => {
+      // Before: 4 of 5 classified (0.8 ≥ threshold). After: 1 of 4 (0.25).
+      const retro = [
+        classed(70, "matcher"), classed(60, "matcher"), classed(50, "condition"), classed(45, "stale"), report(48),
+        classed(30, "matcher"), report(20), report(15), report(10),
+      ];
+      const r = ruleEffect([adopt("verification")], retro, NOW)[0];
+      expect(r.coverageBefore).toBe(0.8);
+      expect(r.coverageAfter).toBe(0.25);
+      expect(r.coverageAfter).toBeLessThan(MIN_CLASS_COVERAGE);
+      expect(r.verdict).toBe("insufficient");
+    });
+
+    test("an empty window has nothing to misclassify → coverage 1, verdict from the rates", () => {
+      // Every classified report before, nothing after (long windows both sides).
+      const retro = [classed(70, "matcher"), classed(60, "silent"), classed(50, "condition")];
+      const r = ruleEffect([adopt("verification")], retro, NOW)[0];
+      expect(r.coverageBefore).toBe(1);
+      expect(r.coverageAfter).toBe(1);
+      expect(r.verdict).toBe("improved");
+    });
   });
 
   test("zero reports in both valid windows → flat, newest adoption first", () => {

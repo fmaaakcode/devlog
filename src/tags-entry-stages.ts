@@ -32,6 +32,8 @@ import { diagnoseFeatureRef, type FeatureRefProblem } from "./features";
 import { detectReopen, PROBLEM_TAGS, type ReopenHint } from "./reopen";
 import { applyUndo } from "./undo";
 import type { RollbackResult } from "./release-rollback";
+import { parseCloserTail, closerTail, type ParsedCloserTail } from "./failure-class";
+import { leadingNums } from "./open-items";
 import type { DevLogData, TagEntry } from "./types";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -87,6 +89,9 @@ export interface EntryCtx {
   batchOpeners: BatchOpener[];
   closedInBatch: Set<number>;
   repairedClosures: Array<{ from: number | null; num: number }>;
+  /** #998: a `[word]` after `#N` that is not in the failure-class vocabulary.
+   *  Surfaced as a soft hint; the closure applies, the word is not stored. */
+  classHints: Array<{ num: number; word: string }>;
   releaseResult: Awaited<ReturnType<typeof applyRelease>>;
   releaseIntent: ReleaseIntent | null;
   releaseIntentConflict: ReleaseIntentConflict | null;
@@ -100,10 +105,13 @@ export interface EntryCtx {
   tag: string;
   content: string;
   pairedThisEntry: boolean;
+  /** #998: what the closer wrote after `#N`, captured BEFORE resolveClosureNumber
+   *  replaces the content with the opener's text. Stamped on the stored entry. */
+  closerTail: ParsedCloserTail | null;
 }
 
 /** What the handler hands runEntryBatch: everything but the per-entry cursor. */
-export type EntryBatchCtx = Omit<EntryCtx, "entry" | "rawContent" | "tag" | "content" | "pairedThisEntry">;
+export type EntryBatchCtx = Omit<EntryCtx, "entry" | "rawContent" | "tag" | "content" | "pairedThisEntry" | "closerTail">;
 
 export interface EntryStage {
   /** The pipeline move this row performs (documentation + tracing). */
@@ -288,6 +296,17 @@ export const ENTRY_STAGES: EntryStage[] = [
       // valid `#N` closure (pre-resolution num, post-resolution opener text)
       // so the Stop hook can echo «✓ أُغلق #N — text» back to Claude.
       const preResolve = ctx.content;
+      // #998: the cause (and its optional [class]) lives in the tail after
+      // `#N`; resolution below rewrites content to the opener's text and would
+      // drop it — which is exactly what happened to every cause before this.
+      if (CLOSER_KINDS[tag] && leadingNums(preResolve).length) {
+        const parsed = parseCloserTail(closerTail(preResolve));
+        ctx.closerTail = parsed;
+        if (parsed.unknownClass) {
+          const n = leadingNums(preResolve)[0];
+          ctx.classHints.push({ num: n, word: parsed.unknownClass });
+        }
+      }
       ctx.content = resolveClosureNumber(tag, ctx.content, data, project);
       const closeConfirm = confirmClosure(tag, preResolve, ctx.content);
       if (closeConfirm) {
@@ -514,6 +533,11 @@ export const ENTRY_STAGES: EntryStage[] = [
       // Hard server-side cap regardless of what the hook sent.
       if (typeof entry.context === "string" && entry.context.trim()) tagEntry.context = entry.context.trim().slice(0, 2000);
       if (ctx.touchedFiles.length) tagEntry.files = ctx.touchedFiles;
+      // #998: the closer's own words survive the opener-text rewrite.
+      if (ctx.closerTail) {
+        if (ctx.closerTail.cause) tagEntry.cause = ctx.closerTail.cause.slice(0, 1000);
+        if (ctx.closerTail.failureClass) tagEntry.failureClass = ctx.closerTail.failureClass;
+      }
       // Claim vs. evidence (#855): judged HERE, where the trace is still
       // hot, and stamped immutably. Recomputing later would judge against an
       // event store that has already aged out — measured as 142 false
@@ -573,6 +597,7 @@ export async function runEntryBatch(batch: TagInput[], shared: EntryBatchCtx): P
     ctx.tag = "";
     ctx.content = "";
     ctx.pairedThisEntry = false;
+    ctx.closerTail = null;
     for (const stage of ENTRY_STAGES) {
       if (!stage.applies(ctx)) continue;
       if (await stage.run(ctx) === "stop") break;

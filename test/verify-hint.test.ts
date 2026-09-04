@@ -146,6 +146,25 @@ describe("verifyHintFor v2 — freshness and outcome", () => {
     expect(verifyHintFor(closers, events, "s1")?.reason).toBe("stale-tests");
   });
 
+  test("passing test BEFORE a shell-command code edit does NOT silence — stale-tests (#1003)", () => {
+    // Mirror of #1000: an edit through bun -e / sed / heredoc emits a COMMAND
+    // event, not a change event. Ignoring it let an older green run pass as
+    // fresh — a false silence.
+    const events = [
+      ev("s1", "bun test", { ts: "2026-06-01T09:00:00Z", ok: true }),
+      ev("s1", `bun -e "require('fs').writeFileSync('src/rule-effect.ts', src)"`, { ts: "2026-06-01T10:00:00Z" }),
+    ];
+    expect(verifyHintFor(closers, events, "s1")?.reason).toBe("stale-tests");
+  });
+
+  test("a test RUN naming a code path is not a mutation — passing run after edit still silences (#1003)", () => {
+    const events = [
+      mut("s1", "src/a.ts", "2026-06-01T10:00:00Z"),
+      ev("s1", "bun test src/a.test.ts test/rule-effect.test.ts", { ts: "2026-06-01T10:05:00Z", ok: true }),
+    ];
+    expect(verifyHintFor(closers, events, "s1")).toBeNull();
+  });
+
   test("passing test AFTER the last code edit silences", () => {
     const events = [
       mut("s1", "src/a.ts", "2026-06-01T10:00:00Z"),
@@ -273,4 +292,47 @@ describe("regressionHintFor", () => {
   test("silent without a session id", () => {
     expect(regressionHintFor(fixClosers, [], "")).toBeNull();
   });
+  test("a shell command that names a test file outside a test-run segment → silent (#1000: cannot tell, never a false alarm)", () => {
+    // The trace sees Edit/Write only. A test written through `bun -e` /
+    // python / a heredoc emits a COMMAND event, not a change event, so
+    // "never touched a test file" was an accusation over a blind channel.
+    const events = [
+      mut("s1", "src/a.ts", "2026-06-01T10:00:00Z"),
+      ev("s1", `bun -e "require('fs').writeFileSync('test/rule-effect.test.ts', src)"`, { ts: "2026-06-01T10:01:00Z" }),
+    ];
+    expect(regressionHintFor(fixClosers, events, "s1")).toBeNull();
+  });
+
+  test("a heredoc edit script naming a test file → silent", () => {
+    const events = [
+      mut("s1", "src/a.ts", "2026-06-01T10:00:00Z"),
+      ev("s1", "python - <<'EOF'\np='test/closed-items.test.ts'\nEOF", { ts: "2026-06-01T10:01:00Z" }),
+    ];
+    expect(regressionHintFor(fixClosers, events, "s1")).toBeNull();
+  });
+
+  test("a Windows-style test path in a PowerShell write → silent", () => {
+    const events = [
+      mut("s1", "src/a.ts", "2026-06-01T10:00:00Z"),
+      ev("s1", "Set-Content -Path test\\a.test.ts -Value $src", { ts: "2026-06-01T10:01:00Z" }),
+    ];
+    expect(regressionHintFor(fixClosers, events, "s1")).toBeNull();
+  });
+
+  test("merely RUNNING a test file (`bun test test/a.test.ts`) does not count as writing one", () => {
+    const events = [
+      mut("s1", "src/a.ts", "2026-06-01T10:00:00Z"),
+      ev("s1", "bun test test/a.test.ts", { ts: "2026-06-01T10:01:00Z" }),
+    ];
+    expect(regressionHintFor(fixClosers, events, "s1")?.closers.length).toBe(1);
+  });
+
+  test("a compound command: edit segment names the test file, run segment runs it → silent", () => {
+    const events = [
+      mut("s1", "src/a.ts", "2026-06-01T10:00:00Z"),
+      ev("s1", "python fix.py test/a.test.ts && bun test test/a.test.ts", { ts: "2026-06-01T10:01:00Z" }),
+    ];
+    expect(regressionHintFor(fixClosers, events, "s1")).toBeNull();
+  });
+
 });

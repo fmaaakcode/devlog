@@ -15,6 +15,7 @@
 // the base condition holds but a once-per-session gate mutes the row.
 
 import type { BlockKey } from "./block-channel";
+import { FAILURE_CLASSES } from "./failure-class";
 
 // The wire shapes this table consumes — the /api/tags response fields as the
 // server sends them. All optional: an ordinary store returns none of them.
@@ -33,6 +34,7 @@ export interface TagsResponse {
   sweepHint?: { num: number; similar: Array<{ num?: number | null; text: string; closerFiles?: string[] }> } | null;
   closureTextWarnings?: Array<{ num: number; openerText: string }>;
   closureHints?: Array<{ kind: string; num: number; openerTag?: string; usedCloser?: string; suggested?: string }>;
+  classHints?: Array<{ num: number; word: string }>;
   openSnapshot?: OpenItemRef[];
   featureHints?: Array<{ kind: string; tag?: string; num?: number }>;
   release?: {
@@ -199,6 +201,23 @@ export const RESPONSE_ROWS: ResponseRow[] = [
       return `\n[devlog closure]\n${lines.join("\n")}\n`;
     },
     logLine: resp => `closure-confirm: ${sure(resp.closed).map((c) => c.num).join(", ")}`,
+    deliver: "info",
+  },
+  // Failure class not in the vocabulary (#998): the closure applied and the
+  // cause is stored; only the bracket word was dropped. Soft — one line with
+  // the accepted words, never a block: a second gate on the closing line
+  // would turn closure into a form.
+  {
+    key: "classHints",
+    applies: resp => nonEmpty(resp.classHints),
+    text(resp, { L }) {
+      const words = FAILURE_CLASSES.map(c => `[${c.aliases[0]}]`).join(" ");
+      const lines = sure(resp.classHints).map((h) =>
+        L(`· #${h.num}: «[${h.word}]» is not a failure class — not stored (the cause is). Accepted: ${words}`,
+          `· #${h.num}: «[${h.word}]» ليست فئة فشل — لم تُخزَّن (السبب خُزّن). المقبول: ${words}`));
+      return `\n[devlog failure-class]\n${lines.join("\n")}\n`;
+    },
+    logLine: resp => `class-hint: ${sure(resp.classHints).map((h) => h.num).join(", ")}`,
     deliver: "info",
   },
   // Same-response pairing echo (#633): a closer that resolved to nothing

@@ -129,7 +129,7 @@ export function makeTagsRoutes(): Record<string, unknown> {
             const batchId = typeof body.batch_id === "string" ? body.batch_id : "";
             if (batchId && (data.processedBatches || []).includes(batchId)) {
               console.log(`[/api/tags] batch replay dropped: ${batchId} (${(body.entries || []).length} entries)`);
-              return Response.json({ ok: true, count: 0, batchReplay: true, release: null, releaseIntent: null, releaseIntentConflict: null, releaseDowngrade: null, releaseBlocked: null, rollback: null, closureHints: [], closureTextWarnings: [], featureHints: [], closed: [], upcomingChanges: [], reopenHints: [], verifyHint: null, regressionHint: null, sweepHint: null, openSnapshot: [], repairedClosures: [] });
+              return Response.json({ ok: true, count: 0, batchReplay: true, release: null, releaseIntent: null, releaseIntentConflict: null, releaseDowngrade: null, releaseBlocked: null, rollback: null, closureHints: [], closureTextWarnings: [], featureHints: [], closed: [], upcomingChanges: [], reopenHints: [], verifyHint: null, regressionHint: null, sweepHint: null, openSnapshot: [], repairedClosures: [], classHints: [] });
             }
             // A batch carrying a release stores the release LAST: continuations
             // append tags AFTER the already-written release line (the feature-
@@ -186,7 +186,7 @@ export function makeTagsRoutes(): Record<string, unknown> {
               touchedFiles: sessionTouchedFiles(data, body.session_id, project),
               batchCommands: sessionCommandCount(data, body.session_id, project),
               sessionEdits, sessionCommands,
-              storedEntries: [], closureHints: [], closureTextWarnings: [], featureHints: [],
+              storedEntries: [], closureHints: [], closureTextWarnings: [], featureHints: [], classHints: [],
               closed: [], fixedConfirms: [], upcomingChanges: [], reopenHints: [],
               batchOpeners: [], closedInBatch: new Set(), repairedClosures: [],
               releaseResult: null, releaseIntent: null, releaseIntentConflict: null,
@@ -276,6 +276,7 @@ export function makeTagsRoutes(): Record<string, unknown> {
               upcomingChanges: ctx.upcomingChanges, reopenHints: ctx.reopenHints,
               verifyHint, regressionHint, sweepHint, openSnapshot,
               repairedClosures: ctx.repairedClosures,
+              classHints: ctx.classHints,
             });
           });
         } catch (e) {

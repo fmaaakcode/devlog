@@ -411,8 +411,9 @@ export async function rootCauseGuard(ctx: GuardCtx): Promise<void> {
   const bare: number[] = [];
   for (const t of tags) {
     if (t.tag !== "bug fix") continue;
-    // Everything after the leading `#N` run: that text is stored on the closer
-    // and shown by `-(ask:closed) #N`, so a cause written here is not lost.
+    // Everything after the leading `#N` run is stored on the closer as `cause`
+    // (#998) and shown by `-(ask:closed) #N`. Before #998 this comment made the
+    // same promise while resolveClosureNumber was discarding the tail (#482).
     const rest = t.content.replace(/^(?:[ \t]*#\d+)+/, "").trim();
     if (rest.length >= 12) continue;             // a cause was given
     const nums = t.content.match(/^[ \t]*#(\d+)/);

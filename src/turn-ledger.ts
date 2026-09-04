@@ -45,6 +45,43 @@ export function entryKey(tag: string, content: string, breaking?: boolean): stri
   return `${tag}${breaking ? "!" : ""}:${Bun.hash(content).toString(36)}`;
 }
 
+/** Multiset subtraction: every key in `consumed` removes ONE matching entry.
+ *  A continuation re-reads the whole turn text, so a line that was already
+ *  handled shows up again — and so does its identical re-emit. Plain "key seen
+ *  before → drop" would swallow both, which is why the release guard could never
+ *  simply mark the line it refused (#1006): the user is told to re-emit
+ *  `-(release)`, and a verbatim re-emit must survive while the refused original
+ *  does not. Count-aware subtraction gives exactly that. */
+export function subtractConsumed<T extends { tag: string; content: string; breaking?: boolean }>(
+  entries: T[],
+  consumed: readonly string[],
+): T[] {
+  const budget = new Map<string, number>();
+  for (const k of consumed) budget.set(k, (budget.get(k) ?? 0) + 1);
+  return entries.filter(e => {
+    const k = entryKey(e.tag, e.content, e.breaking);
+    const n = budget.get(k) ?? 0;
+    if (n === 0) return true;
+    budget.set(k, n - 1);
+    return false;
+  });
+}
+
+/** Collapse a re-read turn to ONE release line — the last one. Every block
+ *  site that refuses a release (guard, feature nudge, story nudge) tells Claude
+ *  to "re-emit -(release)"; a verbatim re-emit is caught by the server's exact
+ *  dedup, but a REPHRASED one is a second, different release entry in the same
+ *  batch — the #1006 shape (two versions minted 84ms apart). A turn never
+ *  legitimately ships two releases, so the latest wording wins; the earlier
+ *  ones are returned for the caller to log. */
+export function keepLastRelease<T extends { tag: string }>(entries: T[]): { kept: T[]; dropped: T[] } {
+  const isRelease = (e: T) => e.tag === "release" || e.tag.startsWith("release:");
+  const releases = entries.filter(isRelease);
+  if (releases.length <= 1) return { kept: entries, dropped: [] };
+  const last = releases[releases.length - 1];
+  return { kept: entries.filter(e => !isRelease(e) || e === last), dropped: releases.slice(0, -1) };
+}
+
 function onlyStrings(arr: unknown): string[] {
   return Array.isArray(arr) ? arr.filter((s): s is string => typeof s === "string") : [];
 }

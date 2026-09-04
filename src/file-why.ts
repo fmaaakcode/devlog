@@ -57,7 +57,14 @@ export interface WhyReport {
   spanDays?: number;
   /** This report was later re-opened — the fix did not hold (retro's ⟲). */
   reopened: boolean;
-  /** Prose around the closer: WHY the fix was done that way. */
+  /** #998: the closer's own words after `#N` — the cause itself. Preferred
+   *  over fixContext at render time (#1007): the prose around a closer is the
+   *  whole response's summary and routinely reads "all done, two commits". */
+  cause?: string;
+  /** #998: closed-vocabulary failure class from the closer, when given. */
+  failureClass?: string;
+  /** Prose around the closer: WHY the fix was done that way. Fallback for
+   *  closers that predate the cause field. */
   fixContext?: string;
   open: boolean;
 }
@@ -195,6 +202,8 @@ export function buildFileWhy(
       ...(day(closedAt) ? { closedAt: day(closedAt) } : {}),
       ...(spanDays(openedAt, closedAt) !== undefined ? { spanDays: spanDays(openedAt, closedAt) } : {}),
       reopened: typeof t.num === "number" && reopenedNums.has(t.num),
+      ...(closed?.cause ? { cause: clip(closed.cause, DECISION_CHARS) } : {}),
+      ...(closed?.failureClass ? { failureClass: closed.failureClass } : {}),
       ...(closed?.closerContext ? { fixContext: clip(closed.closerContext, DECISION_CHARS) } : {}),
       open: !closedAt,
     };
