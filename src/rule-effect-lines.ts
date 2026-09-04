@@ -26,6 +26,12 @@ export function rulesLines(rules: Row | undefined, L: AskCtx["L"]): string[] {
       insufficient: ["insufficient", "غير كافٍ"], unmeasurable: ["unmeasurable", "لا يُقاس"],
     };
     const pct = (c: unknown) => typeof c === "number" ? `${Math.round(c * 100)}%` : "?";
+    // #1014: coverage split — "70% (40%+30% backfilled)" when any of it came from
+    // the reviewed backfill; a bare percentage means the closers wrote it all.
+    const cov = (c: unknown, bf: unknown) => {
+      if (typeof c !== "number" || typeof bf !== "number" || bf <= 0) return pct(c);
+      return `${pct(c)} (${pct(Math.max(0, c - bf))}+${pct(bf)} ${L("backfilled", "رجعي")})`;
+    };
     const line = (r: Row) => {
       const scope = r.scope === "class"
         ? `${L("class", "فئة")}: ${(r.classes || []).join("·")}`
@@ -36,9 +42,14 @@ export function rulesLines(rules: Row | undefined, L: AskCtx["L"]): string[] {
       let why = "";
       if (r.verdict === "unmeasurable") why = L(" — no report subset this category can claim", " — لا فئة بلاغات تخصّ هذا التصنيف");
       else if (r.verdict === "insufficient" && r.scope === "class" && (r.coverageBefore < MIN_CLASS_COVERAGE || r.coverageAfter < MIN_CLASS_COVERAGE))
-        why = L(` — classified ${pct(r.coverageBefore)}/${pct(r.coverageAfter)} of reports before/after; backfill the classes first`,
-                ` — المصنَّف ${pct(r.coverageBefore)}/${pct(r.coverageAfter)} من بلاغات قبل/بعد؛ عبّئ الفئات أولًا`);
+        why = L(` — classified ${cov(r.coverageBefore, r.backfilledBefore)}/${cov(r.coverageAfter, r.backfilledAfter)} of reports before/after; backfill the classes first`,
+                ` — المصنَّف ${cov(r.coverageBefore, r.backfilledBefore)}/${cov(r.coverageAfter, r.backfilledAfter)} من بلاغات قبل/بعد؛ عبّئ الفئات أولًا`);
       else if (r.verdict === "insufficient") why = L(" — windows too young", " — النافذتان فتيّتان");
+      // #1014: a rated class row still says how much of its coverage is after-the-fact —
+      // a verdict standing on backfilled classes is weaker evidence than one the closers wrote.
+      else if (r.scope === "class" && ((r.backfilledBefore ?? 0) > 0 || (r.backfilledAfter ?? 0) > 0))
+        why = L(` — classified ${cov(r.coverageBefore, r.backfilledBefore)}/${cov(r.coverageAfter, r.backfilledAfter)}`,
+                ` — المصنَّف ${cov(r.coverageBefore, r.backfilledBefore)}/${cov(r.coverageAfter, r.backfilledAfter)}`);
       const detail = r.detail ? ` «${String(r.detail).slice(0, 60)}»` : "";
       return `  ${r.rule}${detail} (${scope}) ${day(r.adoptedAt)}: ${L("before", "قبل")} ${rate(r.reportsBefore, r.beforeDays, r.beforeRatePerMonth)} → ${L("after", "بعد")} ${rate(r.reportsAfter, r.afterDays, r.afterRatePerMonth)} = ${L(v[0], v[1])}${why}`;
     };

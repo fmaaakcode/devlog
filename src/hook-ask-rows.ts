@@ -596,8 +596,9 @@ export const ASK_ROWS: AskRow[] = [
         // ⟲: this report reopened an earlier closed one (#556) — the strongest
         // recurrence signal the corpus carries; cluster these first.
         const reopen = typeof it.reopenOf === "number" ? ` ⟲#${it.reopenOf}` : "";
-        // #998: the failure class rides the line so clustering can start from it.
-        const cls = it.failureClass ? ` [${it.failureClass}]` : "";
+        // #998: the failure class rides the line so clustering can start from it;
+        // #1014: a backfilled one is marked so the reader weighs it as after-the-fact.
+        const cls = it.failureClass ? ` [${it.failureClass}${it.failureClassBackfilled ? L(", backfilled", "، رجعي") : ""}]` : "";
         return `  ${num}[${kind}]${reopen}${cls} ${span} ${it.text}${files}`;
       };
       // «الأكثر كسرًا» header (#557): the corpus pre-clustered by file.

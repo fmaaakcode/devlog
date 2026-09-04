@@ -19,6 +19,7 @@ const rec = (p: Partial<RuleTelemetryRecord>): RuleTelemetryRecord =>
 const report = (daysAgo: number, files?: string[], kind = "bug found"): RetroItem =>
   ({ kind, text: "x", openedAt: iso(daysAgo), ageDays: daysAgo, ...(files ? { files } : {}) });
 const classed = (daysAgo: number, failureClass: string): RetroItem => ({ ...report(daysAgo), failureClass });
+const backfilled = (daysAgo: number, failureClass: string): RetroItem => ({ ...classed(daysAgo, failureClass), failureClassBackfilled: true });
 
 describe("ruleStats", () => {
   test("counts fire/ack/pass per gate+rule; lifecycle adopt/exempt are not counters", () => {
@@ -179,6 +180,33 @@ describe("ruleEffect", () => {
       expect(r.coverageAfter).toBe(0.25);
       expect(r.coverageAfter).toBeLessThan(MIN_CLASS_COVERAGE);
       expect(r.verdict).toBe("insufficient");
+    });
+
+    test("#1014: coverage splits into closer-written and backfilled shares per window", () => {
+      // Before: 5 reports — 2 by closer, 2 backfilled, 1 unclassified → coverage 0.8, backfilled 0.4.
+      // After: 4 reports — all backfilled → coverage 1, backfilled 1.
+      const retro = [
+        classed(70, "matcher"), classed(60, "stale"), backfilled(50, "matcher"), backfilled(45, "silent"), report(48),
+        backfilled(30, "matcher"), backfilled(20, "stale"), backfilled(15, "condition"), backfilled(10, "drift"),
+      ];
+      const r = ruleEffect([adopt("verification")], retro, NOW)[0];
+      expect(r.coverageBefore).toBe(0.8);
+      expect(r.backfilledBefore).toBe(0.4);
+      expect(r.coverageAfter).toBe(1);
+      expect(r.backfilledAfter).toBe(1);
+      // The gate still keys on TOTAL coverage — backfilled classes count as classified.
+      expect(r.verdict).not.toBe("insufficient");
+      expect(r.reportsBefore).toBe(3);   // matcher, matcher, silent
+      expect(r.reportsAfter).toBe(2);    // matcher, condition
+    });
+
+    test("#1014: closer-written classes only → backfilled share 0; a non-class scope carries no split", () => {
+      const r = ruleEffect([adopt("verification")], [classed(70, "matcher"), classed(10, "matcher")], NOW)[0];
+      expect(r.backfilledBefore).toBe(0);
+      expect(r.backfilledAfter).toBe(0);
+      const all = ruleEffect([adopt("security")], [backfilled(70, "matcher")], NOW)[0];
+      expect(all.scope).toBe("kind");
+      expect("backfilledBefore" in all).toBe(false);
     });
 
     test("an empty window has nothing to misclassify → coverage 1, verdict from the rates", () => {

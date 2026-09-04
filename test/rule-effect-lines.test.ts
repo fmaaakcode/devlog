@@ -37,6 +37,19 @@ describe("rulesLines", () => {
     expect(row).toContain("= insufficient — classified 0%/25% of reports before/after; backfill the classes first");
   });
 
+  test("#1014: coverage prints split when any of it is backfilled, bare when the closers wrote it all", () => {
+    const [, insufficient] = rulesLines({ effects: [effect({ verdict: "insufficient", coverageBefore: 0.5, backfilledBefore: 0.3, coverageAfter: 1, backfilledAfter: 1, beforeRatePerMonth: null, afterRatePerMonth: null })] }, en);
+    expect(insufficient).toContain("classified 50% (20%+30% backfilled)/100% (0%+100% backfilled) of reports before/after; backfill the classes first");
+    // A rated row with backfilled coverage still says so — weaker evidence than closer-written.
+    const [, rated] = rulesLines({ effects: [effect({ verdict: "improved", coverageBefore: 0.8, backfilledBefore: 0.4, coverageAfter: 1, backfilledAfter: 0 })] }, en);
+    expect(rated).toContain("= improved — classified 80% (40%+40% backfilled)/100%");
+    // No backfill anywhere → nothing appended, the row reads as before #1014.
+    const [, clean] = rulesLines({ effects: [effect({ verdict: "improved", backfilledBefore: 0, backfilledAfter: 0 })] }, en);
+    expect(clean.endsWith("= improved")).toBe(true);
+    const [, arabic] = rulesLines({ effects: [effect({ verdict: "flat", coverageBefore: 1, backfilledBefore: 0.5 })] }, ar);
+    expect(arabic).toContain("المصنَّف 100% (50%+50% رجعي)/100%");
+  });
+
   test("insufficient by age says the windows are young; unmeasurable says why", () => {
     const rows = rulesLines({ effects: [
       effect({ verdict: "insufficient", afterDays: 3, beforeRatePerMonth: null, afterRatePerMonth: null }),

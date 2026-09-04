@@ -70,6 +70,22 @@ describe("retroCorpus", () => {
     expect(it.files).toEqual(["src/a.ts"]);
   });
 
+  test("#1014: the closer's class rides through with its backfilled flag, closer-written stays unflagged", () => {
+    const t2 = [
+      { tag: "bug found", project: "p", num: 5, content: "stale one", timestamp: "2026-04-01T00:00:00Z" },
+      { tag: "bug fix", project: "p", content: "#5 old cache", timestamp: "2026-04-02T00:00:00Z", failureClass: "stale", failureClassBackfilled: true },
+      { tag: "bug found", project: "p", num: 6, content: "matcher one", timestamp: "2026-04-03T00:00:00Z" },
+      { tag: "bug fix", project: "p", content: "#6 regex too wide", timestamp: "2026-04-04T00:00:00Z", failureClass: "matcher" },
+    ];
+    const items = retroCorpus(makeData(t2), "p");
+    const five = items.find(i => i.num === 5)!;
+    const six = items.find(i => i.num === 6)!;
+    expect(five.failureClass).toBe("stale");
+    expect(five.failureClassBackfilled).toBe(true);
+    expect(six.failureClass).toBe("matcher");
+    expect("failureClassBackfilled" in six).toBe(false);
+  });
+
   test("closed-items exposes the merged files field retro reads", () => {
     const closed = closedItems(makeData(tags), "p").find(c => c.num === 1)!;
     expect(closed.files).toEqual(["D:/proj/src/a.ts", "D:/proj/src/b.ts"]);

@@ -65,7 +65,7 @@ export function lastCodeMutationMs(events: EventEntry[], sessionId: string): num
     if (e.session_id !== sessionId) continue;
     const wrote = (e.type === "change" || e.type === "create")
       ? !!e.file_path && isCodeWrite(e.file_path)
-      : !!e.command && commandMayWrite(e.command, isCodeWrite);
+      : !!e.command && commandMayMutate(e.command, isCodeWrite);
     if (!wrote) continue;
     const t = tsMs(e);
     if (t > last) last = t;
@@ -119,7 +119,30 @@ export function commandMayWrite(command: string, accepts: (path: string) => bool
   return false;
 }
 
-/** True if any write event — or a command that may have written (#1000) —
+// Write markers a shell command carries when it changes a file: a redirect
+// (not `2>&1` / `2>/dev/null`, not the `=>` / `->` of inline scripts),
+// in-place sed, tee, file-moving verbs, tree-changing git verbs, and the write
+// APIs of the inline-script channels (bun -e / python / PowerShell). Judged over
+// the WHOLE command: an inline script keeps its path and its write call on
+// different lines, and the segment split would separate them.
+const WRITE_SHAPE_RE =
+  /(?<![0-9&<>=\-])>{1,2}(?!&)|\bsed\s+(?:-[a-zA-Z]*i|--in-place)|\btee\b|\b(?:cp|mv|rm|touch|patch|install)\b|\bgit\s+(?:checkout|restore|reset|apply|stash\s+pop|revert|cherry-pick|merge|rebase|pull)\b|writeFileSync|\bwriteFile\b|Bun\.write|\.write_text\(|open\([^)]*['"][wa]|Set-Content|Out-File|Add-Content|Copy-Item|Move-Item|Remove-Item/;
+
+/**
+ * True when a command names a path the predicate accepts AND carries a write
+ * marker. The "may have written" reading of commandMayWrite is the right
+ * direction for the REGRESSION hint (#1000: over-counting there silences a
+ * nudge, never fakes one) but the wrong one for freshness: counting `sed -n`,
+ * `grep -n` and `cat` as mutations made every green run stale the moment a
+ * source file was READ afterwards \u2014 3/3 retained sessions with a test run
+ * would have fired "stale-tests" over read-only commands. A read stays a read.
+ */
+export function commandMayMutate(command: string, accepts: (path: string) => boolean): boolean {
+  if (!WRITE_SHAPE_RE.test(command || "")) return false;
+  return commandMayWrite(command, accepts);
+}
+
+/** True if any write event \u2014 or a command that may have written (#1000) \u2014
  *  in this session touched a test file. */
 export function sessionWroteTests(events: EventEntry[], sessionId: string): boolean {
   if (!sessionId) return false;

@@ -24,6 +24,7 @@
 
 import { nearMissTags, backtickedCommandLines, parseTags } from "./tag-parser";
 import { saveLedger, type TurnLedger } from "./turn-ledger";
+import { parseCloserTail, closerTail } from "./failure-class";
 
 /** Everything a guard needs from the hook process. Passed in rather than
  *  imported so the guards stay testable without stdin, exit, or a real ledger
@@ -387,6 +388,14 @@ export async function untaggedSessionGuard(ctx: GuardCtx): Promise<void> {
  * (which is itself the honest declaration that there is no root fix yet), or for
  * security (its own path). Deduped per `#N`. Off with DEVLOG_ROOTCAUSE_CHECK=0.
  */
+// A cause is what remains AFTER the `#N` run and the optional `[class]` word
+// (#998). Measuring the raw tail let a long class word stand in for a cause:
+// `-(bug fix) #N [missing-guard]` is 15 characters of NO cause, and the guard
+// stayed silent while `[شرط]` alone was blocked — the verdict depended on the
+// spelling of the class, not on whether anything was said.
+const MIN_CAUSE_CHARS = 12;
+const causeLength = (content: string): number => parseCloserTail(closerTail(content)).cause.length;
+
 export async function rootCauseGuard(ctx: GuardCtx): Promise<void> {
   if (!ctx.msg || envOff("DEVLOG_ROOTCAUSE_CHECK")) return;
   const tags = parseTags(ctx.msg);
@@ -400,7 +409,7 @@ export async function rootCauseGuard(ctx: GuardCtx): Promise<void> {
     if (t.tag !== "bug fix") continue;
     const n = t.content.match(/^[ \t]*#(\d+)/)?.[1];
     if (!n) continue;
-    const caused = hasInsight || t.content.replace(/^(?:[ \t]*#\d+)+/, "").trim().length >= 12;
+    const caused = hasInsight || causeLength(t.content) >= MIN_CAUSE_CHARS;
     // shouldServeAsk is true when the key was never served — i.e. this number
     // was never blocked, so there is no block to have answered.
     if (!caused || await ctx.shouldServeAsk(`rootcause:${n}`)) continue;
@@ -414,8 +423,7 @@ export async function rootCauseGuard(ctx: GuardCtx): Promise<void> {
     // Everything after the leading `#N` run is stored on the closer as `cause`
     // (#998) and shown by `-(ask:closed) #N`. Before #998 this comment made the
     // same promise while resolveClosureNumber was discarding the tail (#482).
-    const rest = t.content.replace(/^(?:[ \t]*#\d+)+/, "").trim();
-    if (rest.length >= 12) continue;             // a cause was given
+    if (causeLength(t.content) >= MIN_CAUSE_CHARS) continue;   // a cause was given
     const nums = t.content.match(/^[ \t]*#(\d+)/);
     if (nums) bare.push(Number(nums[1]));
   }

@@ -130,6 +130,12 @@ export interface RuleEffectRow {
    *  window with no reports at all has nothing to misclassify → 1. */
   coverageBefore?: number;
   coverageAfter?: number;
+  /** Scope "class" only (#1014): the part of each window's coverage that came
+   *  from the reviewed backfill rather than the closer (0–1, ≤ coverage).
+   *  coverage − backfilled = share classified by the closers themselves. The
+   *  gate keys on total coverage; this is the honesty split the reader sees. */
+  backfilledBefore?: number;
+  backfilledAfter?: number;
   /** Observed window lengths (days). Before is capped at LOOKBACK_DAYS and at
    *  the project's first report — never longer than the history can honestly
    *  support. */
@@ -199,19 +205,25 @@ export function ruleEffect(
     // ANY class — a match count over unclassified history is a count of
     // nothing (#998).
     let allBefore = 0, allAfter = 0, classedBefore = 0, classedAfter = 0;
+    let backfilledBefore = 0, backfilledAfter = 0;   // #1014: of the classed, how many after the fact
     for (const it of retro) {
       const t = +new Date(it.openedAt) || 0;
       const inBefore = t >= beforeStartMs && t < adoptedMs;
       const inAfter = !inBefore && t >= adoptedMs && t <= now;
       if (!inBefore && !inAfter) continue;
-      if (inBefore) { allBefore++; if (it.failureClass) classedBefore++; }
-      else { allAfter++; if (it.failureClass) classedAfter++; }
+      const bf = !!it.failureClass && !!it.failureClassBackfilled;
+      if (inBefore) { allBefore++; if (it.failureClass) classedBefore++; if (bf) backfilledBefore++; }
+      else { allAfter++; if (it.failureClass) classedAfter++; if (bf) backfilledAfter++; }
       if (!match(it)) continue;
       if (inBefore) reportsBefore++; else reportsAfter++;
     }
     const coverage = (classed: number, all: number) => (all ? Math.round((classed / all) * 100) / 100 : 1);
     const coverageBefore = coverage(classedBefore, allBefore);
     const coverageAfter = coverage(classedAfter, allAfter);
+    // An empty window's coverage is 1 by convention; nothing in it was backfilled.
+    const share = (n: number, all: number) => (all ? Math.round((n / all) * 100) / 100 : 0);
+    const bfBefore = share(backfilledBefore, allBefore);
+    const bfAfter = share(backfilledAfter, allAfter);
     const underCovered = scope === "class" && (coverageBefore < MIN_CLASS_COVERAGE || coverageAfter < MIN_CLASS_COVERAGE);
 
     const rate = (n: number, days: number): number | null =>
@@ -231,7 +243,7 @@ export function ruleEffect(
 
     rows.push({
       rule: a.rule, ...(a.detail ? { detail: a.detail } : {}), adoptedAt: a.ts, scope,
-      ...(scope === "class" ? { classes, coverageBefore, coverageAfter } : {}),
+      ...(scope === "class" ? { classes, coverageBefore, coverageAfter, backfilledBefore: bfBefore, backfilledAfter: bfAfter } : {}),
       beforeDays, afterDays, reportsBefore, reportsAfter,
       beforeRatePerMonth: beforeRate, afterRatePerMonth: afterRate, verdict,
     });

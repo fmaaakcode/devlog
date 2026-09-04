@@ -58,6 +58,16 @@ describe("it fires when a fix records no cause", () => {
     expect(blocks).toHaveLength(1);
   });
 
+  test("a class word alone is not a cause — however long the word (#998 bracket)", async () => {
+    // The raw tail after `#N` was measured, so `[missing-guard]` (15 chars)
+    // passed while `[شرط]` (5) was blocked: the verdict depended on the class
+    // spelling, not on whether a cause was said. The cause is what remains
+    // after the bracket, and here that is nothing.
+    expect((await run("-(bug fix) #5 [missing-guard]")).blocks).toHaveLength(1);
+    expect((await run("-(bug fix) #5 [شرط]")).blocks).toHaveLength(1);
+    expect((await run("-(bug fix) #5 [conversion] تم")).blocks).toHaveLength(1);
+  });
+
   test("several bare closures are named together in one block", async () => {
     const { blocks } = await run("-(bug fix) #5\n-(bug fix) #6");
     expect(blocks).toHaveLength(1);
@@ -69,6 +79,11 @@ describe("it fires when a fix records no cause", () => {
 describe("it stays silent when a cause exists", () => {
   test("a cause written after the number passes", async () => {
     const { blocks } = await run("-(bug fix) #5 جدول الضريبة يُقرأ قبل تحميل البلد");
+    expect(blocks).toEqual([]);
+  });
+
+  test("a class word followed by a cause passes — the class is beside the cause, not instead of it", async () => {
+    const { blocks } = await run("-(bug fix) #5 [شرط] الحارس يستثني .md فيعمى عن جلسات التوثيق");
     expect(blocks).toEqual([]);
   });
 

@@ -23,6 +23,10 @@ export interface RetroItem {
   files?: string[];      // project-relative; the problem's footprint
   reopenOf?: number;     // the closed report this one reopened (#556)
   failureClass?: string; // #998: the closer's failure class — the axis a class-scoped rule-effect measures on
+  /** #1014: the class was assigned by the reviewed backfill, not by the closer.
+ *  Rule-effect coverage splits on this so a window classified entirely after
+ *  the fact is never mistaken for one whose closers named their causes. */
+  failureClassBackfilled?: true;
 }
 
 const DAY_MS = 86_400_000;
@@ -52,6 +56,7 @@ export function retroCorpus(data: DevLogData, project: string): RetroItem[] {
     const files = projectRelativeFiles(c.files, root);
     out.push({
       ...(c.failureClass ? { failureClass: c.failureClass } : {}),
+      ...(c.failureClassBackfilled ? { failureClassBackfilled: true as const } : {}),
       ...(typeof c.num === "number" ? { num: c.num } : {}),
       kind: c.kind, text: c.text, openedAt: c.openedAt,
       ...(c.closedAt ? { closedAt: c.closedAt } : {}),

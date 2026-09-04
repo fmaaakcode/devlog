@@ -221,6 +221,47 @@ describe("lastCodeMutationMs", () => {
   test("zero when the session wrote nothing", () => {
     expect(lastCodeMutationMs([ev("s1", "git status")], "s1")).toBe(0);
   });
+
+  // #1003 over-fired: every command NAMING a code path counted as a mutation,
+  // so a green run went stale the moment a source file was read afterwards —
+  // 3/3 retained sessions with a test run would have been nagged over
+  // `sed -n` / `grep -n` / `cat`. A read is a read.
+  test.each([
+    "sed -n 390,425p src/tags-entry-stages.ts; echo ---; sed -n 420,445p src/tags-service.ts",
+    'grep -n "ask:open\\|ask:why" src/hook-asks.ts src/hook-ask-rows.ts | head',
+    "cat src/a.ts 2>/dev/null",
+    "git diff src/a.ts 2>&1 | head -40",
+    "bun -e \"import { x } from './src/a.ts'; console.log([1].map(v => v))\"",
+    "python - <<'EOF'\np='src/turn-ledger.ts'\nprint(open(p,encoding='utf-8').read())\nEOF",
+  ])("a read-only command naming a code file is NOT a mutation: %p", (cmd) => {
+    expect(lastCodeMutationMs([ev("s1", cmd, { ts: "2026-06-01T10:00:00Z" })], "s1")).toBe(0);
+  });
+
+  test.each([
+    "cat > src/a.ts <<'EOF'\nexport const x = 1;\nEOF",
+    "echo '// x' >> src/a.ts",
+    "sed -i 's/a/b/' src/a.ts",
+    "bun -e \"require('fs').writeFileSync('src/rule-effect.ts', src)\"",
+    "python - <<'EOF'\np='src/turn-ledger.ts'\ns=open(p).read()\nopen(p,'w').write(s)\nEOF",
+    "Set-Content -Path src\\a.ts -Value $src",
+    "rm -f src/old.ts",
+    "git checkout -- src/a.ts",
+  ])("a write-shaped command naming a code file IS a mutation: %p", (cmd) => {
+    expect(lastCodeMutationMs([ev("s1", cmd, { ts: "2026-06-01T10:00:00Z" })], "s1")).toBe(+new Date("2026-06-01T10:00:00Z"));
+  });
+
+  test("a write-shaped command naming only a non-code file is not a code mutation", () => {
+    expect(lastCodeMutationMs([ev("s1", "echo x >> notes.md", { ts: "2026-06-01T10:00:00Z" })], "s1")).toBe(0);
+  });
+
+  test("reading a source file after a green run does not stale it (end-to-end)", () => {
+    const events = [
+      mut("s1", "src/a.ts", "2026-06-01T09:00:00Z"),
+      ev("s1", "bun test", { ts: "2026-06-01T09:30:00Z", ok: true }),
+      ev("s1", "sed -n 1,40p src/a.ts", { ts: "2026-06-01T10:00:00Z" }),
+    ];
+    expect(verifyHintFor([{ tag: "bug fix", content: "#123" }], events, "s1")).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
