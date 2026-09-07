@@ -4,12 +4,13 @@
 // alive, and maps each session to the process subtree it spawned — that is what
 // the dashboard's process panel renders and what killProcess() acts on.
 //
-// Windows-only by necessity: the process snapshot comes from a PowerShell/WMI
-// query, so results are ttlCached (a snapshot per request would be far too
-// expensive), the shell's own helper processes are filtered out (SELF_NAMES) so
-// DevLog never lists — or kills — the machinery it used to look, and on
-// macOS/Linux it returns empty instead of spawning a `powershell` that isn't
-// there on every poll.
+// The process TREE is Windows-only by necessity: the snapshot comes from a
+// PowerShell/WMI query, so results are ttlCached (a snapshot per request would
+// be far too expensive), the shell's own helper processes are filtered out
+// (SELF_NAMES) so DevLog never lists — or kills — the machinery it used to
+// look, and on macOS/Linux it returns empty instead of spawning a `powershell`
+// that isn't there on every poll. Session LIVENESS is portable: on POSIX it is
+// a signal-0 probe per pid, so /api/sessions works on every OS.
 //
 // The tree math (buildDescendantTree, pruneDescendantsAgainst) is pure and
 // exported for tests, separate from the I/O around it. Note the deliberate
@@ -122,6 +123,18 @@ async function snapshotAllProcessesUncached(): Promise<WinProc[]> {
 async function batchCheckAlive(pids: number[]): Promise<Set<number>> {
   const alive = new Set<number>();
   if (pids.length === 0) return alive;
+  // The WMI snapshot is Windows-only, so on macOS/Linux every session used to
+  // come back dead and /api/sessions was always empty there (#1143's e2e went
+  // red on both POSIX runners, v3.61.0 release prep). Signal 0 is the portable
+  // liveness probe: it delivers nothing, ESRCH means gone, EPERM means alive
+  // but owned by someone else. The process TREE stays Windows-only.
+  if (process.platform !== "win32") {
+    for (const pid of pids) {
+      try { process.kill(pid, 0); alive.add(pid); }
+      catch (e) { if ((e as NodeJS.ErrnoException).code === "EPERM") alive.add(pid); }
+    }
+    return alive;
+  }
   const snapshot = await snapshotAllProcesses();
   const living = new Set(snapshot.map(p => p.pid));
   for (const pid of pids) if (living.has(pid)) alive.add(pid);

@@ -58,6 +58,11 @@ export function legacyQueueDirs(hookDir: string): string[] {
     const parent = dirname(hookDir);
     let siblings: string[] = [];
     try { siblings = readdirSync(parent); } catch { /* unreadable parent → own dir only */ }
+    // Directory enumeration order is a filesystem accident (NTFS sorts, ext4 and
+    // APFS do not), and the order here decides which sibling's batch wins when
+    // two legacy queues hold the same file name (migration never overwrites).
+    // Sort by version so the outcome is the same on every OS: oldest first.
+    siblings.sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
     for (const s of siblings) {
       if (s === basename(hookDir) || !/^\d+\.\d+\.\d+/.test(s)) continue;
       dirs.push(join(parent, s, ".devlog", "tag-queue"));

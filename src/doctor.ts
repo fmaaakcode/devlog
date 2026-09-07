@@ -4,7 +4,7 @@
  * Usage:  bun src/doctor.ts [project-path]   (default: cwd)
  *         bun src/doctor.ts --json [path]    machine-readable
  */
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { resolve, basename } from "node:path";
 import { normalizeSlashes } from "./path-utils";
@@ -231,7 +231,15 @@ async function diagnose(projectPath: string): Promise<DoctorReport> {
   const releaseTags = tags.filter(t => t.tag === "release").sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
   const adoptionMs = releaseTags.length ? Math.min(...releaseTags.map(t => Date.parse(t.timestamp) || Infinity)) : Infinity;
   const topLevel = gitTopLevel(absPath);
-  const norm = (p: string) => normalizeSlashes(resolve(p)).toLowerCase();
+  // Compare REAL paths: `git rev-parse --show-toplevel` answers with symlinks
+  // and 8.3 short names resolved (macOS /var → /private/var, Windows RUNNER~1),
+  // while `resolve()` only normalizes the spelling it was given — so a project
+  // opened through the unresolved spelling was judged "nested" in its own
+  // repository and every tag check silently vanished (green on one OS, red on
+  // the other two in CI, v3.61.0 release prep). realpath both sides; a path
+  // that cannot be resolved (vanished, permission) falls back to the spelling.
+  const real = (p: string) => { try { return realpathSync.native(p); } catch { return resolve(p); } };
+  const norm = (p: string) => normalizeSlashes(real(p)).toLowerCase();
   const nested = !!topLevel && norm(topLevel) !== norm(absPath);
   const tagDates = nested ? new Map<string, number>() : gitTagDates(absPath);
   const gitTags = [...tagDates.keys()].filter(t => VERSION_TAG_RE.test(t));
