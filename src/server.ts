@@ -302,7 +302,7 @@ async function doInject(body: Record<string, unknown>) {
   // merges them, so a third alert never grows this function again.
   const systemMessage = await injectSystemMessages(type, {
     root: ASSET_ROOT, bootMs: BOOT_MS, transcriptPath: str(body.transcript_path),
-    sessionId, project: name, hookRoot: str(body.hook_root), plugin: body.plugin === true,
+    sessionId, project: name, projectCwd: effectiveCwd || "", hookRoot: str(body.hook_root), plugin: body.plugin === true,
   });
   return Response.json({
     hookSpecificOutput: { hookEventName: type, additionalContext },

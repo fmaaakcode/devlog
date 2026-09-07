@@ -307,6 +307,11 @@ export function checkInvariants(tags: TagEntry[], plans: PlanEntry[]): Finding[]
 /** How far back the automatic check looks. See integrityWarning. */
 export const RECENT_DAYS = 7;
 
+/** The codes integrityWarning can raise — the set a caller resolves acks for. */
+export const INTEGRITY_WARNING_CODES = [
+  "DUPLICATE_RELEASES", "DUPLICATE_TAGS", "BLOATED_TWINS", "MULTILINE_HEADLINE_TAGS",
+] as const;
+
 /**
  * The automation (#583): doctor only ever ran when a human remembered to type it,
  * and log corruption is exactly what nobody thinks to look for. The invariants are
@@ -325,8 +330,17 @@ export const RECENT_DAYS = 7;
  *     surface per audience); this line only says "there is something to look at".
  *
  * LOW findings (number gaps — usually just an -(undo)) never surface here.
+ *
+ * ACKED codes never surface either (`acked`: the `-(rule:ack) doctor:<CODE>` set
+ * the project already holds, resolved by the caller from `.devlog/standards-ack`).
+ * doctor downgrades an acknowledged high to a medium and moves on; this pointer
+ * used to ignore the ack file entirely, so a twin the user had already judged
+ * deliberate still opened every session for the rest of its 7-day window — the
+ * ack silenced the report but not the nag that sends you to the report.
  */
-export function integrityWarning(data: DevLogData, project: string, recentDays = RECENT_DAYS): string | null {
+export function integrityWarning(
+  data: DevLogData, project: string, recentDays = RECENT_DAYS, acked: ReadonlySet<string> = new Set(),
+): string | null {
   const since = Date.now() - recentDays * 86400000;
   const tags = (data.tags || []).filter(t => t.project === project && ms(t.timestamp) >= since);
   if (!tags.length) return null;
@@ -339,7 +353,7 @@ export function integrityWarning(data: DevLogData, project: string, recentDays =
     duplicateTags(tags),
     bloatedTwins(tags),
     multilineHeadlines(tags),
-  ].filter((f): f is Finding => f !== null && f.severity !== "low");
+  ].filter((f): f is Finding => f !== null && f.severity !== "low" && !acked.has(f.code));
   if (!findings.length) return null;
 
   const codes = findings.map(f => f.code).join(", ");

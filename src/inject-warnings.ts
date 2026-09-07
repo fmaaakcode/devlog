@@ -13,7 +13,8 @@
 
 import { staleInjectWarning, foreignRootWarning, isPluginCacheRoot } from "./freshness";
 import { canaryWarningOnce, transcriptLifelineWarningOnce } from "./transcript-canary";
-import { integrityWarning } from "./doctor-invariants";
+import { integrityWarning, INTEGRITY_WARNING_CODES } from "./doctor-invariants";
+import { isAcked } from "./standards-ack";
 import { loadData } from "./data";
 import { softFail } from "./soft-fail";
 
@@ -27,6 +28,9 @@ export interface InjectWarningCtx {
   sessionId: string;
   /** Resolved project name — empty when the cwd owns no project. */
   project: string;
+  /** The project's effective root on disk — where its `.devlog/standards-ack`
+   *  lives. Empty when unknown; the integrity pointer then honours no acks. */
+  projectCwd?: string;
   /** Root of the HOOK that sent this request (X-DevLog-Hook-Root) — "" from
    *  older hooks. Compared against `root` for the foreign-daemon check (#600). */
   hookRoot?: string;
@@ -98,7 +102,13 @@ export async function injectSystemMessages(type: string, ctx: InjectWarningCtx):
   // the log's structure doesn't change between two prompts of the same session.
   if (type === "SessionStart" && ctx.project) {
     try {
-      const w = integrityWarning(await loadData(), ctx.project);
+      // The same ack file doctor consults (#1069): a code the user judged
+      // deliberate must not reopen every session — the ack silenced the report,
+      // and it has to silence the nag that points at the report too.
+      const acked = new Set(ctx.projectCwd
+        ? INTEGRITY_WARNING_CODES.filter(code => isAcked(ctx.projectCwd as string, "doctor", code))
+        : []);
+      const w = integrityWarning(await loadData(), ctx.project, undefined, acked);
       if (w) out.push(w);
     } catch (e) { softFail("injectWarnings.integrity", e); }
   }

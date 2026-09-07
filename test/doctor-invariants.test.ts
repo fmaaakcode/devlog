@@ -290,6 +290,20 @@ describe("integrityWarning (the SessionStart automation)", () => {
     ]), "p")).toContain("DUPLICATE_RELEASES");
   });
 
+  test("an ACKED code is skipped — the ack silences the nag, not only doctor's report", () => {
+    // `-(rule:ack) doctor:DUPLICATE_RELEASES` downgrades the finding inside doctor
+    // (#1069), but the SessionStart pointer ignored the ack file, so a twin the
+    // user had already judged deliberate reopened every session for the rest of
+    // its window — with nothing left to clear.
+    const twins = data([
+      tag("release", "v9.9.9 — y", at(0)),
+      tag("release", "v9.9.9 — y", at(2)),
+    ]);
+    expect(integrityWarning(twins, "p", undefined, new Set(["DUPLICATE_RELEASES"]))).toBeNull();
+    // Only the acked code is silenced — a different problem in the window still warns.
+    expect(integrityWarning(twins, "p", undefined, new Set(["DUPLICATE_TAGS"]))).toContain("DUPLICATE_RELEASES");
+  });
+
   test("number gaps never reach the warning — a 7-day slice makes every older number a 'gap'", () => {
     // #1..#400 were assigned long before the window; only #401 lands inside it.
     // A window-scoped gap check would scream about 400 "missing" numbers.

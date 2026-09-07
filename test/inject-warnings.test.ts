@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { injectSystemMessages } from "../src/inject-warnings";
 import { resetCanaryGate } from "../src/transcript-canary";
+import { withData } from "../src/data";
 
 // A root whose sources are newer than the daemon's boot (bootMs = 0) → always stale.
 function staleRoot(): string {
@@ -85,6 +86,35 @@ describe("injectSystemMessages", () => {
       root, bootMs: 0, transcriptPath: "", sessionId: "s-nopath-2", project: "",
     });
     expect(start ?? "").not.toContain("transcript_path");
+  });
+
+  test("SessionStart integrity pointer honours the project's -(rule:ack) doctor:<CODE> (#1069 gap)", async () => {
+    // Two releases stored 15s apart with the same text — DUPLICATE_RELEASES, fresh
+    // enough to sit inside the 7-day window. doctor reads `.devlog/standards-ack`
+    // and downgrades it; the SessionStart pointer never opened that file, so the
+    // acknowledged twin reopened every session anyway.
+    const root = track(mkdtempSync(join(tmpdir(), "iw-ok-")));
+    const projectDir = track(mkdtempSync(join(tmpdir(), "iw-proj-")));
+    mkdirSync(join(projectDir, ".devlog"));
+    const project = "iw-ack-project";
+    const now = Date.now();
+    const twin = (id: string, offsetMs: number) => ({
+      id, project, tag: "release", content: "v1.0.0 — same reason",
+      timestamp: new Date(now - 3600_000 + offsetMs).toISOString(),
+    });
+    await withData(d => { d.tags.push(twin("iw-t1", 0), twin("iw-t2", 15_000)); });
+    try {
+      const ctx = { root, bootMs: now, transcriptPath: "", sessionId: "s-ack", project, projectCwd: projectDir };
+      // No ack yet → the pointer fires.
+      expect(await injectSystemMessages("SessionStart", ctx)).toContain("DUPLICATE_RELEASES");
+      // Acked exactly as doctor's own hint says → silent, same file, same key.
+      writeFileSync(join(projectDir, ".devlog", "standards-ack"), "doctor:DUPLICATE_RELEASES\n");
+      expect(await injectSystemMessages("SessionStart", ctx)).toBeNull();
+      // Without the project's cwd nothing can be resolved → still warns (no silent skip).
+      expect(await injectSystemMessages("SessionStart", { ...ctx, projectCwd: "" })).toContain("DUPLICATE_RELEASES");
+    } finally {
+      await withData(d => { d.tags = d.tags.filter(t => t.project !== project); });
+    }
   });
 
   test("PreToolUse never warns — a file-read probe is not a session event", async () => {
