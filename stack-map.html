@@ -78,8 +78,10 @@
     font-size: 12px;
     font-family: inherit;
     width: 170px;
-    direction: rtl;
   }
+  /* The header is always LTR (tool row); the search box alone follows the
+     page language — a bare direction:rtl typed English from the right (#1191). */
+  html[dir="rtl"] header input[type="search"] { direction: rtl; }
   header input[type="search"]:focus { outline: none; border-color: var(--accent); }
   main {
     flex: 1;

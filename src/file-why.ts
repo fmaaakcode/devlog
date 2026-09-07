@@ -12,9 +12,10 @@
 // comes from the store.
 
 import type { DevLogData, TagEntry } from "./types";
-import { buildFileStory, isNoisePath, relToProject } from "./file-story";
+import { buildFileStory, fileMatches, isNoisePath, relToProject } from "./file-story";
 import { closedItems, type ClosedItem } from "./closed-items";
 import { isReport } from "./open-items";
+import { basenameIndex, footprint } from "./retro";
 
 // Caps: a dossier that scrolls is a dossier nobody reads. Every truncation is
 // reported as a `…More` count — the record never shrinks silently.
@@ -141,7 +142,22 @@ export function buildFileWhy(
 
   const story = buildFileStory(data, project, filePath);   // tags newest-first
   base.lastChange = story.events[0]?.timestamp;
-  if (!story.tags.length) return base;
+
+  // #1229: reports are matched by their FOOTPRINT (retro's rule — the source
+  // paths the report names in its text, session files only as the fallback),
+  // not by the session stamp alone: a session that edited this file while
+  // filing ten reports about other files gave this dossier all ten, each with
+  // the same unrelated fix text — and a report naming this file from a session
+  // that edited elsewhere never reached it. `data.tags` is chronological →
+  // oldest first. Resolved BEFORE the empty check: such a report is history
+  // even when no session stamp points here.
+  const projectTags = data.tags.filter(t => t.project === project);
+  const root = data.projects[project]?.path || "";
+  const index = basenameIndex(projectTags, root);
+  const reportTags = projectTags.filter(t => isReport(t.tag)
+    && (footprint(t.content, t.files, root, index) ?? []).some(f => fileMatches(f, file)));
+
+  if (!story.tags.length && !reportTags.length) return base;
   base.empty = false;
 
   // ── Session stories (narrative layer P2) ──────────────────────────────────
@@ -186,9 +202,11 @@ export function buildFileWhy(
     for (const id of p.tagIds) promptByTagId.set(id, p.text);
   }
 
-  const reportTags = story.tags.filter(t => isReport(t.tag)).reverse();   // oldest first
   base.reportsMore = Math.max(0, reportTags.length - MAX_REPORTS);
-  base.reports = reportTags.slice(0, MAX_REPORTS).map((t: TagEntry) => {
+  // Over the cap, the OLDEST are the ones folded into "…N more": the reader
+  // about to rewrite a file needs its latest report and fix, and `slice(0, MAX)`
+  // on the oldest-first list hid exactly those (#1122).
+  base.reports = reportTags.slice(-MAX_REPORTS).map((t: TagEntry) => {
     const closed = typeof t.num === "number" ? closedByNum.get(t.num) : undefined;
     const openedAt = t.timestamp;
     const closedAt = closed?.closedAt;

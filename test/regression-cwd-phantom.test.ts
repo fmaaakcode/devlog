@@ -10,6 +10,7 @@ import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { scrubbedEnv } from "./_helpers";
 
 const TEST_PORT = 17781;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
@@ -44,7 +45,7 @@ function startRealServer(dataDir: string): Subprocess {
     cmd: ["bun", join("src", "server.ts")],
     cwd: PROJECT_ROOT,
     env: {
-      ...process.env,
+      ...scrubbedEnv(),
       DEVLOG_DATA_DIR: dataDir,
       DEVLOG_PORT: String(TEST_PORT),
       DEVLOG_VERSION_CHECK_DISABLED: "1",
@@ -113,6 +114,22 @@ describe("regression — stray $NAME folder: malformed cwd must not create a pha
     expect(existsSync(join(ghost, ".devlog"))).toBe(false);
     const data = await (await fetch(`${BASE}/api/data`)).json() as { projects?: Record<string, unknown> };
     expect(Object.keys(data.projects || {})).not.toContain("devlog-ghost-does-not-exist-xyz");
+  });
+
+  test("POST /api/tags with an absolute-but-missing cwd is refused and mints no project (#1199)", async () => {
+    const ghost = join(tmpdir(), "devlog-ghost-tags-cwd-xyz");
+    if (existsSync(ghost)) rmSync(ghost, { recursive: true, force: true });
+
+    const res = await fetch(`${BASE}/api/tags`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cwd: ghost, session_id: "phantom-3", entries: [{ tag: "built", content: "phantom work" }] }),
+    });
+    // A definitive 4xx: the hook parks the batch as poison (recoverable), never retries into a phantom.
+    expect(res.status).toBe(400);
+    const data = await (await fetch(`${BASE}/api/data`)).json() as { projects?: Record<string, unknown>; tags?: Array<{ project: string }> };
+    expect(Object.keys(data.projects || {})).not.toContain("devlog-ghost-tags-cwd-xyz");
+    expect((data.tags || []).some(t => t.project === "devlog-ghost-tags-cwd-xyz")).toBe(false);
   });
 
   test("a real, existing cwd still registers normally (no false-positive)", async () => {

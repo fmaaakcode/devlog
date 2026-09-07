@@ -10,12 +10,12 @@ import type { Subprocess } from "bun";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startServer, stopServer, waitForServer, runHook, PROJECT_ROOT } from "./_helpers";
+import { startServer, stopServer, waitForServer, runHook, HOOK_STATE_DIR } from "./_helpers";
 import type { PromptEntry } from "../src/types";
 
 const TEST_PORT = 17973;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
-const TURN_STATE_DIR = join(PROJECT_ROOT, ".devlog", "turn-state");
+const TURN_STATE_DIR = join(HOOK_STATE_DIR, "turn-state");
 
 let dataDir: string, projDir: string, server: Subprocess;
 const rnd = Math.random().toString(36).slice(2, 8);
@@ -130,5 +130,25 @@ describe("prompt capture (narrative layer P1)", () => {
     const row = (await storedPrompts()).find(p => p.text.startsWith("ابدأ"));
     expect(row).toBeDefined();
     expect(row!.text.length).toBeLessThanOrEqual(701);   // 700 + ellipsis
+  });
+
+  test("a local slash command typed mid-turn is neither the prompt nor a turn boundary (#1228)", async () => {
+    // Exactly the live shape: the real ask, the assistant's first segment, then
+    // the harness's `<command-name>/low-priority` echo + its system stdout entry
+    // (the user pressed it while the model worked), then the segment with the tag.
+    const uuid = "U-localcmd";
+    const lines = [
+      { type: "user", uuid, message: { role: "user", content: "كمل" } },
+      { type: "assistant", uuid: `a-${uuid}-0`, message: { role: "assistant", content: [{ type: "text", text: "أكمل من حيث وقفنا." }] } },
+      { type: "user", uuid: `c-${uuid}`, message: { role: "user", content: "<command-name>/low-priority</command-name>\n            <command-message>low-priority</command-message>\n            <command-args></command-args>" } },
+      { type: "system", subtype: "local_command", uuid: `s-${uuid}`, content: "<local-command-stdout>Continuing now at lower priority</local-command-stdout>" },
+      { type: "assistant", uuid: `a-${uuid}-1`, message: { role: "assistant", content: [{ type: "text", text: "تم.\n\n-(note) عمل بعد أمر محلي" }] } },
+    ];
+    const p = join(projDir, `tx-${uuid}.jsonl`);
+    writeFileSync(p, lines.map(l => JSON.stringify(l)).join("\n"));
+    await runHook(TEST_PORT, { cwd: projDir, session_id: workSid, transcript_path: p, stop_hook_active: false });
+    const prompts = await storedPrompts();
+    expect(prompts.some(r => r.text.startsWith("<command-name>"))).toBe(false);
+    expect(prompts.find(r => r.text === "كمل")).toBeDefined();
   });
 });

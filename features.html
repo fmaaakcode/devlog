@@ -161,7 +161,7 @@
 
   /* ---------- api table ---------- */
   table { width: 100%; border-collapse: collapse; font-size: 0.85em; margin-top: 10px; }
-  th, td { text-align: right; padding: 9px 12px; border-bottom: 1px solid var(--border); }
+  th, td { text-align: start; padding: 9px 12px; border-bottom: 1px solid var(--border); }
   th { color: var(--text2); font-weight: 600; font-size: 0.85em; text-transform: uppercase; letter-spacing: 1px; }
   td .mono { color: var(--emerald); font-size: 0.92em; }
 
@@ -228,7 +228,7 @@
         <span class="pill core" data-i18n="feat.pillCore">Core</span>
         <h3 data-i18n="feat.captureH3">Automatic tag capture</h3>
         <p data-i18n-html="feat.captureP">Claude ends its reply with <code>-(tag) content</code> markers. The Stop hook scans the reply, captures them and sends them to the dashboard — built, bug fix, todo, security note, architectural decision… with no manual file.</p>
-        <div class="api" data-i18n-html="feat.captureApi">Captured by <b>parse-tags.js</b> ← <b>POST /api/tags</b></div>
+        <div class="api" data-i18n-html="feat.captureApi">Captured by <b>parse-tags.sh → parse-tags.ts</b> ← <b>POST /api/tags</b></div>
       </div>
     </div>
 
@@ -290,7 +290,7 @@
         <span class="pill core" data-i18n="feat.pillCore">Core</span>
         <h3 data-i18n="feat.libscanH3">Library version scanning</h3>
         <p data-i18n="feat.libscanP">The "Security scan" button compares every dependency against its official registry and highlights the stale ones — latest version and its date, with a ⏳ warning for versions fresher than 7 days. Fully built-in: no external service, no API key.</p>
-        <div class="api"><b>registry.ts</b> · <b>GET /api/vuln/:project</b></div>
+        <div class="api"><b>vuln-scan.ts</b> · <b>osv.ts</b> · <b>GET /api/vuln/:project</b></div>
       </div>
     </div>
 
@@ -333,7 +333,7 @@
         <span class="pill hidden" data-i18n="feat.pillHidden">Hidden</span>
         <h3 data-i18n="feat.analysisH3">Static code analysis engine</h3>
         <p data-i18n-html="feat.analysisP">An analyzer (tokenizer + multi-language symbol extractor) maps HTTP routes, the <b>function call graph</b>, module dependency graph, threads, IPC messages, data types and security-sensitive patterns — with no external language grammars.</p>
-        <div class="api"><b>GET /api/analyze</b> · <b>analyze.ts</b> · <b>tokenizer.ts</b> · <b>symbols.ts</b></div>
+        <div class="api"><b>GET /api/map</b> · <b>analyze.ts</b> · <b>tokenizer.ts</b> · <b>symbols.ts</b></div>
       </div>
     </div>
 
@@ -383,20 +383,23 @@
     <!-- stack map -->
     <div class="card flip">
       <div class="demo">
+        <!-- One project's FILES as a graph (stack-map.html?project=…) — the old
+             mock showed six project cards, a cross-project view that never
+             existed (#1161). -->
         <div class="stackgrid">
-          <div class="scard"><div class="nm">helper</div><span class="chip" style="background:#0c2630;color:#118ab2">TS</span><span class="chip" style="background:#2a2410;color:#ffd166">Bun</span></div>
-          <div class="scard"><div class="nm">api</div><span class="chip" style="background:#0e2620;color:#06d6a0">Go</span></div>
-          <div class="scard"><div class="nm">ui</div><span class="chip" style="background:#0c2630;color:#118ab2">TS</span><span class="chip" style="background:#2a1018;color:#ef476f">React</span></div>
-          <div class="scard"><div class="nm">core</div><span class="chip" style="background:#2a1810;color:#ff9f45">Rust</span></div>
-          <div class="scard"><div class="nm">ml</div><span class="chip" style="background:#1a2a0d;color:#9bd45f">Py</span></div>
-          <div class="scard"><div class="nm">cli</div><span class="chip" style="background:#2a1810;color:#ff9f45">Rust</span></div>
+          <div class="scard"><div class="nm">server.ts</div><span class="chip" style="background:#2a2410;color:#ffd166">entry</span><span class="chip" style="background:#0c2630;color:#118ab2">→ 12</span></div>
+          <div class="scard"><div class="nm">data.ts</div><span class="chip" style="background:#0c2630;color:#118ab2">→ 9</span></div>
+          <div class="scard"><div class="nm">routes-tags.ts</div><span class="chip" style="background:#0c2630;color:#118ab2">→ 4</span><span class="chip" style="background:#0e2620;color:#06d6a0">today</span></div>
+          <div class="scard"><div class="nm">scanner.ts</div><span class="chip" style="background:#0c2630;color:#118ab2">→ 3</span></div>
+          <div class="scard"><div class="nm">osv.ts</div><span class="chip" style="background:#0c2630;color:#118ab2">→ 1</span></div>
+          <div class="scard"><div class="nm">theme.js</div><span class="chip" style="background:#2a1018;color:#ef476f">rail</span></div>
         </div>
       </div>
       <div class="body">
         <span class="pill hidden" data-i18n="feat.pillHidden">Hidden</span>
-        <h3 data-i18n="feat.stackH3">Cross-project stack map</h3>
-        <p data-i18n="feat.stackP">A bird's-eye view of every project's languages, frameworks and libraries on one page, with a saveable layout — see your technologies from above across the whole portfolio.</p>
-        <div class="api"><b>stack-map.html</b> · <b>GET /api/stack/:project</b> · <b>/stack/:project/layout</b></div>
+        <h3 data-i18n="feat.stackH3">Project stack map</h3>
+        <p data-i18n="feat.stackP">One project's files drawn as a dependency graph — who imports whom, entry points, clusters by folder and recently active files — with a layout you can drag and save. Opens per project from the dashboard header.</p>
+        <div class="api"><b>stack-map.html?project=…</b> · <b>GET /api/stack/:project</b> · <b>/stack/:project/layout</b></div>
       </div>
     </div>
 
@@ -450,14 +453,14 @@
   <table>
     <thead><tr><th data-i18n="feat.thFeature">Feature</th><th data-i18n="feat.thEntry">Entry point</th><th data-i18n="feat.thFile">File</th></tr></thead>
     <tbody>
-      <tr><td data-i18n="feat.rowAnalysis">Static code analysis</td><td><span class="mono">GET /api/analyze</span></td><td><code>analyze.ts</code></td></tr>
+      <tr><td data-i18n="feat.rowAnalysis">Static code analysis</td><td><span class="mono">GET /api/map</span></td><td><code>analyze.ts</code></td></tr>
       <tr><td data-i18n="feat.rowProcs">Process monitoring/kill</td><td><span class="mono">GET /api/processes · POST /api/kill-pid/:pid</span></td><td><code>sessions.ts</code></td></tr>
-      <tr><td data-i18n="feat.rowChanges">Change tracking + diff</td><td><span class="mono">GET /api/changes/by-id/:id</span></td><td><code>server.ts</code></td></tr>
+      <tr><td data-i18n="feat.rowChanges">Change tracking + diff</td><td><span class="mono">GET /api/changes/by-id/:id</span></td><td><code>routes-changes.ts</code></td></tr>
       <tr><td data-i18n="feat.rowStack">Stack map</td><td><span class="mono">GET /api/stack/:project · /layout</span></td><td><code>stack-map.html</code></td></tr>
       <tr><td data-i18n="feat.rowTree">Tree browser</td><td><span class="mono">GET /api/tree/:project</span></td><td><code>tree.ts</code></td></tr>
       <tr><td data-i18n="feat.rowExport">Export</td><td><span class="mono">GET /api/export/:project · /api/export-all</span></td><td><code>export.ts</code></td></tr>
       <tr><td data-i18n="feat.rowInject">Injection preview</td><td><span class="mono">GET /api/inject/preview · /api/injections</span></td><td><code>inject.ts</code></td></tr>
-      <tr><td data-i18n="feat.rowVuln">Library scan</td><td><span class="mono">GET /api/vuln/:project</span></td><td><code>registry.ts</code></td></tr>
+      <tr><td data-i18n="feat.rowVuln">Library scan</td><td><span class="mono">GET /api/vuln/:project</span></td><td><code>vuln-scan.ts</code></td></tr>
       <tr><td data-i18n="feat.rowTags">Tag capture</td><td><span class="mono">POST /api/tags</span></td><td><code>tags-service.ts</code></td></tr>
     </tbody>
   </table>

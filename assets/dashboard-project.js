@@ -1,5 +1,5 @@
         import { data, activeProject, setActiveProject, headerBuilt, setHeaderBuilt, setCachedTree, setFullRenderNeeded } from "./dashboard-state.js";
-        import { API, esc, safeHref, langColors, destructiveHeaders, uiAlert, uiConfirm, uiPrompt, activeSessionsByProject } from "./dashboard-core.js";
+        import { API, esc, safeHref, langColors, destructiveHeaders, uiAlert, uiConfirm, uiPrompt, activeSessionsByProject, httpErrorText } from "./dashboard-core.js";
         import { summaryTagCounts, summaryVulnClass, summaryLastActivity, summaryTombstones, ACTIVE_WINDOW_MS, fetchProjectView, refreshActiveView } from "./dashboard-data.js";
         import { patchSessions } from "./dashboard-panels.js";
         import { t as tr, uiDir } from "./dashboard-i18n.js";
@@ -145,7 +145,7 @@
                     const j = await r.json().catch(() => ({}));
                     if (!r.ok) { uiAlert(j.error || tr("imp.fail")); return; }
                     const a = j.added || {};
-                    uiAlert(tr("imp.done", { tags: a.tags || 0, events: a.events || 0, plans: a.plans || 0, steps: a.planSteps || 0, archive: j.archive?.added || 0, skipped: j.skipped || 0, renumbered: j.renumbered || 0 }), tr("imp.title"));
+                    uiAlert(tr("imp.done", { tags: a.tags || 0, events: a.events || 0, plans: a.plans || 0, steps: a.planSteps || 0, archive: j.archive?.added || 0, skipped: j.skipped || 0, renumbered: j.renumbered || 0 }) + (j.pathDetached ? tr("imp.detached", { path: j.pathDetached }) : ""), tr("imp.title"));
                     location.reload();
                 } catch (e) { uiAlert(tr("err.connServer", { msg: e.message })); }
             };
@@ -214,9 +214,13 @@
                         // refetch instead of patching them by hand.
                         refreshActiveView(true);
                     }
+                } else {
+                    // 401 (token), 409, 500: the user confirmed «احذف المشروع»
+                    // and nothing visible happened (#1151). Say what the server said.
+                    uiAlert(await httpErrorText(res));
                 }
             } catch {
-                // Delete request failed — sidebar stays as-is, user can retry.
+                uiAlert(tr("err.connGeneric"));
             }
         }
 
@@ -239,9 +243,20 @@
             fetchProjectView(name, true);
         }
 
+        // A malformed %-sequence in a copied/truncated deep link (`#project=100%`)
+        // made decodeURIComponent throw — inside initDashboard that killed the
+        // summary fetch AND the WebSocket: blank sidebar, clean console (#1152).
+        // A bad hash is now reported once and treated as «no deep link».
+        let badHashReported = false;
         export function projectFromHash() {
             const m = location.hash.match(/project=([^&]+)/);
-            return m ? decodeURIComponent(m[1]) : null;
+            if (!m) return null;
+            try { return decodeURIComponent(m[1]); }
+            catch {
+                if (!badHashReported) { badHashReported = true; uiAlert(tr("err.badHash")); }
+                history.replaceState(null, '', location.pathname);
+                return null;
+            }
         }
 
         export function getProjectTags() {

@@ -13,6 +13,7 @@
 
 import type { DevLogData, TagEntry } from "./types";
 import { esc } from "./html-escape";
+import { currentLang } from "./i18n";
 import { collectRelease, renderReleaseHtml, type ReleaseFacts } from "./release-html";
 import {
   resolveReleaseIntent, detectReleaseOpenItems,
@@ -26,22 +27,30 @@ export interface ReleasePreview {
   blockers: ReleaseOpenItem[];
 }
 
-const BUMP_AR: Record<string, string> = { patch: "ترقيعي", minor: "فرعي", major: "رئيسي" };
+const L = (en: string, ar: string): string => (currentLang() === "ar" ? ar : en);
+const BUMP_LABEL: Record<string, [en: string, ar: string]> = {
+  patch: ["patch", "ترقيعي"], minor: ["minor", "فرعي"], major: ["major", "رئيسي"],
+};
 
+// Bilingual (F-6.18 — the banner was Arabic-only on an otherwise DEVLOG_LANG-
+// aware page) and drawn from the page's own theme tokens (the release page
+// embeds DL_THEME_ROOT) instead of re-stating its hex: the dl-theme contract
+// keeps colour hex in one place. Logical padding so RTL/LTR both indent the list.
 function previewBanner(intent: ReleaseIntent, blockers: ReleaseOpenItem[]): string {
-  const bumpLabel = `${BUMP_AR[intent.bump] ?? intent.bump}${intent.auto ? " — مُكتشف تلقائيًا من الأدلة" : ""}`;
+  const bump = BUMP_LABEL[intent.bump];
+  const bumpLabel = `${bump ? L(...bump) : intent.bump}${intent.auto ? L(" — auto-detected from the evidence", " — مُكتشف تلقائيًا من الأدلة") : ""}`;
   const blockersHtml = blockers.length
-    ? `<p style="margin:10px 0 0;color:#ef476f"><b>⛔ ${blockers.length} عنصر مفتوح سيحجب هذا الإصدار:</b></p>
-       <ul style="margin:6px 0 0;padding-right:20px;color:#ef476f;font-size:0.9em">
-         ${blockers.map(b => `<li>${typeof b.num === "number" ? `#${b.num} ` : ""}${esc(b.content.slice(0, 90))}${b.planTitle ? ` <span style="opacity:0.7">(خطة: ${esc(b.planTitle)})</span>` : ""}</li>`).join("\n         ")}
+    ? `<p style="margin:10px 0 0;color:var(--c-security)"><b>${L(`⛔ ${blockers.length} open item(s) will block this release:`, `⛔ ${blockers.length} عنصر مفتوح سيحجب هذا الإصدار:`)}</b></p>
+       <ul style="margin:6px 0 0;padding-inline-start:20px;color:var(--c-security);font-size:0.9em">
+         ${blockers.map(b => `<li>${typeof b.num === "number" ? `#${b.num} ` : ""}${esc(b.content.slice(0, 90))}${b.planTitle ? ` <span style="opacity:0.7">(${L("plan", "خطة")}: ${esc(b.planTitle)})</span>` : ""}</li>`).join("\n         ")}
        </ul>`
-    : `<p style="margin:10px 0 0;color:#06d6a0">✓ لا عناصر مفتوحة — الإصدار جاهز متى طلبته.</p>`;
+    : `<p style="margin:10px 0 0;color:var(--c-built)">${L("✓ No open items — the release is ready whenever you ask for it.", "✓ لا عناصر مفتوحة — الإصدار جاهز متى طلبته.")}</p>`;
   return `
-  <section class="dl-preview-banner" style="border:1px dashed #ffd166;background:rgba(255,209,102,0.07);border-radius:10px;padding:14px 18px;margin-bottom:18px">
-    <strong style="color:#ffd166">⚠ معاينة حية — هذا الإصدار لم يُصدر بعد ولا يُكتب شيء على القرص</strong>
-    <p style="margin:8px 0 0;color:#9A9A9A;font-size:0.9em">
-      الرقم المتوقع <b style="color:#EEEEEE;font-family:'Cascadia Code',Consolas,monospace">v${esc(intent.version)}</b>
-      انطلاقًا من ${esc(intent.from)} (رفع ${esc(bumpLabel)}).
+  <section class="dl-preview-banner" style="border:1px dashed var(--c-update);background:color-mix(in srgb, var(--c-update) 7%, transparent);border-radius:10px;padding:14px 18px;margin-bottom:18px">
+    <strong style="color:var(--c-update)">${L("⚠ Live preview — this release has not shipped and nothing is written to disk", "⚠ معاينة حية — هذا الإصدار لم يُصدر بعد ولا يُكتب شيء على القرص")}</strong>
+    <p style="margin:8px 0 0;color:var(--text2);font-size:0.9em">
+      ${L("Predicted number", "الرقم المتوقع")} <b style="color:var(--text);font-family:'Cascadia Code',Consolas,monospace">v${esc(intent.version)}</b>
+      ${L(`from ${esc(intent.from)} (${esc(bumpLabel)} bump).`, `انطلاقًا من ${esc(intent.from)} (رفع ${esc(bumpLabel)}).`)}
     </p>
     ${blockersHtml}
   </section>`;
@@ -64,7 +73,7 @@ export async function buildReleasePreview(data: DevLogData, project: string): Pr
     id: "release-preview",
     project,
     tag: "release",
-    content: `v${intent.version} — معاينة الإصدار القادم`,
+    content: L(`v${intent.version} — next release preview`, `v${intent.version} — معاينة الإصدار القادم`),
     timestamp: new Date().toISOString(),
   };
   const facts = collectRelease(data, project, target);

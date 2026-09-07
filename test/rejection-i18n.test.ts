@@ -26,7 +26,7 @@ function fixture(): DevLogData {
 const lastRejectionDetail = async (): Promise<string> => {
   const data = fixture();
   const out = await applyUndo("alpha", data, PROJ);
-  expect(out).toBeNull();                                 // ambiguous → no removal
+  expect(out.outcome).toBe("ambiguous");                  // ambiguous → no removal
   const last = data.rejections?.at(-1);
   expect(last?.reason).toBe("undo-ambiguous");
   return last?.detail ?? "";

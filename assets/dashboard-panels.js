@@ -1,5 +1,5 @@
         import { data, activeProject, headerBuilt, showCompletedPlans, plansTab, todosTab } from "./dashboard-state.js";
-        import { API, esc, timeStr, destructiveHeaders, uiAlert, uiConfirm } from "./dashboard-core.js";
+        import { API, esc, timeStr, localStamp, destructiveHeaders, uiAlert, uiConfirm, httpErrorText } from "./dashboard-core.js";
         import { t as tr, locale, uiDir } from "./dashboard-i18n.js";
         import { currentVerdicts, updateCard } from "./dashboard-data.js";
         import { getProjectTags, patchHeader, buildHeaderOnce } from "./dashboard-project.js";
@@ -18,7 +18,7 @@
             const d = Math.floor((Date.now() - new Date(ts)) / 86400000);
             return d <= 0 ? tr("days.today") : d === 1 ? tr("days.one") : d === 2 ? tr("days.two") : tr("days.n", { d });
         };
-        const addedTitle = (ts) => ts ? tr("card.addedAt", { ts: String(ts).slice(0, 16).replace('T', ' ') }) : '';
+        const addedTitle = (ts) => ts ? tr("card.addedAt", { ts: localStamp(ts) }) : '';
 
         // Targeted refresh for the tasks card alone — the الحالية/القادمة tab
         // switch must not redraw the whole project (that re-fetched the changes
@@ -146,11 +146,25 @@
             }
         }
 
+        // A fetch that rejects or a non-2xx answer used to leave the click on
+        // the sessions chip doing nothing at all (#1150) — same silence killPid
+        // next door already fixed. Failures now surface through uiAlert.
+        const fetchJsonOrThrow = async (url) => {
+            const r = await fetch(url);
+            if (!r.ok) throw new Error(await httpErrorText(r));
+            return r.json();
+        };
         export async function openSessionsPanel(projectName) {
-            const [sRes, pRes] = await Promise.all([
-                fetch(`/api/sessions?project=${encodeURIComponent(projectName)}`).then(r => r.json()),
-                fetch(`/api/processes?project=${encodeURIComponent(projectName)}`).then(r => r.json()),
-            ]);
+            let sRes, pRes;
+            try {
+                [sRes, pRes] = await Promise.all([
+                    fetchJsonOrThrow(`/api/sessions?project=${encodeURIComponent(projectName)}`),
+                    fetchJsonOrThrow(`/api/processes?project=${encodeURIComponent(projectName)}`),
+                ]);
+            } catch (e) {
+                uiAlert(tr("sess.loadFail", { msg: String(e?.message || e) }));
+                return;
+            }
             const sessions = sRes.items || [];
             const procs = pRes.items || [];
 
@@ -207,7 +221,11 @@
         // إصلاحات مين انتكست (⟲)، ومين شحن إصلاحًا بلا اختبار. نافذة عند الطلب
         // لا بطاقة دائمة: البيانات صغيرة (نماذج معدودة) وجمهورها لحظة قرار.
         export async function openModelStatsPanel(projectName) {
-            const res = await fetch(`/api/model-stats?project=${encodeURIComponent(projectName)}`).then(r => r.json()).catch(() => null);
+            // A network/server failure is NOT «no attributed tags yet» (#1150):
+            // keep the empty-state text for a real empty answer only.
+            let res = null, loadError = null;
+            try { res = await fetchJsonOrThrow(`/api/model-stats?project=${encodeURIComponent(projectName)}`); }
+            catch (e) { loadError = String(e?.message || e); }
             const models = res?.models || [];
             const short = (m) => String(m || '').replace(/^claude-/, '');
             const num = (v) => (v == null ? '—' : v);
@@ -245,7 +263,7 @@
                             <th style="padding:6px;text-align:${uiDir() === "rtl" ? "right" : "left"}">${tr("models.thModel")}</th><th>${tr("models.thTags")}</th><th>${tr("models.thOpened")}</th><th>${tr("models.thClosures")}</th><th>${tr("models.thFixes")}</th><th>${tr("models.thReopened")}</th><th>${tr("models.thNoTest")}</th><th>${tr("models.thAvgDays")}</th>
                         </tr></thead>
                         <tbody>${rows}</tbody>
-                    </table>` : `<div style="color:var(--text2);font-size:0.9em;padding:12px 0">${tr("models.empty")}</div>`}
+                    </table>` : `<div style="color:${loadError ? 'var(--pink)' : 'var(--text2)'};font-size:0.9em;padding:12px 0">${loadError ? esc(tr("models.loadFail", { msg: loadError })) : tr("models.empty")}</div>`}
                     ${res?.unattributed ? `<div style="color:var(--text2);font-size:0.75em;margin-top:12px">${tr("models.unattributed", { n: res.unattributed })}</div>` : ''}
                 </div>`;
             modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
@@ -258,7 +276,13 @@
             try {
                 const r = await fetch(`${API}/api/kill-pid/${pid}`, { method: 'POST', headers: await destructiveHeaders() }).then(r => r.json());
                 if (r.ok) openSessionsPanel(projectName);
-                else uiAlert(tr("err.failedMsg", { msg: r.error || tr("err.unknown") }));
+                else {
+                    uiAlert(tr("err.failedMsg", { msg: r.error || tr("err.unknown") }));
+                    // #1062: the server refused because the pid no longer names the
+                    // tracked process (recycled or gone) and dropped the row — redraw
+                    // so the stale kill button disappears with it.
+                    if (r.identityChanged) openSessionsPanel(projectName);
+                }
             } catch (e) {
                 uiAlert(tr("err.connServer", { msg: e?.message || e }));
             }
@@ -303,7 +327,7 @@
             let totalSteps = 0, doneSteps = 0;
             for (const plan of plans) {
                 if (plan.upcoming) continue;  // deferred plans sit outside the progress story
-                const vs = plan.steps.filter(s => !s.dropped);  // dropped steps are archived, not open (#410)
+                const vs = (plan.steps || []).filter(s => !s.dropped);  // dropped steps are archived, not open (#410); imported/hand-edited plans may lack the array (#1146)
                 totalSteps += vs.length; doneSteps += vs.filter(s => s.completed).length;
             }
             totalSteps += liveTodos.length; doneSteps += (liveTodos.length - openTodos);
@@ -396,7 +420,7 @@
             }
 
             const sections = projectPlans.map((plan) => {
-                const visible = plan.steps.filter(s => !s.dropped);  // archived dropped steps stay out of the view (#410)
+                const visible = (plan.steps || []).filter(s => !s.dropped);  // archived dropped steps stay out of the view (#410); no array on imported plans (#1146)
                 const done = visible.filter(s => s.completed).length;
                 const total = visible.length;
                 const pct = total > 0 ? Math.round((done / total) * 100) : 0;
@@ -588,7 +612,7 @@
         async function openFileStoryModal(project, filePath) {
             try {
                 const r = await fetch(`${API}/api/file-story?project=${encodeURIComponent(project)}&path=${encodeURIComponent(filePath)}&deep=1`);
-                if (!r.ok) return;
+                if (!r.ok) throw new Error(await httpErrorText(r));   // 404 for an archived/deleted event was a silent no-op (#1150)
                 const s = await r.json();
                 const fname = (s.file || '').split('/').pop();
                 const tagRows = (s.tags || []).map(t => `
@@ -642,7 +666,7 @@
         async function openDiffModal(id) {
             try {
                 const r = await fetch(`${API}/api/changes/by-id/${encodeURIComponent(id)}`);
-                if (!r.ok) return;
+                if (!r.ok) throw new Error(await httpErrorText(r));   // archived/deleted event: say so, don't swallow (#1150)
                 const e = await r.json();
                 const oldS = e.old_string || '';
                 const newS = e.new_string || e.content || '';
@@ -666,8 +690,8 @@
                 overlay.addEventListener('click', ev => { if (ev.target === overlay) close(); });
                 overlay.querySelector('#diffClose').addEventListener('click', close);
                 document.addEventListener('keydown', function once(ev) { if (ev.key === 'Escape') { close(); document.removeEventListener('keydown', once); } });
-            } catch {
-                // Diff fetch failed — just don't open the overlay.
+            } catch (e) {
+                uiAlert(tr("changes.loadFail", { msg: String(e?.message || e) }));
             }
         }
 

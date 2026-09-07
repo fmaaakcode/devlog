@@ -100,6 +100,6 @@ describe("buildDepsPayload — the /api/deps shape", () => {
   test("unknown project → null; project with no libraries → empty payload", () => {
     expect(buildDepsPayload(makeData(), "ghost")).toBeNull();
     const data = makeData({ projects: { p: { ...project, libraries: [] } } });
-    expect(buildDepsPayload(data, "p")).toEqual({ project: "p", total: 0, withPurpose: 0, libraries: [] });
+    expect(buildDepsPayload(data, "p")).toEqual({ project: "p", total: 0, withPurpose: 0, libraries: [], orphans: [] });
   });
 });

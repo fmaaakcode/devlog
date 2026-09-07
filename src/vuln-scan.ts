@@ -14,13 +14,15 @@
 
 import { loadData, withData, normalizeTagContent, assignNum, latestCloserTs, SECURITY_OPEN_TAGS } from "./data";
 import { latestVersions, synthesizeStatus, type VersionInfo } from "./registry";
-import { osvEcosystem, scanTree, type PkgVuln } from "./osv";
+import type { PkgVuln } from "./osv";
+import { buildScanInventory, scanInventory, pkgKey } from "./vuln-inventory";
 import { enumerateDepTree } from "./lockfile-tree";
 import { loadVulnIgnore } from "./vuln-ignore";
 import { broadcast } from "./broadcast";
 import { softFail } from "./soft-fail";
 import { currentLang } from "./i18n";
 import { ecoMap } from "./eco-map";
+import type { TagEntry } from "./types";
 import { REGISTRY_CHECK_DISABLED, VULN_CHECK_DISABLED } from "./check-flags";
 
 const L = <T>(en: T, ar: T): T => (currentLang() === "ar" ? ar : en);
@@ -81,12 +83,13 @@ export async function runVulnScan(name: string) {
     };
 
     // Native latest-version lookup — the source of truth for "outdated". One
-    // registry query batch per ecosystem group, merged by name (a name colliding
-    // across ecosystems in one project keeps the first group's answer).
+    // registry query batch per ecosystem group, keyed `eco:name` (the same
+    // sweep as #1102: a name shared by an npm package and a crate in one Tauri
+    // project used to take the first group's answer for both).
     const nativeLatest = new Map<string, VersionInfo>();
     for (const [eco, group] of groupByEco(packages)) {
       const m = await latestVersions(eco, group.map(p => p.name));
-      for (const [n, v] of m) if (!nativeLatest.has(n)) nativeLatest.set(n, v);
+      for (const [n, v] of m) nativeLatest.set(pkgKey(eco, n), v);
     }
     // Whole days since an ISO date — feeds the dashboard's "released N days ago"
     // caption and its <7-day "fresh, wait before upgrading" warning.
@@ -100,57 +103,47 @@ export async function runVulnScan(name: string) {
     // CVE axis (OSV.dev) — the native scan above sees only freshness; OSV adds the
     // known-advisory data that lets the reconciliation loop create/close security
     // tags. Independent opt-out (air-gapped users who still want outdated tracking).
-    // Full dependency tree (direct + transitive) from the lockfile — most vulns
-    // live in transitive deps that the direct-only `packages` list misses (~half,
-    // verified vs bun/cargo audit). Falls back to the direct list when no lockfile.
-    // Capped so a giant monorepo can't issue an unbounded scan. Freshness stays on
-    // direct deps only (the dashboard's library view); the tree is vuln-coverage only.
-    // Each ecosystem group is scanned against ITS OWN OSV ecosystem; a group with
-    // no OSV mapping (vcpkg/C-C++) stays freshness-only, as before.
+    // The inventory is the direct list PLUS the lockfile tree (direct + transitive
+    // — most vulns live in transitive deps, ~half, verified vs bun/cargo audit),
+    // keyed `eco:name` and scanned per ecosystem against ITS OWN OSV feed; a group
+    // with no OSV mapping (vcpkg/C-C++) stays freshness-only. See vuln-inventory.ts
+    // for the three defects the union + key fix (#1099, #1100, #1102).
     const tree = VULN_CHECK_DISABLED ? [] : await enumerateDepTree(projectSnap.path);
-    // No silent caps: say when the tree exceeds the scan bound (R9 note).
-    if (tree.length > 2000) console.error(`[vuln-scan] ${name}: dep tree has ${tree.length} packages — scanning the first 2000, ${tree.length - 2000} skipped this cycle.`);
-    const treePackages = (tree.length ? tree : packages).slice(0, 2000)
-      .map(p => ({ name: p.name, version: p.version.replace(/[\^~>=<\s]/g, "") || "latest", eco: p.eco }));
-    const vulnByPkg = new Map<string, PkgVuln>();
+    const inventory = buildScanInventory(packages, tree);
+    // No silent caps: say when the tree exceeds the scan bound (R9 note). Direct
+    // packages sit first in the inventory, so the cap only ever drops transitive nodes.
+    if (inventory.skipped > 0) console.error(`[vuln-scan] ${name}: dep tree has ${inventory.packages.length + inventory.skipped} packages — scanning the first ${inventory.packages.length}, ${inventory.skipped} skipped this cycle.`);
+    const treePackages = inventory.packages;
+    const osv = VULN_CHECK_DISABLED
+      ? { verdicts: new Map<string, PkgVuln>(), osvEcos: new Set<string>(), unresolved: 0, complete: false }
+      : await scanInventory(treePackages, fetch, await loadVulnIgnore(projectSnap.path));
+    const vulnByPkg = osv.verdicts;
     // Ecosystems whose OSV scan actually ran — gates security-tag creation and
     // auto-close below PER PACKAGE, so a freshness-only group (or a disabled
     // vuln check) never touches that group's security tags.
-    const osvEcos = new Set<string>();
-    if (!VULN_CHECK_DISABLED) {
-      const ignore = await loadVulnIgnore(projectSnap.path);
-      for (const [eco, group] of groupByEco(treePackages)) {
-        const osvEco = osvEcosystem(eco);
-        if (!osvEco) continue;
-        osvEcos.add(eco);
-        const res = await scanTree(osvEco, group.map(p => ({ name: p.name, version: p.version })), fetch, ignore);
-        for (const [n, pv] of res) {
-          const prev = vulnByPkg.get(n);
-          // Same name in two ecosystems: keep whichever is vulnerable.
-          if (!prev || (prev.vulns === 0 && pv.vulns > 0)) vulnByPkg.set(n, pv);
-        }
-      }
-    }
+    const osvEcos = osv.osvEcos;
 
-    // Direct deps: native freshness + OSV vuln verdict (keyed by name → exact
-    // installed version from the tree). OSV "ok:false" (query failed / non-numeric
-    // version) → indeterminate, so a transient OSV outage never auto-closes a tag.
-    const directNames = new Set(packages.map(p => p.name));
+    // Direct deps: native freshness + OSV vuln verdict (keyed by eco:name → exact
+    // installed version). OSV "ok:false" (query failed / non-numeric version) →
+    // indeterminate, so a transient OSV outage never auto-closes a tag — and so
+    // does a MISSING verdict for a package whose ecosystem was scanned (#1099):
+    // "we never asked" must never read as "no CVE".
+    const directKeys = new Set(packages.map(p => pkgKey(p.eco, p.name)));
     const directResults = packages.map(p => {
       // synthesizeStatus distinguishes "indeterminate" (registry lookup failed →
       // latest UNKNOWN) from "safe" (R4 code-quality F1).
-      const s = synthesizeStatus(p.version, nativeLatest.get(p.name));
+      const s = synthesizeStatus(p.version, nativeLatest.get(pkgKey(p.eco, p.name)));
       // description rides the freshness lookup's own response (registry.ts) —
       // attached here so every direct-dep result shape below carries it.
-      const fresh = { isLatest: s.isLatest, latestVersion: s.latestVersion, latestReleaseDate: s.date || "", daysSinceLatest: daysSince(s.date), description: nativeLatest.get(p.name)?.description || "" };
-      const pv = vulnByPkg.get(p.name);
+      const fresh = { isLatest: s.isLatest, latestVersion: s.latestVersion, latestReleaseDate: s.date || "", daysSinceLatest: daysSince(s.date), description: nativeLatest.get(pkgKey(p.eco, p.name))?.description || "" };
+      const pv = vulnByPkg.get(pkgKey(p.eco, p.name));
       if (pv?.ok && pv.vulns > 0) {
         // vulnVersion: the resolved version the advisories actually hit. A lockfile
         // can hold the same name at two versions (reqwest 0.12 + 0.13); blaming the
         // direct version for a transitive-only hit sends the user at a clean target.
         return { name: p.name, version: p.version, eco: p.eco, vulnVersion: pv.version || p.version, status: pv.status, icon: pv.icon, message: pv.message, severity: pv.severity, topVuln: pv.topVuln, fixVersion: pv.fixVersion, vulns: pv.vulns, notices: pv.notices, detailsUrl: pv.detailsUrl, advisories: pv.advisories, direct: true, ...fresh };
       }
-      if (pv && !pv.ok) {
+      if ((pv && !pv.ok) || (!pv && osvEcos.has(p.eco))) {
         return { name: p.name, version: p.version, eco: p.eco, status: "indeterminate", direct: true, ...fresh };
       }
       // Notice-only (unmaintained/unsound, zero CVEs): keep status "safe" — no
@@ -165,12 +158,13 @@ export async function runVulnScan(name: string) {
     // security tags + get stored; clean ones pass through ONLY so a previously
     // opened security tag can auto-close (the storage loop skips them to stay bounded).
     const transitiveResults: Record<string, unknown>[] = [];
-    for (const [pkgName, pv] of vulnByPkg) {
-      if (directNames.has(pkgName) || !pv.ok) continue;
-      const node = treePackages.find(t => t.name === pkgName);
+    for (const [key, pv] of vulnByPkg) {
+      if (directKeys.has(key) || !pv.ok) continue;
+      const node = treePackages.find(t => pkgKey(t.eco, t.name) === key);
+      if (!node) continue;
       // Prefer the verdict's own version — with the same name resolved at two
       // versions, `find` returns an arbitrary one; pv.version is the scanned one.
-      const base = { name: pkgName, version: pv.version || node?.version || "", eco: node?.eco || "", direct: false, isLatest: undefined, latestVersion: "", latestReleaseDate: "", daysSinceLatest: null };
+      const base = { name: node.name, version: pv.version || node.version || "", eco: node.eco, direct: false, isLatest: undefined, latestVersion: "", latestReleaseDate: "", daysSinceLatest: null };
       if (pv.vulns > 0) {
         transitiveResults.push({ ...base, status: pv.status, icon: pv.icon, message: pv.message, severity: pv.severity, topVuln: pv.topVuln, fixVersion: pv.fixVersion, vulns: pv.vulns, detailsUrl: pv.detailsUrl, advisories: pv.advisories });
       } else {
@@ -191,6 +185,10 @@ export async function runVulnScan(name: string) {
         // Sanitize fields from the (external, possibly attacker-controlled) Vuln API
         // at the source — defense-in-depth beyond safeHref at the render sink (D4).
         const sStr = (v: unknown, max: number) => typeof v === "string" ? v.slice(0, max) : "";
+        // Release dates are stored only when they parse: a registry sending
+        // «unknown» used to reach the dashboard, where toISOString threw and
+        // took the whole project view down (#1155).
+        const sDate = (v: unknown) => typeof v === "string" && !Number.isNaN(Date.parse(v)) ? v.slice(0, 40) : "";
         const sUrl = (v: unknown) => (typeof v === "string" && /^https?:\/\//i.test(v)) ? v.slice(0, 500) : "";
         const priorVuln = project.vulnResults || {};
         for (const pkg of libResults.results) {
@@ -216,10 +214,18 @@ export async function runVulnScan(name: string) {
                 kind: sStr(a?.kind, 20) || "vuln",
               }))
             : [];
-          vulnMap[sStr(pkg.name, 100)] = { status: sStr(pkg.status, 20), icon: sStr(pkg.icon, 20), message: sStr(pkg.message, 500), vulns: pkg.vulns ?? 0, notices: pkg.notices ?? 0, severity: sStr(pkg.severity, 20) || "none", topVuln: pkg.topVuln || null, fixVersion: sStr(pkg.fixVersion, 50), latestVersion: sStr(pkg.latestVersion, 50), ...(typeof pkg.isLatest === "boolean" ? { isLatest: pkg.isLatest } : {}), unscannableReason: sStr(pkg.unscannableReason, 200), detailsUrl: sUrl(pkg.detailsUrl), daysSinceFix: pkg.daysSinceFix ?? null, daysSinceLatest: pkg.daysSinceLatest ?? null, fixReleaseDate: sStr(pkg.fixReleaseDate, 40), latestReleaseDate: sStr(pkg.latestReleaseDate, 40), description: sStr(pkg.description, 300), advisories, transitive: pkg.direct === false };
+          vulnMap[sStr(pkg.name, 100)] = { status: sStr(pkg.status, 20), icon: sStr(pkg.icon, 20), message: sStr(pkg.message, 500), vulns: pkg.vulns ?? 0, notices: pkg.notices ?? 0, severity: sStr(pkg.severity, 20) || "none", topVuln: pkg.topVuln || null, fixVersion: sStr(pkg.fixVersion, 50), latestVersion: sStr(pkg.latestVersion, 50), ...(typeof pkg.isLatest === "boolean" ? { isLatest: pkg.isLatest } : {}), unscannableReason: sStr(pkg.unscannableReason, 200), detailsUrl: sUrl(pkg.detailsUrl), daysSinceFix: pkg.daysSinceFix ?? null, daysSinceLatest: pkg.daysSinceLatest ?? null, fixReleaseDate: sDate(pkg.fixReleaseDate), latestReleaseDate: sDate(pkg.latestReleaseDate), description: sStr(pkg.description, 300), advisories, transitive: pkg.direct === false };
         }
         project.vulnResults = vulnMap as typeof project.vulnResults;
-        project.vulnScanDate = new Date().toISOString();
+        // Two clocks (#1104/#1139): libScanDate = "a scan ran" (the sweep's
+        // staleness clock); vulnScanDate = "OSV judged every queried group" — the
+        // client report prints it as "last security scan", so a freshness-only
+        // round must not stamp it. A project OSV can't cover at all (vcpkg) has
+        // its stale claim from the old stamping removed; an outage or a disabled
+        // check keeps the last REAL date (it did happen).
+        project.libScanDate = new Date().toISOString();
+        if (osv.complete) project.vulnScanDate = project.libScanDate;
+        else if (!VULN_CHECK_DISABLED && osvEcos.size === 0) delete project.vulnScanDate;
       }
 
       // Auto-create security tags + auto-close fixed + track outdated
@@ -285,21 +291,41 @@ export async function runVulnScan(name: string) {
           // about vulnerabilities, so it must never create or auto-close security
           // tags — and an OSV run for npm says nothing about a vcpkg library.
           if (osvEcos.has(pkg.eco)) {
+            // Does this stored tag speak about THIS package? Keyed tags (#1101)
+            // match on `eco:name@`; legacy text-identity tags match on `name@`
+            // (they carry no ecosystem — never merged, per §5.4).
+            const aboutPkg = (secTag: TagEntry, low: string) => secTag.secKey
+              ? secTag.secKey.startsWith(`${pkg.eco}:${pkg.name}@`)
+              : low.startsWith(`${pkg.name.toLowerCase()}@`);
             if (hasCve) {
+              const key = `${pkg.eco}:${pkg.name}@${pkg.vulnVersion || pkg.version}`;
               const text = `${pkg.name}@${pkg.vulnVersion || pkg.version} — ${pkg.message}`.slice(0, 100);
               const norm = normalizeTagContent(text);
-              if (!openSecTexts.has(norm)) {
-                data.tags.push({ id: crypto.randomUUID(), project: name, tag: "security", content: text, timestamp: now, num: assignNum(data, name) });
+              // Identity is the claim (`eco:name@version`), not its wording: a
+              // language flip, a re-rated severity or a newer fix version
+              // REWORDS the open tag instead of opening #N+1 and closing #N with
+              // a "security fix" that never happened (224 of 304 stored security
+              // tags had been closed exactly that way).
+              const openKeyed = existingSecTags.find(t => t.secKey === key && !secClosed(normalizeTagContent(t.content), t.timestamp || ""));
+              if (openKeyed) {
+                if (normalizeTagContent(openKeyed.content) !== norm) { openKeyed.content = text; openSecTexts.add(norm); }
+              } else if (!openSecTexts.has(norm)) {
+                data.tags.push({ id: crypto.randomUUID(), project: name, tag: "security", content: text, timestamp: now, num: assignNum(data, name), secKey: key });
                 openSecTexts.add(norm);
+              } else {
+                // A legacy tag with this exact wording is the open claim — adopt it
+                // under the key so the next drift rewords it instead of forking.
+                const twin = existingSecTags.find(t => !t.secKey && normalizeTagContent(t.content) === norm);
+                if (twin) twin.secKey = key;
               }
               // Supersede: one open claim per package. An older OPEN security tag
-              // for the SAME package with a DIFFERENT text (message drift, or a
-              // stale pre-fix cross-ecosystem claim) is closed — the tag just
-              // pushed carries the current truth, and two contradicting open
-              // entries for one package is exactly what made the card read wrong.
+              // for the SAME package with a DIFFERENT claim (another pinned
+              // version, or a stale pre-fix claim) is closed — the current tag
+              // carries the truth, and two contradicting open entries for one
+              // package is exactly what made the card read wrong.
               for (const secTag of existingSecTags) {
                 const low = normalizeTagContent(secTag.content);
-                if (low === norm || !low.startsWith(`${pkg.name.toLowerCase()}@`)) continue;
+                if (secTag.secKey === key || low === norm || !aboutPkg(secTag, low)) continue;
                 if (secClosed(low, secTag.timestamp || "")) continue;
                 data.tags.push({ id: crypto.randomUUID(), project: name, tag: "security fix", content: secTag.content, timestamp: now });
                 latestSecFixTs.set(low, now);
@@ -308,7 +334,7 @@ export async function runVulnScan(name: string) {
               // No CVE on this lib — auto-close any open security tags for it
               for (const secTag of existingSecTags) {
                 const low = normalizeTagContent(secTag.content);
-                if (low.startsWith(`${pkg.name.toLowerCase()}@`) && !secClosed(low, secTag.timestamp || "")) {
+                if (aboutPkg(secTag, low) && !secClosed(low, secTag.timestamp || "")) {
                   data.tags.push({ id: crypto.randomUUID(), project: name, tag: "security fix", content: secTag.content, timestamp: now });
                   latestSecFixTs.set(low, now);
                 }

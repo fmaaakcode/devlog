@@ -32,11 +32,18 @@ export const CONTENT_PATTERNS: PatternRule[] = [
   { label: "WebSocket", re: /new\s+WebSocket\b|Bun\.serve.*websocket|\.upgrade\s*\(/i },
   { label: "JSON", re: /JSON\.parse|JSON\.stringify/i },
   { label: "IPC", re: /child_process|(?<!\.)\bspawn\s*\(|(?<!\.)\bexec\s*\(|(?<!\.)\bfork\s*\(|ipcRenderer|ipcMain|Command::new|std::process/i },
-  { label: "Threading", re: /Worker\b|worker_threads|thread::spawn|std::thread|rayon|tokio::spawn|pthread|Thread\.new|async_std/i },
+  // Call/API forms only. A bare `Worker\b` (/i) matched every local `async
+  // function worker()` and the word "(Worker)" in a string, labelling a
+  // project "Threading" without one thread (#1079).
+  { label: "Threading", re: /new\s+(?:Worker|SharedWorker)\s*\(|worker_threads|thread::spawn|std::thread|\brayon\b|tokio::spawn|pthread_create|Thread\.new|async_std|threading\.Thread\s*\(|std::jthread/ },
   { label: "Windows API", re: /winapi|windows-sys|CreateProcess|HWND|WinUser|kernel32|user32|advapi32|RegOpenKey|HKEY_/i },
   { label: "System", re: /std::fs|std::path|std::env|os\.path|pathlib|sys\.platform/i },
   { label: "Event Loop", re: /tokio|async-std|#\[tokio::main\]|EventLoop|event_loop|select!\s*\{/i },
-  { label: "File Watcher", re: /notify|FSWatcher|watchFile|inotify|chokidar|file.*watch|watch.*file/i },
+  // Identifier/call forms only: `notify` and `file … watch` are ordinary
+  // English in any repo (a comment saying "fs.watch on each root" made DevLog
+  // a "File Watcher" project, #1079). Content is comment-stripped upstream,
+  // but the rule itself must not match prose either.
+  { label: "File Watcher", re: /\bnotify::|use\s+notify\b|RecommendedWatcher|FSWatcher|\bfs\.watch(?:File)?\s*\(|\bwatch\s*\(\s*['"]|inotify_|\bchokidar\b|FileSystemWatcher|ReadDirectoryChangesW|kqueue/ },
 
   // C++ / native / GPU
   { label: "NVENC/NVDEC", re: /NVENC|nvEncodeAPI|NvEncoder|nvcuvid|NVDEC/i },

@@ -6,7 +6,7 @@
 // byte snapshot, since ranks/line-counts are analysis-dependent.
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateStackMd } from "../src/export";
@@ -73,12 +73,23 @@ describe("generateStackMd", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test("does nothing when DEVLOG_STACK.md already exists", async () => {
+  // #1093: generate-once is gone. A legacy file (no body-hash trailer) is
+  // regenerated; a file whose body no longer matches its trailer was edited by
+  // hand and is left alone. The trailer itself is covered in analyze-lib-skip.test.
+  test("a legacy DEVLOG_STACK.md without a trailer is regenerated; a hand-edited one is kept", async () => {
     const dir = tmpProject();
     mkdirSync(join(dir, ".devlog"), { recursive: true });
     writeFileSync(join(dir, ".devlog", "DEVLOG_STACK.md"), "PREEXISTING");
     await generateStackMd(dir, mkProject(dir, { files: { ts: 1 } }));
-    expect(readStack(dir)).toBe("PREEXISTING");          // untouched
+    const generated = readStack(dir);
+    expect(generated).toContain("# stack-fixture");
+    expect(generated).toMatch(/<!-- devlog:stack [0-9a-f]+ -->\s*$/);
+    // the legacy content was archived before the one-time overwrite
+    expect(readFileSync(join(dir, ".devlog", "DEVLOG_STACK.legacy.md"), "utf8")).toBe("PREEXISTING");
+    const edited = generated.replace("# stack-fixture", "# stack-fixture\n\nmy note");
+    writeFileSync(join(dir, ".devlog", "DEVLOG_STACK.md"), edited);
+    await generateStackMd(dir, mkProject(dir, { files: { ts: 1 } }));
+    expect(readStack(dir)).toBe(edited);                 // untouched
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -89,11 +100,34 @@ describe("generateStackMd", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test("Rust / Python / Go language branches", async () => {
+  // #1190 (F-9.159): the old version set `language: lang` AND asserted `lang` —
+  // a tautology, because the generator echoes profile.language whenever it
+  // detects nothing (export-stack.ts: `if (langs.length === 0) langs.push(
+  // project.language)`). A broken Rust/Python/Go branch passed. The profile's
+  // declared language is now deliberately WRONG, so the name can only come from
+  // the extension histogram the branch reads.
+  test("Rust / Python / Go language branches are detected from file counts, not echoed from the profile", async () => {
     for (const [lang, ext, file] of [["Rust", "rs", "main.rs"], ["Python", "py", "app.py"], ["Go", "go", "main.go"]] as const) {
       const dir = tmpProject({ [file]: "// code\n" });
-      await generateStackMd(dir, mkProject(dir, { language: lang, files: { [ext]: 2 }, totalFiles: 2 }));
-      expect(readStack(dir)).toContain(lang);
+      try {
+        await generateStackMd(dir, mkProject(dir, { language: "Brainfuck", files: { [ext]: 2 }, totalFiles: 2 }));
+        const md = readStack(dir);
+        expect(md).toContain(lang);
+        expect(md).not.toContain("Brainfuck");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test("mixed-language project lists languages dominant-first from the histogram", async () => {
+    const dir = tmpProject({ "main.rs": "// r\n", "tool.py": "# p\n" });
+    try {
+      await generateStackMd(dir, mkProject(dir, { language: "Go", files: { py: 5, rs: 2 }, totalFiles: 7 }));
+      const md = readStack(dir);
+      expect(md).toContain("Python / Rust");
+      expect(md).not.toContain("Go");
+    } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });

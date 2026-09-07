@@ -5,7 +5,8 @@
 // broadcast/audit), so unlike routes-static it needs no injected server state:
 // makeProcessRoutes() takes no deps. Spread into server.ts's routeDefs.
 
-import { loadData, withData, projectName } from "./data";
+import { loadData, withData } from "./data";
+import { resolveProjectFor } from "./project-resolve";
 import { broadcast } from "./broadcast";
 import { readActiveSessions, refreshDescendants, killProcess } from "./sessions";
 import { appendAudit } from "./audit";
@@ -23,9 +24,17 @@ export function makeProcessRoutes(): Record<string, unknown> {
         const url = new URL(req.url);
         const project = url.searchParams.get("project");
         const sessions = await readActiveSessions();
-        let items = sessions.filter(s => s.alive);
-        if (project) items = items.filter(s => projectName(s.cwd) === project);
-        return Response.json({ items });
+        const data = await loadData();
+        // Attribute each session to a REGISTERED project by its cwd (exact path
+        // or a folded subfolder) — the basename mapping shared one green dot
+        // between two projects with the same folder name and never lit a
+        // project whose registry name differs from its folder (#1143). An
+        // unregistered cwd carries `project: null`; the dashboard skips it.
+        const items = sessions.filter(s => s.alive).map(s => {
+            const r = resolveProjectFor(data, s.cwd || "");
+            return { ...s, project: r.registered ? r.name : null };
+        });
+        return Response.json({ items: project ? items.filter(s => s.project === project) : items });
       },
     },
 
@@ -66,14 +75,18 @@ export function makeProcessRoutes(): Record<string, unknown> {
         const tracked = snapshot.descendants.find(d => d.pid === pid);
         if (!tracked) return Response.json({ error: "PID not tracked by DevLog" }, { status: 403 });
         await appendAudit("process.kill", req, { target: pid });
-        const result = await killProcess(pid);
-        if (result.ok) {
+        // Re-identified at kill time by name + start time (#1062): the tracked
+        // row may be a poll interval old and the pid may have been recycled.
+        const result = await killProcess(pid, { name: tracked.name, created: tracked.created });
+        if (result.ok || result.identityChanged) {
+          // Killed, or the row described a process that no longer exists —
+          // either way it must leave the tracked list (and its kill button).
           await withData(async (data) => {
             data.descendants = data.descendants.filter(d => d.pid !== pid);
             broadcast("processes", { killed: pid });
           });
         }
-        return Response.json(result);
+        return Response.json(result, { status: result.ok ? 200 : result.identityChanged ? 409 : 500 });
       },
     },
   };

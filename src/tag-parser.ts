@@ -145,7 +145,19 @@ export function parseTags(msg: string): ParsedTag[] {
   // extracting from the stripped text).
   const stripped = msg
     .replace(/```[\s\S]*?```/g, m => " ".repeat(m.length))
-    .replace(/`[^`\n]*`/g, m => " ".repeat(m.length));
+    .replace(/`[^`\n]*`/g, m => " ".repeat(m.length))
+    // A head that is NOT a head in the ORIGINAL text (#805's isRealTagHead: an
+    // inline-code residue or prose sits between the bullet and `(`) is
+    // neutralized HERE, in the detection copy, so it can be neither a head NOR
+    // a body terminator (#1020). The regex lookahead cannot call the check, so
+    // «- `#793` (todo) — …» inside a doc body used to END the body there while
+    // the head check then refused it — everything after the line was lost
+    // with no tag and no warning. Same length, so offsets still map 1:1.
+    .replace(new RegExp(`(^|\\n)([ \\t]*)-(\\s*)\\((?=${termAlt}!?\\))`, "g"),
+      (m, nl: string, indent: string, gap: string, offset: number) => {
+        const parenIndex = offset + nl.length + indent.length + 1 + gap.length;
+        return isRealTagHead(msg, offset, parenIndex) ? m : `${nl}${indent} ${gap}(`;
+      });
 
   const out: ParsedTag[] = [];
   // Single pass over `stripped` for doc and non-doc alike: a tag inside a

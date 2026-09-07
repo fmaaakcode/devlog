@@ -30,6 +30,11 @@ export interface FeatureItem {
   /** Version of the first release cut AFTER the feature landed — the release
    *  that shipped it. Absent = not released yet. */
   sinceVersion?: string;
+  /** #1188: the tag's `[vX.Y.Z]` marker named a version NO recorded release
+   *  carries. The marker is kept on the tag but attribution fell back to the
+   *  timestamp rule — an unknown version must never mint a phantom release
+   *  group in the inventory or the client report. */
+  unknownVersion?: string;
 }
 
 /** Strip the leading `#N` reference (+ separators) off an update/removed body. */
@@ -86,18 +91,21 @@ export function featureList(data: DevLogData, project: string): FeatureItem[] {
     if (typeof t.num === "number" && removed.has(t.num)) continue;
     const upd = typeof t.num === "number" ? updates.get(t.num) : undefined;
     // Explicit [vX.Y.Z] marker (the backfill path) overrides the timestamp
-    // attribution: the capability shipped in that PAST release. Resolved to the
-    // recorded release's spelling when one matches, kept as written otherwise.
+    // attribution: the capability shipped in that PAST release, resolved to the
+    // recorded release's spelling. A marker naming NO recorded release (#1188)
+    // used to be kept as written — minting a version that never existed as a
+    // group in every inventory surface; now it degrades to the timestamp rule
+    // and is flagged, and the entry hint (diagnoseFeatureMarker) says so.
     const mk = parseVersionMarker(t.content);
-    const since = mk
-      ? (releases.find(r => sameVersion(r.version, mk.version))?.version ?? mk.version)
-      : shippedIn(+new Date(t.timestamp));
+    const pinned = mk ? releases.find(r => sameVersion(r.version, mk.version))?.version : undefined;
+    const since = pinned ?? shippedIn(+new Date(t.timestamp));
     out.push({
       ...(typeof t.num === "number" ? { num: t.num } : {}),
       text: upd?.text ?? (mk ? mk.text : t.content),
       addedAt: t.timestamp,
       ...(upd ? { updatedAt: upd.at } : {}),
       ...(since ? { sinceVersion: since } : {}),
+      ...(mk && !pinned ? { unknownVersion: mk.version } : {}),
     });
   }
   return out;
@@ -219,9 +227,30 @@ export function backfillCorpus(data: DevLogData, project: string): {
 }
 
 export interface FeatureRefProblem {
-  kind: "no-ref" | "no-text" | "no-match" | "already-removed";
+  kind: "no-ref" | "no-text" | "no-match" | "already-removed" | "unknown-version";
   tag: string;
   num?: number;
+  /** `unknown-version` only: the `[vX.Y.Z]` marker text that matched no release. */
+  version?: string;
+}
+
+/**
+ * #1188: a `-(feature) [vX.Y.Z] …` whose marker names a version no recorded
+ * release carries. Advisory, not a rejection — the tag IS stored (attributed by
+ * its date, see featureList) — but silently accepting it left a typo'd backfill
+ * looking like a shipped release with no hint at entry. Returns null for a
+ * marker-less feature or a marker that resolves.
+ */
+export function diagnoseFeatureMarker(
+  tag: string, content: string, data: DevLogData, project: string,
+): FeatureRefProblem | null {
+  if (tag !== "feature") return null;
+  const mk = parseVersionMarker(content);
+  if (!mk) return null;
+  const known = data.tags.some(t =>
+    t.project === project && t.tag === "release" && isRealVersion(t.content)
+    && sameVersion(parseVersion(t.content).version, mk.version));
+  return known ? null : { kind: "unknown-version", tag, version: mk.version };
 }
 
 /**

@@ -1,9 +1,10 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { DevLogData, ProjectProfile, TagEntry, EventEntry } from "./types";
-import { isPathInside, makeAbsenceJudge, normalizeSlashes, pathsEqual, projectRelativeFiles } from "./path-utils";
+import { isPathInside, makeAbsenceJudge, normalizeSlashes, pathsEqual } from "./path-utils";
 import { diskExists } from "./disk-probe";
-import { isStepClosed, leadingNums, normalizeTagContent, openTodos, openBugs } from "./data";
+import { isStepClosed, normalizeTagContent, openTodos, openBugs } from "./data";
+import { pairFixes, toItems, type ReleaseItem } from "./release-items";
 import { currentLang } from "./i18n";
 import { DL_THEME_ROOT } from "./dl-theme";
 import { esc } from "./html-escape";
@@ -336,44 +337,6 @@ ${bodyInner}
 // Section builders (return empty string when no content; spec says sections
 // are optional).
 // ────────────────────────────────────────────────────────────────────────────
-// One display item: `text` is the headline (for a paired fix, the BUG's text —
-// the problem), `cure` the closer's tail (how it was fixed), when available.
-// `files` (#500): the capturing session's in-tree files, project-relative —
-// present only for tags stored since position memory (#486) landed.
-// `model` (#695): the model that authored the tag — for a paired fix, the
-// CLOSER's model (who fixed it, not who found it). Absent on pre-#695 history.
-interface ReleaseItem { text: string; breaking?: boolean; cure?: string; files?: string[]; model?: string }
-
-function toItems(tags: TagEntry[], root: string): ReleaseItem[] {
-  return tags.map(t => {
-    const files = projectRelativeFiles(t.files, root);
-    return { text: t.content, ...(t.breaking ? { breaking: true } : {}), ...(files ? { files } : {}), ...(t.model ? { model: t.model } : {}) };
-  });
-}
-
-/**
- * Pair each `bug fix` with its opener: a `#N …tail` closer shows the BUG's own
- * text as the problem and the tail as the cure. Bare `#N` closers were already
- * rewritten to the opener's text at store time, so they fall through as-is.
- * Files come from the CLOSER's session (where the fix landed) ∪ the opener's.
- */
-function pairFixes(fixTags: TagEntry[], allProjectTags: TagEntry[], root: string): ReleaseItem[] {
-  return fixTags.map(t => {
-    const content = t.content || "";
-    const nums = leadingNums(content);
-    if (nums.length === 1) {
-      const opener = allProjectTags.find(o => o.num === nums[0] && o.tag === "bug found");
-      if (opener) {
-        const cure = content.replace(/^(?:\s*#\d+)+[\s,،:—–-]*/, "").trim();
-        const files = projectRelativeFiles([...new Set([...(t.files || []), ...(opener.files || [])])], root);
-        return { text: opener.content, ...(cure ? { cure } : {}), ...(t.breaking ? { breaking: true } : {}), ...(files ? { files } : {}), ...(t.model ? { model: t.model } : {}) };
-      }
-    }
-    const files = projectRelativeFiles(t.files, root);
-    return { text: content, ...(t.breaking ? { breaking: true } : {}), ...(files ? { files } : {}), ...(t.model ? { model: t.model } : {}) };
-  });
-}
-
 // Sessions + calendar span of the work that shipped in this release.
 function releaseContext(data: DevLogData, project: string, start: number, end: number): { days: number; sessions: number } {
   const sessions = new Set<string>();

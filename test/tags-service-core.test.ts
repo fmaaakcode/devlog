@@ -10,10 +10,11 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  registerPlan, handleDocTag, enforceAtomicContent, resolveClosureNumber,
+  registerPlan, enforceAtomicContent, resolveClosureNumber,
   detectReleaseDowngrade, resolveReleaseIntent, detectReleaseOpenItems,
   applyRelease, syncPlanSteps,
 } from "../src/tags-service";
+import { handleDocTag } from "../src/doc-tag";
 import type { DevLogData, TagEntry, PlanStep, PlanEntry, ProjectProfile } from "../src/types";
 
 const PROJ = "core-fixture";

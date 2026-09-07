@@ -9,7 +9,19 @@
 //
 // Path-based only — no regex secret DETECTION, which produces false positives
 // and hides the user's own data from themselves.
-const SENSITIVE_PATH_RE = /(?:^|[/\\])(?:\.env(?:\.|$)|\.npmrc$|\.pgpass$|id_rsa(?:\.pub)?$|id_ed25519(?:\.pub)?$|.+\.(?:pem|key|p12|pfx|asc)$|.*credentials.*|.*\.secret(?:s)?$)/i;
+//
+// F-1.14 closed the two gaps in both directions: the common secret carriers
+// that were missing (.envrc, .netrc, .htpasswd, id_dsa/id_ecdsa, secrets.json /
+// secrets.yaml, keystores, .ovpn/.ppk) are in; and `credentials` now has to be
+// the file's NAME (with an optional config-style extension), because the old
+// `.*credentials.*` swallowed ordinary source such as `credentials-form.tsx`
+// and hid the user's own diff from them.
+//
+// #1204: `.env.example` / `.env.sample` / `.env.template` / `.env.dist` /
+// `.env.defaults` are the committed TEMPLATES of a .env — placeholder keys with
+// no values, the one file a reader is supposed to look at — so they pass; every
+// other `.env.*` (.env.local, .env.production, …) is still a secret carrier.
+const SENSITIVE_PATH_RE = /(?:^|[/\\])(?:\.env(?:$|\.(?!(?:example|sample|template|dist|defaults?)$))|\.envrc$|\.npmrc$|\.pgpass$|\.netrc$|\.htpasswd$|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?$|.+\.(?:pem|key|p12|pfx|asc|keystore|jks|ovpn|ppk)$|[^/\\]*credentials?(?:\.(?:json|ya?ml|toml|ini|txt|xml|properties|cfg|conf|csv))?$|secrets?\.(?:json|ya?ml|toml|ini|env|txt)$|.*\.secret(?:s)?$)/i;
 
 export function isSensitivePath(p: string | undefined): boolean {
   return typeof p === "string" && SENSITIVE_PATH_RE.test(p);

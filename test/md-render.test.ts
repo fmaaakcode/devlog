@@ -1,6 +1,8 @@
 import { test, expect, describe } from "bun:test";
 import { renderMarkdown } from "../src/md-render";
 
+const escapeAttr = (s: string) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/'/g, "&#39;");
+
 describe("renderMarkdown", () => {
   test("headings render with dl-h{n} class", () => {
     expect(renderMarkdown("# title")).toContain('<h1 class="dl-h1">title</h1>');
@@ -65,10 +67,42 @@ describe("renderMarkdown", () => {
     expect(out).toContain("dl-callout");
   });
 
-  test("sanitization: <script> tag is stripped", () => {
+  test("sanitization: a raw <script> in prose is escaped text, never a tag (#1027)", () => {
     const out = renderMarkdown("safe\n<script>alert(1)</script>\nmore");
     expect(out).not.toContain("<script>");
-    expect(out).not.toContain("alert(1)");
+    // The text survives — escaped — instead of being deleted from the document.
+    expect(out).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+  });
+
+  test("#1027: XSS examples inside a code block are kept verbatim (escaped), not erased", () => {
+    const md = "```html\n<script>alert(1)</script>\n<img src=x onerror=\"x()\">\n```";
+    const out = renderMarkdown(md);
+    expect(out).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(out).toContain("onerror=&quot;x()&quot;");
+    expect(out).not.toMatch(/<script/i);
+    expect(out).not.toMatch(/<img[^>]*onerror/i);
+  });
+
+  test("#1027: prose words that merely start with «on» are not deleted", () => {
+    const out = renderMarkdown('في المشروع once="true" والخيار onboarding="x" مهم');
+    expect(out).toContain("once=&quot;true&quot;");
+    expect(out).toContain("onboarding=&quot;x&quot;");
+  });
+
+  test("#1026: fences with c++ / c# / objective-c / info strings open a code block", () => {
+    for (const lang of ["c++", "c#", "objective-c", "f#", "ts title=x"]) {
+      const md = `# عنوان\n\`\`\`${lang}\nint a\n- not a list\n\`\`\`\nنص عادي\n- بند`;
+      const out = renderMarkdown(md);
+      expect(out).toContain(`data-lang="${escapeAttr(lang.split(/\s/)[0])}"`);
+      // Inside the block: literal text, not a list.
+      expect(out).toContain("- not a list");
+      expect(out).not.toContain("<li>not a list</li>");
+      // After the block: prose is a paragraph and the bullet is a real list.
+      expect(out).toContain("<p>نص عادي</p>");
+      expect(out).toContain("<li>بند</li>");
+      // Exactly one code block — the closing fence did not open a second one.
+      expect(out.match(/<pre class="dl-code"/g)?.length).toBe(1);
+    }
   });
 
   test("sanitization: javascript: URL becomes #", () => {

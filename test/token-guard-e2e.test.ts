@@ -4,7 +4,7 @@
 // without the token, 200 with it). Proves the feature is opt-in + enforced.
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
-import { asJson } from "./_helpers";
+import { asJson, scrubbedEnv } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,7 +27,7 @@ function boot(port: number, extraEnv: Record<string, string>) {
   const server = spawn({
     cmd: ["bun", join("src", "server.ts")],
     cwd: PROJECT_ROOT,
-    env: { ...process.env, DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(port), DEVLOG_VERSION_CHECK_DISABLED: "1", ...extraEnv },
+    env: { ...scrubbedEnv(), DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(port), DEVLOG_VERSION_CHECK_DISABLED: "1", ...extraEnv },
     stdout: "pipe", stderr: "pipe",
   });
   return { server, dataDir };

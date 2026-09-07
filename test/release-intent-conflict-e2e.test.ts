@@ -11,6 +11,7 @@ import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
+import { scrubbedEnv } from "./_helpers";
 
 const TEST_PORT = 17931;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
@@ -54,7 +55,7 @@ beforeAll(async () => {
   proc = spawn({
     cmd: ["bun", join("src", "server.ts")],
     cwd: PROJECT_ROOT,
-    env: { ...process.env, DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT), DEVLOG_VERSION_CHECK_DISABLED: "1" },
+    env: { ...scrubbedEnv(), DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT), DEVLOG_VERSION_CHECK_DISABLED: "1" },
     stdout: "pipe",
     stderr: "pipe",
   });

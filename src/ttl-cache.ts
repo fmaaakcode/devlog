@@ -10,26 +10,43 @@
 // caching a technically-successful-but-degraded value (e.g. an empty process
 // snapshot from a hung WMI query) so a transient failure isn't served as
 // truth for the rest of the window.
+//
+// `staleWhileRevalidate` (#1064 / F-4.74): once a value has been produced, an
+// EXPIRED one is served immediately while a single refresh runs in the
+// background. Without it the demolition gate's /api/file-weight probe — a 4s
+// hook budget against a cold analysis walk that takes tens of seconds on a
+// large repo — failed open after every 5-minute quiet spell, exactly on the
+// projects with the most load-bearing walls. A five-minute-old import graph is
+// the right answer for that caller; "unknown" is not. Callers that need the
+// window honored strictly (the process snapshot) leave it off.
 
 export function ttlCached<T>(
   ttlMs: number,
   fn: () => Promise<T>,
   shouldCache: (value: T) => boolean = () => true,
+  opts: { staleWhileRevalidate?: boolean } = {},
 ): () => Promise<T> {
   let cached: { at: number; value: T } | null = null;
   let inFlight: Promise<T> | null = null;
-  return async () => {
-    if (cached && Date.now() - cached.at < ttlMs) return cached.value;
+  const refresh = (): Promise<T> => {
     if (inFlight) return inFlight;
-    inFlight = fn();
-    try {
-      const value = await inFlight;
+    inFlight = fn().then(value => {
       if (shouldCache(value)) cached = { at: Date.now(), value };
       else cached = null;
       return value;
-    } finally {
-      inFlight = null;
+    }).finally(() => { inFlight = null; });
+    return inFlight;
+  };
+  return async () => {
+    if (cached && Date.now() - cached.at < ttlMs) return cached.value;
+    if (cached && opts.staleWhileRevalidate) {
+      // Serve the expired value now; the refresh (already running or started
+      // here) replaces it for the next caller. Its failure is the next call's
+      // to see — a stale answer must not turn into a thrown one.
+      refresh().catch(() => { /* surfaced on the next miss */ });
+      return cached.value;
     }
+    return refresh();
   };
 }
 

@@ -5,6 +5,10 @@ import { join } from "node:path";
 // STANDARDS_DIR is captured at module-eval from this env var, so it must be set
 // before the dynamic import below.
 const TMP = join(import.meta.dir, ".tmp-standards");
+// Restored in afterAll (#1166): the suite shares one process, and leaving the
+// var pointed at a directory this file DELETES made every later standards
+// consumer (routes-standards-e2e, the rule commands) read an empty catalog.
+const PREV_STD = process.env.DEVLOG_STANDARDS_DIR;
 process.env.DEVLOG_STANDARDS_DIR = TMP;
 // Messages went bilingual (#906) and currentLang() reads the env per call.
 // The assertions here pin the ARABIC variants, so pin the language too —
@@ -20,14 +24,17 @@ async function seed() {
   await writeFile(join(TMP, "README.md"), "# index", "utf-8");
   await writeFile(join(TMP, "_TEMPLATE.md"), "# template", "utf-8");
   await writeFile(join(TMP, "languages", "README.md"), "# axis readme", "utf-8");
+  // Both seeds carry a REAL "when it applies" line (#1174): the check now
+  // demands the section with a sentence, not merely the absence of the
+  // template placeholder — a seed without the section would itself warn.
   await writeFile(
     join(TMP, "languages", "rust.md"),
-    "# rust — معايير\n\n## القواعد\n\n- استخدم Result بدل panic\n- لا unwrap في كود الإنتاج\n",
+    "# rust — معايير\n\n## متى تنطبق\n\nأي مشروع Rust.\n\n## القواعد\n\n- استخدم Result بدل panic\n- لا unwrap في كود الإنتاج\n",
     "utf-8",
   );
   await writeFile(
     join(TMP, "app-types", "desktop-gui.md"),
-    "# desktop-gui — معايير\n\n## القواعد\n",
+    "# desktop-gui — معايير\n\n## متى تنطبق\n\nتطبيقات سطح المكتب.\n\n## القواعد\n",
     "utf-8",
   );
 }
@@ -44,6 +51,8 @@ afterAll(async () => {
   await rm(TMP, { recursive: true, force: true });
   if (PREV_LANG === undefined) delete process.env.DEVLOG_LANG;
   else process.env.DEVLOG_LANG = PREV_LANG;
+  if (PREV_STD === undefined) delete process.env.DEVLOG_STANDARDS_DIR;
+  else process.env.DEVLOG_STANDARDS_DIR = PREV_STD;
 });
 
 describe("parseRuleCommands", () => {
@@ -223,6 +232,24 @@ describe("rule kind (check/guide)", () => {
     ]);
   });
 
+  test("#1128: sub-headings inside the rules section do not end it; a peer heading does; fenced bullets are not rules", () => {
+    // The live design.md shape: 3 top bullets, then `### 1)…### 6)` groups.
+    const md = [
+      "# design — معايير", "", "## متى تنطبق", "أي واجهة.", "",
+      "## القواعد",
+      "- أ", "- ب", "",
+      "### 1) اللوحة", "3 رماديات.", "",
+      "```css", "- not a rule (inside a code fence)", "```", "",
+      "- [فحص] ج", "",
+      "### 2) الحدود", "- د", "",
+      "## المصدر الكامل", "- ليست قاعدة (قسم آخر)",
+    ].join("\n");
+    const rules = std.parseRules(md);
+    expect(rules.map(r => r.text)).toEqual(["أ", "ب", "ج", "د"]);
+    expect(rules[2].kind).toBe("check");
+    expect(std.checkRules(md).map(r => r.num)).toEqual([3]);
+  });
+
   test("checkRules returns only the verifiable rules", () => {
     const rules = std.checkRules("## القواعد\n- [فحص] أ\n- ب\n- [check] ج\n");
     expect(rules.map(r => r.text)).toEqual(["أ", "ج"]);
@@ -348,6 +375,159 @@ describe("createCategory", () => {
     // No file leaked outside STANDARDS_DIR.
     const escaped = join(TMP, "..", "..", "..", "escape", "pwned.md");
     expect(await readFile(escaped, "utf-8").then(() => true, () => false)).toBe(false);
+  });
+});
+
+// Issue #1 (public repo): inside a DevLog-tracked project, writes default to
+// the project layer (<root>/.devlog/standards); `global:` promotes a rule to
+// the shared library explicitly; outside any project everything is global as
+// before. Global-by-default leaked 29 of the author's own 62 rules across
+// unrelated projects, so the safe default is the one whose failure is cheap.
+describe("write scope: project by default inside a project, global: to promote", () => {
+  const PROJ = join(TMP, "proj");
+  const P = (...s: string[]) => join(PROJ, ".devlog", "standards", ...s);
+  const exists = (p: string) => readFile(p, "utf-8").then(() => true, () => false);
+  beforeEach(async () => { await mkdir(join(PROJ, ".devlog"), { recursive: true }); });
+
+  test("defaultWriteScope: project when a .devlog sits above cwd, global without a cwd", () => {
+    expect(std.defaultWriteScope(join(PROJ, "src"))).toBe("project");
+    expect(std.defaultWriteScope(undefined)).toBe("global");
+  });
+
+  test("splitScopePrefix reads global:/project: and leaves the rest untouched", () => {
+    expect(std.splitScopePrefix("global: rust")).toEqual({ scope: "global", rest: "rust" });
+    expect(std.splitScopePrefix("PROJECT:platforms/vercel")).toEqual({ scope: "project", rest: "platforms/vercel" });
+    expect(std.splitScopePrefix("rust text")).toEqual({ rest: "rust text" });
+  });
+
+  test("rule:new inside a project lands in .devlog/standards and the catalog marks it project-local", async () => {
+    const r = await std.createCategory("platforms", "vercel", join(PROJ, "src"));
+    expect(r.ok).toBe(true);
+    expect(r.message).toContain("خاص بالمشروع");
+    expect(await exists(P("platforms", "vercel.md"))).toBe(true);
+    expect(await exists(join(TMP, "platforms", "vercel.md"))).toBe(false);
+    expect((await std.scanCatalog(PROJ)).find(e => e.category === "vercel")?.scope).toBe("project");
+    const add = await std.addRule("vercel", "لا تستخدم edge runtime للمسارات الثقيلة", PROJ);
+    expect(add.ok).toBe(true);
+    expect(add.message).toContain("خاص بالمشروع");
+    expect(await readFile(P("platforms", "vercel.md"), "utf-8")).toContain("- لا تستخدم edge runtime");
+  });
+
+  test("rule:add on a name that exists only globally starts a project file under the same axis; the global file is untouched", async () => {
+    const before = await readFile(join(TMP, "languages", "rust.md"), "utf-8");
+    const r = await std.addRule("rust", "هذا المشروع يستخدم tokio وحده", PROJ);
+    expect(r.ok).toBe(true);
+    expect(await readFile(P("languages", "rust.md"), "utf-8")).toContain("- هذا المشروع يستخدم tokio وحده");
+    expect(await readFile(join(TMP, "languages", "rust.md"), "utf-8")).toBe(before);
+    // A second add appends to the same project file, no second template.
+    await std.addRule("rust", "قاعدة ثانية", PROJ);
+    const file = await readFile(P("languages", "rust.md"), "utf-8");
+    expect(file.split("# rust").length).toBe(2);
+    expect(file).toContain("- قاعدة ثانية");
+  });
+
+  test("global: promotes: rule:add/rule:new write the library from inside a project; project layer untouched", async () => {
+    const add = await std.addRule("rust", "قاعدة عامة لكل مشاريع رست", PROJ, "global");
+    expect(add.ok).toBe(true);
+    expect(add.message).toContain("عام");
+    expect(await readFile(join(TMP, "languages", "rust.md"), "utf-8")).toContain("- قاعدة عامة لكل مشاريع رست");
+    expect(await exists(P("languages", "rust.md"))).toBe(false);
+    const mk = await std.createCategory("platforms", "netlify", PROJ, "global");
+    expect(mk.ok).toBe(true);
+    expect(await exists(join(TMP, "platforms", "netlify.md"))).toBe(true);
+    expect(await exists(P("platforms", "netlify.md"))).toBe(false);
+    // global: on a name with no global file does not silently fall back to the project layer.
+    await std.createCategory("platforms", "vercel", PROJ);
+    const miss = await std.addRule("vercel", "x", PROJ, "global");
+    expect(miss.ok).toBe(false);
+    expect(miss.message).toContain("global:");
+  });
+
+  test("rule:rm: project file first, global twin when no project file; global: never touches the project file", async () => {
+    await std.addRule("rust", "قاعدة المشروع", PROJ);            // project rust.md, 1 rule
+    const rmProj = await std.removeRule("rust", 1, PROJ);
+    expect(rmProj.ok).toBe(true);
+    expect(rmProj.message).toContain("خاص بالمشروع");
+    expect(await readFile(join(TMP, "languages", "rust.md"), "utf-8")).toContain("- استخدم Result بدل panic");
+    // No project desktop-gui → falls through to the global one.
+    const rmGlobal = await std.removeRule("desktop-gui", 1, PROJ);
+    expect(rmGlobal.ok).toBe(false); // seed has 0 rules there: out of range, but resolved
+    expect(rmGlobal.message).toContain("desktop-gui");
+    // Explicit global: removes from the library even though a project rust.md exists.
+    await std.addRule("rust", "قاعدة المشروع", PROJ);
+    const rmG = await std.removeRule("rust", 2, PROJ, "global");
+    expect(rmG.ok).toBe(true);
+    expect(rmG.message).toContain("عام");
+    expect(await readFile(P("languages", "rust.md"), "utf-8")).toContain("- قاعدة المشروع");
+  });
+
+  test("same-scope twin refused, cross-scope twin allowed with a note", async () => {
+    await std.createCategory("platforms", "vercel", PROJ);
+    const dup = await std.createCategory("platforms", "vercel", PROJ);
+    expect(dup.ok).toBe(false);
+    expect(dup.message).toContain("خاص بالمشروع");
+    const aug = await std.createCategory("languages", "rust", PROJ);
+    expect(aug.ok).toBe(true);
+    expect(aug.message).toContain("بجانب");
+  });
+
+  test("project: without a cwd refuses and writes nowhere", async () => {
+    // (A cwd with no .devlog above it can't be staged from inside this repo —
+    // projectStandardsDir walks up and would find D:/helper/.devlog.)
+    const r = await std.createCategory("platforms", "vercel", undefined, "project");
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain(".devlog");
+    expect(await exists(join(TMP, "platforms", "vercel.md"))).toBe(false);
+  });
+
+  test("command forms: bare → project, global: → library, project: → project; rule:rm honours the prefix", async () => {
+    const cmds = std.parseRuleCommands([
+      "-(rule:new) platforms/vercel",
+      "-(rule:new) global:platforms/netlify",
+      "-(rule:new) project:platforms/fly",
+      "-(rule:add) rust\nقاعدة مشروع عبر الأمر",
+      "-(rule:add) global:rust\nقاعدة عامة عبر الأمر",
+      "-(rule:rm) global:rust #3",
+    ].join("\n"));
+    const out = await std.runRuleCommands(cmds, PROJ);
+    expect(out.output).not.toContain("✗");
+    expect(await exists(P("platforms", "vercel.md"))).toBe(true);
+    expect(await exists(join(TMP, "platforms", "netlify.md"))).toBe(true);
+    expect(await exists(P("platforms", "netlify.md"))).toBe(false);
+    expect(await exists(P("platforms", "fly.md"))).toBe(true);
+    expect(await readFile(P("languages", "rust.md"), "utf-8")).toContain("- قاعدة مشروع عبر الأمر");
+    const glob = await readFile(join(TMP, "languages", "rust.md"), "utf-8");
+    expect(glob).not.toContain("قاعدة مشروع عبر الأمر");
+    expect(glob).not.toContain("قاعدة عامة عبر الأمر"); // added as #3 then removed by global:rust #3
+  });
+
+  test("formatCatalogNames stars project-local entries with a legend; listCatalog's split view has no stars", async () => {
+    await std.createCategory("platforms", "vercel", PROJ);
+    const names = std.formatCatalogNames(await std.scanCatalog(PROJ));
+    expect(names).toContain("vercel*");
+    expect(names).toContain("* = خاص بالمشروع");
+    expect(names).not.toContain("rust*");
+    expect(std.formatCatalogNames(await std.scanCatalog())).not.toContain("*");
+    const list = await std.listCatalog(PROJ);
+    expect(list).toContain("vercel");
+    expect(list).not.toContain("vercel*");
+  });
+});
+
+// #1241: the global library follows CLAUDE_CONFIG_DIR like memory cards and
+// sessions do (#135) — a relocated Claude folder must not split them.
+describe("standardsDir honors CLAUDE_CONFIG_DIR", () => {
+  test("DEVLOG_STANDARDS_DIR wins; otherwise <CLAUDE_CONFIG_DIR>/standards", () => {
+    const prevCfg = process.env.CLAUDE_CONFIG_DIR;
+    try {
+      process.env.CLAUDE_CONFIG_DIR = join(TMP, "moved-claude");
+      expect(std.standardsDir()).toBe(TMP);
+      delete process.env.DEVLOG_STANDARDS_DIR;
+      expect(std.standardsDir()).toBe(join(TMP, "moved-claude", "standards"));
+    } finally {
+      process.env.DEVLOG_STANDARDS_DIR = TMP;
+      if (prevCfg === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prevCfg;
+    }
   });
 });
 
@@ -493,6 +673,18 @@ describe("resolveContentTemplates (P4 — injectable toolchain resolver)", () =>
 });
 
 describe("runRuleCommands (batch orchestration)", () => {
+  test("#1131: the rule:rm lifecycle event carries the removed rule's text, not just its sliding number", async () => {
+    const add = std.parseRuleCommands("-(rule:add) desktop-gui\n[فحص] قاعدة مؤقتة للحذف");
+    const events: Array<{ action: "ack" | "adopt" | "remove"; rule: string; detail?: string }> = [];
+    await std.runRuleCommands(add, undefined, events);
+    expect(events[0]).toMatchObject({ action: "adopt", rule: "desktop-gui", detail: "[فحص] قاعدة مؤقتة للحذف" });
+    const n = std.parseRules(await readFile(join(TMP, "app-types", "desktop-gui.md"), "utf-8")).length;
+    const rm = std.parseRuleCommands(`-(rule:rm) desktop-gui #${n}`);
+    const rmEvents: Array<{ action: "ack" | "adopt" | "remove"; rule: string; detail?: string }> = [];
+    await std.runRuleCommands(rm, undefined, rmEvents);
+    expect(rmEvents[0]).toEqual({ action: "remove", rule: `desktop-gui #${n}`, detail: "قاعدة مؤقتة للحذف" });
+  });
+
   test("serves a read and an add in one batch", async () => {
     const cmds = std.parseRuleCommands(
       "-(ask:rules) rust\n-(rule:add) desktop-gui\nالبرامج تشتغل في System Tray",

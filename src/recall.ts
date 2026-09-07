@@ -20,20 +20,6 @@ import type { ClosedItem } from "./closed-items";
 // Tokenization
 // ---------------------------------------------------------------------------
 
-// Function words that carry no retrieval signal. Small on purpose: an
-// aggressive list starts eating domain words; these are only the unambiguous
-// glue of both languages.
-const STOPWORDS = new Set([
-  // Arabic
-  "في", "من", "على", "الى", "إلى", "عن", "مع", "ان", "أن", "إن", "لا", "ما",
-  "هذا", "هذه", "ذلك", "التي", "الذي", "ثم", "او", "أو", "بعد", "قبل", "عند",
-  "كل", "بين", "حتى", "لم", "لن", "قد", "كان", "يكون", "هو", "هي", "بدل",
-  // English
-  "the", "a", "an", "of", "to", "in", "on", "for", "and", "or", "is", "are",
-  "was", "be", "with", "that", "this", "it", "as", "at", "by", "not", "no",
-  "when", "via",
-]);
-
 const TASHKEEL = /[ً-ْٰـ]/g;   // harakat + dagger alif + tatweel
 
 /** Normalize one token: Arabic orthography folding + Latin lowercase. */
@@ -50,6 +36,25 @@ function normalizeToken(tok: string): string {
   if (s.startsWith("ال") && s.length >= 5) s = s.slice(2);
   return s;
 }
+
+// Function words that carry no retrieval signal. Small on purpose: an
+// aggressive list starts eating domain words; these are only the unambiguous
+// glue of both languages. Written in natural spelling and NORMALIZED at build
+// time through the same folding tokens go through (#1028): the membership test
+// runs on normalized tokens, so «على» must be stored as «علي» and «إلى» as
+// «الي» — kept raw, the two most common Arabic prepositions sailed through as
+// retrieval terms and the auto-recall gate (3 shared tokens) fired a "similar
+// closed bug" hint on reports that shared nothing but على/إلى/تظهر.
+const STOPWORDS = new Set([
+  // Arabic
+  "في", "من", "على", "الى", "إلى", "عن", "مع", "ان", "أن", "إن", "لا", "ما",
+  "هذا", "هذه", "ذلك", "التي", "الذي", "ثم", "او", "أو", "بعد", "قبل", "عند",
+  "كل", "بين", "حتى", "لم", "لن", "قد", "كان", "يكون", "هو", "هي", "بدل",
+  // English
+  "the", "a", "an", "of", "to", "in", "on", "for", "and", "or", "is", "are",
+  "was", "be", "with", "that", "this", "it", "as", "at", "by", "not", "no",
+  "when", "via",
+].map(normalizeToken));
 
 /**
  * Text → informative tokens. Splits on anything that is neither a letter (any

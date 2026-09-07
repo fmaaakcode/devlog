@@ -49,6 +49,9 @@ export interface GuardCtx {
   flushTagQueue: () => Promise<unknown>;
   /** Feeds Claude and exits the hook — never returns. */
   blockContinue: (text: string) => Promise<never>;
+  /** Per-call cap under the hook's remaining wall-clock budget (#1042);
+   *  absent = the call's own cap (older callers, unit tests). */
+  budget?: (wantMs: number) => number;
 }
 
 /** Response items from /api/changes/session — see AskData in hook-asks for why
@@ -140,7 +143,7 @@ async function recordCompliance(
 
 async function sessionChanges(ctx: GuardCtx, timeoutMs = 3000): Promise<{ items: ChangeItem[]; tagCount?: number }> {
   const r = await fetch(`${ctx.server}/api/changes/session?session_id=${encodeURIComponent(ctx.sessionId)}`,
-    { signal: AbortSignal.timeout(timeoutMs) });
+    { signal: AbortSignal.timeout(ctx.budget?.(timeoutMs) ?? timeoutMs) });
   if (!r.ok) return { items: [] };
   const { items = [], tagCount } = await r.json() as { items?: ChangeItem[]; tagCount?: number };
   return { items, tagCount };
@@ -226,13 +229,17 @@ const MANIFEST = /(?:^|[\\/])(Cargo\.toml|package\.json|go\.mod|pyproject\.toml|
  * is still bad next turn, and nagging every turn is how a guard gets muted.
  */
 export async function depFreshnessGuard(ctx: GuardCtx): Promise<void> {
-  if (!ctx.cwd || !ctx.sessionId || ctx.stopHookActive || envOff("DEVLOG_STANDARDS_CHECK")) return;
+  // No stopHookActive gate (#1034 / F-3.10): a continuation caused by ANOTHER
+  // guard (near-miss, backtick, an ask) used to skip this check entirely, so a
+  // manifest edit in a turn that also had a typo'd tag was never checked. The
+  // per-session violation signature below is what prevents re-firing.
+  if (!ctx.cwd || !ctx.sessionId || envOff("DEVLOG_STANDARDS_CHECK")) return;
   const { isEnforcementDisabled, isAcked } = await import("./standards");
   if (isEnforcementDisabled(ctx.cwd)) return;
   const { items } = await sessionChanges(ctx);
   if (!items.some(it => MANIFEST.test(it.file_path || ""))) return;
 
-  const r1 = await fetch(`${ctx.server}/api/dep-freshness?cwd=${encodeURIComponent(ctx.cwd)}`, { signal: AbortSignal.timeout(10000) });
+  const r1 = await fetch(`${ctx.server}/api/dep-freshness?cwd=${encodeURIComponent(ctx.cwd)}`, { signal: AbortSignal.timeout(ctx.budget?.(10000) ?? 10000) });
   const { violations: allViolations = [] } = r1.ok ? await r1.json() as { violations?: Violation[] } : { violations: [] };
   // Drop deps the developer marked intentional (P5): `dep:<name>`.
   const violations = allViolations.filter((v: Violation) => !isAcked(ctx.cwd, "dep", v.name));
@@ -245,8 +252,8 @@ export async function depFreshnessGuard(ctx: GuardCtx): Promise<void> {
   const lines = violations.map((v: Violation) => v.kind === "behind"
     ? L(`· ${v.name} ${v.installed} → use ${v.suggest} (a newer mature version is available)`,
         `· ${v.name} ${v.installed} → استخدم ${v.suggest} (إصدار أحدث ناضج متاح)`)
-    : L(`· ${v.name} ${v.installed} (latest ${v.latest} is ${v.ageDays} days old < 7) → use ${v.suggest}`,
-        `· ${v.name} ${v.installed} (الأحدث ${v.latest} عمره ${v.ageDays} يوم < 7) → استخدم ${v.suggest}`));
+    : L(`· ${v.name} ${v.installed} (latest ${v.latest} is ${v.ageDays} days old < 7) → pin exactly: ${v.cmd || v.suggest}`,
+        `· ${v.name} ${v.installed} (الأحدث ${v.latest} عمره ${v.ageDays} يوم < 7) → ثبّت بدقة: ${v.cmd || v.suggest}`));
   const out = [
     "════════ DevLog Dependency Check ════════",
     L(`⚠ ${violations.length} dependency(ies) violate the dependencies standard:`,
@@ -264,7 +271,7 @@ export async function depFreshnessGuard(ctx: GuardCtx): Promise<void> {
     { detail: violations.map((v: Violation) => v.name).join(",") });
 }
 
-interface Violation { name: string; installed: string; suggest: string; latest?: string; ageDays?: number; kind?: string }
+interface Violation { name: string; installed: string; suggest: string; latest?: string; ageDays?: number; kind?: string; eco?: string; cmd?: string }
 
 /**
  * Untagged-session guard — the in-session answer to the silent-omission hole
@@ -415,7 +422,13 @@ export async function rootCauseGuard(ctx: GuardCtx): Promise<void> {
     if (!caused || await ctx.shouldServeAsk(`rootcause:${n}`)) continue;
     await recordCompliance(ctx, "root-cause", `rootcause-pass:${n}`, `#${n}`);
   }
-  if (ctx.stopHookActive || hasInsight) return;
+  // No stopHookActive gate (#1034 / F-3.10): when near-miss (or any ask) blocked
+  // first, the continuation arrived with stopHookActive=true and this guard
+  // returned before ever marking `rootcause:N` — so a bare `-(bug fix) #N` in
+  // the same response was stored with no cause and no notice, against the
+  // "blocked once" promise. The per-number key below is the loop guard: a
+  // number already served is never blocked again, continuation or not.
+  if (hasInsight) return;
 
   const bare: number[] = [];
   for (const t of tags) {

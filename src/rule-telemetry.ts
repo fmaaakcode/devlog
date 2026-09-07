@@ -24,7 +24,7 @@
 // Counters separate those two. What they do NOT measure is whether the tags the
 // block extracted are honest — that stays the verification loop's question.
 
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, unlink } from "node:fs/promises";
 import { DATA_DIR } from "./data";
 import { softFail } from "./soft-fail";
 
@@ -95,8 +95,26 @@ export async function appendRuleTelemetry(
   }
 }
 
-/** All stored records, oldest first, capped to the newest `cap` lines. Corrupt
- *  lines are skipped (append-only files survive crashes mid-line). */
+/** Remove the whole trail — the /api/data/clear twin (#1060). Absent file =
+ *  already clear; any other failure is reported, not swallowed, so the wipe
+ *  route can say what it could not remove. */
+export async function clearRuleTelemetry(): Promise<boolean> {
+  try {
+    await unlink(TELEMETRY_FILE);
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code === "ENOENT") return true;
+    softFail("ruleTelemetry.clear", e);
+    return false;
+  }
+}
+
+/** All stored records, oldest first. Counter records (fire/ack/pass) are capped
+ *  to the newest `cap`; LIFECYCLE records (adopt/remove/exempt) are never
+ *  dropped (#1134) — adoption dates have no other store, they are the oldest
+ *  lines by nature, and a cap that ate them made ruleEffect report "no rule
+ *  was ever adopted" once the file passed 20k lines. Corrupt lines are skipped
+ *  (append-only files survive crashes mid-line). */
 export async function loadRuleTelemetry(cap = 20_000): Promise<RuleTelemetryRecord[]> {
   let raw: string;
   try {
@@ -112,5 +130,13 @@ export async function loadRuleTelemetry(cap = 20_000): Promise<RuleTelemetryReco
       if (typeof r.ts === "string" && gateSet.has(r.gate) && actionSet.has(r.action) && typeof r.rule === "string") out.push(r);
     } catch { /* torn line — skip */ }
   }
-  return out.slice(-cap);
+  if (out.length <= cap) return out;
+  // Keep every lifecycle record, then the newest counters up to the cap;
+  // re-sort by timestamp so the result stays oldest-first.
+  const lifecycle = out.filter(isLifecycle);
+  const keep = Math.max(0, cap - lifecycle.length);
+  const counters = keep ? out.filter(r => !isLifecycle(r)).slice(-keep) : [];   // slice(-0) would keep everything
+  return [...lifecycle, ...counters].sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
 }
+
+const isLifecycle = (r: RuleTelemetryRecord): boolean => r.action === "adopt" || r.action === "remove" || r.action === "exempt";

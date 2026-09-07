@@ -18,8 +18,9 @@ import {
   CLOSER_KINDS, NUMBERED_TAGS,
 } from "./data";
 import { pathsEqual } from "./path-utils";
+import { handleDocTag } from "./doc-tag";
 import {
-  handleDocTag, enforceAtomicContent, resolveClosureNumber, diagnoseClosureMismatch,
+  enforceAtomicContent, resolveClosureNumber, diagnoseClosureMismatch,
   diagnoseClosureTextDivergence, confirmClosure, applyRelease, resolveReleaseIntent,
   detectReleaseDowngrade, detectReleaseOpenItems, detectReleaseIntentConflict, syncPlanSteps, pairSameResponseClosure, pushRejection,
   type ClosureMismatch, type ClosureTextDivergence, type ClosureConfirm, type BatchOpener,
@@ -28,12 +29,13 @@ import {
 import { detectReleaseJump, releaseJumpWasRefused } from "./release-leap";
 import { applyUpcoming, applyTodoPromotion, type UpcomingChange } from "./upcoming";
 import { judgeClaim } from "./claim-evidence";
-import { diagnoseFeatureRef, type FeatureRefProblem } from "./features";
+import { diagnoseFeatureMarker, diagnoseFeatureRef, type FeatureRefProblem } from "./features";
+import { parseLibTag } from "./deps-explain";
 import { detectReopen, PROBLEM_TAGS, type ReopenHint } from "./reopen";
 import { applyUndo } from "./undo";
 import type { RollbackResult } from "./release-rollback";
 import { parseCloserTail, closerTail, type ParsedCloserTail } from "./failure-class";
-import { leadingNums } from "./open-items";
+import { leadingNums, singleHashNum } from "./open-items";
 import type { DevLogData, TagEntry } from "./types";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -92,6 +94,10 @@ export interface EntryCtx {
   /** #998: a `[word]` after `#N` that is not in the failure-class vocabulary.
    *  Surfaced as a soft hint; the closure applies, the word is not stored. */
   classHints: Array<{ num: number; word: string }>;
+  /** #1115: `-(lib) name — purpose` diagnostics. "orphan" = stored, but the
+   *  name matches no manifest library (typo or CDN); "no-purpose" = nothing to
+   *  record, skipped. Both used to be silent. */
+  libHints: Array<{ kind: "orphan" | "no-purpose"; name: string }>;
   releaseResult: Awaited<ReturnType<typeof applyRelease>>;
   releaseIntent: ReleaseIntent | null;
   releaseIntentConflict: ReleaseIntentConflict | null;
@@ -108,10 +114,16 @@ export interface EntryCtx {
   /** #998: what the closer wrote after `#N`, captured BEFORE resolveClosureNumber
    *  replaces the content with the opener's text. Stamped on the stored entry. */
   closerTail: ParsedCloserTail | null;
+  /** #1019: this entry is a closer that resolved by NUMBER to an open item. Its
+   *  content is now the opener's text, so whole-history dedup would compare it
+   *  against the PREVIOUS closer of a same-text item and drop it — after the
+   *  «✓ أُغلق» echo was already pushed. A number targets one open item; it is
+   *  never a duplicate of anything. */
+  numberedClosure: boolean;
 }
 
 /** What the handler hands runEntryBatch: everything but the per-entry cursor. */
-export type EntryBatchCtx = Omit<EntryCtx, "entry" | "rawContent" | "tag" | "content" | "pairedThisEntry" | "closerTail">;
+export type EntryBatchCtx = Omit<EntryCtx, "entry" | "rawContent" | "tag" | "content" | "pairedThisEntry" | "closerTail" | "numberedClosure">;
 
 export interface EntryStage {
   /** The pipeline move this row performs (documentation + tracing). */
@@ -227,10 +239,22 @@ export const ENTRY_STAGES: EntryStage[] = [
           // Every OTHER kind (wrong-verb, no-match, already-closed-wrong-verb) is a
           // real signal — the wrong-verb-on-closed case means a likely number typo
           // aimed at a different open item (#396) — so surface it. Never stored.
-          if (mismatch.kind !== "already-closed") ctx.closureHints.push(mismatch);
+          // ONE exception to the silence (T-152): the batch ALSO opened exactly
+          // one compatible item that nothing closes yet — «-(bug found) X» +
+          // «-(bug fix) #1180» where #1180 is yesterday's closed bug is the #465
+          // slip with a real number, and swallowing it left X open forever with
+          // nobody speaking. Surfaced with the opener's number; never auto-paired.
+          if (mismatch.kind === "already-closed") {
+            const orphan = pairSameResponseClosure(tag, ctx.batchOpeners, ctx.closedInBatch);
+            if (orphan) ctx.closureHints.push({ ...mismatch, batchOpenerNum: orphan.num });
+          } else ctx.closureHints.push(mismatch);
           return "stop";
         }
-      } else if (CLOSER_KINDS[tag] && !/#\d/.test(ctx.content || "")) {
+      } else if (CLOSER_KINDS[tag] && !leadingNums(ctx.content || "").length && singleHashNum(ctx.content || "") === null) {
+        // "No number" means what the resolver means (#1024): neither a leading
+        // `#N` run nor a bare `12`. The old `/#\d/` test let `-(bug fix) 12` —
+        // valid for open #12 — fall into this text path, where it matched no
+        // text and got paired with the batch's lone opener instead.
         // #633 documented path: a closer with NO number at all. If its text
         // matches an open item (or an open plan step / a Pn phase code for
         // done/dropped), the legacy text-closure machinery owns it untouched.
@@ -275,6 +299,26 @@ export const ENTRY_STAGES: EntryStage[] = [
         ctx.featureHints.push(featProblem);
         return "stop";
       }
+      // #1188: a `[vX.Y.Z]` marker naming no recorded release — advisory only;
+      // the feature is stored (attributed by date), the hint asks for a check.
+      const markerProblem = diagnoseFeatureMarker(ctx.tag, ctx.content, ctx.data, ctx.project);
+      if (markerProblem) ctx.featureHints.push(markerProblem);
+    },
+  },
+  // Library purpose (`-(lib) name — purpose`, #1115): a bare name records
+  // nothing and is skipped with a hint; a purpose for a name the manifest
+  // does not hold is STORED (a CDN or vendored library is legitimate) but
+  // echoed back so a typo is caught at capture, not discovered as ∅ later.
+  {
+    key: "lib-purpose",
+    applies: ctx => ctx.tag === "lib",
+    run(ctx) {
+      const parsed = parseLibTag(ctx.content);
+      if (!parsed) { ctx.libHints.push({ kind: "no-purpose", name: ctx.content.trim().split(/\s+/)[0] || "" }); return "stop"; }
+      const libs = ctx.data.projects[ctx.project]?.libraries || [];
+      if (libs.length && !libs.some(l => l.name.toLowerCase() === parsed.name.toLowerCase())) {
+        ctx.libHints.push({ kind: "orphan", name: parsed.name });
+      }
     },
   },
   // Text-divergence guard (#315): a `#N <tail>` closure whose trailing
@@ -310,6 +354,7 @@ export const ENTRY_STAGES: EntryStage[] = [
       ctx.content = resolveClosureNumber(tag, ctx.content, data, project);
       const closeConfirm = confirmClosure(tag, preResolve, ctx.content);
       if (closeConfirm) {
+        ctx.numberedClosure = true;
         ctx.closed.push(closeConfirm);
         ctx.closedInBatch.add(closeConfirm.num);
         // #682: fix-shaped confirms feed the pattern-sweep hint (routes-tags).
@@ -355,8 +400,11 @@ export const ENTRY_STAGES: EntryStage[] = [
     key: "undo",
     applies: ({ tag }) => tag === "undo",
     async run(ctx): Promise<"stop"> {
-      const rb = await applyUndo(ctx.content, ctx.data, ctx.project);
-      if (rb) ctx.rollback = rb;
+      // #1206: every non-removal outcome has already pushed its rejection inside
+      // applyUndo; the batch's rejections ride the /api/tags response, so the
+      // model hears «removed NOTHING» in the same turn instead of a silent null.
+      const u = await applyUndo(ctx.content, ctx.data, ctx.project);
+      if (u.rollback) ctx.rollback = u.rollback;
       return "stop";
     },
   },
@@ -393,7 +441,12 @@ export const ENTRY_STAGES: EntryStage[] = [
     applies: () => true,
     run(ctx) {
       const { tag, content, data, project } = ctx;
-      const isMeta = tag === "done" || tag === "dropped" || tag === "undo";
+      // A closer resolved by `#N` is meta too (#1019): its content is the
+      // opener's text, so a re-reported bug (#743 path: same text, fresh
+      // number) fixed a second time compared byte-equal to the FIRST fix and
+      // was dropped — after «✓ أُغلق #N» went out — leaving the item
+      // unclosable by number forever.
+      const isMeta = tag === "done" || tag === "dropped" || tag === "undo" || ctx.numberedClosure;
       const normContent = normalizeTagContent(content);
       // Exact-match dedup only. The previous 60-char prefix path silently
       // dropped legitimate tags whose first 60 chars happened to match an
@@ -416,7 +469,7 @@ export const ENTRY_STAGES: EntryStage[] = [
           const openTwin = projTags.some(t =>
             t.tag === tag && typeof t.num === "number" && openNums.has(t.num)
             && normalizeTagContent(t.content) === normContent);
-          regressionReport = !openTwin && !!detectReopen(data, project, tag, content, ctx.touchedFiles);
+          regressionReport = !openTwin && !!detectReopen(data, project, tag, content);
         }
         if (!regressionReport) {
           console.log(`[/api/tags] dedup drop: project=${project} tag=${tag} content="${content.slice(0, 80)}"`);
@@ -564,7 +617,7 @@ export const ENTRY_STAGES: EntryStage[] = [
       // a fix that didn't hold — store the relation, echo it to the hook.
       // Detected BEFORE the push so the new entry can't match itself.
       if (typeof tagEntry.num === "number") {
-        const reopen = detectReopen(data, project, tag, content, tagEntry.files);
+        const reopen = detectReopen(data, project, tag, content);
         if (reopen) {
           tagEntry.relatedTo = reopen.num;
           ctx.reopenHints.push({ ...reopen, reportNum: tagEntry.num });
@@ -598,6 +651,7 @@ export async function runEntryBatch(batch: TagInput[], shared: EntryBatchCtx): P
     ctx.content = "";
     ctx.pairedThisEntry = false;
     ctx.closerTail = null;
+    ctx.numberedClosure = false;
     for (const stage of ENTRY_STAGES) {
       if (!stage.applies(ctx)) continue;
       if (await stage.run(ctx) === "stop") break;

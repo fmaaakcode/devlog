@@ -9,24 +9,27 @@
 // closed by `#N` must disappear from DEVLOG_STATUS.md, which is why closure
 // resolution goes through the shared open-item resolvers instead of a local
 // re-implementation — a divergent copy here once left `-(done) #N` items open
-// in the status file forever. (2) Ownership: generateStackMd is generate-once
-// by default (`force` to regenerate) because a user may hand-edit the stack
-// map; regenerating on every scan would silently eat their edits.
+// in the status file forever. (2) Ownership: generateStackMd (export-stack.ts,
+// re-exported here) regenerates after every scan but only while the file's
+// body-hash trailer still matches — a hand-edited stack map is kept until the
+// dashboard's explicit regenerate (#1093).
 //
 // Section headings in DEVLOG_STACK.md are the contract that stack-parser.ts
-// reads back for the dashboard's stack map — rename one here and the
-// corresponding section there goes silently empty.
+// reads back for the dashboard's stack map — rename one there and the
+// corresponding section here goes silently empty.
 
+import { existsSync } from "node:fs";
 import { mkdir, appendFile } from "node:fs/promises";
-import { join } from "node:path";
-import type { DevLogData, ProjectProfile, TagEntry } from "./types";
+import { basename, join } from "node:path";
+import type { DevLogData, TagEntry } from "./types";
 import { projectName, normalizeTagContent, openTodos, openBugs, openSecurity, SECURITY_OPEN_TAGS } from "./data";
-import { changelogLine } from "./changelog-rebuild";
-import { analyzeProject } from "./analyze";
+import { leadingNums } from "./open-items";
+import { changelogLine, changelogHeader } from "./changelog-rebuild";
 import { suggestBumpSince } from "./tags-service";
 import { computeNextVersion } from "./version-writer";
 import { parseVersionMarker } from "./release-html";
 import { currentLang } from "./i18n";
+export { generateStackMd, stackFileIsGenerated } from "./export-stack";
 
 // #892: the committed mirrors (DEVLOG_STATUS.md / DEVLOG_GITHUB.md) render in
 // the DEVLOG_LANG language. DEVLOG_STACK.md stays out of scope — its section
@@ -36,12 +39,20 @@ const L = (en: string, ar: string): string => (currentLang() === "ar" ? ar : en)
 // True when two strings share a long common prefix that covers most of both
 // (≥25 chars AND ≥80% of the longer). Guards against treating items that merely
 // share a boilerplate prefix (e.g. "… Finding #2" vs "… Finding #3") as equal.
+// A differing tail that carries a DIGIT is never a re-emit: the auto-update
+// shape «marked — تم التحديث الى 18.0.0» vs «… 18.0.5» passed the 80% rule
+// (the version is <20% of the line) and the release notes named the wrong
+// library version (#1095).
 function sharedPrefixClose(na: string, nb: string): boolean {
   if (na.length <= 10 || nb.length <= 10) return false;
   let i = 0;
   const min = Math.min(na.length, nb.length);
   while (i < min && na[i] === nb[i]) i++;
-  return i >= 25 && i >= 0.8 * Math.max(na.length, nb.length);
+  if (i < 25 || i < 0.8 * Math.max(na.length, nb.length)) return false;
+  // Back up to the start of the token the divergence sits in, then compare tails.
+  let t = i;
+  while (t > 0 && /[\w.]/.test(na[t - 1])) t--;
+  return !/\d/.test(na.slice(t)) && !/\d/.test(nb.slice(t));
 }
 
 function fuzzyMatch(a: string, b: string): boolean {
@@ -64,7 +75,11 @@ export function dedupTags(list: TagEntry[]): TagEntry[] {
   });
 }
 
-export async function exportStatusMd(projectPath: string, data: DevLogData, projectKey?: string) {
+/** Outcome of a mirror export: the caller decides whether "nothing written"
+ *  is fine (hook path) or must be reported (dashboard export buttons). */
+export interface ExportOutcome { written: boolean; reason?: "nothing-to-export" | "folder-missing" | "write-failed"; detail?: string }
+
+export async function exportStatusMd(projectPath: string, data: DevLogData, projectKey?: string): Promise<ExportOutcome> {
   // Prefer the caller's known key over re-deriving from the path basename (#F3):
   // a rename-while-folder-detached leaves key=newName but basename=oldName, so
   // the derived name finds zero tags and the mirror files freeze silently.
@@ -73,7 +88,10 @@ export async function exportStatusMd(projectPath: string, data: DevLogData, proj
   const plans = (data.plans || []).filter(p => p.project === name);
   const project = data.projects[name];
 
-  if (tags.length === 0 && plans.length === 0) return;
+  if (tags.length === 0 && plans.length === 0) return { written: false, reason: "nothing-to-export" };
+  // Mirrors go INTO an existing folder, never conjure one (#1058): mkdir -p on a
+  // deleted/foreign path resurrected it as two orphan files and un-tombstoned it.
+  if (!existsSync(projectPath)) return { written: false, reason: "folder-missing", detail: projectPath };
 
   const releases = tags.filter(t => t.tag === "release");
   const todos = tags.filter(t => t.tag === "todo");
@@ -131,10 +149,27 @@ export async function exportStatusMd(projectPath: string, data: DevLogData, proj
   const currentTodoTags = openTodoTags.filter(t => !t.upcoming);
   const currentBugTags = openBugTags.filter(t => !t.upcoming);
   const upcomingTags = [...openTodoTags, ...openBugTags].filter(t => t.upcoming);
+  // A todo closed by `-(dropped) #N` was WITHDRAWN, not done: it renders struck
+  // through, never as `[x]` — the committed file used to claim work that never
+  // happened (#1096). Dropped-by-number is the only closer shape since #998
+  // (`-(dropped) #N`); a dropped tag carrying text instead is matched by content.
+  const droppedNums = new Set<number>();
+  const droppedTexts = new Set<string>();
+  for (const d of tags) {
+    if (d.tag !== "dropped") continue;
+    const nums = leadingNums(d.content);
+    if (nums.length) for (const n of nums) droppedNums.add(n);
+    else droppedTexts.add(normalizeTagContent(d.content));
+  }
+  const isDropped = (t: TagEntry) => (typeof t.num === "number" && droppedNums.has(t.num)) || droppedTexts.has(normalizeTagContent(t.content));
   if (todos.length) {
     lines.push(L("## Tasks", "## المهام"));
     for (const t of currentTodoTags) lines.push(`- [ ] ${numPrefix(t.num)}${t.content}`);
-    for (const t of closedTodoTags) lines.push(`- [x] ${numPrefix(t.num)}${t.content}`);
+    for (const t of closedTodoTags) {
+      lines.push(isDropped(t)
+        ? `- ~~${numPrefix(t.num)}${t.content}~~ ${L("(withdrawn)", "(مسحوبة)")}`
+        : `- [x] ${numPrefix(t.num)}${t.content}`);
+    }
     lines.push("");
   }
   if (upcomingTags.length) {
@@ -214,8 +249,10 @@ export async function exportStatusMd(projectPath: string, data: DevLogData, proj
     await Bun.write(join(devlogDir, "DEVLOG_STATUS.md"), md);
     await appendChangelog(devlogDir, tags);
     await exportGithubMd(projectPath, data, name);
+    return { written: true };
   } catch (e) {
     console.error(`[exportStatusMd] export skipped for ${projectPath}: ${(e as Error)?.message}`);
+    return { written: false, reason: "write-failed", detail: (e as Error)?.message || String(e) };
   }
 }
 
@@ -316,7 +353,8 @@ export async function exportGithubMd(projectPath: string, data: DevLogData, proj
   lines.push(`> ${L("Last updated", "آخر تحديث")}: ${new Date().toISOString()}`);
   lines.push("");
   lines.push(L("## 📌 Project", "## 📌 المشروع"));
-  lines.push(`- **Local path:** \`${projectPath}\``);
+  // Folder name only (#1098): this file is pushed, and an absolute path leaks the machine layout + account name.
+  lines.push(`- **${L("Folder", "المجلد")}:** \`${basename(projectPath)}\``);
   if (lastRelease) {
     const days = Math.floor((Date.now() - lastReleaseTime) / 86400000);
     lines.push(`- **Last release:** ${lastVersion} (${lastRelease.timestamp.split("T")[0]})`);
@@ -492,315 +530,6 @@ export async function exportGithubMd(projectPath: string, data: DevLogData, proj
   await Bun.write(join(projectPath, ".devlog", "DEVLOG_GITHUB.md"), lines.join("\n"));
 }
 
-export async function generateStackMd(projectPath: string, project: ProjectProfile, force = false) {
-  const devlogDir = join(projectPath, ".devlog");
-  const stackFile = join(devlogDir, "DEVLOG_STACK.md");
-
-  // Generate-once by default (may carry manual edits); force = explicit regen.
-  // R9 F2 exception: an EMPTY-analysis file is frozen residue of the old lib/ skip — regenerate it, or the fix reaches no one.
-  // Both language variants of the empty marker are probed (#906 made headings bilingual).
-  const file = Bun.file(stackFile);
-  if (!force && await file.exists() && !(await file.text().then(t => t.includes("| 0 سطر | 0 دالة") || t.includes("| 0 lines | 0 functions")).catch(() => false))) return;
-
-  try { await mkdir(devlogDir, { recursive: true }); } catch { /* best-effort: a real failure resurfaces at the write below */ }
-
-  // Deep analysis
-  const analysis = await analyzeProject(projectPath);
-
-  const lines: string[] = [];
-  lines.push(`# ${project.name}`);
-  lines.push("");
-
-  // Detect all languages used and runtimes
-  const cppFiles = (project.files.cpp || 0) + (project.files.cc || 0) + (project.files.cxx || 0) + (project.files.c || 0) + (project.files.h || 0) + (project.files.hpp || 0) + (project.files.cu || 0);
-  const tsFiles = (project.files.ts || 0) + (project.files.tsx || 0);
-  const jsFiles = (project.files.js || 0) + (project.files.jsx || 0);
-  const pyFiles = (project.files.py || 0);
-  const rsFiles = (project.files.rs || 0);
-  const goFiles = (project.files.go || 0);
-
-  // Build language list (dominant first)
-  const langs: string[] = [];
-  const langCounts: [string, number][] = [];
-  if (cppFiles > 0) langCounts.push(["C++", cppFiles]);
-  if (tsFiles > 0) langCounts.push(["TypeScript", tsFiles]);
-  if (jsFiles > 0) langCounts.push(["JavaScript", jsFiles]);
-  if (rsFiles > 0) langCounts.push(["Rust", rsFiles]);
-  if (pyFiles > 0) langCounts.push(["Python", pyFiles]);
-  if (goFiles > 0) langCounts.push(["Go", goFiles]);
-  langCounts.sort((a, b) => b[1] - a[1]);
-  for (const [lang] of langCounts) langs.push(lang);
-  if (langs.length === 0) langs.push(project.language);
-
-  // Detect standard/runtime for each language
-  const qualifiers: string[] = [];
-  if (langs.includes("C++")) {
-    if (analysis.patterns.includes("CUDA")) qualifiers.push("CUDA");
-    if (analysis.patterns.includes("CMake")) qualifiers.push("CMake");
-    // Detect C++ standard from CMakeLists or code
-    if (project.files.cu) qualifiers.push("CUDA");
-  }
-  if (langs.includes("TypeScript") || langs.includes("JavaScript")) {
-    const bunLock = await Bun.file(join(projectPath, "bun.lockb")).exists() || await Bun.file(join(projectPath, "bunfig.toml")).exists();
-    if (bunLock || (tsFiles > 0 && !project.libraries.some(l => l.name === "typescript"))) qualifiers.push("Bun");
-    else if (await Bun.file(join(projectPath, "package-lock.json")).exists()) qualifiers.push("Node.js");
-    else if (await Bun.file(join(projectPath, "yarn.lock")).exists()) qualifiers.push("Yarn");
-    else if (await Bun.file(join(projectPath, "pnpm-lock.yaml")).exists()) qualifiers.push("pnpm");
-    // Deno detection
-    if (await Bun.file(join(projectPath, "deno.json")).exists() || await Bun.file(join(projectPath, "deno.jsonc")).exists()) {
-      qualifiers.length = 0; // clear Bun detection
-      qualifiers.push("Deno");
-    }
-  }
-
-  const langStr = langs.join(" / ") + (qualifiers.length > 0 ? ` (${[...new Set(qualifiers)].join(", ")})` : "");
-
-  // The project description is the DECLARED one (`-(desc)`), never a guess.
-  // It used to be assembled from detected patterns, which states things nobody
-  // claimed: a Bun/TypeScript project came out as "P2P + واجهة Qt" because two
-  // text signatures matched (#791). Patterns are still listed below under
-  // «الأنماط», where they read as evidence rather than as an identity. No
-  // `-(desc)` yet → no line at all; the describe-nudge already asks for one.
-  const declaredDesc = (project.description || "").trim();
-
-  // Stack. Headings follow the i18n policy like STATUS/GITHUB (#892/#906):
-  // English default, DEVLOG_LANG=ar for Arabic.
-  lines.push("## Stack");
-  lines.push(L(`- **Language**: ${langStr}`, `- **اللغة**: ${langStr}`));
-  if (declaredDesc) lines.push(L(`- **Description**: ${declaredDesc}`, `- **الوصف**: ${declaredDesc}`));
-  if (project.framework) lines.push(L(`- **Framework**: ${project.framework}`, `- **الإطار**: ${project.framework}`));
-  if (analysis.patterns.length > 0) lines.push(L(`- **Patterns**: ${analysis.patterns.join(", ")}`, `- **الأنماط**: ${analysis.patterns.join("، ")}`));
-  lines.push(L(
-    `- **Files**: ${project.totalFiles} files | ${analysis.totalLines} lines | ${analysis.totalFunctions} functions`,
-    `- **الملفات**: ${project.totalFiles} ملف | ${analysis.totalLines} سطر | ${analysis.totalFunctions} دالة`));
-  lines.push("");
-
-  // Libraries
-  const prodLibs = project.libraries.filter(l => !l.dev);
-  const devLibs = project.libraries.filter(l => l.dev);
-  if (project.libraries.length > 0) {
-    lines.push(L("## Libraries", "## المكتبات"));
-    if (prodLibs.length > 0) {
-      for (const l of prodLibs) lines.push(`- ${l.name} \`${l.version}\``);
-    }
-    if (devLibs.length > 0) {
-      lines.push("");
-      lines.push("**Dev:**");
-      for (const l of devLibs) lines.push(`- ${l.name} \`${l.version}\``);
-    }
-    lines.push("");
-  }
-
-  // Importance indicator based on rank
-  const maxFileRank = Math.max(...Object.values(analysis.fileRanks || {}), 0.001);
-  function importanceLabel(rank: number, max: number): string {
-    const pct = rank / max;
-    if (pct > 0.7) return "███";
-    if (pct > 0.4) return "██░";
-    if (pct > 0.15) return "█░░";
-    return "░░░";
-  }
-
-  // File map — sorted by importance (already sorted by PageRank)
-  if (analysis.files.length > 0) {
-    lines.push(L("## File map (sorted by importance)", "## خريطة الملفات (مرتبة بالأهمية)"));
-    lines.push(L("| Importance | File | Lines | Description | Exports |", "| الأهمية | الملف | الأسطر | الوصف | يصدّر |"));
-    lines.push("|---------|-------|--------|-------|-------|");
-    for (const f of analysis.files) {
-      const rank = analysis.fileRanks?.[f.path] || 0;
-      const bar = importanceLabel(rank, maxFileRank);
-      const exportsStr = f.exports.slice(0, 4).join(", ") + (f.exports.length > 4 ? " ..." : "");
-      lines.push(`| ${bar} | \`${f.path}\` | ${f.lines} | ${f.description} | ${exportsStr || "—"} |`);
-    }
-    lines.push("");
-  }
-
-  // Functions — sorted by importance within each file
-  const maxFnRank = Math.max(...Object.values(analysis.fnRanks || {}), 0.001);
-  const filesWithFns = analysis.files.filter(f => f.functions.length > 0);
-  if (filesWithFns.length > 0) {
-    lines.push(L("## Key functions", "## الدوال الرئيسية"));
-    for (const f of filesWithFns) {
-      const fname = f.path.split("/").pop()?.replace(/\.\w+$/, "") || f.path;
-      // Sort functions by rank
-      const sortedFns = [...f.functions].sort((a, b) => {
-        const ra = analysis.fnRanks?.[`${f.path}:${a.name}`] || 0;
-        const rb = analysis.fnRanks?.[`${f.path}:${b.name}`] || 0;
-        return rb - ra;
-      });
-      lines.push(`### ${fname}`);
-      for (const fn of sortedFns) {
-        const fnRank = analysis.fnRanks?.[`${f.path}:${fn.name}`] || 0;
-        const bar = importanceLabel(fnRank, maxFnRank);
-        const prefix = fn.isExported ? "**" : "";
-        const suffix = fn.isExported ? "**" : "";
-        const async_ = fn.isAsync ? "async " : "";
-        let line = `- ${bar} ${prefix}${async_}${fn.name}${fn.params}${suffix}`;
-        if (fn.description) line += ` — ${fn.description}`;
-        if (fn.lines > 1) line += L(` [${fn.lines} lines]`, ` [${fn.lines} سطر]`);
-        lines.push(line);
-        if (fn.calls.length > 0) {
-          lines.push(L(`  - calls: ${fn.calls.map(c => `\`${c}\``).join(", ")}`, `  - ينادي: ${fn.calls.map(c => `\`${c}\``).join("، ")}`));
-        }
-      }
-      lines.push("");
-    }
-  }
-
-  // Dependency graph — show both "imports" and "imported by"
-  if (analysis.files.length > 0) {
-    // Build reverse graph: who imports this file? Match by BASENAME (no ext),
-    // not substring — the old `target.path.includes(normalized)` linked `./data`
-    // to `metadata.ts` and `path` to `path-utils.ts` (R4 code-quality F2).
-    const baseOf = (p: string) => (p.split("/").pop() ?? "").replace(/\.\w+$/, "");
-    const importedBy: Record<string, string[]> = {};
-    for (const f of analysis.files) {
-      const sourceName = baseOf(f.path);
-      for (const imp of f.imports) {
-        const impBase = baseOf(imp.replace(/^\.+\//, ""));
-        for (const target of analysis.files) {
-          if (target.path === f.path) continue;   // ignore self-import
-          if (baseOf(target.path) !== impBase) continue;
-          (importedBy[target.path] ||= []);
-          if (!importedBy[target.path].includes(sourceName)) {
-            importedBy[target.path].push(sourceName);
-          }
-        }
-      }
-    }
-
-    lines.push(L("## File relationships", "## العلاقات بين الملفات"));
-    for (const f of analysis.files) {
-      const deps = f.imports.map(i => i.replace(/^\.\//, ""));
-      const usedBy = importedBy[f.path] || [];
-      if (deps.length === 0 && usedBy.length === 0) continue;
-
-      let line = `- \`${f.path}\``;
-      if (deps.length > 0) line += ` → ${deps.map(d => `\`${d}\``).join("، ")}`;
-      if (usedBy.length > 0) line += L(` ← used by: ${usedBy.map(u => `\`${u}\``).join(", ")}`, ` ← يستخدمه: ${usedBy.map(u => `\`${u}\``).join("، ")}`);
-      lines.push(line);
-    }
-    lines.push("");
-  }
-
-  // Entry points
-  if (analysis.entryPoints.length > 0) {
-    lines.push(L("## Entry points", "## نقاط الدخول"));
-    for (const ep of analysis.entryPoints) {
-      lines.push(`- \`${ep}\``);
-    }
-    lines.push("");
-  }
-
-  // API Routes
-  if (analysis.apiRoutes.length > 0) {
-    lines.push(L("## APIs", "## الـ APIs"));
-    // Group by method
-    const byMethod: Record<string, { path: string; file: string }[]> = {};
-    for (const r of analysis.apiRoutes) {
-      if (!byMethod[r.method]) byMethod[r.method] = [];
-      byMethod[r.method].push(r);
-    }
-    for (const [method, routes] of Object.entries(byMethod)) {
-      for (const r of routes) {
-        lines.push(`- **${method}** \`${r.path}\` ← \`${r.file}\``);
-      }
-    }
-    lines.push("");
-  }
-
-  // Data flow (only if we can confidently detect it)
-  const hasServer = analysis.patterns.includes("HTTP Server");
-  const hasWS = analysis.patterns.includes("WebSocket");
-  const hasDB = analysis.patterns.includes("Database");
-  const hasFileIO = analysis.patterns.includes("File I/O");
-  const hasHooks = analysis.apiRoutes.some(r => r.path.includes("hook"));
-  const hasClient = analysis.files.some(f => f.context === "client");
-
-  if (hasServer) {
-    lines.push(L("## Data flow", "## تدفق البيانات"));
-    lines.push("```");
-    if (hasHooks && hasWS) {
-      lines.push("Hooks → API → data.json → WebSocket → Dashboard");
-    } else if (hasDB && hasWS && hasClient) {
-      lines.push("Client → API → Database → WebSocket → Client");
-    } else if (hasDB && hasClient) {
-      lines.push("Client → API → Database → Response → Client");
-    } else if (hasFileIO && hasWS) {
-      lines.push("Input → API → Files → WebSocket → Client");
-    } else if (hasClient) {
-      lines.push("Client → API → Server → Response → Client");
-    } else {
-      lines.push("Request → API → Process → Response");
-    }
-    lines.push("```");
-    lines.push("");
-  }
-
-  // Threads
-  if (analysis.threads.length > 0) {
-    lines.push(L("## Threads", "## الخيوط (Threads)"));
-    for (let i = 0; i < analysis.threads.length; i++) {
-      const t = analysis.threads[i];
-      lines.push(`- **Thread ${i + 1}**: ${t.purpose} ← \`${t.file}\``);
-    }
-    lines.push("");
-  }
-
-  // IPC Messages
-  if (analysis.ipcMessages.length > 0) {
-    lines.push("## IPC Protocol", L(
-      "> Textual inference from the code — a list of likely candidates, not a confirmed protocol inventory.",
-      "> استدلال نصّي من الكود — قائمة مرشّحات محتملة، لا حصرًا مؤكَّدًا للبروتوكول.")); // heuristic harvest, never authoritative
-    const jsToNative = analysis.ipcMessages.filter(m => m.direction === "js→native");
-    const nativeToJs = analysis.ipcMessages.filter(m => m.direction === "native→js");
-    if (jsToNative.length > 0) {
-      lines.push("**JS → Native:**");
-      for (const m of jsToNative) lines.push(`- \`${m.name}\` ← \`${m.file}\``);
-    }
-    if (nativeToJs.length > 0) {
-      if (jsToNative.length > 0) lines.push("");
-      lines.push("**Native → JS:**");
-      for (const m of nativeToJs) lines.push(`- \`${m.name}\` ← \`${m.file}\``);
-    }
-    lines.push("");
-  }
-
-  // Data Types (structs, enums, interfaces)
-  if (analysis.dataTypes.length > 0) {
-    lines.push(L("## Data types", "## أنواع البيانات"));
-    for (const dt of analysis.dataTypes) {
-      const fieldsStr = dt.fields.slice(0, 8).join(", ") + (dt.fields.length > 8 ? ` ... (+${dt.fields.length - 8})` : "");
-      lines.push(`- **${dt.name}** (${dt.kind}) — ${fieldsStr} ← \`${dt.file}\``);
-    }
-    lines.push("");
-  }
-
-  // Security
-  if (analysis.security.length > 0) {
-    lines.push(L("## Security", "## الأمان"));
-    // Deduplicate by type
-    const seen = new Set<string>();
-    for (const s of analysis.security) {
-      if (seen.has(s.type)) continue;
-      seen.add(s.type);
-      const locations = analysis.security.filter(x => x.type === s.type).map(x => `\`${x.location}\``);
-      lines.push(`- **${s.type}** — ${locations.join("، ")}`);
-    }
-    lines.push("");
-  }
-
-  // File types
-  const exts = Object.entries(project.files).sort((a, b) => b[1] - a[1]);
-  if (exts.length > 0) {
-    lines.push(L("## File types", "## أنواع الملفات"));
-    for (const [ext, count] of exts) lines.push(`- \`.${ext}\` ${count}`);
-    lines.push("");
-  }
-
-  await Bun.write(stackFile, lines.join("\n"));
-}
-
 // Small, file-size-independent dedup index sitting next to the changelog
 // (#devops-F1): the set of logged tag ids + the last day header written. Avoids
 // reading the (ever-growing) .md on every hook. Bootstraps ONCE from the .md if
@@ -850,7 +579,7 @@ async function appendChangelog(devlogDir: string, tags: TagEntry[]) {
   }
 
   // True append — O(delta), not O(file). Header created once.
-  if (!mdExists) await Bun.write(file, "# سجل التغييرات\n");
+  if (!mdExists) await Bun.write(file, changelogHeader());
   await appendFile(file, append, "utf-8");
   // Prune-on-write (audit 2026-08-14 E5): persist only ids still present in
   // the store, not every id ever logged. A dead id can't be re-appended — the

@@ -17,8 +17,8 @@
 // Runs standalone (verification #7): no daemon, no data dir — the behavioural
 // test serves its own throwaway HTTP listener.
 
-import { describe, test, expect } from "bun:test";
-import { readFileSync } from "node:fs";
+import { describe, test, expect, afterAll } from "bun:test";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -26,7 +26,7 @@ import { sanitizeRuleRecord, RULE_GATES, type RuleTelemetryRecord } from "../src
 import { ruleStats, ruleEffect, turnGateSummary } from "../src/rule-effect";
 import { rootCauseGuard, untaggedSessionGuard, type GuardCtx } from "../src/hook-guards";
 import { ASK_ROWS, type AskCtx } from "../src/hook-ask-rows";
-import { BLOCK_RULES, ruleForBlock, recordBlock, makeBlockChannel, GUARD_RULES, TURN_RULES, type BlockKey } from "../src/block-channel";
+import { BLOCK_RULES, ruleForBlock, recordBlock, makeBlockChannel, GUARD_RULES, WHISPER_RULES, TURN_RULES, type BlockKey } from "../src/block-channel";
 
 const GUARDS_SRC = join(import.meta.dir, "..", "src", "hook-guards.ts");
 const PARSE_TAGS_SRC = join(import.meta.dir, "..", "parse-tags.ts");
@@ -87,6 +87,13 @@ interface CtxOpts {
   ledger?: GuardCtx["ledger"];
 }
 
+// Every ledger file a context names is removed in afterAll (#1181): the guards
+// write it on ack, nothing deleted it, and 150 `devlog-guard-tel-*` files sat
+// in TEMP. Collected here because each test mints its own path.
+const LEDGER_FILES: string[] = [];
+const trackLedgerFile = (p: string): string => { LEDGER_FILES.push(p); return p; };
+afterAll(() => { for (const p of LEDGER_FILES) rmSync(p, { force: true }); });
+
 /** A guard context that records instead of exiting. `server` decides whether
  *  the telemetry POST lands or fails. */
 function ctxFor(msg: string, server: string, opts: CtxOpts = {}) {
@@ -99,7 +106,7 @@ function ctxFor(msg: string, server: string, opts: CtxOpts = {}) {
     tagSegments: [{ text: msg, model: "test" }],
     cwd: "D:/p", sessionId: "s1", server,
     stopHookActive: opts.stopHookActive ?? false,
-    ledger, ledgerFile: join(tmpdir(), `devlog-guard-tel-${randomUUID()}.json`),
+    ledger, ledgerFile: trackLedgerFile(join(tmpdir(), `devlog-guard-tel-${randomUUID()}.json`)),
     L: (_en: string, ar: string) => ar,
     log: (l: string) => { logs.push(l); },
     shouldServeAsk: async (cmd: string) => !served.has(cmd),
@@ -247,6 +254,9 @@ describe("delivery is never counted as enforcement", () => {
       // keys are checked structurally in the next test).
       const named = keys.some(k => call.includes(`"${k}"`))
         || /return flushBlock\(key\)|blockContinue\(text, "/.test(call)
+        // #1226: the tail flush forwards the key a response row deferred — the
+        // row's key is checked structurally in the next test.
+        || /flushBlock\(deferredFlush\)/.test(call)
         || /runResponseRows|makeBlockChannel|blockContinue, flushBlock/.test(call);
       expect(named).toBe(true);
     }
@@ -424,10 +434,19 @@ describe("the read side names the silence", () => {
     expect(silent).toEqual(["root-cause"]);
   });
 
-  test("the vocabulary covers the six guards and every counted block key", () => {
+  test("the vocabulary covers the five guards, the whisper, and every counted block key", () => {
     // The list is what makes silence detectable; a guard missing from it would
     // simply never be reported as dead.
     for (const g of GUARD_RULES) expect(TURN_RULES).toContain(g);
+    // #1177 / F-9.66: the demolition-why whisper records from parse-tags.ts,
+    // outside hook-guards.ts — the sixth turn rule, structurally invisible to
+    // the source pin below. Named in WHISPER_RULES so its death shows as silence.
+    for (const w of WHISPER_RULES) expect(TURN_RULES).toContain(w);
+    expect(TURN_RULES).toContain("demolition-why");
+    // The whisper lives in src/hook-demolition-why.ts (extracted from parse-tags.ts);
+    // its recorded name must be one of WHISPER_RULES, or its silence is invisible.
+    const whisperSrc = readFileSync(join(import.meta.dir, "..", "src", "hook-demolition-why.ts"), "utf-8");
+    for (const w of WHISPER_RULES) expect(whisperSrc).toContain(`DEMOLITION_WHY_RULE = "${w}"`);
     expect(TURN_RULES).toContain("closure-check");
     expect(TURN_RULES).not.toContain("serve");
     expect(new Set(TURN_RULES).size).toBe(TURN_RULES.length);   // no double counting

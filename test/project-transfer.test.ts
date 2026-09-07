@@ -205,3 +205,109 @@ describe("applyImportBundle — merge into existing project", () => {
     expect(data.events[0]?.id).toBe("E2");                // resorted chronologically
   });
 });
+
+// #1192 / #1018 — the T-158 two-server experiment: machine A's closers name
+// A's numbers in their TEXT; after renumbering they must name the NEW numbers,
+// or closed-items closes B's own #1/#2 and leaves A's rows open forever.
+describe("applyImportBundle — closer text follows the renumbering (#1192, #1018)", () => {
+  function localData(): DevLogData {
+    return mkData({
+      projects: { bar: mkProfile("bar", { description: "محلي", nextItemNum: 3 }) },
+      tags: [
+        tag("L1", "bar", "bug found", "خلل B محلي: الزر لا يستجيب", { num: 1, timestamp: "2026-07-01T00:00:00.000Z" }),
+        tag("L2", "bar", "todo", "مهمة B محلية", { num: 2, timestamp: "2026-07-02T00:00:00.000Z" }),
+      ],
+    });
+  }
+
+  test("leading #N in bug fix / done / feature update is rewritten; the cause tail is kept", () => {
+    const data = localData();
+    const bundle = mkBundle("bar", {
+      tags: [
+        tag("A-b1", "bar", "bug found", "خلل A: العدّاد يتجاوز السقف", { num: 1, timestamp: "2026-05-10T00:00:00.000Z" }),
+        tag("A-f1", "bar", "bug fix", "#1 [شرط] السقف كان يُقارَن بعد الزيادة", { timestamp: "2026-05-11T00:00:00.000Z" }),
+        tag("A-t2", "bar", "todo", "مهمة A مفتوحة", { num: 2, timestamp: "2026-05-12T00:00:00.000Z" }),
+        tag("A-t3", "bar", "todo", "مهمة A ثانية", { num: 3, timestamp: "2026-05-12T00:00:00.000Z" }),
+        tag("A-d23", "bar", "done", "#2 #3", { timestamp: "2026-05-13T00:00:00.000Z" }),
+        tag("A-fe", "bar", "feature", "ميزة A", { num: 4, timestamp: "2026-05-14T00:00:00.000Z" }),
+        tag("A-fu", "bar", "feature update", "#4 ميزة A بنص جديد", { timestamp: "2026-05-15T00:00:00.000Z" }),
+      ],
+    });
+    const s = applyImportBundle(data, bundle);
+    expect(s.unresolvedRefs).toBe(0);
+    const by = (id: string) => data.tags.find(t => t.id === id);
+    expect(by("A-b1")?.num).toBe(3);
+    expect(by("A-f1")?.content).toBe("#3 [شرط] السقف كان يُقارَن بعد الزيادة");
+    expect(by("A-t2")?.num).toBe(4);
+    expect(by("A-t3")?.num).toBe(5);
+    expect(by("A-d23")?.content).toBe("#4 #5");
+    expect(by("A-fe")?.num).toBe(6);
+    expect(by("A-fu")?.content).toBe("#6 ميزة A بنص جديد");
+    // Local rows untouched — B's own #1/#2 were never closed by A's closers.
+    expect(by("L1")?.content).toBe("خلل B محلي: الزر لا يستجيب");
+    expect(by("L2")?.num).toBe(2);
+  });
+
+  test("story relatedNums follow the map; unresolvable ones drop", () => {
+    const data = localData();
+    const bundle = mkBundle("bar", {
+      tags: [
+        tag("A-b1", "bar", "bug found", "خلل A", { num: 1 }),
+        tag("A-s", "bar", "story", "منعطف الدفعة", { relatedNums: [1, 77] }),
+      ],
+    });
+    applyImportBundle(data, bundle);
+    expect(data.tags.find(t => t.id === "A-s")?.relatedNums).toEqual([3]);
+  });
+
+  test("a #N the bundle never defines stays as written and is counted", () => {
+    const data = localData();
+    const bundle = mkBundle("bar", {
+      tags: [tag("A-x", "bar", "done", "#42 سبب", { timestamp: "2026-05-13T00:00:00.000Z" })],
+    });
+    const s = applyImportBundle(data, bundle);
+    expect(data.tags.find(t => t.id === "A-x")?.content).toBe("#42 سبب");
+    expect(s.unresolvedRefs).toBe(1);
+  });
+
+  test("a brand-new project keeps closer text verbatim (nothing to collide with)", () => {
+    const data = mkData();
+    const bundle = mkBundle("foo", {
+      tags: [
+        tag("t1", "foo", "bug found", "خلل", { num: 1 }),
+        tag("f1", "foo", "bug fix", "#1 السبب"),
+      ],
+    });
+    applyImportBundle(data, bundle);
+    expect(data.tags.find(t => t.id === "f1")?.content).toBe("#1 السبب");
+  });
+});
+
+// #1059 — a bundle's profile.path names the OTHER machine's disk. Registered
+// verbatim, every path-reader believed it (export-all conjured the folder
+// locally). A path that does not exist here is detached and reported.
+describe("applyImportBundle — foreign path is detached (#1059)", () => {
+  test("a non-existent path becomes empty and the summary names what was dropped", () => {
+    const data = mkData();
+    const foreign = "Z:/definitely/not/here/api";
+    const bundle = mkBundle("api", { profile: mkProfile("api", { path: foreign }), tags: [tag("t1", "api", "note", "n")] });
+    const s = applyImportBundle(data, bundle);
+    expect(s.created).toBe(true);
+    expect(s.pathDetached).toBe(foreign);
+    expect(data.projects.api?.path).toBe("");
+  });
+
+  test("a path that exists locally is kept", () => {
+    const data = mkData();
+    const here = process.cwd();
+    const s = applyImportBundle(data, mkBundle("here", { profile: mkProfile("here", { path: here }) }));
+    expect(s.pathDetached).toBeUndefined();
+    expect(data.projects.here?.path).toBe(here);
+  });
+
+  test("an existing local project keeps ITS path regardless of the bundle's", () => {
+    const data = mkData({ projects: { bar: mkProfile("bar", { path: "D:/local/bar", nextItemNum: 1 }) } });
+    applyImportBundle(data, mkBundle("bar", { profile: mkProfile("bar", { path: "Z:/foreign/bar" }) }));
+    expect(data.projects.bar?.path).toBe("D:/local/bar");
+  });
+});

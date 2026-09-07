@@ -90,7 +90,7 @@ Bypass knobs for emergencies: `DEVLOG_RELEASE_GUARD=0`, `DEVLOG_CLOSURE_CHECK=0`
 Everything open gets a `#N` that follows you across sessions — open today, close next week.
 
 - **Tasks** open with `-(todo)`, close with `-(done) #N` or withdraw with `-(dropped) #N`. Live list any time with `-(ask:open)`.
-- **Bugs** open with `-(bug found)`, close with a root cause. A bug that comes back after its "fix" is flagged automatically with ⟲ — regressions don't pass quietly.
+- **Bugs** open with `-(bug found)`, close with a root cause. A bug that comes back after its "fix" is linked with ⟲ when you name the old report in the new one (`-(bug found) ⟲ #N …`) or re-report it word for word — regressions don't pass quietly.
 - **Security** items have their own lane: never deferrable, never shipped open.
 - **Plans** (`-(doc:plan)`) are checkbox documents whose boxes flip themselves as steps close — see [Plans](#plans--two-distinct-things-similar-names).
 - **Upcoming tier** — deferred ideas in their own tab; kept, but they never block a release.
@@ -125,7 +125,7 @@ Every new session, Claude receives a compact briefing so it never starts from ze
 
 ## Standards library
 
-Rules captured from your corrections, pulled on demand by language or app type (`-(ask:rules) typescript security`), added with `-(rule:add)`. Each rule gets a before/after effect measurement (see below), so you know which rules actually changed anything.
+Rules captured from your corrections, pulled on demand by language or app type (`-(ask:rules) typescript security`), added with `-(rule:add)`. Two layers: rules written inside a project land in that project's own layer (`<root>/.devlog/standards`, travels with the repo), and `-(rule:add) global:<cat>` promotes a rule to the global library (`<CLAUDE_CONFIG_DIR or ~/.claude>/standards`, override with `DEVLOG_STANDARDS_DIR`) so one Rust rule serves every Rust project. Each rule gets a before/after effect measurement (see below), so you know which rules actually changed anything.
 
 ## Dashboard — everything above, live
 

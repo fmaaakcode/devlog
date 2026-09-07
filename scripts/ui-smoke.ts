@@ -14,7 +14,7 @@
 // Usage: bun scripts/ui-smoke.ts   (finds Chrome/Edge/Chromium; override with
 // DEVLOG_SMOKE_BROWSER=<path>). Exit 0 = both scenarios proved; 1 = failure.
 
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
@@ -137,6 +137,10 @@ async function main(): Promise<void> {
   const dataDir = mkdtempSync(join(tmpdir(), "devlog-smoke-"));
   const userDataDir = mkdtempSync(join(tmpdir(), "devlog-smoke-udd-"));
   const now = new Date().toISOString();
+  // The project folder must EXIST: since #1199 (wave 1) POST /api/tags rejects a
+  // cwd that is not a real directory with 400, so scenario E's tag post needs a
+  // real path — it used to point at a folder that was never created.
+  mkdirSync(join(dataDir, "nowhere", "src"), { recursive: true });
   writeFileSync(join(dataDir, "projects.json"), JSON.stringify({
     real: { name: "real", path: join(dataDir, "nowhere"), description: "smoke", blueprint: [], language: "TypeScript", framework: "", libraries: [], files: { ts: 1 }, directories: [], totalFiles: 1, lastScan: now },
   }));

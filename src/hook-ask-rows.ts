@@ -17,6 +17,7 @@
 
 import { noteAskFailure } from "./hook-asks";
 import type { AskCtx, AskData, AskHit, AskRow } from "./hook-asks";
+import { formatLibAdviceLines, type LibAdviceItem } from "./lib-advice-lines";
 import { weightBar } from "./project-map";
 import { rulesLines } from "./rule-effect-lines";
 
@@ -59,6 +60,16 @@ export const ASK_ROWS: AskRow[] = [
     logLine: d => `ask:open: served ${(d.items || []).length} item(s)`,
     format: (d, _m, ctx) => {
       const items: Row[] = d.items || [];
+      // An unknown list is not an empty one (#1065 / F-4.80): `cwd-mismatch`
+      // means this folder is not the registered project's path, and printing
+      // "no open items" here made the asker close nothing — against a list it
+      // never saw.
+      if (d.reason) {
+        return d.reason === "cwd-mismatch"
+          ? ctx.L("⚠ open items unknown: this folder is not the registered path of its project (a same-named project lives at another path, or the folder moved). Run from the project root, or re-register it.",
+                  "⚠ المفتوحات مجهولة: هذا المجلد ليس المسار المسجَّل لمشروعه (مشروع بنفس الاسم على مسار آخر، أو المجلد انتقل). نفّذ من جذر المشروع أو أعد تسجيله.")
+          : ctx.L(`⚠ open items unknown: ${d.reason}`, `⚠ المفتوحات مجهولة: ${d.reason}`);
+      }
       // «قادمة» rides its own section so the committed lists stay an exact
       // mirror of what the guards enforce. Every line carries its opening
       // date+time (the "when was this added?" answer, per user request).
@@ -74,7 +85,7 @@ export const ASK_ROWS: AskRow[] = [
       const section = (label: string, arr: Row[]) => (arr?.length ? `\n${label}:\n${arr.map(line).join("\n")}` : "");
       const sec = [...(groups.security || []), ...(groups["security:own"] || []), ...(groups["security:dep"] || [])];
       const body = [
-        section(ctx.L("Open bugs", "بقات مفتوحة"), groups["bug found"]),
+        section(ctx.L("Open bugs", "بلاغات مفتوحة"), groups["bug found"]),
         section(ctx.L("Open security", "ثغرات مفتوحة"), sec),
         section(ctx.L("Open todos", "مهام مفتوحة"), groups.todo),
         section(ctx.L("Open plan steps", "خطوات خطط مفتوحة"), groups["plan-step"]),
@@ -147,68 +158,36 @@ export const ASK_ROWS: AskRow[] = [
     path: "/api/lib-advice",
     timeoutMs: 25000,
     serve: async (hits: AskHit[], ctx: AskCtx) => {
-      // The server caps at 8 names (#749): only the names actually sent ride
-      // this batch. A line whose names all made the cut is marked served; a
-      // line with names past the cap stays UNSERVED (a continuation re-serves
-      // it) and the output says so — the old mark-everything path starved
-      // those names of advice AND deduped away their re-ask within the turn.
+      // The server answers at most 8 names per call (#749). More than 8 in a
+      // turn are asked in PARALLEL batches of 8 (#1032 / F-3.23): the earlier
+      // "leave the over-cap line unserved so a continuation re-serves it" was a
+      // blocking loop — the continuation re-read the same line, re-sent the
+      // same first 8 and left the same surplus, forever (5/5 passes blocked in
+      // the audit's replay). Parallel batches cost one round-trip's time and
+      // leave nothing behind to loop on. Any batch failing = the whole ask
+      // failed and unserved (#860 voice), so a retry re-asks everything.
       const LIB_CAP = 8;
-      const flat = hits.flatMap(h => h.m[1].trim().split(/[ \t]+/).map(name => ({ h, name })));
-      const sent = flat.slice(0, LIB_CAP);
-      const starved = flat.slice(LIB_CAP);
-      const names = sent.map(x => x.name).join(" ");
-      const r = await fetch(
-        `${ctx.server}/api/lib-advice?cwd=${encodeURIComponent(ctx.cwd)}&names=${encodeURIComponent(names)}`,
-        { signal: AbortSignal.timeout(25000) });
+      const names = [...new Set(hits.flatMap(h => h.m[1].trim().split(/[ \t]+/).filter(Boolean)))];
+      const batches: string[][] = [];
+      for (let i = 0; i < names.length; i += LIB_CAP) batches.push(names.slice(i, i + LIB_CAP));
+      const replies = await Promise.all(batches.map(b => fetch(
+        `${ctx.server}/api/lib-advice?cwd=${encodeURIComponent(ctx.cwd)}&names=${encodeURIComponent(b.join(" "))}`,
+        { signal: AbortSignal.timeout(ctx.budget?.(25000) ?? 25000) })));
       // Own fetch → own failure voice (#860): this row never reaches serveHit,
       // so without the note a non-ok reply left the asker with pure silence.
-      if (!r.ok) {
-        await ctx.log(`ask:lib: server replied ${r.status}`);
-        noteAskFailure("lib-advice", `HTTP ${r.status}`, ctx);
+      const bad = replies.find(r => !r.ok);
+      if (bad) {
+        await ctx.log(`ask:lib: server replied ${bad.status}`);
+        noteAskFailure("lib-advice", `HTTP ${bad.status}`, ctx);
         return;
       }
-      // Record only now the fetch succeeded (#398) — and only lines whose
-      // names ALL rode this batch (#749).
-      for (const h of hits) if (!starved.some(s => s.h === h)) await ctx.markAskServed(h.cmd);
-      const { items = [] } = await r.json() as { items?: Row[] };
+      // Record only now every batch succeeded (#398).
+      for (const h of hits) await ctx.markAskServed(h.cmd);
+      const items: Row[] = [];
+      for (const r of replies) items.push(...((await r.json() as { items?: Row[] }).items || []));
       const L = ctx.L;
-      const age = (d: unknown) => (typeof d === "number" ? L(` (${d}d old)`, ` (عمرها ${d} يوم)`) : "");
-      const lines = items.map((it: Row) => {
-        switch (it.verdict) {
-          case "ok": {
-            const stepped = it.steppedBack
-              ? L(`\n    ⚠ newer matured release skipped — vulnerable (${it.vulnNote})`,
-                  `\n    ⚠ تجاوزنا نسخة أحدث ناضجة لأنها مثغورة (${it.vulnNote})`)
-              : "";
-            const fresh = (it.latest && it.latest !== it.suggest && !it.steppedBack)
-              ? L(` · latest ${it.latest}${age(it.latestAgeDays)} not matured yet`,
-                  ` · الأحدث ${it.latest}${age(it.latestAgeDays)} لم تنضج بعد`)
-              : "";
-            return `  ${it.name} → ${it.suggest}${age(it.suggestAgeDays)} ${L("— OSV clean", "— نظيفة OSV")} · ${it.installCmd}${fresh}${stepped}`;
-          }
-          case "ok-unverified":
-            return `  ${it.name} → ${it.suggest}${age(it.suggestAgeDays)} ${L("— ⚠ OSV did not answer; maturity only, NO security certificate", "— ⚠ لم يُجب OSV؛ اختيار نضج فقط بلا شهادة أمان")} · ${it.installCmd}`;
-          case "no-clean":
-            return `  ${it.name} — ${L(`no OSV-clean version among the newest matured releases (${it.vulnNote}). Not recommending a vulnerable version.`, `لا نسخة نظيفة ضمن أحدث النسخ الناضجة (${it.vulnNote}). لن أقترح نسخة مثغورة.`)}`;
-          case "no-mature":
-            return `  ${it.name} — ${L(`nothing matured yet: newest is ${it.latest}${age(it.latestAgeDays)}, under the 7-day rule. Wait or decide explicitly.`, `لا نسخة ناضجة بعد: الأحدث ${it.latest}${age(it.latestAgeDays)} تحت قاعدة الأيام السبعة. انتظر أو قرر صراحةً.`)}`;
-          case "unsupported-eco":
-            // Two honest messages, not one misleading blame (#673): an EMPTY
-            // eco means project detection failed — say that, and hand over
-            // the prefix escape hatch instead of "ecosystem ? not supported".
-            return it.eco
-              ? `  ${it.name} — ${L(`ecosystem "${it.eco}" not supported for version history (npm/pypi/crates/go only)`, `النظام "${it.eco}" غير مدعوم لتاريخ النسخ (npm/pypi/crates/go فقط)`)}`
-              : `  ${it.name} — ${L("could not detect this project's ecosystem — prefix the name and re-ask: npm:/pypi:/crates:/go:", "لم أتعرّف على نظام هذا المشروع — أضِف بادئة للاسم وأعد السؤال: npm:/pypi:/crates:/go:")}`;
-          case "need-full-path":
-            return `  ${it.name} — ${L("Go needs the FULL module path (e.g. go:github.com/jackc/pgx/v5) — the proxy knows no short names, and guessing one is typo-squatting territory. Re-ask with the import path.", "Go يتطلب مسار الوحدة الكامل (مثل go:github.com/jackc/pgx/v5) — البروكسي لا يعرف الأسماء القصيرة، وتخمينها باب typo-squatting. أعد السؤال بمسار الاستيراد.")}`;
-          case "invalid-name":
-            return `  ${it.name} — ${L("invalid package name — refused", "اسم حزمة غير صالح — مرفوض")}`;
-          case "registry-disabled":
-            return `  ${it.name} — ${L("not looked up: registry checks are disabled on this DevLog (DEVLOG_REGISTRY_CHECK_DISABLED=1). Pick the version yourself.", "لم يُستعلَم عنها: فحوصات السجل معطّلة في هذا الـDevLog (DEVLOG_REGISTRY_CHECK_DISABLED=1). اختر النسخة بنفسك.")}`;
-          default:
-            return `  ${it.name} — ${L("not found under this EXACT name (or lookup failed). Verify the name yourself — no near-miss suggestions (typo-squatting).", "غير موجودة بهذا الاسم الحرفي (أو فشل الاستعلام). تحقق من الاسم بنفسك — لا اقتراح أسماء مشابهة (typo-squatting).")}`;
-        }
-      });
+      // One line per verdict — src/lib-advice-lines.ts (pure, every verdict covered).
+      const lines = formatLibAdviceLines(items as LibAdviceItem[], L);
       const out = lines.length ? lines.join("\n") : L("nothing to advise.", "لا شيء يُقترح.");
       // Purpose capture (#663): the ask:lib moment is when Claude KNOWS why the
       // dependency is being added — ask for the one-line record right here,
@@ -217,12 +196,8 @@ export const ASK_ROWS: AskRow[] = [
         ? L("\n  After installing, record WHY it's in this project: `-(lib) <name> — <one-line purpose>` (re-emit the name to update).",
             "\n  بعد التركيب سجّل سبب وجودها في المشروع: `-(lib) <الاسم> — <غرض من سطر واحد>` (أعد إصداره بنفس الاسم للتحديث).")
         : "";
-      const capped = starved.length
-        ? L(`\n  ⚠ capped at ${LIB_CAP} names per ask — NOT advised here: ${starved.map(s => s.name).join(" ")}. Re-emit -(ask:lib) for them.`,
-            `\n  ⚠ السقف ${LIB_CAP} أسماء لكل سؤال — لم يُنصح هنا: ${starved.map(s => s.name).join(" ")}. أعد -(ask:lib) لها وحدها.`)
-        : "";
-      await ctx.log(`ask:lib: served ${items.length} item(s)${starved.length ? `, ${starved.length} past cap` : ""}`);
-      await ctx.blockContinue(`\n[devlog lib-advice]\n${out}${capture}${capped}\n`);
+      await ctx.log(`ask:lib: served ${items.length} item(s) in ${batches.length} batch(es)`);
+      await ctx.blockContinue(`\n[devlog lib-advice]\n${out}${capture}\n`);
     },
   },
 
@@ -288,6 +263,9 @@ export const ASK_ROWS: AskRow[] = [
         ? (d.fellBack
             ? L(`Nothing matched «${d.query}» — showing the ${entries.length} most important files of ${d.total} instead:`,
                 `لا شيء يطابق «${d.query}» — إليك أهم ${entries.length} ملف من ${d.total} بدلًا من ذلك:`)
+            : (typeof d.matched === "number" && d.matched > entries.length)
+            ? L(`${entries.length} of ${d.matched} files matching «${d.query}» (of ${d.total}) — narrow the query to see the rest:`,
+                `${entries.length} من ${d.matched} ملفًا يطابق «${d.query}» (من ${d.total}) — ضيّق الاستعلام لرؤية الباقي:`)
             : L(`${entries.length} file(s) matching «${d.query}» (of ${d.total}):`,
                 `${entries.length} ملف يطابق «${d.query}» (من ${d.total}):`))
         : L(`Top ${entries.length} files of ${d.total}, by how much the rest of the code depends on them:`,
@@ -452,6 +430,11 @@ export const ASK_ROWS: AskRow[] = [
         if (files.length) {
           out.push(L(`  Files (${files.length}${s.filesMore ? `+${s.filesMore}` : ""}): `, `  الملفات (${files.length}${s.filesMore ? `+${s.filesMore}` : ""}): `)
             + files.map((f: Row) => `${f.path}${f.edits > 1 ? ` ×${f.edits}` : ""}${f.linesAdded || f.linesRemoved ? ` (+${f.linesAdded}/−${f.linesRemoved})` : ""}`).join(" · "));
+        } else if (s.eventsKnown === false) {
+          // #1138: the session's events fell outside retention (hot store + cold
+          // archive) — say UNKNOWN, never let silence read as "touched nothing".
+          out.push(L("  Files/commands: unknown — this session's events are outside the retention window (not evidence it touched nothing).",
+                     "  الملفات/الأوامر: غير معلومة — أحداث هذه الجلسة خارج نافذة الاحتفاظ (ليس دليلًا على أنها لم تلمس شيئًا)."));
         }
         const c = s.commands || {};
         if (c.total) {
@@ -532,7 +515,13 @@ export const ASK_ROWS: AskRow[] = [
         const since = f.sinceVersion
           ? ctx.L(`since ${f.sinceVersion}`, `منذ ${f.sinceVersion}`)
           : ctx.L("not released yet", "غير مُصدَرة بعد");
-        return `  ${num}${f.text} — ${since}`;
+        // #1188: a marker naming no recorded release — say so instead of
+        // letting the by-date attribution pass as the marker's word.
+        const unknown = f.unknownVersion
+          ? ctx.L(` (marker [${f.unknownVersion}] matches no recorded release — attributed by date)`,
+                  ` (العلامة [${f.unknownVersion}] لا تطابق إصدارًا مسجَّلًا — نُسبت بالتاريخ)`)
+          : "";
+        return `  ${num}${f.text} — ${since}${unknown}`;
       };
       return features.length
         ? `${ctx.L(`Current capabilities (${features.length}):`, `قدرات المشروع الحالية (${features.length}):`)}\n${features.map(line).join("\n")}`
@@ -552,7 +541,7 @@ export const ASK_ROWS: AskRow[] = [
     path: "/api/deps",
     logLine: d => `ask:deps: served ${(d.libraries || []).length} item(s)`,
     format: (d, _m, ctx) => {
-      const { libraries = [], total = 0, withPurpose = 0 } = d as { libraries?: Row[]; total?: number; withPurpose?: number };
+      const { libraries = [], total = 0, withPurpose = 0, orphans = [] } = d as { libraries?: Row[]; total?: number; withPurpose?: number; orphans?: Row[] };
       const line = (l: Row) => {
         const dev = l.dev ? " (dev)" : "";
         const desc = l.description ? ` · ${String(l.description).slice(0, 120)}` : "";
@@ -565,10 +554,16 @@ export const ASK_ROWS: AskRow[] = [
         ? ctx.L(`\n  ${uncovered} without a purpose — draft one line each, get the user's approval, then record each with \`-(lib) <name> — <purpose>\`.`,
                 `\n  ${uncovered} بلا غرض — اقترح سطرًا لكل واحدة، خذ موافقة المستخدم، ثم سجّل كل واحدة بـ\`-(lib) <الاسم> — <الغرض>\`.`)
         : "";
-      return libraries.length
+      // Purposes recorded for names outside the manifest (#1115) — shown, not
+      // swallowed: a typo to fix with a re-emit, or a CDN library to keep.
+      const orphanBlock = orphans.length
+        ? `\n${ctx.L(`Purposes recorded for names NOT in the manifest (${orphans.length}) — typo? re-emit under the right name; CDN/vendored? fine as is:`, `أغراض مسجَّلة لأسماء ليست في المانيفست (${orphans.length}) — خطأ إملائي؟ أعد الإصدار بالاسم الصحيح؛ CDN/مضمَّنة؟ تبقى كما هي:`)}\n${orphans.map((o: Row) => `  ⌀ ${o.name} — ${o.purpose}`).join("\n")}`
+        : "";
+      const body = libraries.length
         ? `${ctx.L(`Project libraries (${total}, ${withPurpose} with a recorded purpose):`, `مكتبات المشروع (${total}، منها ${withPurpose} بغرض مسجَّل):`)}\n${libraries.map(line).join("\n")}${footer}`
         : ctx.L("No libraries known for this project yet (they appear after the first scan).",
                 "لا مكتبات معروفة للمشروع بعد (تظهر بعد أول فحص).");
+      return body + orphanBlock;
     },
   },
 

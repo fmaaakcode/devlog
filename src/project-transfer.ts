@@ -16,16 +16,28 @@
 //   from the local high-water mark up; `relatedTo` follows through the same
 //   map. A row already present keeps its local number AND still enters the
 //   map, so a re-import remaps references identically every time.
+// - The `#N` run that LEADS a closer's text (`-(done) #1 #2`, `-(bug fix) #1
+//   cause`), a feature reference (`-(feature update) #1 new text`) and a
+//   story's relatedNums travel through the same map (#1192/#1018). closed-items
+//   reads those numbers from the content itself, so an un-remapped closer would
+//   close an unrelated LOCAL item and leave the imported one open forever —
+//   the live two-server experiment (T-158) showed exactly that. A number the
+//   map cannot resolve is left as written: it names nothing in the bundle, and
+//   inventing a local target would be worse than an honest dangling reference
+//   (counted in summary.unresolvedRefs).
 // - Profile: local wins; imported values only fill locally-empty fields.
 // - Archive months merge file-by-file, id-deduped, rewritten sorted.
 // - Machine-local state (injections log, descendants, rejections, migrations)
 //   deliberately stays out of the bundle — it describes the machine, not the
 //   project.
 
+import { existsSync } from "node:fs";
 import { normalizeTagContent } from "./data";
+import { FEATURE_REF_TAGS } from "./features";
+import { CLOSURE_TAGS } from "./open-items";
 import { listArchiveMonths, mutateArchiveMonth, readArchiveMonth, readUndoneMonth } from "./event-archive";
 import type {
-  DevLogData, EventEntry, InjectionConfig, PlanEntry, ProjectProfile,
+  DevLogData, EventEntry, InjectionConfig, PlanEntry, ProjectProfile, PromptEntry,
   TagEntry, UndoneRecord, WorklogEntry,
 } from "./types";
 
@@ -43,6 +55,10 @@ export interface TransferBundle {
   plans: PlanEntry[];
   events: EventEntry[];
   worklog: WorklogEntry[];
+  /** The user's own words per capture batch (#1068) — narrative layer, part of
+   *  the project's history. Optional: bundles written before it existed have
+   *  none, and validateBundle does not require it. */
+  prompts?: PromptEntry[];
   /** Monthly archive rows for this project, keyed by "YYYY-MM". */
   archive: { events: Record<string, EventEntry[]>; undone: Record<string, UndoneRecord[]> };
 }
@@ -51,11 +67,17 @@ export interface ImportSummary {
   project: string;
   /** True when the project did not exist locally (registered as-is, numbers kept). */
   created: boolean;
-  added: { tags: number; events: number; plans: number; planSteps: number; worklog: number };
+  added: { tags: number; events: number; plans: number; planSteps: number; worklog: number; prompts: number };
   /** Rows skipped because they already exist locally (same id / same step text). */
   skipped: number;
   /** Numbered items whose `#N` shifted to clear the local sequence. */
   renumbered: number;
+  /** `#N` references inside closer/feature-ref text that no imported or local
+   *  row resolves — left verbatim, reported so the user can inspect them. */
+  unresolvedRefs: number;
+  /** New project only: the exporting machine's path, dropped because that
+   *  folder does not exist on this machine (the profile's `path` is now ""). */
+  pathDetached?: string;
   /** Filled by the route after the store merge (separate file-level pass). */
   archive?: { added: number; months: number };
 }
@@ -86,6 +108,7 @@ export async function buildExportBundle(data: DevLogData, name: string): Promise
     plans: data.plans.filter(p => p.project === name),
     events: data.events.filter(e => e.project === name),
     worklog: data.worklog.filter(w => w.project === name),
+    prompts: (data.prompts ?? []).filter(p => p.project === name),
     archive,
   };
 }
@@ -113,6 +136,21 @@ function findLocalPlan(data: DevLogData, project: string, bp: PlanEntry): PlanEn
     ?? data.plans.find(p => p.project === project && normalizeTagContent(p.title) === normalizeTagContent(bp.title));
 }
 
+/** Rewrite the leading `#N #M …` run of a closer/feature-ref text through the
+ *  number map — the same run leadingNums() reads, so the renumbered text closes
+ *  exactly what the original closed. Trailing prose (the cause) is untouched. */
+export function remapLeadingNums(content: string, numMap: Map<number, number>): { content: string; unresolved: number } {
+  const m = (content || "").match(/^(?:\s*#\d+)+/);
+  if (!m) return { content, unresolved: 0 };
+  let unresolved = 0;
+  const head = m[0].replace(/#(\d+)/g, (whole, d: string) => {
+    const mapped = numMap.get(parseInt(d, 10));
+    if (mapped == null) { unresolved++; return whole; }
+    return `#${mapped}`;
+  });
+  return { content: head + content.slice(m[0].length), unresolved };
+}
+
 /** Fold a bundle into the store. Pure mutation on `data` — no file I/O — so the
  *  merge semantics are unit-testable; call under withData(). Archive months are
  *  a separate pass (mergeArchiveBundle) because they live outside the store. */
@@ -122,8 +160,8 @@ export function applyImportBundle(data: DevLogData, bundle: TransferBundle): Imp
   const created = !existing;
   const summary: ImportSummary = {
     project: name, created,
-    added: { tags: 0, events: 0, plans: 0, planSteps: 0, worklog: 0 },
-    skipped: 0, renumbered: 0,
+    added: { tags: 0, events: 0, plans: 0, planSteps: 0, worklog: 0, prompts: 0 },
+    skipped: 0, renumbered: 0, unresolvedRefs: 0,
   };
 
   const localTagById = new Map<string, TagEntry>();
@@ -180,6 +218,16 @@ export function applyImportBundle(data: DevLogData, bundle: TransferBundle): Imp
         const m = numMap.get(row.relatedTo);
         if (m != null) row.relatedTo = m; else delete row.relatedTo;
       }
+      // Closers and feature references carry their target in the TEXT.
+      if (CLOSURE_TAGS.has(row.tag) || FEATURE_REF_TAGS.has(row.tag)) {
+        const r = remapLeadingNums(row.content, numMap);
+        row.content = r.content;
+        summary.unresolvedRefs += r.unresolved;
+      }
+      if (row.relatedNums) {
+        const mapped = row.relatedNums.map(n => numMap.get(n)).filter((n): n is number => n != null);
+        if (mapped.length) row.relatedNums = mapped; else delete row.relatedNums;
+      }
     }
     data.tags.push(row);
     summary.added.tags++;
@@ -221,6 +269,16 @@ export function applyImportBundle(data: DevLogData, bundle: TransferBundle): Imp
     data.worklog.push({ ...w, project: name });
     summary.added.worklog++;
   }
+  // Prompts (#1068): same id-dedup append; absent in pre-prompts bundles.
+  if (Array.isArray(bundle.prompts) && bundle.prompts.length) {
+    data.prompts ??= [];
+    const promptIds = new Set(data.prompts.map(p => p.id));
+    for (const p of bundle.prompts) {
+      if (!p || typeof p !== "object" || typeof p.id !== "string" || promptIds.has(p.id)) { summary.skipped++; continue; }
+      data.prompts.push({ ...p, project: name });
+      summary.added.prompts++;
+    }
+  }
 
   // Profile.
   if (created) {
@@ -228,6 +286,16 @@ export function applyImportBundle(data: DevLogData, bundle: TransferBundle): Imp
     // The exporting machine's disconnection marker describes ITS disk, not
     // this one — cleanupMissingProjects re-derives it locally if warranted.
     delete profile.disconnectedSince;
+    // Its `path` describes the other machine's disk too (#1059). Kept verbatim
+    // it is a lie every path-reader believes: export-all conjured `D:\work\api\
+    // .devlog\` on a machine that never had the folder. A path that does not
+    // exist here is detached (empty) — the first hook from the real local clone
+    // re-links it through the git-remote relocation rule in scanner.ts, and an
+    // empty path is never tombstoned (cleanupMissingProjects skips it).
+    if (profile.path && !existsSync(profile.path)) {
+      profile.path = "";
+      summary.pathDetached = bundle.profile.path;
+    }
     let hw = profile.nextItemNum || 1;
     for (const t of bundle.tags) if (t.num && t.num >= hw) hw = t.num + 1;
     for (const p of bundle.plans) for (const s of p.steps) if (s.num && s.num >= hw) hw = s.num + 1;

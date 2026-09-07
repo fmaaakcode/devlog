@@ -78,6 +78,7 @@ function appendStream(stream: ArchiveStream, records: unknown[], label: string):
       const month = currentArchiveMonth();
       await compressClosedMonths(month);
       await appendWithRetry(`${ARCHIVE_DIR}/${stream}-${month}.jsonl`, lines);
+      forget(stream, month);
       return true;
     } catch (e) {
       console.error(`[event-archive] ${stream} append failed — ${label} not archived:`, (e as Error)?.message);
@@ -115,6 +116,7 @@ async function writeMonthUnchained(stream: ArchiveStream, month: string, records
   const body = records.length ? `${records.map(e => JSON.stringify(e)).join("\n")}\n` : "";
   await mkdir(ARCHIVE_DIR, { recursive: true });
   const plain = `${ARCHIVE_DIR}/${stream}-${month}.jsonl`;
+  forget(stream, month);
   if (month === currentArchiveMonth(now)) {
     await Bun.write(plain, body);
   } else {
@@ -170,6 +172,7 @@ export function mutateArchiveMonth<T>(
         await writeMonthUnchained(stream, month, out, now);
       } else {
         const plain = `${ARCHIVE_DIR}/${stream}-${month}.jsonl`;
+        forget(stream, month);
         await unlinkWithRetry(plain);
         await unlinkWithRetry(`${plain}.gz`);
       }
@@ -204,6 +207,23 @@ export async function purgeProjectArchive(gone: Set<string>): Promise<number> {
         return kept.length === rows.length ? null : kept;
       });
       if (r) removed += r.before - r.after;
+    }
+  }
+  return removed;
+}
+
+/** Drop EVERY archived row across both streams — the on-disk twin of the
+ *  /api/data/clear wipe (#1060): "clear must actually mean zero" held for the
+ *  five JSON stores while every cold month and the undo trail survived, so a
+ *  project re-registered under the same name inherited pre-wipe history. Each
+ *  month empties through mutateArchiveMonth, so the unlink rides the write
+ *  chain like every other archive mutation. Returns the rows removed. */
+export async function clearArchive(): Promise<number> {
+  let removed = 0;
+  for (const stream of ["events", "undone"] as const) {
+    for (const month of await listArchiveMonths(stream)) {
+      const r = await mutateArchiveMonth<unknown>(stream, month, () => []);
+      if (r) removed += r.before;
     }
   }
   return removed;
@@ -248,17 +268,32 @@ const STREAM_VALID: Record<ArchiveStream, (o: unknown) => boolean> = {
   undone: o => !!(o as UndoneRecord).undoneAt && !!(o as UndoneRecord).entry,
 };
 
+// Parsed-month cache (F-4.47 / F-4.59): file-story deep=1, the export bundle
+// and the changelog rebuild each read EVERY month for EVERY project on each
+// request — a synchronous gunzip plus a JSON.parse per line, in the server's
+// event loop, with nothing remembered between two clicks. Closed months never
+// change (their .gz is final), so the parsed rows are kept keyed by the file's
+// size+mtime, and every writer in this module drops the key it touches: an
+// append or rewrite to the current month re-reads; a closed month is parsed
+// once per process. Bounded so a decade of months cannot pin memory. Callers
+// get a COPY — routes reverse or filter the array in place.
+const READ_CACHE_MAX = 24;
+const readCache = new Map<string, { identity: string; rows: unknown[] }>();
+const forget = (stream: ArchiveStream, month: string) => { readCache.delete(`${stream}-${month}`); };
+
 async function readStream<T>(stream: ArchiveStream, month: string, valid: (o: T) => boolean = STREAM_VALID[stream]): Promise<T[]> {
   if (!MONTH_RE.test(month)) return []; // also guards the filename against traversal
   const plain = Bun.file(`${ARCHIVE_DIR}/${stream}-${month}.jsonl`);
-  let text: string;
-  if (await plain.exists()) {
-    text = await plain.text();
-  } else {
-    const gz = Bun.file(`${ARCHIVE_DIR}/${stream}-${month}.jsonl.gz`);
-    if (!(await gz.exists())) return [];
-    text = new TextDecoder().decode(gunzipSync(await gz.bytes()));
-  }
+  const gz = Bun.file(`${ARCHIVE_DIR}/${stream}-${month}.jsonl.gz`);
+  const src = (await plain.exists()) ? plain : (await gz.exists()) ? gz : null;
+  if (!src) return [];
+  const cacheKey = `${stream}-${month}`;
+  const identity = `${src.name}:${src.size}:${src.lastModified}`;
+  const hit = readCache.get(cacheKey);
+  if (hit && hit.identity === identity) return hit.rows.slice() as T[];
+  const text = src === plain
+    ? await plain.text()
+    : new TextDecoder().decode(gunzipSync(await gz.bytes()));
   const out: T[] = [];
   for (const line of text.split("\n")) {
     if (!line.trim()) continue;
@@ -267,7 +302,15 @@ async function readStream<T>(stream: ArchiveStream, month: string, valid: (o: T)
       if (o && typeof o === "object" && valid(o)) out.push(o);
     } catch { /* truncated/corrupt line — skip, keep the rest of the month */ }
   }
-  return out;
+  readCache.delete(cacheKey);
+  readCache.set(cacheKey, { identity, rows: out });
+  if (readCache.size > READ_CACHE_MAX) readCache.delete(readCache.keys().next().value as string);
+  return out.slice();
+}
+
+/** Test seam: forget every parsed month. */
+export function clearArchiveReadCache(): void {
+  readCache.clear();
 }
 
 export function readArchiveMonth(month: string): Promise<EventEntry[]> {

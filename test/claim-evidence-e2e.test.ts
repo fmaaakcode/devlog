@@ -6,7 +6,7 @@
 // server on an isolated port with a temp data dir and a registered project.
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { asJson, stopServer } from "./_helpers";
+import { asJson, stopServer, scrubbedEnv } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -71,7 +71,7 @@ describe("the evidence stamp, applied live (E2E)", () => {
     server = spawn({
       cmd: ["bun", join("src", "server.ts")],
       cwd: PROJECT_ROOT,
-      env: { ...process.env, DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT), DEVLOG_VERSION_CHECK_DISABLED: "1" },
+      env: { ...scrubbedEnv(), DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT), DEVLOG_VERSION_CHECK_DISABLED: "1" },
       stdout: "pipe", stderr: "pipe",
     });
     await waitForServer();

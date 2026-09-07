@@ -8,10 +8,57 @@
 // replay re-rejects it, damming the queue behind it. Quarantine it aside
 // (`.rejected`) and keep draining; 408/429/5xx/network stay retryable.
 
-import { readdir, readFile, rm, rename } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, rm, rename, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 export const isPermanentReject = (s: number): boolean => s >= 400 && s < 500 && s !== 408 && s !== 429;
+
+/** Move every parked batch (`.json`) and quarantined one (`.json.rejected`) from
+ *  the pre-#1040 queue folders into `queueDir`. Names keep their timestamp
+ *  prefix, so drain order survives the move. Missing folders are fine; a file
+ *  that already exists at the target is left where it is (never overwritten).
+ *  Cross-device moves fall back to copy + remove. Returns the number moved. */
+export async function migrateLegacyQueues(queueDir: string, legacyDirs: string[]): Promise<number> {
+  let moved = 0;
+  for (const dir of legacyDirs) {
+    if (dir === queueDir) continue;
+    let files: string[];
+    try { files = (await readdir(dir)).filter(f => f.endsWith(".json") || f.endsWith(".json.rejected")); }
+    catch { continue; }
+    if (!files.length) continue;
+    await mkdir(queueDir, { recursive: true });
+    for (const name of files) {
+      const from = join(dir, name);
+      const to = join(queueDir, name);
+      if (await Bun.file(to).exists()) continue;
+      try { await rename(from, to); moved++; }
+      catch {
+        try { await copyFile(from, to); await rm(from); moved++; }
+        catch { /* locked or unreadable — the next hook run retries */ }
+      }
+    }
+  }
+  return moved;
+}
+
+export const REJECTED_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Remove `.json.rejected` files older than 30 days (by mtime). Best-effort:
+ *  a file that cannot be stat'ed or unlinked is left for the next run. */
+export async function pruneRejected(queueDir: string, names: string[], log: (s: string) => unknown, now = Date.now()): Promise<number> {
+  let removed = 0;
+  for (const name of names) {
+    if (!name.endsWith(".json.rejected")) continue;
+    const fp = join(queueDir, name);
+    try {
+      if (now - (await stat(fp)).mtimeMs < REJECTED_MAX_AGE_MS) continue;
+      await rm(fp);
+      removed++;
+      await log(`queue-prune: removed quarantined batch ${name} (>30 days)`);
+    } catch { /* locked or already gone — retry next drain */ }
+  }
+  return removed;
+}
 
 export interface TagQueue {
   /** Drain queued batches oldest-first; stop on the first retryable failure. */
@@ -26,9 +73,15 @@ export interface TagQueue {
 export function makeTagQueue(queueDir: string, server: string, log: (s: string) => unknown): TagQueue {
   return {
     async flushTagQueue() {
-      let files: string[];
-      try { files = (await readdir(queueDir)).filter(f => f.endsWith(".json")).sort(); }
+      let all: string[];
+      try { all = await readdir(queueDir); }
       catch { return; }
+      // F-2.30: quarantined batches (`.json.rejected`) had no sweeper anywhere —
+      // they piled up for the life of the install. Same 30-day window as the
+      // data dir's .bak pruning; each removal is named in the hook log so the
+      // trail of "this batch was refused" survives the file.
+      await pruneRejected(queueDir, all, log);
+      const files = all.filter(f => f.endsWith(".json")).sort();
       for (const name of files) {
         const fp = join(queueDir, name);
         try {
@@ -66,8 +119,8 @@ export function makeTagQueue(queueDir: string, server: string, log: (s: string) 
       await Bun.write(join(queueDir, fname), body);
       await log(`quarantined rejected batch (${status}): ${fname}`);
       return `\n[devlog tags-rejected]\n${L(
-        `The server REFUSED this response's ${count} tag(s) (HTTP ${status}) — they are NOT in the log. A copy is parked at .devlog/tag-queue/${fname}; it will not be retried automatically. Tell the user rather than assuming the work was recorded.`,
-        `الخادم رفض تاقات هذا الرد (${count}) برمز HTTP ${status} — لم تُسجَّل في السجل. نسخة منها محفوظة في .devlog/tag-queue/${fname} ولن يُعاد إرسالها تلقائيًا. أبلغ المستخدم بدل افتراض أن العمل سُجِّل.`)}\n`;
+        `The server REFUSED this response's ${count} tag(s) (HTTP ${status}) — they are NOT in the log. A copy is parked at ${join(queueDir, fname)}; it will not be retried automatically. Tell the user rather than assuming the work was recorded.`,
+        `الخادم رفض تاقات هذا الرد (${count}) برمز HTTP ${status} — لم تُسجَّل في السجل. نسخة منها محفوظة في ${join(queueDir, fname)} ولن يُعاد إرسالها تلقائيًا. أبلغ المستخدم بدل افتراض أن العمل سُجِّل.`)}\n`;
     },
   };
 }

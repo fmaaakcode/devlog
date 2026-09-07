@@ -6,7 +6,7 @@
 // group still mounts and behaves identically (guard + handler + JSON shape).
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
-import { asJson } from "./_helpers";
+import { asJson, scrubbedEnv } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -37,7 +37,7 @@ beforeAll(async () => {
   server = spawn({
     cmd: ["bun", join("src", "server.ts")],
     cwd: PROJECT_ROOT,
-    env: { ...process.env, DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT), DEVLOG_VERSION_CHECK_DISABLED: "1" },
+    env: { ...scrubbedEnv(), DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT), DEVLOG_VERSION_CHECK_DISABLED: "1" },
     stdout: "pipe",
     stderr: "pipe",
   });

@@ -17,7 +17,9 @@ Write the tag content in the user's language.
   (language, runtime, frameworks, key libraries, integrations) — a technical ID card,
   not marketing prose
 - `-(built)` new code not mapping to a plan step · `-(refactor)` restructure, no behavior change · `-(update)` dependency bump
-- `-(bug found)` … / close with `-(bug fix) #N` **naming the root cause after the
+- `-(bug found)` … (a defect that came BACK after its fix: put `⟲ #N` in the text,
+  naming the closed report — DevLog links it as a reopen and charges the old fix; the
+  link is never inferred from similar wording) / close with `-(bug fix) #N` **naming the root cause after the
   number** (a bare number is blocked once). Optionally put a failure class in brackets
   right after the number, from a CLOSED vocabulary: `-(bug fix) #N [شرط] السبب` —
   `مطابق` · `شرط` · `حارس` · `بيئة` · `توقيت` · `صمت` · `بائت` · `انحراف` · `عقد` ·
@@ -80,8 +82,9 @@ Write the tag content in the user's language.
 - `-(note)` · `-(decision)` — name the rejected alternative and why it lost (wider trade-off study → `-(doc:comparison)`) · `-(insight)`
 - `-(story)` قصة دفعة الإغلاق/الإصدار: **المنعطفات فقط** — نهج فشل، تغيير اتجاه،
   تأجيل متعمد — لا إعادة سرد للتاقات (≤1200 حرف، واحدة للدفعة). همسة تطلبها مرة
-  واحدة بعد دفعة تغلق عناصر أو إصدار؛ تُختم بحكم الدليل على أثر الجلسة كاملًا
-  وتُربط بأرقام ما أغلقته الدفعة.
+  واحدة بعد دفعة تغلق عنصرين فأكثر (الإصدار وحده لا يطلبها — دفعاته نُبِّهت
+  عند إغلاقها)؛ تُختم بحكم الدليل على أثر الجلسة كاملًا وتُربط بأرقام ما أغلقته
+  الدفعة.
 - `-(doc:report|analysis|plan|comparison|readme)` name\n<markdown>
 
 **Closure is mandatory** — every open item (todo/bug/security/plan step) is closed by

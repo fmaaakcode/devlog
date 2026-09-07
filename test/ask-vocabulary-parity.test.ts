@@ -17,12 +17,30 @@
 import { test, expect, describe } from "bun:test";
 import { COMMAND_TAGS } from "../src/tag-parser";
 import { ASK_ROWS } from "../src/hook-ask-rows";
+import { RULE_COMMANDS } from "../src/standards";
 
 describe("pull-command vocabulary parity", () => {
   test("every ASK_ROWS key is a known COMMAND_TAG", () => {
     const known = new Set<string>(COMMAND_TAGS);
     const missing = ASK_ROWS.map(r => r.key).filter(k => !known.has(k));
     expect(missing).toEqual([]);
+  });
+
+  // #1183 (F-9.109): the reverse direction. A COMMAND_TAG nobody serves is the
+  // double silence #605 was built against, mirrored: the parser treats the line
+  // as a command (no near-miss correction, no backtick nudge, never stored) and
+  // no server answers it — inert AND quiet. Every recognized command must have
+  // exactly one owner: the pull table (ASK_ROWS) or the standards rule commands
+  // (RULE_COMMANDS, served by parse-tags Part 1.5).
+  test("every COMMAND_TAG is served by ASK_ROWS or RULE_COMMANDS — no inert command", () => {
+    const served = new Set<string>([...ASK_ROWS.map(r => r.key), ...RULE_COMMANDS]);
+    const inert = COMMAND_TAGS.filter(c => !served.has(c));
+    expect(inert).toEqual([]);
+  });
+
+  test("no command has two owners — a rule command must not also be a pull row", () => {
+    const rows = new Set<string>(ASK_ROWS.map(r => r.key));
+    expect(RULE_COMMANDS.filter(c => rows.has(c))).toEqual([]);
   });
 
   test("row keys are unique — two rows on one key would silently shadow", () => {

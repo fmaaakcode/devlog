@@ -9,7 +9,8 @@
 //   - callouts: > [!note], > [!warning], > [!info]
 //   - horizontal rule (--- on its own line)
 // Everything else is rendered as escaped text. The output is sanitized: no
-// raw <script>, no on* handlers, no javascript: URLs.
+// raw <script>, no on* handlers, no javascript: URLs — enforced on the
+// RENDERED HTML, never by deleting source text (#1027).
 
 import { esc } from "./html-escape";
 
@@ -79,13 +80,22 @@ function parseTable(st: ParseState): boolean {
   return true;
 }
 
+// Opening fence: ``` plus an optional info string. The language token accepts
+// what real fences carry — `c++`, `c#`, `objective-c`, `f#`, `.env` — and any
+// trailing info (` title=x`, `{1,3}`) is tolerated (#1026). The old `\w*` only
+// knew letters/digits: a ```c# line fell through as a PARAGRAPH, its body
+// rendered as markdown, and its closing fence opened a code block that ate the
+// rest of the document — prose became code and code became prose.
+const FENCE_OPEN_RE = /^```[ \t]*([\w+#.-]*)(?:[ \t].*)?$/;
+const FENCE_CLOSE_RE = /^```[ \t]*$/;
+
 function parseCodeBlock(st: ParseState): boolean {
-  const fence = st.lines[st.i].match(/^```\s*(\w*)\s*$/);
+  const fence = st.lines[st.i].match(FENCE_OPEN_RE);
   if (!fence) return false;
   const lang = fence[1] || "";
   st.i++;
   const buf: string[] = [];
-  while (st.i < st.lines.length && !/^```\s*$/.test(st.lines[st.i])) {
+  while (st.i < st.lines.length && !FENCE_CLOSE_RE.test(st.lines[st.i])) {
     buf.push(st.lines[st.i]);
     st.i++;
   }
@@ -200,13 +210,24 @@ function parseParagraph(st: ParseState): void {
   if (buf.length) st.out.push(`<p>${inline(buf.join(" "))}</p>`);
 }
 
+// Defense in depth AFTER rendering, on the HTML we produced (#1027). Every
+// byte of source text reaches the output escaped (inline()/escapeHtml), so a
+// `<script>` or an `onerror=` in the SOURCE is already inert text — a
+// pre-parse strip on the raw markdown only deleted documentation: an XSS
+// example inside a ```html block vanished silently, and prose words that
+// merely start with "on" (` once="true"`, ` onboarding="x"`) were erased.
+// Applied to the rendered HTML, the same patterns can only hit a real tag —
+// which our templates never emit — so this costs zero content and still
+// catches a future template regression.
+function sanitizeHtml(html: string): string {
+  return html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, "")
+    .replace(/<script\b[^>]*\/?>/gi, "")
+    .replace(/(<[a-z][^>]*?)\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "$1");
+}
+
 export function renderMarkdown(md: string): string {
-  // Strip any raw <script> or on* attributes before parsing — defense in depth.
-  const clean = md
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/\son\w+\s*=\s*"[^"]*"/gi, "")
-    .replace(/\son\w+\s*=\s*'[^']*'/gi, "");
-  const st: ParseState = { out: [], i: 0, lines: clean.split(/\r?\n/) };
+  const st: ParseState = { out: [], i: 0, lines: md.split(/\r?\n/) };
   while (st.i < st.lines.length) {
     const before = st.i;
     if (parseBlank(st)) continue;
@@ -225,5 +246,5 @@ export function renderMarkdown(md: string): string {
       st.i++;
     }
   }
-  return st.out.join("\n");
+  return sanitizeHtml(st.out.join("\n"));
 }

@@ -4,10 +4,11 @@ import { t as tr, applyI18n } from './dashboard-i18n.js';
 // HTML-escape untrusted strings before innerHTML — DEVLOG_STACK.md is
 // project-controlled (security audit R2 #1 / defense D2). Shared single copy
 // since audit C2.
-import { esc } from './dom-safe.js';
+import { esc, httpErrorDetail } from './dom-safe.js';
 // Canvas colors can't use var() syntax — resolve the page's :root tokens once
 // at load (audit C1); the fallbacks mirror stack-map.html's definitions.
 import { cssVar } from './theme.js';
+import { normalize, buildGroupIndex, activityGlow, computeActivity } from './stack-map-graph-util.js';
 applyI18n();
 
 const C_BG = cssVar('--bg', '#161718');
@@ -96,40 +97,6 @@ function resize() {
 window.addEventListener('resize', () => { resize(); render(); });
 resize();
 
-function normalize(name) {
-  return name.replace(/^.*\//, '').replace(/\.[^.]+$/, '');
-}
-
-// Semantic clusters: filename-token families beat raw directories when a
-// project keeps most files flat in src/ (helper: 20/29). A first-token family
-// (routes-*, doc-*) needs ≥2 members in the same directory to count; otherwise
-// the file falls back to its directory ('root' for top-level non-UI files).
-function buildGroupIndex(paths) {
-  const meta = paths.map(p => {
-    const dir = p.includes('/') ? p.slice(0, p.indexOf('/')) : '';
-    const base = p.slice(p.lastIndexOf('/') + 1);
-    const ext = base.slice(base.lastIndexOf('.') + 1).toLowerCase();
-    const token = base.includes('-') ? base.slice(0, base.indexOf('-')) : '';
-    return { p, dir, ext, token };
-  });
-  const famCount = new Map();
-  for (const m of meta) {
-    if (!m.token) continue;
-    const k = `${m.dir}|${m.token}`;
-    famCount.set(k, (famCount.get(k) || 0) + 1);
-  }
-  const groups = new Map();
-  for (const m of meta) {
-    if (m.ext === 'html' || m.ext === 'css') groups.set(m.p, 'ui');
-    else if (m.dir && m.dir !== 'src') groups.set(m.p, m.dir);
-    else if (m.token && famCount.get(`${m.dir}|${m.token}`) >= 2) groups.set(m.p, m.token);
-    else groups.set(m.p, m.dir || 'root');
-  }
-  return groups;
-}
-
-// Importance is encoded by size alone (three tiers, spread wide enough to
-// read at a glance now that color no longer helps).
 function sizeFor(importance) {
   if (importance >= 3) return { w: 150, h: 58, font: 13, sub: 11 };
   if (importance === 2) return { w: 116, h: 46, font: 12, sub: 10 };
@@ -403,47 +370,22 @@ function placeRail() {
   railBox = { x: railCx - colW / 2, y: minY - 6, w: colW, h: y - minY + 12 };
 }
 
-function computeActivity() {
-  const now = Date.now();
-  const relevantTags = ['built', 'bug fix', 'refactor'];
-  // TagEntry.timestamp is an ISO string — the old numeric arithmetic on it
-  // produced NaN, so the glow never fired on real data (latent since launch).
-  const ts = t => typeof t.timestamp === 'number' ? t.timestamp : Date.parse(t.timestamp) || 0;
-  const filtered = projectTags.filter(t => relevantTags.includes(t.tag));
-  for (const n of nodes) {
-    const base = n.label;
-    const baseNoExt = base.replace(/\.[^.]+$/, '');
-    let best = null;
-    for (const t of filtered) {
-      const c = (t.content || '').toLowerCase();
-      if (c.includes(base.toLowerCase()) || (baseNoExt.length >= 4 && c.includes(baseNoExt.toLowerCase()))) {
-        if (!best || ts(t) > ts(best)) best = t;
-      }
-    }
-    if (best) {
-      const days = Math.floor((now - ts(best)) / (1000 * 60 * 60 * 24));
-      n.activity = { days, tag: best.tag, content: best.content };
-    } else {
-      n.activity = null;
-    }
-  }
-}
+// Activity glow lives in stack-map-graph-util.js (computeActivity, #1159) —
+// pure over nodes + tags, so the matcher is unit-tested there.
 
-function activityGlow(days) {
-  if (days <= 1) return 1.0;
-  if (days <= 3) return 0.8;
-  if (days <= 7) return 0.55;
-  if (days <= 14) return 0.3;
-  return 0;
-}
 
+// Node identity is the file's FULL path. Basename-without-extension ids made
+// same-named files one node (helper: index×4, features.ts/features.html,
+// deps.js/deps.html …) so relations of src/features.ts drew onto features.html
+// and the .ts node was railed as "unreached" (#1156). Relation endpoints and
+// entry points written by the current generator are full paths too; a legacy
+// stack file may still carry basenames, which resolve only when unambiguous.
 function buildGraph(stack) {
-  entryPoints = (stack.entryPoints || []).map(p => normalize(p));
   const groupIndex = buildGroupIndex(stack.files.map(f => f.path));
   nodes = stack.files.map(f => {
     const size = sizeFor(f.importance);
     return {
-      id: normalize(f.path),
+      id: f.path,
       path: f.path,
       group: groupIndex.get(f.path),
       label: f.path.split('/').pop(),
@@ -464,15 +406,29 @@ function buildGraph(stack) {
   const names = [...clusters.keys()].sort((a, b) => a.localeCompare(b));
   clusterColors = new Map(names.map((g, i) => [g, CLUSTER_SLOTS[i] || CLUSTER_OTHER]));
   const byId = new Map(nodes.map(n => [n.id, n]));
+  // Legacy references (basename, or path without extension) resolve only when
+  // exactly one node carries that name — never to an arbitrary winner.
+  const byBase = new Map();
+  for (const n of nodes) {
+    for (const key of new Set([normalize(n.path), n.path.replace(/\.[^.]+$/, '')])) {
+      byBase.set(key, byBase.has(key) ? null : n);
+    }
+  }
+  const resolveRef = (ref) => byId.get(ref) || byBase.get(normalize(ref)) || byBase.get(ref) || null;
+  entryPoints = (stack.entryPoints || []).map(p => resolveRef(p)?.id).filter(Boolean);
 
+  // Function groups are written under the file's basename (`### fname`), so
+  // they map to node ids through resolveRef like any other reference.
   const fnToFile = new Map();
   for (const fn of stack.functions || []) fnToFile.set(fn.name, fn.file);
   const strengthMap = new Map();
   for (const fn of stack.functions || []) {
+    const src = resolveRef(fn.file)?.id;
+    if (!src) continue;
     for (const c of fn.calls || []) {
-      const tgt = fnToFile.get(c);
-      if (!tgt || tgt === fn.file) continue;
-      const k = `${fn.file}|${tgt}`;
+      const tgt = resolveRef(fnToFile.get(c) || '')?.id;
+      if (!tgt || tgt === src) continue;
+      const k = `${src}|${tgt}`;
       strengthMap.set(k, (strengthMap.get(k) || 0) + 1);
     }
   }
@@ -482,8 +438,8 @@ function buildGraph(stack) {
   edges = [];
   const seen = new Set();
   for (const r of stack.fileRelations) {
-    const a = byId.get(normalize(r.from));
-    const b = byId.get(normalize(r.to));
+    const a = resolveRef(r.from);
+    const b = resolveRef(r.to);
     if (!a || !b || a === b) continue;
     const key = `${a.id}|${b.id}`;
     if (seen.has(key)) continue;
@@ -491,7 +447,7 @@ function buildGraph(stack) {
     const strength = strengthMap.get(`${a.id}|${b.id}`) || 0;
     edges.push({ source: a, target: b, strength, strengthNorm: strength / maxStrength });
   }
-  computeActivity();
+  computeActivity(nodes, projectTags);
   adjacency = new Map();
   for (const n of nodes) adjacency.set(n, new Set([n]));
   for (const e of edges) {
@@ -991,6 +947,9 @@ canvas.addEventListener('mousemove', e => {
     dragging.y = ny;
     dragging.vx = 0;
     dragging.vy = 0;
+    // The dragged node's layout target follows the hand: otherwise the radial/
+    // layered pull (step) springs it back to where the layout put it (#1157).
+    if (dragging.tx != null) { dragging.tx = nx; dragging.ty = ny; }
     if (!simRunning) { render(); loop(); }
   } else {
     const node = pickNode(x, y);
@@ -1087,15 +1046,29 @@ function schedulePositionSave() {
     const positions = {};
     for (const n of nodes) positions[n.id] = { x: n.x, y: n.y };
     try {
-      await fetch(`/api/stack/${encodeURIComponent(project)}/layout`, {
+      const res = await fetch(`/api/stack/${encodeURIComponent(project)}/layout`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ positions }),
       });
-    } catch {
-      // Layout save is best-effort; the next drag retries.
+      // fetch resolves on 401/404/413/500 — the user arranged, closed, and
+      // lost the layout without a word (#1158). Say what the server said.
+      if (!res.ok) showTransient(tr("stack.saveFail", { msg: await httpErrorText(res) }));
+    } catch (e) {
+      showTransient(tr("stack.saveFail", { msg: String(e?.message || e) }));
     }
   }, 500);
+}
+
+const httpErrorText = async (res) => tr("err.http", await httpErrorDetail(res));
+// The status line is hidden once the map renders; a transient message
+// borrows it for a few seconds instead of a modal over the canvas.
+let transientTimer = null;
+function showTransient(msg) {
+  statusEl.textContent = msg;
+  statusEl.style.display = '';
+  clearTimeout(transientTimer);
+  transientTimer = setTimeout(() => { statusEl.style.display = 'none'; }, 6000);
 }
 
 function openFile(node) {
@@ -1115,9 +1088,12 @@ function openFile(node) {
 
 document.getElementById('reLayout').onclick = async () => {
   try {
-    await fetch(`/api/stack/${encodeURIComponent(project)}/layout`, { method: 'DELETE' });
-  } catch {
-    // Server-side reset failed — still re-layout locally.
+    const res = await fetch(`/api/stack/${encodeURIComponent(project)}/layout`, { method: 'DELETE' });
+    // A refused DELETE leaves the saved file on disk, so the old positions
+    // come back on the next reload (#1158) — re-layout locally but say so.
+    if (!res.ok) showTransient(tr("stack.resetFail", { msg: await httpErrorText(res) }));
+  } catch (e) {
+    showTransient(tr("stack.resetFail", { msg: String(e?.message || e) }));
   }
   savedPositions = null;
   layoutInitial();
@@ -1222,16 +1198,26 @@ function loop() {
   }
 }
 
+// Saved positions win over the layout's targets: a restored node's tx/ty become
+// its saved spot, so the first drag (which starts the simulation) holds every
+// other node where the user left it instead of snapping all of them back to the
+// computed radial/layered layout and then saving THAT (#1157). Layout keys are
+// full paths (#1156); a layout saved under the old basename keys is honoured
+// only where the basename is unambiguous.
 function applySavedPositions() {
   if (!savedPositions) return 0;
+  const baseCount = new Map();
+  for (const n of nodes) { const b = normalize(n.path); baseCount.set(b, (baseCount.get(b) || 0) + 1); }
   let applied = 0;
   for (const n of nodes) {
-    const p = savedPositions[n.id];
+    const base = normalize(n.path);
+    const p = savedPositions[n.id] || (baseCount.get(base) === 1 ? savedPositions[base] : null);
     if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
       n.x = p.x;
       n.y = p.y;
       n.vx = 0;
       n.vy = 0;
+      if (n.tx != null) { n.tx = p.x; n.ty = p.y; }
       applied++;
     }
   }

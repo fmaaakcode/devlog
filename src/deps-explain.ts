@@ -59,12 +59,18 @@ export interface DepExplainItem {
   detailsUrl?: string;
 }
 
+/** A recorded purpose whose name matches no manifest library (#1115): a typo,
+ *  a CDN-loaded library, or a project never scanned. Stored faithfully, shown
+ *  as its own list so the agent sees what it recorded rather than ∅. */
+export interface OrphanPurpose { name: string; purpose: string; purposeAt: string; }
+
 export interface DepsExplainPayload {
   project: string;
   total: number;
   /** Coverage: how many libraries carry a recorded purpose line. */
   withPurpose: number;
   libraries: DepExplainItem[];
+  orphans: OrphanPurpose[];
 }
 
 /** The /api/deps payload: every manifest library, annotated. Null when the
@@ -92,10 +98,15 @@ export function buildDepsPayload(data: DevLogData, project: string): DepsExplain
     };
   });
   libraries.sort((a, b) => Number(!!a.purpose) - Number(!!b.purpose) || a.name.localeCompare(b.name));
+  const known = new Set((p.libraries || []).map(l => l.name.toLowerCase()));
+  const orphans: OrphanPurpose[] = [];
+  for (const [name, pur] of purposes) if (!known.has(name)) orphans.push({ name, purpose: pur.purpose, purposeAt: pur.at });
+  orphans.sort((a, b) => a.name.localeCompare(b.name));
   return {
     project,
     total: libraries.length,
     withPurpose: libraries.filter((l) => l.purpose).length,
     libraries,
+    orphans,
   };
 }

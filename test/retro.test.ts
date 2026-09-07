@@ -4,7 +4,7 @@
 // open/closed split can never disagree with ask:open / ask:closed.
 
 import { describe, expect, test } from "bun:test";
-import { retroCorpus, fragileFiles } from "../src/retro";
+import { retroCorpus, fragileFiles, regressionGap, touchesTests, testEvidence, mentionedFiles } from "../src/retro";
 import { closedItems } from "../src/closed-items";
 import { collectRelease, generateReleaseHtml } from "../src/release-html";
 import { projectRelativeFiles } from "../src/path-utils";
@@ -123,6 +123,92 @@ describe("fragileFiles (#557)", () => {
 
   test("empty when nothing recurs", () => {
     expect(fragileFiles(makeData(report(1, ["D:/proj/src/a.ts"])), "p")).toEqual([]);
+  });
+});
+
+describe("report footprint = the paths the report names (#1135)", () => {
+  test("a report written from a notes session is charged to the source file it names, not to the notes", () => {
+    const data = makeData([
+      // Two audit reports filed from a session that only edited the audit notes.
+      { tag: "bug found", project: "p", num: 1, content: "src/parser.ts:12 يبتلع الخطأ صامتًا", files: ["D:/proj/audits/phase-3.md"], timestamp: "2026-01-01T00:00:00Z" },
+      { tag: "bug found", project: "p", num: 2, content: "parser.ts:40 — المطابقة على النص كله", files: ["D:/proj/audits/phase-3.md"], timestamp: "2026-01-02T00:00:00Z" },
+      // An older fixed report whose session footprint teaches the index that `parser.ts` lives in src/.
+      { tag: "bug found", project: "p", num: 3, content: "crash on empty input", files: ["D:/proj/src/parser.ts"], timestamp: "2025-12-01T00:00:00Z" },
+      { tag: "bug fix", project: "p", content: "#3 guard", files: ["D:/proj/src/parser.ts"], timestamp: "2025-12-02T00:00:00Z" },
+    ]);
+    const byNum = Object.fromEntries(retroCorpus(data, "p").map(i => [i.num, i.files]));
+    expect(byNum[1]).toEqual(["src/parser.ts"]);   // named with its directory
+    expect(byNum[2]).toEqual(["src/parser.ts"]);   // bare name resolved through the index
+    expect(byNum[3]).toEqual(["src/parser.ts"]);   // no mention → session files (unchanged behaviour)
+    expect(fragileFiles(data, "p")).toEqual([{ file: "src/parser.ts", count: 3, open: 2 }]);
+  });
+
+  test("mentionedFiles: root files stay as written, ambiguous bare names are dropped, URLs and versions are not paths", () => {
+    const index = new Map<string, Set<string>>([["data.ts", new Set(["src/data.ts", "assets/data.ts"])]]);
+    expect(mentionedFiles("parse-tags.ts:580 وdata.ts:361 و https://x.y/z/index.html و 1.2.3 و @scope/pkg.js", index))
+      .toEqual(["parse-tags.ts"]);
+    expect(mentionedFiles("انظر src\\hooks.ts و ./src/inject.ts و src/inject.ts مرة أخرى", new Map()))
+      .toEqual(["src/hooks.ts", "src/inject.ts"]);
+    expect(mentionedFiles("لا مسار هنا، مجرد نص", new Map())).toEqual([]);
+  });
+
+  test("#1229: a kebab-case module STEM resolves through the index; lone words and unknown stems never do", () => {
+    const data = makeData([
+      { tag: "bug found", project: "p", num: 1, content: "doctor-invariants يدفع صفًا مكررًا لكل زوج", files: ["D:/proj/assets/dashboard-tree-ws.js"], timestamp: "2026-01-01T00:00:00Z" },
+      { tag: "bug found", project: "p", num: 2, content: "text-align:right أفلت من الحارس — the data is wrong", files: ["D:/proj/assets/dashboard-tree-ws.js"], timestamp: "2026-01-02T00:00:00Z" },
+      // Teach the index the stems: one session on doctor-invariants, one on data.
+      { tag: "built", project: "p", content: "x", files: ["D:/proj/src/doctor-invariants.ts", "D:/proj/src/data.ts"], timestamp: "2025-12-01T00:00:00Z" },
+    ]);
+    const byNum = Object.fromEntries(retroCorpus(data, "p").map(i => [i.num, i.files]));
+    expect(byNum[1]).toEqual(["src/doctor-invariants.ts"]);        // stem → the one file carrying it
+    expect(byNum[2]).toEqual(["assets/dashboard-tree-ws.js"]);      // `text-align` unknown, `data` a lone word → session fallback
+    // A stem already inside a path is the path's business, never a second hit.
+    const idx = new Map<string, Set<string>>([["dashboard-tree-ws", new Set(["assets/dashboard-tree-ws.js"])], ["dashboard-tree-ws.js", new Set(["assets/dashboard-tree-ws.js"])]]);
+    expect(mentionedFiles("dashboard-tree-ws.js:78 يحوّل المسار", idx)).toEqual(["assets/dashboard-tree-ws.js"]);
+  });
+});
+
+describe("withdrawn reports and test evidence (#1136, #1200)", () => {
+  test("#1136: a report closed by -(dropped) is not a problem report — out of the corpus, fragile files and the test gap", () => {
+    const data = makeData([
+      { tag: "bug found", project: "p", num: 1, content: "thought it was a crash in the scanner loop", files: ["D:/proj/src/a.ts"], timestamp: "2026-01-01T00:00:00Z" },
+      { tag: "dropped", project: "p", content: "#1 not a defect — expected behaviour", files: ["D:/proj/src/a.ts"], timestamp: "2026-01-02T00:00:00Z" },
+      { tag: "bug found", project: "p", num: 2, content: "real crash in the scanner loop on empty dirs", files: ["D:/proj/src/a.ts"], timestamp: "2026-01-03T00:00:00Z" },
+      { tag: "bug fix", project: "p", content: "#2 guard the empty case", files: ["D:/proj/src/a.ts"], timestamp: "2026-01-04T00:00:00Z" },
+    ]);
+    const corpus = retroCorpus(data, "p");
+    expect(corpus.map(i => i.num)).toEqual([2]);
+    // Only ONE report touched src/a.ts → below the 2+ recurrence bar.
+    expect(fragileFiles(data, "p")).toEqual([]);
+    const gap = regressionGap(data, "p");
+    expect(gap.judged).toBe(1);          // the withdrawal is never judged for a test
+    expect(gap.withoutTest).toBe(1);
+    expect(gap.items.map(i => i.num)).toEqual([2]);
+  });
+
+  test("#1200: PascalCase test files (Java/Kotlin/C#/C++) count as tests; a Rust-only footprint is unjudgeable", () => {
+    expect(touchesTests(["src/main/java/app/FooTest.java"])).toBe(true);
+    expect(touchesTests(["Tests/FooTests.cs"])).toBe(true);
+    expect(touchesTests(["app/src/FooSpec.kt"])).toBe(true);
+    expect(touchesTests(["src/FooTest.cpp"])).toBe(true);
+    // Case-sensitive: a source file that merely ends in "…tests" is not a test.
+    expect(touchesTests(["src/protests.cs", "src/requests.cs"])).toBe(false);
+    expect(testEvidence(["src/lib.rs", "src/parser.rs"])).toBe("unjudgeable");
+    expect(testEvidence(["src/lib.rs", "tests/parse.rs"])).toBe("yes");
+    expect(testEvidence(["src/lib.ts"])).toBe("no");
+    expect(testEvidence(undefined)).toBe("unjudgeable");
+  });
+
+  test("#1200: a Rust fix without a test PATH lands in `unknown`, never `withoutTest`", () => {
+    const data = makeData([
+      { tag: "bug found", project: "p", num: 1, content: "parser panics on empty input", timestamp: "2026-01-01T00:00:00Z" },
+      { tag: "bug fix", project: "p", content: "#1 return Err instead of unwrap", files: ["D:/proj/src/parser.rs"], timestamp: "2026-01-02T00:00:00Z" },
+      { tag: "bug found", project: "p", num: 2, content: "cli flag ignored", timestamp: "2026-01-03T00:00:00Z" },
+      { tag: "bug fix", project: "p", content: "#2 wire the flag", files: ["D:/proj/src/cli.ts"], timestamp: "2026-01-04T00:00:00Z" },
+    ]);
+    const gap = regressionGap(data, "p");
+    expect(gap).toMatchObject({ judged: 1, withTest: 0, withoutTest: 1, unknown: 1 });
+    expect(gap.items.map(i => i.num)).toEqual([2]);
   });
 });
 

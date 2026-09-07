@@ -49,15 +49,53 @@ describe("parseInstallCommands", () => {
     expect(parseInstallCommands("git add -A")).toEqual([]);
     expect(parseInstallCommands("bun install")).toEqual([]);
     expect(parseInstallCommands("npm install --save-dev")).toEqual([]);
-    expect(parseInstallCommands("echo bun add nothing?")).toEqual([]); // no manager match mid-echo? — 'bun add' preceded by space DOES match; name captured
+    // F-9.47 (#1205 family): the old fixture `echo bun add nothing?` passed for the
+    // wrong reason — the trailing `?` fails the NAME regex, not the manager match
+    // — while its comment claimed the opposite. Pinned honestly: an unquoted,
+    // uncommented `bun add <name>` anywhere in the command IS parsed (the gate
+    // cannot tell `echo bun add x` from `cd dir && bun add x`); only quoting or a
+    // comment (stripped, see below) makes a mention inert, and `?` is not a name.
+    expect(parseInstallCommands("echo bun add nothing")).toEqual([{ name: "nothing", version: "", eco: "npm" }]);
+    expect(parseInstallCommands("echo bun add nothing?")).toEqual([]);
   });
 
   test("local paths, URLs and tarballs are not registry packages", () => {
     expect(parseInstallCommands("bun add ./local-pkg ../other file:foo git+https://x/y.git")).toEqual([]);
   });
 
-  test("caps at 8 packages", () => {
-    expect(parseInstallCommands("bun add a b c d e f g h i j")).toHaveLength(8);
+  // #1037 / F-3.36: the ninth package used to be installed blind — the parser
+  // stopped at 8 and the surplus never reached the advisor, a block message or
+  // a re-issue. Every named package is gated; the hook batches the advisor call.
+  test("no cap — the ninth package is gated too", () => {
+    const pkgs = parseInstallCommands("bun add a b c d e f g h i j");
+    expect(pkgs).toHaveLength(10);
+    expect(pkgs.map(p => p.name)).toContain("i");
+    expect(pkgs.map(p => p.name)).toContain("j");
+  });
+
+  // #1036 / F-3.35: the natural shape of a long install the model writes.
+  test("a `\\`+newline continuation is one command", () => {
+    expect(parseInstallCommands("bun add \\\n  react react-dom")).toEqual([
+      { name: "react", version: "", eco: "npm" }, { name: "react-dom", version: "", eco: "npm" }]);
+    expect(parseInstallCommands("bun add react \\\n  react-dom").map(p => p.name)).toEqual(["react", "react-dom"]);
+    expect(parseInstallCommands("npm i \\\r\n  express@5.1.0").map(p => `${p.name}@${p.version}`)).toEqual(["express@5.1.0"]);
+  });
+
+  // #1172 / F-9.47: manager words inside a string, a comment or a heredoc body
+  // are text, not an install — the gate used to block them with phantom names.
+  test.each([
+    'echo "bun add lodash"',
+    "node -e \"console.log('npm install express')\"",
+    "cat > README.md <<'EOF'\nRun: bun add hono\nEOF",
+    "git commit -m 'chore: pip install requests in CI'",
+    "ls # bun add nothing",
+  ])("quoted / heredoc / commented mentions never gate: %p", (cmd) => expect(parseInstallCommands(cmd)).toEqual([]));
+
+  test("a quoted package name is still the name", () => {
+    expect(parseInstallCommands('bun add "react" \'react-dom@19.1.0\'')).toEqual([
+      { name: "react", version: "", eco: "npm" }, { name: "react-dom", version: "19.1.0", eco: "npm" }]);
+    // A comment after the names is dropped, the names before it survive.
+    expect(parseInstallCommands("bun add hono # web framework").map(p => p.name)).toEqual(["hono"]);
   });
 });
 
@@ -144,7 +182,31 @@ describe("decideGate", () => {
   });
 
   test("a package with no advice entry passes", () => {
-    expect(decideGate([pkg("mystery")], [])).toEqual({ blocks: [], warns: [], vulnPins: [] });
+    expect(decideGate([pkg("mystery")], [])).toEqual({ blocks: [], warns: [], vulnPins: [], hardBlocks: 0 });
+  });
+
+  // #1047 / F-3.82: the hook used to ack EVERY outcome before blocking, so a
+  // verbatim re-issue of a blind `bun add lodash` passed with no version and no
+  // OSV check — the header's "BLOCK … enforcement, not discipline" was false in
+  // practice (10 gate→ack-pass pairs within seconds in the live log). hardBlocks
+  // tells the hook which outcomes may never be acked.
+  test("blind / no-clean / no-mature blocks are HARD; pin disagreements and vulnerable pins are not", () => {
+    expect(decideGate([pkg("hono")], [ok("hono", "4.12.28")]).hardBlocks).toBe(1);
+    expect(decideGate([pkg("hono")], [{ name: "hono", verdict: "no-clean", vulnNote: "x" }]).hardBlocks).toBe(1);
+    expect(decideGate([pkg("hono")], [{ name: "hono", verdict: "no-mature", latest: "5.0.0", latestAgeDays: 2 }]).hardBlocks).toBe(1);
+    // Two blind names in one command → two hard blocks.
+    expect(decideGate([pkg("a"), pkg("b")], [ok("a", "1.0.0"), ok("b", "2.0.0")]).hardBlocks).toBe(2);
+    // A pin that merely disagrees is advisory (warn), overridable.
+    const warn = decideGate([pkg("hono", "4.0.0")], [ok("hono", "4.12.28")]);
+    expect(warn.warns).toHaveLength(1);
+    expect(warn.hardBlocks).toBe(0);
+    // A known-vulnerable pin blocks but stays overridable (the override opens a security item).
+    const vuln = decideGate([pkg("lodash", "4.17.20")],
+      [{ ...ok("lodash", "4.18.1"), pin: { version: "4.17.20", vulns: 3, severity: "high" } }]);
+    expect(vuln.blocks).toHaveLength(1);
+    expect(vuln.hardBlocks).toBe(0);
+    // Mixed: one blind + one pinned-disagreeing → still hard (the blind one must be pinned first).
+    expect(decideGate([pkg("a"), pkg("b", "1.0.0")], [ok("a", "1.0.0"), ok("b", "2.0.0")]).hardBlocks).toBe(1);
   });
 
   test("pin that is ITSELF vulnerable → block naming its vulns + a vulnPins record (#630)", () => {
@@ -252,7 +314,7 @@ describe("decideGate", () => {
 
     test("verified outcomes are untouched: clean matching pin still passes, blind+ok still blocks the same", () => {
       const advice = [{ ...ok("hono", "4.12.28"), pin: { version: "4.12.28", vulns: 0, severity: "none" } }];
-      expect(strict([pkg("hono", "4.12.28")], advice)).toEqual({ blocks: [], warns: [], vulnPins: [] });
+      expect(strict([pkg("hono", "4.12.28")], advice)).toEqual({ blocks: [], warns: [], vulnPins: [], hardBlocks: 0 });
       expect(strict([pkg("hono")], [ok("hono", "4.12.28")]).blocks)
         .toEqual(decideGate([pkg("hono")], [ok("hono", "4.12.28")]).blocks);
     });

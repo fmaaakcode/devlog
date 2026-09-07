@@ -16,12 +16,12 @@ import type { Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startServer, stopServer, waitForServer, runHook, asJson, PROJECT_ROOT } from "./_helpers";
+import { startServer, stopServer, waitForServer, runHook, asJson, HOOK_STATE_DIR } from "./_helpers";
 import type { TagEntry } from "../src/types";
 
 const TEST_PORT = 17911;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
-const TURN_STATE_DIR = join(PROJECT_ROOT, ".devlog", "turn-state");
+const TURN_STATE_DIR = join(HOOK_STATE_DIR, "turn-state");
 
 describe("corruption joints (E2E)", () => {
   let dataDir: string, projDir: string, sid: string, server: Subprocess;

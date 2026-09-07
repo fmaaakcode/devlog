@@ -7,9 +7,9 @@
 //   - matching   cwd  → written under the registered path
 
 import { test, expect, describe, beforeAll, beforeEach, afterEach } from "bun:test";
-import { asJson } from "./_helpers";
+import { asJson, scrubbedEnv } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -46,7 +46,7 @@ function startRealServer(dataDir: string): Subprocess {
     cmd: ["bun", join("src", "server.ts")],
     cwd: PROJECT_ROOT,
     env: {
-      ...process.env,
+      ...scrubbedEnv(),
       DEVLOG_DATA_DIR: dataDir,
       DEVLOG_PORT: String(TEST_PORT),
       DEVLOG_VERSION_CHECK_DISABLED: "1",
@@ -100,6 +100,9 @@ describe("regression — audit 2026-05-09 #1: doc:* must reject mismatched cwd",
     // .devlog/docs/* into attackerDir.
     const projectName = projectDir.split(/[\\/]/).pop()!;
     const fakeCwd = join(attackerDir, projectName);
+    // The attacker path EXISTS (a real sibling folder): the phantom-cwd gate (#1199) refuses
+    // a missing path before doc handling, and this test is about the doc-level guard.
+    mkdirSync(fakeCwd, { recursive: true });
 
     const res = await fetch(`${BASE}/api/tags`, {
       method: "POST",

@@ -5,10 +5,26 @@
 // counts can never disagree with what the sweep deletes (#408). Pure functions
 // over DevLogData + a disk existence check; no store I/O lives here.
 
-import { existsSync } from "node:fs";
 import { readdir, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
+import { diskExists } from "./disk-probe";
+import { sweepOrphanTmp } from "./atomic-write";
+import type { ExistsProbe } from "./path-utils";
 import type { DevLogData, ProjectProfile } from "./types";
+import { isCodeWrite } from "./standards";
+import { isTrackingFile } from "./tracking-files";
+
+/** ONE definition of "this session wrote something worth a tag" (#1208), shared
+ *  by the two passive sidebar counters below and identical to the in-session
+ *  untagged guard's trigger (hook-guards.ts → untagged-guard.ts): a CODE file
+ *  (isCodeWrite) or a manual TRACKING file (isTrackingFile, #676). Before this
+ *  the counters took ANY change/create event — a README-only session showed up
+ *  as «بلا تاقات» in the sidebar while the guard, rightly, stayed silent. */
+function isSubstantiveWrite(e: { type?: string; file_path?: string }): boolean {
+  if (e.type !== "change" && e.type !== "create") return false;
+  const f = e.file_path || "";
+  return !!f && (isCodeWrite(f) || isTrackingFile(f));
+}
 
 /** Coerce a store timestamp to epoch ms. Live data uses ISO strings; imported /
  *  seeded data may carry epoch numbers — both must sort/compare identically. */
@@ -16,11 +32,14 @@ export function tsToMs(v: unknown): number {
   return typeof v === "number" ? v : Date.parse(String(v)) || 0;
 }
 
-/** Store names (tags/events/plans/worklog — the same four arrays purgeProjectData
- *  sweeps, so report and purge can't disagree) with NO registry entry — leftovers of
- *  deleted projects + historical naming bugs ("D:helper", "v1.3.0", "unknown") — each
- *  with a per-store count. projects-summary needs `.size`; orphan-projects lists them. */
-export function orphanCounts(data: DevLogData): Map<string, { tags: number; events: number; plans: number; worklog: number }> {
+/** Store names (tags/events/plans/worklog/prompts — the project-keyed history
+ *  arrays purgeProjectData sweeps, so report and purge can't disagree) with NO
+ *  registry entry — leftovers of deleted projects + historical naming bugs
+ *  ("D:helper", "v1.3.0", "unknown") — each with a per-store count.
+ *  projects-summary needs `.size`; orphan-projects lists them. Descendants are
+ *  not counted: they are live process rows, not history (#1068). */
+export type OrphanCount = { tags: number; events: number; plans: number; worklog: number; prompts: number };
+export function orphanCounts(data: DevLogData): Map<string, OrphanCount> {
   const registered = new Set(Object.keys(data.projects));
   // Plausibility gate (#716 pattern): an EMPTY registry beside non-empty stores
   // is a wounded registry (projects.json quarantined at load, or stores restored
@@ -29,17 +48,18 @@ export function orphanCounts(data: DevLogData): Map<string, { tags: number; even
   if (registered.size === 0 && (data.tags.length || data.events.length || data.plans.length || data.worklog.length)) {
     return new Map();
   }
-  const counts = new Map<string, { tags: number; events: number; plans: number; worklog: number }>();
-  const bump = (name: string, k: "tags" | "events" | "plans" | "worklog") => {
+  const counts = new Map<string, OrphanCount>();
+  const bump = (name: string, k: keyof OrphanCount) => {
     if (!name || registered.has(name)) return;
     let c = counts.get(name);
-    if (!c) { c = { tags: 0, events: 0, plans: 0, worklog: 0 }; counts.set(name, c); }
+    if (!c) { c = { tags: 0, events: 0, plans: 0, worklog: 0, prompts: 0 }; counts.set(name, c); }
     c[k]++;
   };
   for (const t of data.tags) bump(t.project, "tags");
   for (const e of data.events) bump(e.project, "events");
   for (const p of data.plans) bump(p.project, "plans");
   for (const w of data.worklog) bump(w.project, "worklog");
+  for (const p of data.prompts ?? []) bump(p.project, "prompts");
   return counts;
 }
 
@@ -75,7 +95,7 @@ export function partiallyTaggedCounts(data: DevLogData, quietMs = 30 * 60 * 1000
     if (!s) { s = { project: e.project, files: new Set(), lastMs: 0 }; bySession.set(e.session_id, s); }
     const ms = tsToMs(e.timestamp);
     if (ms > s.lastMs) { s.lastMs = ms; s.project = e.project; }
-    if ((e.type === "change" || e.type === "create") && e.file_path) s.files.add(e.file_path);
+    if (e.file_path && isSubstantiveWrite(e)) s.files.add(e.file_path);
   }
   const cutoff = Date.now() - quietMs;
   const counts = new Map<string, number>();
@@ -97,7 +117,7 @@ export function untaggedSessionCounts(data: DevLogData, quietMs = 30 * 60 * 1000
     if (!s) { s = { project: e.project, wrote: false, lastMs: 0 }; bySession.set(e.session_id, s); }
     const ms = tsToMs(e.timestamp);
     if (ms > s.lastMs) { s.lastMs = ms; s.project = e.project; }
-    if ((e.type === "change" || e.type === "create") && e.file_path) s.wrote = true;
+    if (isSubstantiveWrite(e)) s.wrote = true;
   }
   const cutoff = Date.now() - quietMs;
   const counts = new Map<string, number>();
@@ -132,6 +152,18 @@ export async function cleanupOldBackups(dataDir: string, maxAgeDays = 30): Promi
 }
 
 /**
+ * Remove crash-orphaned temp siblings (`*.tmp.<pid>.<ms>`, `*.<pid>.<ms>.tmp`)
+ * in the data dir (F-4.94 / T-12). The atomic writer unlinks its sibling on a
+ * failed write or rename; only a hard crash between the two can strand one, and
+ * nothing swept those — cleanupOldBackups matches `.bak` only. An hour is the
+ * age floor: a live write holds its sibling for milliseconds. Returns the names
+ * removed. Best-effort, never throws.
+ */
+export function cleanupOrphanTmp(dataDir: string, maxAgeMs?: number): Promise<string[]> {
+  return sweepOrphanTmp(dataDir, maxAgeMs);
+}
+
+/**
  * Safety copies of the irreplaceable stores — ONE routine for both callers
  * (#759: this and project-transfer.ts each exported a `backupStores` with
  * different semantics, and importing the wrong one produced no compile error).
@@ -161,6 +193,13 @@ export async function backupStores(dataDir: string, label?: string): Promise<str
     // One copy per day is the point of the date stamp; the labeled stamp is
     // unique per call, so the skip never applies there.
     if (!label && (await Bun.file(dest).exists())) continue;
+    // Daily: an EMPTY store has no history to protect, and copying it takes the
+    // day's slot — found by store-quarantine-e2e (wave 9): the quarantine of a
+    // corrupt tags.json leaves a fresh `[]`, the boot backup copied that, and the
+    // real rows saved minutes later got no daily copy until the next day. Leave
+    // the slot for the first non-empty state of the day. Labeled copies still
+    // record everything — a pre-destructive snapshot must be complete.
+    if (!label && /^\s*(\[\s*\]|\{\s*\})\s*$/.test(await src.text())) continue;
     try {
       await Bun.write(dest, src);
       written.push(name);
@@ -177,25 +216,33 @@ export const TOMBSTONE_MS = 30 * 24 * 3600 * 1000;
 /** A registered project is a "tombstone" when its folder has been gone longer than
  *  `maxAgeMs` (the disconnectedSince marker) AND is STILL missing on disk right now
  *  (a marker can go stale if the drive came back). Shared by the projects-summary
- *  counter and the cleanup-tombstones sweep so they can't disagree. */
-export function isTombstone(project: ProjectProfile, maxAgeMs = TOMBSTONE_MS): boolean {
+ *  counter and the cleanup-tombstones sweep so they can't disagree.
+ *  The probe is diskExists, not existsSync (#1067): only ENOENT means gone. A
+ *  permission denial, a busy handle or a locked drive reads as PRESENT, because
+ *  the verdict here ends in a full purge of the project's history — an fs
+ *  hiccup must never qualify a live project for deletion. Injectable for tests. */
+export function isTombstone(project: ProjectProfile, maxAgeMs = TOMBSTONE_MS, exists: ExistsProbe = diskExists): boolean {
   if (!project.disconnectedSince) return false;
   if (Date.now() - new Date(project.disconnectedSince).getTime() <= maxAgeMs) return false;
-  return !!project.path && !existsSync(project.path);
+  return !!project.path && !exists(project.path);
 }
 
-/** Purge every store row whose project is in `gone`: the four bulk arrays
- *  (tags/plans/events/worklog) plus the per-project remnants that survived the
- *  original sweep — injections, rejections, and the meta.json injection-config
- *  key. Delete / cleanup-orphans / cleanup-tombstones all route here so none
- *  can forget a store (#408). On-disk archive months are a separate async pass
- *  (purgeProjectArchive in event-archive.ts) — every caller of this function
- *  must call that one too. Returns the number of rows removed. */
+/** Purge every store row whose project is in `gone`: the bulk history arrays
+ *  (tags/plans/events/worklog/prompts) plus the per-project remnants that
+ *  survived earlier sweeps — injections, rejections, descendants (#1068/#1195:
+ *  prompts are the user's own words and descendants the session's child
+ *  processes; both carry `project` and both outlived the project until now),
+ *  and the meta.json injection-config key. Delete / cleanup-orphans /
+ *  cleanup-tombstones all route here so none can forget a store (#408). On-disk
+ *  archive months are a separate async pass (purgeProjectArchive in
+ *  event-archive.ts) — every caller of this function must call that one too.
+ *  Returns the number of rows removed. */
 export function purgeProjectData(data: DevLogData, gone: Set<string>): number {
   if (!gone.size) return 0;
   const count = (d: DevLogData) =>
     d.tags.length + d.plans.length + d.events.length + d.worklog.length +
-    d.injections.length + (d.rejections?.length ?? 0);
+    d.injections.length + (d.rejections?.length ?? 0) + (d.prompts?.length ?? 0) +
+    (d.descendants?.length ?? 0);
   const before = count(data);
   data.tags = data.tags.filter(t => !gone.has(t.project));
   data.plans = data.plans.filter(p => !gone.has(p.project));
@@ -203,6 +250,8 @@ export function purgeProjectData(data: DevLogData, gone: Set<string>): number {
   data.worklog = data.worklog.filter(w => !gone.has(w.project));
   data.injections = data.injections.filter(i => !gone.has(i.project));
   if (data.rejections) data.rejections = data.rejections.filter(r => !gone.has(r.project));
+  if (data.prompts) data.prompts = data.prompts.filter(p => !gone.has(p.project));
+  if (data.descendants) data.descendants = data.descendants.filter(d => !gone.has(d.project));
   let removed = before - count(data);
   for (const name of gone) {
     if (data.projectInjectionConfigs[name]) {

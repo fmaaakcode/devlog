@@ -4,9 +4,9 @@
 // server, covering shapes + the confirm/guard paths.
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
-import { asJson } from "./_helpers";
+import { asJson, scrubbedEnv } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -35,7 +35,7 @@ beforeAll(async () => {
   server = spawn({
     cmd: ["bun", join("src", "server.ts")],
     cwd: PROJECT_ROOT,
-    env: { ...process.env, DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT), DEVLOG_VERSION_CHECK_DISABLED: "1" },
+    env: { ...scrubbedEnv(), DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT), DEVLOG_VERSION_CHECK_DISABLED: "1" },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -107,5 +107,73 @@ describe("routes-misc (extracted group) still mounts + behaves", () => {
     expect(baks.some(f => f.startsWith("tags."))).toBe(true);
     const bakTags = JSON.parse(await Bun.file(join(dataDir, baks.find(f => f.startsWith("tags."))!)).text());
     expect(JSON.stringify(bakTags)).toContain("survives only in the bak twin");
+  });
+});
+
+// #1058 / #1059 / #1063 — no route may CREATE a project folder that is gone.
+// Export wrote `<path>/.devlog/` with mkdir -p (resurrecting deleted projects
+// and foreign-machine paths), and a manual rescan of an unreachable folder
+// replaced the real profile with an empty one. Same server, a project seeded
+// through the real inject path, then its folder removed.
+describe("missing project folder is refused, never conjured (#1058/#1059/#1063)", () => {
+  const NAME = "ghost1058";
+  let folder: string;
+
+  beforeAll(async () => {
+    const ws = mkdtempSync(join(tmpdir(), "devlog-ghost-ws-"));
+    folder = join(ws, NAME);
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "package.json"), JSON.stringify({ name: NAME, version: "1.0.0", dependencies: { left: "1.0.0" } }));
+    expect((await fetch(`${BASE}/api/inject?cwd=${encodeURIComponent(folder)}&type=SessionStart`)).status).toBe(200);
+    // Give it a tag so export has something to write, then delete the folder.
+    const t = await fetch(`${BASE}/api/tags`, { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ cwd: folder, entries: [{ tag: "note", content: "قبل حذف المجلد" }] }) });
+    expect(t.status).toBe(200);
+    rmSync(folder, { recursive: true, force: true });
+  });
+
+  test("POST /api/export/:project → 409 and the folder stays gone", async () => {
+    const r = await fetch(`${BASE}/api/export/${NAME}`, { method: "POST", headers: JSON_HEADERS });
+    expect(r.status).toBe(409);
+    expect((await asJson(r)).error).toBe("folder-missing");
+    expect(existsSync(folder)).toBe(false);
+  });
+
+  test("POST /api/export-all lists it under skipped, not exported, and creates nothing", async () => {
+    const r = await fetch(`${BASE}/api/export-all`, { method: "POST", headers: JSON_HEADERS });
+    const body = await asJson(r);
+    expect(body.exported).not.toContain(NAME);
+    expect(body.skipped.find((s: { name: string }) => s.name === NAME)?.reason).toBe("folder-missing");
+    expect(existsSync(folder)).toBe(false);
+  });
+
+  test("POST /api/scan/:project → 409 and the stored profile keeps its language and libraries", async () => {
+    const before = (await asJson(await fetch(`${BASE}/api/data`))).projects[NAME];
+    expect(before.language).toBeTruthy();
+    const r = await fetch(`${BASE}/api/scan/${NAME}`, { method: "POST", headers: JSON_HEADERS });
+    expect(r.status).toBe(409);
+    const after = (await asJson(await fetch(`${BASE}/api/data`))).projects[NAME];
+    expect(after.language).toBe(before.language);
+    expect(after.libraries).toEqual(before.libraries);
+    expect(existsSync(folder)).toBe(false);
+  });
+
+  test("POST /api/project-import with another machine's path registers the project detached", async () => {
+    const foreign = "Z:/other-machine/imported1059";
+    const bundle = {
+      kind: "devlog-project-export", schemaVersion: 1, exportedAt: "2026-09-01T00:00:00.000Z", project: "imported1059",
+      profile: { name: "imported1059", path: foreign, description: "", blueprint: [], language: "TypeScript", framework: "", libraries: [], files: {}, directories: [], totalFiles: 0, lastScan: "2026-09-01T00:00:00.000Z" },
+      tags: [{ id: "i1", project: "imported1059", tag: "todo", content: "مهمة مستوردة", num: 1, timestamp: "2026-09-01T00:00:00.000Z" }],
+      plans: [], events: [], worklog: [], archive: { events: {}, undone: {} },
+    };
+    const r = await fetch(`${BASE}/api/project-import`, { method: "POST", headers: JSON_HEADERS, body: JSON.stringify(bundle) });
+    expect(r.status).toBe(200);
+    const body = await asJson(r);
+    expect(body.created).toBe(true);
+    expect(body.pathDetached).toBe(foreign);
+    const proj = (await asJson(await fetch(`${BASE}/api/data`))).projects.imported1059;
+    expect(proj.path).toBe("");
+    // export-all now skips it silently by design (no path) — and never mkdirs Z:/.
+    const ex = await asJson(await fetch(`${BASE}/api/export-all`, { method: "POST", headers: JSON_HEADERS }));
+    expect(ex.exported).not.toContain("imported1059");
   });
 });

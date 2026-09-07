@@ -35,7 +35,8 @@ const analysis = (): ProjectAnalysis => ({
     { path: "src/a.ts", lines: 5, exports: [], imports: ["./core"], description: "" },
     { path: "src/b.ts", lines: 5, exports: [], imports: ["./core"], description: "" },
   ],
-  graph: { "src/core.ts": [], "src/a.ts": ["./core"], "src/b.ts": ["./core"] },
+  // graph edges are RESOLVED project paths (import-resolve.ts, wave 3), not specifiers
+  graph: { "src/core.ts": [], "src/a.ts": ["src/core.ts"], "src/b.ts": ["src/core.ts"] },
 } as unknown as ProjectAnalysis);
 
 describe("dependents come from the import graph", () => {

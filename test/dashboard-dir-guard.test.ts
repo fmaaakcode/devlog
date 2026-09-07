@@ -75,6 +75,23 @@ describe("direction guard — LTR/RTL parity at the source level (#712)", () => 
     }
   });
 
+  test("features.html + stack-map.html flip with the language too (#1191)", async () => {
+    // Both pages call applyI18n (lang/dir follow the toggle) yet were outside
+    // this guard: features.html pinned `th, td { text-align: right }` and
+    // stack-map.html a bare `direction: rtl` on the search box, so the English
+    // rendering kept RTL alignment. Same contract as deps.html: a physical
+    // right-alignment or an rtl direction survives only inside a rule keyed
+    // on [dir="rtl"]; the always-LTR tool header (direction: ltr) stays legal.
+    const hits: string[] = [];
+    for (const f of ["features.html", "stack-map.html"]) {
+      const html = stripCssComments(await Bun.file(join(ROOT, f)).text());
+      html.split("\n").forEach((line, i) => {
+        if (/text-align:\s*right|direction:\s*rtl/.test(line) && !line.includes('[dir="rtl"]')) hits.push(`${f}:${i + 1}: ${line.trim().slice(0, 100)}`);
+      });
+    }
+    expect(hits).toEqual([]);
+  });
+
   test("JS templates: no hardcoded direction:rtl or margin-right:auto", async () => {
     // Inline styles in the JS templates had the same disease. direction:ltr
     // stays legal (code, paths, timestamps are LTR in both languages); a

@@ -287,8 +287,8 @@ describe("defaultEcoFor — manifest evidence beats language mapping", () => {
 });
 
 describe("installCmd", () => {
-  test("speaks each ecosystem's own tool", () => {
-    expect(installCmd("npm", "astro", "7.0.7")).toBe("bun add astro@7.0.7");
+  test("speaks each ecosystem's own tool — npm pins with --exact so the caret cannot float past the maturity guard (#1108)", () => {
+    expect(installCmd("npm", "astro", "7.0.7")).toBe("bun add --exact astro@7.0.7");
     expect(installCmd("pypi", "requests", "2.32.0")).toBe("pip install requests==2.32.0");
     expect(installCmd("crates.io", "serde", "1.0.219")).toBe("cargo add serde@1.0.219");
     expect(installCmd("go", "github.com/gorilla/websocket", "1.5.3")).toBe("go get github.com/gorilla/websocket@v1.5.3");

@@ -9,7 +9,7 @@
 // project, then spawns the hook itself with a `-(release)` response on stdin.
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { asJson, stopServer } from "./_helpers";
+import { asJson, stopServer, scrubbedEnv } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -31,7 +31,7 @@ function startServer(dataDir: string): Subprocess {
   return spawn({
     cmd: ["bun", join("src", "server.ts")],
     cwd: PROJECT_ROOT,
-    env: { ...process.env, DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT), DEVLOG_VERSION_CHECK_DISABLED: "1" },
+    env: { ...scrubbedEnv(), DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT), DEVLOG_VERSION_CHECK_DISABLED: "1" },
     stdout: "pipe", stderr: "pipe",
   });
 }
@@ -44,7 +44,7 @@ async function runHook(cwd: string, message: string): Promise<{ code: number; ou
   const proc = spawn({
     cmd: ["bun", "parse-tags.ts"],
     cwd: PROJECT_ROOT,
-    env: { ...process.env, DEVLOG_PORT: String(TEST_PORT), DEVLOG_LANG: "en", DEVLOG_DEBUG: "0" },
+    env: { ...scrubbedEnv(), DEVLOG_PORT: String(TEST_PORT), DEVLOG_LANG: "en", DEVLOG_DEBUG: "0" },
     stdin: "pipe", stdout: "pipe", stderr: "pipe",
   });
   proc.stdin.write(JSON.stringify({ cwd, session_id: "hook-json-e2e", last_assistant_message: message }));

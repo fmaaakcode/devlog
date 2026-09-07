@@ -18,27 +18,17 @@ export function pageRankFiles(files: FileAnalysis[], graph: Record<string, strin
   const inLinks: Record<string, string[]> = {};
   for (const node of nodes) { outLinks[node] = []; inLinks[node] = []; }
 
-  // Resolve imports to targets by BASENAME (no extension), not substring. The
-  // old `target.includes(normalized)` let a short import like `./data` link to
-  // `metadata.ts` and `path` match `path-utils.ts`, corrupting the rank graph —
-  // the same collision computeImportedBy was fixed for (R4 code-quality F2).
-  const baseName = (p: string) => (p.split("/").pop() ?? "").replace(/\.\w+$/, "");
-  const byBase = new Map<string, string[]>();
-  for (const node of nodes) {
-    const b = baseName(node);
-    const arr = byBase.get(b);
-    if (arr) arr.push(node); else byBase.set(b, [node]);
-  }
-
-  for (const [file, imports] of Object.entries(graph)) {
+  // `graph` carries RESOLVED edges (importer → exact project paths, see
+  // import-resolve.ts). Basename matching here — the previous step up from
+  // substring matching (R4 code-quality F2) — still produced a dead ranking for
+  // Python (`.models` stripped to "", `app.models` → app.py) and multiplied
+  // edges across same-named files (#1080, #1179).
+  for (const [file, targets] of Object.entries(graph)) {
     if (!outLinks[file]) continue;
-    for (const imp of imports) {
-      const impBase = baseName(imp.replace(/^\.+\//, ""));
-      for (const target of byBase.get(impBase) ?? []) {
-        if (target === file) continue;   // ignore self-import
-        outLinks[file].push(target);
-        inLinks[target].push(file);
-      }
+    for (const target of new Set(targets)) {
+      if (target === file || !outLinks[target]) continue;
+      outLinks[file].push(target);
+      inLinks[target].push(file);
     }
   }
 
@@ -99,24 +89,41 @@ export function pageRankFunctions(files: FileAnalysis[], callGraph: { caller: st
   // seconds of blocked event loop on big projects, and this runs on the
   // /api/hook hot path for new projects (R9 F1). Set dedupes a function name
   // declared twice in one file, matching the old per-file single push.
+  // Two indexes: the declared name as written (`Wrap::next`, `ACTIONS.x`) and
+  // its BASE (`next`, `x`). A call site rarely spells the declaring type —
+  // `iter.next()` says `next` — so a callee that misses the full index falls
+  // back to base-name holders, preferring one declared in the caller's own
+  // file. Full-name-only matching dropped every method edge (19% of aljsr's
+  // graph) and left fnRanks for Rust/C++ methods as boosts with no graph (#1081).
   const keysByCallee = new Map<string, Set<string>>();
+  const keysByBase = new Map<string, Set<string>>();
+  const baseOf = (name: string) => name.split(/::|\./).pop() ?? name;
+  const addKey = (map: Map<string, Set<string>>, k: string, v: string) => {
+    let keys = map.get(k);
+    if (!keys) { keys = new Set(); map.set(k, keys); }
+    keys.add(v);
+  };
   for (const f of files) {
     for (const fn of f.functions) {
-      let keys = keysByCallee.get(fn.name);
-      if (!keys) {
-        keys = new Set();
-        keysByCallee.set(fn.name, keys);
-      }
-      keys.add(`${f.path}:${fn.name}`);
+      const key = `${f.path}:${fn.name}`;
+      addKey(keysByCallee, fn.name, key);
+      addKey(keysByBase, baseOf(fn.name), key);
     }
   }
 
   for (const edge of callGraph) {
-    // caller is already "file:name"; callee is just a name — resolve via index
+    // caller is already "file:name"; callee is a name — full first, then base
     const callerKey = edge.caller;
     if (!outLinks[callerKey]) continue;
 
-    for (const targetKey of keysByCallee.get(edge.callee) ?? []) {
+    let targets: Iterable<string> = keysByCallee.get(edge.callee) ?? [];
+    if (!keysByCallee.has(edge.callee)) {
+      const byBase = [...(keysByBase.get(baseOf(edge.callee)) ?? [])];
+      const local = byBase.filter(k => k.startsWith(`${edge.file}:`));
+      targets = local.length > 0 ? local : byBase;
+    }
+    for (const targetKey of targets) {
+      if (targetKey === callerKey) continue;
       outLinks[callerKey].push(targetKey);
       inLinks[targetKey].push(callerKey);
     }

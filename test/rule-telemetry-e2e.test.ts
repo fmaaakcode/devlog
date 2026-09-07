@@ -6,9 +6,10 @@
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import { spawn, type Subprocess } from "bun";
-import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { scrubbedEnv } from "./_helpers";
 
 const TEST_PORT = 17963;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
@@ -16,6 +17,7 @@ const PROJECT_ROOT = join(import.meta.dir, "..");
 
 let server: Subprocess;
 let dataDir: string;
+let regDir: string;   // a REGISTERED project's real folder (seeded into projects.json)
 
 async function waitForServer(maxMs = 8000): Promise<void> {
   const deadline = Date.now() + maxMs;
@@ -38,11 +40,18 @@ const post = (body: unknown) =>
 
 beforeAll(async () => {
   dataDir = mkdtempSync(join(tmpdir(), "devlog-ruletel-"));
+  regDir = mkdtempSync(join(tmpdir(), "devlog-ruletel-proj-"));
+  writeFileSync(join(dataDir, "projects.json"), JSON.stringify({
+    reg: {
+      name: "reg", path: regDir, description: "", blueprint: [], language: "TypeScript", framework: "",
+      libraries: [], files: {}, directories: [], totalFiles: 0, lastScan: "2026-07-01T00:00:00.000Z",
+    },
+  }));
   server = spawn({
     cmd: ["bun", join("src", "server.ts")],
     cwd: PROJECT_ROOT,
     env: {
-      ...process.env,
+      ...scrubbedEnv(),
       DEVLOG_DATA_DIR: dataDir,
       DEVLOG_PORT: String(TEST_PORT),
       DEVLOG_VERSION_CHECK_DISABLED: "1",
@@ -57,6 +66,7 @@ afterAll(async () => {
   server.kill();
   await server.exited;
   rmSync(dataDir, { recursive: true, force: true });
+  rmSync(regDir, { recursive: true, force: true });
 });
 
 describe("POST /api/rule-telemetry", () => {
@@ -77,10 +87,19 @@ describe("POST /api/rule-telemetry", () => {
     expect(existsSync(file)).toBe(true);
     const lines = readFileSync(file, "utf-8").trim().split("\n").map(l => JSON.parse(l));
     expect(lines.length).toBe(2);
-    // Attribution: untracked cwd falls back to its basename — never "spoofed".
-    expect(lines.every((l: any) => l.project === "myproj")).toBe(true);
+    // Attribution (#1066): an UNREGISTERED cwd stamps no project at all — the
+    // basename "myproj" would land on a registered project of that name living
+    // elsewhere. Never "spoofed" either: the hook's own field is stripped.
+    expect(lines.every((l: any) => !("project" in l))).toBe(true);
     expect(lines.every((l: any) => +new Date(l.ts) > +new Date("2026-01-01"))).toBe(true);
     expect(lines[1]).toMatchObject({ gate: "lifecycle", action: "adopt", rule: "rust", detail: "text" });
+  });
+
+  test("a REGISTERED cwd is stamped with the registry name (#1066)", async () => {
+    const r = await post({ cwd: regDir, records: [{ gate: "turn", action: "pass", rule: "closure" }] });
+    expect(await r.json()).toEqual({ ok: true, stored: 1, rejected: 0 });
+    const lines = readFileSync(join(dataDir, "rule-telemetry.jsonl"), "utf-8").trim().split("\n").map(l => JSON.parse(l));
+    expect(lines[lines.length - 1]).toMatchObject({ gate: "turn", action: "pass", rule: "closure", project: "reg" });
   });
 
   test("malformed body / missing records → accounted as zero, never an error", async () => {
@@ -88,9 +107,12 @@ describe("POST /api/rule-telemetry", () => {
     expect(await (await post({ records: "x" })).json()).toEqual({ ok: true, stored: 0, rejected: 0 });
   });
 
-  test("caps a burst at 50 records per call", async () => {
+  test("caps a burst at 50 records per call — and ACCOUNTS for the surplus (#1202)", async () => {
     const records = Array.from({ length: 60 }, (_, i) => ({ gate: "install", action: "pass", rule: `npm:pkg${i}` }));
-    const body = await (await post({ records })).json() as { stored: number };
-    expect(body.stored).toBe(50);
+    const body = await (await post({ records })).json() as { stored: number; rejected: number };
+    // Before: `rejected: 0` — ten records vanished with no count anywhere,
+    // against the route's own "per-record accounting" promise.
+    expect(body).toMatchObject({ stored: 50, rejected: 10 });
+    expect(body.stored + body.rejected).toBe(records.length);
   });
 });

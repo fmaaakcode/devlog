@@ -11,6 +11,7 @@
  */
 import type { EventEntry } from "./types";
 import { isCodeWrite } from "./standards";
+import { shellWriteTargets, stripShellLiterals } from "./shell-write";
 
 // Commands that count as "ran the suite" this session. Word-boundaried so
 // `latest` / `attestation` never match a bare `test`.
@@ -22,11 +23,18 @@ import { isCodeWrite } from "./standards";
 // re-fires on every closure (the observed verify-loop). The make clause allows
 // flags/vars between the tool and the target (`make -j8 test`, `make CC=gcc
 // check`) but stops at a statement separator so it can't reach across `&&`/`;`.
+//
+// Matched on the STRIPPED command (#1033 / F-3.1, F-2.73): quoted strings,
+// heredoc bodies and comments are blanked first, so `git commit -m "npm test
+// FAILED"`, `grep -rn "bun test" docs/` and a python heredoc that mentions a
+// test file are not test runs — and their output is never judged as a runner's
+// (commandOutcome shares this classifier). The runner names also refuse a
+// trailing `.`/`-`: `cat pytest.ini` reads a config, it does not run pytest.
 const TEST_CMD_RE =
-  /\b(?:bun|npm|pnpm|yarn|deno)\s+(?:run\s+)?test\b|\b(?:vitest|jest|pytest|phpunit|rspec|ctest)\b|\b(?:cargo|go|gradle|mvn|dotnet)\s+test\b|\b(?:mingw32-make|gmake|make)\b[^\n&|;]*\b(?:test|check)\b/i;
+  /\b(?:bun|npm|pnpm|yarn|deno)\s+(?:run\s+)?test\b(?![.-])|\b(?:vitest|jest|pytest|phpunit|rspec|ctest)\b(?![.-])|\b(?:cargo|go|gradle|mvn|dotnet)\s+test\b(?![.-])|\b(?:mingw32-make|gmake|make)\b[^\n&|;]*\b(?:test|check)\b/i;
 
 export function isTestCommand(command: string): boolean {
-  return TEST_CMD_RE.test(command || "");
+  return TEST_CMD_RE.test(stripShellLiterals(command || ""));
 }
 
 /** True if any Bash event in this session ran a recognized test command. */
@@ -93,24 +101,27 @@ export function isTestFile(path: string): boolean {
 
 // Path-like tokens inside a shell command (`test/a.test.ts`, `./tests/x.py`,
 // `C:\p\spec\y.rb`) — quotes are outside the class, so a path inside
-// `writeFileSync('test/a.test.ts')` is found as-is.
+// `writeFileSync('test/a.test.ts')` is found as-is. Kept ONLY for the
+// regression hint's over-counting direction (below); freshness uses the real
+// write targets.
 const PATH_TOKEN_RE = /[\w.\-~:@]*[\\/][\w.\-\\/~@]+/g;
 const SEGMENT_SPLIT_RE = /&&|\|\||[;|\n]/;
 
 /**
- * True when a shell command names a test file OUTSIDE a test-run segment. A
- * test written through `bun -e`, python, sed or a heredoc emits a COMMAND
- * event, never a change event (#1000): the trace is blind to that channel, so
- * a test-file path in such a command reads as "may have written it" — the
- * fail-open answer the claim-evidence rule requires — while `bun test
- * test/a.test.ts` alone stays a run, not a write.
+ * True when a shell command names a test file OUTSIDE a test-run segment, or
+ * actually writes one. A test written through `bun -e`, python, sed or a
+ * heredoc emits a COMMAND event, never a change event (#1000): the trace is
+ * blind to that channel, so a test-file path in such a command reads as "may
+ * have written it" — the fail-open answer the claim-evidence rule requires —
+ * while `bun test test/a.test.ts` alone stays a run, not a write.
  */
 export function commandMayWriteTests(command: string): boolean {
-  return commandMayWrite(command, isTestFile);
+  return shellWriteTargets(command).targets.some(isTestFile) || commandMayWrite(command, isTestFile);
 }
 
 /** True when a non-test-run segment of the command names a path the
- *  predicate accepts — "may have written it", never "did". */
+ *  predicate accepts — "may have written it", never "did". Over-counts by
+ *  design; never use it where a false positive fakes evidence. */
 export function commandMayWrite(command: string, accepts: (path: string) => boolean): boolean {
   for (const seg of (command || "").split(SEGMENT_SPLIT_RE)) {
     if (isTestCommand(seg)) continue;
@@ -119,27 +130,20 @@ export function commandMayWrite(command: string, accepts: (path: string) => bool
   return false;
 }
 
-// Write markers a shell command carries when it changes a file: a redirect
-// (not `2>&1` / `2>/dev/null`, not the `=>` / `->` of inline scripts),
-// in-place sed, tee, file-moving verbs, tree-changing git verbs, and the write
-// APIs of the inline-script channels (bun -e / python / PowerShell). Judged over
-// the WHOLE command: an inline script keeps its path and its write call on
-// different lines, and the segment split would separate them.
-const WRITE_SHAPE_RE =
-  /(?<![0-9&<>=\-])>{1,2}(?!&)|\bsed\s+(?:-[a-zA-Z]*i|--in-place)|\btee\b|\b(?:cp|mv|rm|touch|patch|install)\b|\bgit\s+(?:checkout|restore|reset|apply|stash\s+pop|revert|cherry-pick|merge|rebase|pull)\b|writeFileSync|\bwriteFile\b|Bun\.write|\.write_text\(|open\([^)]*['"][wa]|Set-Content|Out-File|Add-Content|Copy-Item|Move-Item|Remove-Item/;
-
 /**
- * True when a command names a path the predicate accepts AND carries a write
- * marker. The "may have written" reading of commandMayWrite is the right
- * direction for the REGRESSION hint (#1000: over-counting there silences a
- * nudge, never fakes one) but the wrong one for freshness: counting `sed -n`,
- * `grep -n` and `cat` as mutations made every green run stale the moment a
- * source file was READ afterwards \u2014 3/3 retained sessions with a test run
- * would have fired "stale-tests" over read-only commands. A read stays a read.
+ * True when a command WRITES a path the predicate accepts — the unified shell
+ * write detector's answer (#1029/#1030, F-2.71/F-2.72): a target is a path
+ * because it is the operand of a write verb, so a root file with no slash
+ * (`echo x > parse-tags.ts`) counts and `s/a/b/`, `/dev/null` and a URL never
+ * do. An opaque write (`git merge`, `> $OUT`) counts as a mutation: the
+ * freshness question is "could code have changed?", and unknown is yes. The
+ * earlier shape — any write marker + any slash token — made `sed -i 's/a/b/'
+ * README.md` a code mutation and `echo x > parse-tags.ts` nothing at all,
+ * i.e. wrong in both directions. A read stays a read.
  */
 export function commandMayMutate(command: string, accepts: (path: string) => boolean): boolean {
-  if (!WRITE_SHAPE_RE.test(command || "")) return false;
-  return commandMayWrite(command, accepts);
+  const w = shellWriteTargets(command);
+  return w.opaque || w.targets.some(accepts);
 }
 
 /** True if any write event \u2014 or a command that may have written (#1000) \u2014

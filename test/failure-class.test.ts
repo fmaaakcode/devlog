@@ -13,7 +13,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { parseCloserTail, closerTail, normalizeFailureClass, FAILURE_CLASSES, UNCLASSIFIED } from "../src/failure-class";
-import { stopServer } from "./_helpers";
+import { stopServer, scrubbedEnv } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -77,7 +77,7 @@ function startServer(dataDir: string): Subprocess {
   return spawn({
     cmd: ["bun", join("src", "server.ts")],
     cwd: PROJECT_ROOT,
-    env: { ...process.env, DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT), DEVLOG_VERSION_CHECK_DISABLED: "1" },
+    env: { ...scrubbedEnv(), DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT), DEVLOG_VERSION_CHECK_DISABLED: "1" },
     stdout: "pipe",
     stderr: "pipe",
   });

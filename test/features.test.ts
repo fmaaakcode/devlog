@@ -7,7 +7,7 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import type { DevLogData, ProjectProfile, TagEntry } from "../src/types";
 import { DEFAULT_INJECTION_CONFIG } from "../src/data";
 import {
-  featureList, featuresSinceLastRelease, diagnoseFeatureRef, stripFeatureRef, featureRefNum,
+  featureList, featuresSinceLastRelease, diagnoseFeatureRef, diagnoseFeatureMarker, stripFeatureRef, featureRefNum,
   backfillCorpus,
 } from "../src/features";
 
@@ -110,11 +110,31 @@ describe("featureList", () => {
     expect(list[0].sinceVersion).toBe("v1.0.0");   // resolved to the recorded spelling
   });
 
-  test("a marker naming no recorded release is kept as written", () => {
+  test("a marker naming no recorded release mints NO phantom version — by-date attribution + flag (#1188)", () => {
     const data = makeData([
-      t("feature", "[v9.9.9] imported from elsewhere", { num: 11 }),
+      t("release", "v1.0.0 — first", { ts: "2026-01-01T00:00:00.000Z" }),
+      t("feature", "[v9.9.9] imported from elsewhere", { num: 11, ts: "2026-02-01T00:00:00.000Z" }),
     ]);
-    expect(featureList(data, P)[0].sinceVersion).toBe("v9.9.9");
+    const [f] = featureList(data, P);
+    expect(f.sinceVersion).toBeUndefined();          // after the only release → not released yet, NOT "v9.9.9"
+    expect(f.unknownVersion).toBe("v9.9.9");
+    expect(f.text).toBe("imported from elsewhere");   // marker still stripped from the client text
+  });
+});
+
+describe("diagnoseFeatureMarker (#1188)", () => {
+  const base = () => makeData([t("release", "v1.0.0 — first", { ts: "2026-01-01T00:00:00.000Z" })]);
+
+  test("a marker-less feature and a marker naming a recorded release pass", () => {
+    expect(diagnoseFeatureMarker("feature", "plain capability", base(), P)).toBeNull();
+    expect(diagnoseFeatureMarker("feature", "[1.0.0] backfilled", base(), P)).toBeNull();   // v-less spelling resolves
+  });
+  test("a marker naming no recorded release → unknown-version, carrying the marker text", () => {
+    expect(diagnoseFeatureMarker("feature", "[v2.17.0] typo'd", base(), P))
+      .toMatchObject({ kind: "unknown-version", tag: "feature", version: "v2.17.0" });
+  });
+  test("non-feature tags pass through", () => {
+    expect(diagnoseFeatureMarker("built", "[v9.9.9] not a feature", base(), P)).toBeNull();
   });
 });
 

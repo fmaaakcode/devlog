@@ -184,6 +184,37 @@ describe("bloatedTwins (the #486/#487 signature)", () => {
       tag("built", "افحص بنية الترانسكربت وأضف الكناري", at(1)),
     ])).toBeNull();
   });
+
+  // #1073 / F-4.104: two intended items opened in one response, one a prefix
+  // of the other, with DIFFERENT numbers — the false positive that blocked the
+  // release and advised deleting real open work with -(undo).
+  test("two distinct numbered items are two items, not a twin", () => {
+    expect(bloatedTwins([
+      tag("todo", "اختبارات البارسر للحالات", at(0), 3),
+      tag("todo", "اختبارات البارسر للحالات الفارغة والمتطرفة", at(1), 4),
+    ])).toBeNull();
+  });
+
+  test("a re-read twin carrying the same number, or no number, is still caught", () => {
+    expect(bloatedTwins([
+      tag("todo", "اختبارات البارسر للحالات", at(0), 3),
+      tag("todo", "اختبارات البارسر للحالات الفارغة والمتطرفة", at(1), 3),
+    ])?.code).toBe("BLOATED_TWINS");
+    expect(bloatedTwins([
+      tag("todo", "اختبارات البارسر للحالات", at(0), 3),
+      tag("todo", "اختبارات البارسر للحالات الفارغة والمتطرفة", at(1)),
+    ])?.code).toBe("BLOATED_TWINS");
+  });
+
+  test("a chain a ⊂ b ⊂ c is one event, reported once", () => {
+    const f = bloatedTwins([
+      tag("built", "كاشف الكتابة بالشل", at(0)),
+      tag("built", "كاشف الكتابة بالشل الموحّد", at(1)),
+      tag("built", "كاشف الكتابة بالشل الموحّد مع مستهلكيه الخمسة", at(2)),
+    ]);
+    expect(f?.items).toHaveLength(1);
+    expect(f?.title).toContain("1 ");
+  });
 });
 
 describe("multilineHeadlines", () => {
@@ -285,8 +316,10 @@ describe("checkInvariants", () => {
     const codes = checkInvariants([
       tag("release", "v1.0.0 — x", at(0), 1),
       tag("release", "v1.0.0 — x", at(1), 2),
+      // A swallowed-tail twin carries no number of its own (#1178: the old
+      // fixture gave it #4 — two numbers are two items, not a twin).
       tag("todo", "نص أصلي طويل كفاية", at(0), 3),
-      tag("todo", "نص أصلي طويل كفاية مع ذيل مبتلَع", at(1), 4),
+      tag("todo", "نص أصلي طويل كفاية مع ذيل مبتلَع", at(1)),
       tag("dropped", "تحسين التصميم", at(0), 5),
       tag("dropped", "تحسين التصميم", at(1.6), 6),
       tag("bug found", "عطل\nبسطرين", at(0), 9),

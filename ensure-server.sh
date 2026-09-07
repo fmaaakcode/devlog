@@ -184,6 +184,11 @@ if [ "$ALIVE" = "1" ]; then
   esac
 fi
 
+# One wall-clock budget for the cold-boot wait AND the inject retries below:
+# the hook is wired with a 20s timeout, so everything must finish inside ~14s
+# of script time whatever the connect latency is.
+HARD_DEADLINE=$((SECONDS + 14))
+
 if [ "$ALIVE" != "1" ]; then
   # Spawn detached. Logs go under .devlog/ so we don't litter the repo.
   mkdir -p "$SELF_DIR/.devlog" 2>/dev/null
@@ -203,9 +208,16 @@ if [ "$ALIVE" != "1" ]; then
     nohup bun src/server.ts >>".devlog/server.log" 2>&1 &
     disown 2>/dev/null || true
   )
-  # Wait up to ~3s for the server to bind. The inject POST at the end tolerates
-  # a short stall (the hook's own timeout is the ceiling).
-  for _ in 1 2 3 4 5 6; do
+  # Wait up to ~12s for the server to bind (#1048 / F-3.104). The old 3s covered
+  # a warm start only: a COLD boot — first session after a plugin install or
+  # update, Defender scanning a fresh cache, 5MB of data to load — routinely
+  # ran past it, the single inject below hit "connection refused", and the
+  # session opened with no SessionStart card and no protocol primer, silently
+  # (exit 0, stderr dropped). The hook is wired with a 20s timeout; the inject
+  # retries below stay inside what is left.
+  # Wall-clock bound, not iteration count: a refused connect can itself take up
+  # to the curl cap on Windows, so N iterations is not N×0.5s.
+  while [ "$SECONDS" -lt "$((HARD_DEADLINE - 4))" ]; do
     sleep 0.5
     curl -s -m 1 "http://127.0.0.1:$PORT/api/ping" >/dev/null 2>&1 && break
   done
@@ -220,5 +232,17 @@ fi
 
 # Forward the event and relay the server's response — this stdout is the hook's
 # entire visible output, so it must stay last and unpolluted.
-inject
+# Retried (#1048): one refused connection during a cold boot used to cost the
+# whole SessionStart card. curl's exit code 7 (connection refused) / 28 (timed
+# out) / 52 (empty reply) mean "not up yet" — try again, ~1s apart, up to 5
+# times; any other outcome (a reply, or a different failure) is final. The
+# response body is captured so a failed attempt never leaks partial output.
+while :; do
+  OUT="$(inject)"; RC=$?
+  case "$RC" in
+    7|28|52) [ "$SECONDS" -ge "$HARD_DEADLINE" ] && break; sleep 1 ;;
+    *) break ;;
+  esac
+done
+printf '%s' "$OUT"
 exit 0

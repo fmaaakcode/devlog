@@ -12,14 +12,14 @@
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import type { Subprocess } from "bun";
-import { asJson, PROJECT_ROOT, runHook, startServer, stopServer, waitForServer } from "./_helpers";
+import { asJson, runHook, startServer, stopServer, waitForServer, HOOK_STATE_DIR } from "./_helpers";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const TEST_PORT = 17961;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
-const QUEUE_DIR = join(PROJECT_ROOT, ".devlog", "tag-queue");
+const QUEUE_DIR = join(HOOK_STATE_DIR, "tag-queue");
 // Sorts before any Date.now()-prefixed real entry → drains FIRST, in front of
 // the fresh batch this test posts.
 const POISON = join(QUEUE_DIR, "0000000000000-poison768.json");

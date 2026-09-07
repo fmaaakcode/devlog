@@ -1,9 +1,13 @@
 import { test, expect, describe, beforeEach, afterAll } from "bun:test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runWriteCheckers, WRITE_CHECKERS, DISABLED_CHECKERS, cppStandardChecker, designHexChecker } from "../src/write-checks";
 
-const PROJ = join(import.meta.dir, ".tmp-wc-proj");
+// Outside the repo (#1211): the old test/.tmp-wc-proj sat inside the working
+// tree with only .tmp-*.json gitignored.
+const PROJ = mkdtempSync(join(tmpdir(), "devlog-wc-proj-"));
 const ctxBase = {
   cwd: PROJ,
   catalog: ["rust", "cpp", "design", "typescript"],
@@ -36,12 +40,23 @@ describe("runWriteCheckers — toolchain", () => {
     const r = await runWriteCheckers({ ...ctxBase, filePath: join(PROJ, "Cargo.toml"), content: `edition = "2021"` });
     expect(r).toBeNull();
   });
-  test("version check fails open when latestVersion rejects", async () => {
+  test("rust-version is the MSRV, never demanded to match the newest toolchain (#1112)", async () => {
+    // latestVersion resolves to 1.96.0 and the manifest pins 1.84 — the old
+    // checker blocked with «← الأحدث المستقر 1.96.0». Not a violation.
     const r = await runWriteCheckers({
-      ...ctxBase, latestVersion: async () => { throw new Error("network"); },
-      filePath: join(PROJ, "Cargo.toml"), content: `edition = "2024"\nrust-version = "1.84"`,
+      ...ctxBase, filePath: join(PROJ, "Cargo.toml"), content: `edition = "2024"\nrust-version = "1.84"`,
     });
-    expect(r).toBeNull(); // edition ok, version skipped on failure
+    expect(r).toBeNull();
+  });
+  test("an old edition next to an old MSRV reports the edition only", async () => {
+    const r = await runWriteCheckers({ ...ctxBase, filePath: join(PROJ, "Cargo.toml"), content: `edition = "2021"\nrust-version = "1.84"` });
+    expect(r?.lines.filter(l => l.startsWith("•"))).toHaveLength(1);
+    expect(r?.lines.join("\n")).not.toContain("rust-version");
+  });
+  test("design hits carry FILE line numbers, not joined-string lines (#1117)", async () => {
+    const js = `// header\n\n\nconst h = '<i style="color:#06d6a0"></i>';`;
+    const r = await designHexChecker({ ...ctxBase, filePath: join(PROJ, "gen.js"), content: js });
+    expect(r?.lines[0]).toBe("• سطر 4: #06d6a0");
   });
 });
 

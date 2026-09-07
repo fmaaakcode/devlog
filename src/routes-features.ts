@@ -160,25 +160,29 @@ export function makeFeatureRoutes({ htmlResponse }: FeatureRouteDeps): Record<st
         const id = typeof body.id === "string" ? body.id : "";
         if (!id) return Response.json({ error: "id required — repairs are per entry, never in bulk" }, { status: 400 });
 
-        const snapshot = await loadData();
-        const preview = previewRepair(snapshot, id);
-        if (!preview) return Response.json({ error: "unknown id, or nothing to repair" }, { status: 404 });
-        if (body.confirm !== true) return Response.json({ applied: false, ...preview });
-
-        const original = snapshot.tags.find(t => t.id === id);
-        if (!original) return Response.json({ error: "unknown id" }, { status: 404 });
-        const archived = await archiveUndone([{
-          undoneAt: new Date().toISOString(), project: preview.project, kind: "tag", entry: original,
-        }]);
-        if (!archived) {
-          return Response.json({ error: "archive failed — refusing to modify a row we cannot keep a copy of" }, { status: 503 });
+        if (body.confirm !== true) {
+          const preview = previewRepair(await loadData(), id);
+          if (!preview) return Response.json({ error: "unknown id, or nothing to repair" }, { status: 404 });
+          return Response.json({ applied: false, ...preview });
         }
-        await appendAudit("record.repair", req, { target: id, removed: preview.removed });
-        await withData(async (data) => {
+        // Preview, archive and write under ONE lock (#1057): computed on a
+        // snapshot outside it, the write landed on whatever the row held by
+        // then — a concurrent undo or edit was overwritten with a stale
+        // trim, and a row that had vanished still answered applied:true.
+        return await withData(async (data) => {
+          const preview = previewRepair(data, id);
           const t = data.tags.find(x => x.id === id);
-          if (t) t.content = preview.after;
+          if (!preview || !t) return Response.json({ error: "unknown id, or nothing to repair" }, { status: 404 });
+          const archived = await archiveUndone([{
+            undoneAt: new Date().toISOString(), project: preview.project, kind: "tag", entry: { ...t },
+          }]);
+          if (!archived) {
+            return Response.json({ error: "archive failed — refusing to modify a row we cannot keep a copy of" }, { status: 503 });
+          }
+          await appendAudit("record.repair", req, { target: id, removed: preview.removed });
+          t.content = preview.after;
+          return Response.json({ applied: true, ...preview });
         });
-        return Response.json({ applied: true, ...preview });
       },
     },
 
@@ -245,8 +249,10 @@ export function makeFeatureRoutes({ htmlResponse }: FeatureRouteDeps): Record<st
           project,
           items,
           rules: {
-            stats: ruleStats(telemetry.filter(r => !r.project || r.project === project)),
-            effects: ruleEffect(telemetry, items),
+            // Exact project only (#1066): a record without a project was stamped
+            // from an unregistered folder — it belongs to nobody's counters.
+            stats: ruleStats(telemetry.filter(r => r.project === project)),
+            effects: ruleEffect(telemetry, items, Date.now(), { project }),
           },
           // The `turn` gate: what the Stop guards did in THIS project, plus the
           // ones that said nothing — a guard muted or broken is invisible in the
@@ -309,7 +315,8 @@ export function makeFeatureRoutes({ htmlResponse }: FeatureRouteDeps): Record<st
         if (!project) return Response.json({ project: null }, { status: 404 });
         const data = await loadData();
         const prevDoc = await newestStudyDoc(data.projects[project]?.path);
-        return Response.json({ project, ...studyCorpus(data, project, Date.now(), prevDoc, await loadRuleTelemetry()) });
+        return Response.json({ project, ...studyCorpus(data, project, Date.now(), prevDoc, await loadRuleTelemetry(),
+          makeAbsenceJudge(data.projects[project]?.path || "", diskExists)) });
       },
     },
 

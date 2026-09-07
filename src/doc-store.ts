@@ -3,7 +3,8 @@
 //   <projectPath>/.devlog/docs/<slug>.{md,html}
 // alongside a small index.json tracking metadata.
 
-import { mkdir, readFile, writeFile, rename, access } from "node:fs/promises";
+import { mkdir, readFile, access } from "node:fs/promises";
+import { atomicWriteText } from "./atomic-write";
 import { join } from "node:path";
 import { renderDocHtml, docSlug, DOC_TYPES, MAX_DOC_BYTES, type DocType } from "./doc-templates";
 import type { PlanStep } from "./types";
@@ -29,7 +30,7 @@ function docsDirFor(projectPath: string): string {
   return join(projectPath, ".devlog", "docs");
 }
 
-async function readIndex(dir: string): Promise<DocIndexEntry[]> {
+export async function readIndex(dir: string): Promise<DocIndexEntry[]> {
   try {
     const parsed = await Bun.file(join(dir, "index.json")).json();
     return Array.isArray(parsed) ? parsed : [];
@@ -37,12 +38,31 @@ async function readIndex(dir: string): Promise<DocIndexEntry[]> {
 }
 
 async function writeIndex(dir: string, entries: DocIndexEntry[]): Promise<void> {
-  // Atomic temp+rename so a crash mid-write can't truncate index.json — matches
-  // the house pattern in version-writer.ts / data.ts (R3 P5).
-  const target = join(dir, "index.json");
-  const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tmp, JSON.stringify(entries, null, 2), "utf-8");
-  await rename(tmp, target);
+  // Atomic temp+fsync+rename (atomic-write.ts) so a crash mid-write can't
+  // truncate index.json. The .md/.html twins below go through the SAME writer
+  // (F-2.49): they used to be written straight over the target, so a crash or
+  // an AV lock mid-write left the plan's source file — the one the user opens
+  // and the checkbox scanner reads — cut off, while its index entry said fine.
+  await atomicWriteText(join(dir, "index.json"), JSON.stringify(entries, null, 2));
+}
+
+/** The entry re-emitting `name` would update: same name, whitespace-trimmed
+ *  (the slug is NOT the identity — see #1031 in writeDoc). */
+function findDocByName(index: DocIndexEntry[], name: string): DocIndexEntry | undefined {
+  const want = name.trim();
+  return index.find(e => (e.name || "").trim() === want);
+}
+
+/** `base`, or the first `base-2`, `base-3`, … that neither the index nor the
+ *  DISK holds. The disk is asked too (sweep after #1129, same pattern): readIndex
+ *  swallows a missing or corrupt index.json as `[]`, and an index that knows
+ *  nothing would have let a brand-new doc land on top of an existing
+ *  `<slug>.md` the user can still open. */
+async function freeSlug(index: DocIndexEntry[], base: string, dir: string): Promise<string> {
+  const taken = new Set(index.map(e => e.slug));
+  const held = async (slug: string) => taken.has(slug) || await Bun.file(join(dir, `${slug}.md`)).exists();
+  if (!(await held(base))) return base;
+  for (let n = 2; ; n++) if (!(await held(`${base}-${n}`))) return `${base}-${n}`;
 }
 
 // Split the doc payload: first non-empty line is the doc name (slug source),
@@ -156,13 +176,18 @@ export async function writeDoc(
   }
 
   const { name, body } = splitNameAndBody(rawContent);
-  const slug = docSlug(name);
   const dir = docsDirFor(projectPath);
   await mkdir(dir, { recursive: true });
 
   const now = new Date().toISOString();
   const index = await readIndex(dir);
-  const existing = index.find(e => e.slug === slug);
+  // #1031: the slug folds case and punctuation («Plan!», «plan?», «PLAN» → plan),
+  // so "create or replace" keyed on the slug alone let a NEW doc under a
+  // different name silently overwrite an existing one — with no trace, because
+  // the doc tag records only the new name. Replace is for re-emitting the SAME
+  // name; a different name whose slug is taken gets the next free `-N` slug.
+  const existing = findDocByName(index, name);
+  const slug = existing ? existing.slug : await freeSlug(index, docSlug(name), dir);
   const meta = existing
     ? { ...existing, name, type, updatedAt: now }
     : { slug, name, type, createdAt: now, updatedAt: now };
@@ -171,10 +196,10 @@ export async function writeDoc(
   else index.push(meta);
 
   const mdPath = join(dir, `${slug}.md`);
-  await writeFile(mdPath, body, "utf-8");
+  await atomicWriteText(mdPath, body);
   const html = renderDocHtml({ ...meta, project: projectName }, body);
   const htmlPath = join(dir, `${slug}.html`);
-  await writeFile(htmlPath, html, "utf-8");
+  await atomicWriteText(htmlPath, html);
   await writeIndex(dir, index);
 
   return { slug, type, mdPath, htmlPath, steps: extractCheckboxes(body) };
@@ -193,13 +218,15 @@ export async function appendDoc(
   }
 
   const { name, body } = splitNameAndBody(rawContent);
-  const slug = docSlug(name);
   const dir = docsDirFor(projectPath);
   try { await access(dir); } catch { throw new Error(`no docs directory for ${projectName}`); }
 
   const index = await readIndex(dir);
-  const meta = index.find(e => e.slug === slug);
-  if (!meta) throw new Error(`doc not found for update: ${slug}`);
+  // Exact name first (a `-N` slug from #1031 is reachable only by its name),
+  // then the slug — the pre-#1031 lookup, kept so old call sites still resolve.
+  const meta = findDocByName(index, name) ?? index.find(e => e.slug === docSlug(name));
+  if (!meta) throw new Error(`doc not found for update: ${docSlug(name)}`);
+  const slug = meta.slug;
 
   const mdPath = join(dir, `${slug}.md`);
   const oldBody = await readFile(mdPath, "utf-8");
@@ -209,10 +236,10 @@ export async function appendDoc(
   }
 
   meta.updatedAt = new Date().toISOString();
-  await writeFile(mdPath, newBody, "utf-8");
+  await atomicWriteText(mdPath, newBody);
   const html = renderDocHtml({ ...meta, project: projectName }, newBody);
   const htmlPath = join(dir, `${slug}.html`);
-  await writeFile(htmlPath, html, "utf-8");
+  await atomicWriteText(htmlPath, html);
   await writeIndex(dir, index);
 
   return { slug, type: meta.type, mdPath, htmlPath, steps: extractCheckboxes(newBody) };
@@ -255,7 +282,7 @@ async function applyDocMutation(
   const next = mutate(body);
   if (next === null) return false;
 
-  await writeFile(mdPath, next, "utf-8");
+  await atomicWriteText(mdPath, next);
 
   const index = await readIndex(dir);
   const slug = (mdPath.split(/[\\/]/).pop() ?? "").replace(/\.md$/, "");
@@ -264,7 +291,7 @@ async function applyDocMutation(
     meta.updatedAt = new Date().toISOString();
     const html = renderDocHtml({ ...meta, project: projectName }, next);
     const htmlPath = join(dir, `${slug}.html`);
-    await writeFile(htmlPath, html, "utf-8");
+    await atomicWriteText(htmlPath, html);
     await writeIndex(dir, index);
   }
   return true;

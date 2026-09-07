@@ -15,8 +15,21 @@ export interface TelemetryClientRecord {
   detail?: string;
 }
 
+/** The sink stores at most this many records per call (routes-standards.ts);
+ *  anything past it comes back as `rejected`. Chunk on the client so a busy
+ *  turn's burst is stored whole instead of losing its tail (#1202 / F-9.263). */
+export const TELEMETRY_BATCH_MAX = 50;
+
+/** Split a burst into sink-sized batches, in order. Pure; exported for tests. */
+export function chunkTelemetry<T>(records: readonly T[], size = TELEMETRY_BATCH_MAX): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < records.length; i += size) out.push(records.slice(i, i + size));
+  return out;
+}
+
 /** POST records to the server's single-writer sink. No-op on empty; every
- *  failure (down, slow, refused) is swallowed by design. */
+ *  failure (down, slow, refused) is swallowed by design. Bursts above the
+ *  sink's cap go as consecutive calls (one timeout budget each). */
 export async function postRuleTelemetry(
   server: string,
   cwd: string,
@@ -24,12 +37,14 @@ export async function postRuleTelemetry(
   timeoutMs = 1500,
 ): Promise<void> {
   if (!records.length) return;
-  try {
-    await fetch(`${server}/api/rule-telemetry`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cwd, records }),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-  } catch { /* best-effort by contract */ }
+  for (const batch of chunkTelemetry(records)) {
+    try {
+      await fetch(`${server}/api/rule-telemetry`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd, records: batch }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch { /* best-effort by contract */ }
+  }
 }

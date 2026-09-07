@@ -85,7 +85,8 @@ describe("stack freshness (mtime + explicit regenerate)", () => {
     expect(body.mtime).toBeGreaterThan(0);
   });
 
-  test("POST /api/stack/:project/regenerate overwrites the seeded file", async () => {
+  test("POST /api/stack/:project/regenerate overwrites the seeded file — and the exposed mtime moves with it", async () => {
+    const before = await asJson(await fetch(`${BASE}/api/stack/real`));
     const r = await fetch(`${BASE}/api/stack/real/regenerate`, { method: "POST" });
     expect(r.status).toBe(200);
     const body = await asJson(r);
@@ -94,6 +95,11 @@ describe("stack freshness (mtime + explicit regenerate)", () => {
     const after = await asJson(await fetch(`${BASE}/api/stack/real`));
     expect(after.content).not.toBe(STACK_MARKER);
     expect(after.content).toContain("real");
+    // #1205: "freshness" was asserted as `mtime > 0` only — a route returning a
+    // constant would pass. The mtime is the file's: regenerate's answer and the
+    // next GET agree, and neither is older than the seeded file's stamp.
+    expect(after.mtime).toBe(body.mtime);
+    expect(after.mtime).toBeGreaterThanOrEqual(before.mtime);
   });
 
   test("POST regenerate → 404 for an unknown project", async () => {

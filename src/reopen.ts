@@ -1,34 +1,36 @@
-// «إعادة الفتح» (#556): a new problem report that matches a CLOSED one is the
-// signature of a fix that didn't hold. DevLog stores the relation at ingest
-// (TagEntry.relatedTo) so recurrence becomes DATA, not language work Claude
-// repeats on every retro: the Stop hook echoes it, retro lines carry ⟲#N, and
-// the dashboard badges the item. Detection is heuristic and advisory — it
-// links, it never blocks and never rewrites the new report.
+// «إعادة الفتح» (#556): a new problem report that points at a CLOSED one is
+// the signature of a fix that didn't hold. DevLog stores the relation at
+// ingest (TagEntry.relatedTo) so recurrence becomes DATA, not language work
+// Claude repeats on every retro: the Stop hook echoes it, retro lines carry
+// ⟲#N, and the dashboard badges the item. Linking is advisory — it never
+// blocks and never rewrites the new report.
+//
+// Two ways a report links (#1118): the AUTHOR names the old report with
+// `⟲ #N` / `reopen #N` in the text, or the text is the closed report's text
+// verbatim (#593 — the same defect re-reported word for word). The former
+// Jaccard-similarity inference (≥0.6 text, ≥0.35 with a shared file) is gone:
+// human reports never reach it — the live maximum across 69,006 helper pairs
+// was 0.28 — so the column it fed stayed empty for the whole log. The soft
+// path for "this looks like #N" is the one-shot 🧠 recall hint (ask:search),
+// which suggests; only an explicit marker or an identical text asserts.
 
 import type { DevLogData } from "./types";
 import { closedItems } from "./closed-items";
+import { normalizeTagContent } from "./open-items";
 
 export const PROBLEM_TAGS = new Set(["bug found", "security", "security:own", "security:dep"]);
 
-// Words of 3+ letters/digits (unicode — Arabic reports are the norm here),
-// keeping path-ish glue chars so `src/scanner.ts` survives as one token.
-const tokens = (s: string): Set<string> =>
-  new Set(s.toLowerCase().match(/[\p{L}\p{N}_./\\-]{3,}/gu) ?? []);
-
-function jaccard(a: Set<string>, b: Set<string>): number {
-  if (!a.size || !b.size) return 0;
-  let inter = 0;
-  for (const t of a) if (b.has(t)) inter++;
-  return inter / (a.size + b.size - inter);
-}
-
-const normFile = (f: string): string => f.toLowerCase().replace(/\\/g, "/");
+/** `⟲ #N`, `⟲#N`, `reopen #N`, `reopens #N`, `يعيد فتح #N` — the author's own
+ *  pointer at the report that came back. First match wins. */
+export const REOPEN_MARK_RE = /(?:⟲|\breopens?\b|يعيد فتح|إعادة فتح)\s*#(\d+)/iu;
 
 export interface ReopenMatch {
-  /** The closed report this new one likely reopens. */
+  /** The closed report this new one reopens. */
   num: number;
   text: string;
   closedAt?: string;
+  /** How the link was established — the hook wording depends on it. */
+  via: "marker" | "identical";
 }
 
 /** Echoed to the Stop hook per stored report that reopens a closed one. */
@@ -38,31 +40,31 @@ export interface ReopenHint extends ReopenMatch {
 }
 
 /**
- * The closed problem report the new `content` most likely reopens, or null.
- * Match = strong text echo alone (Jaccard ≥ 0.6), or a decent echo (≥ 0.35)
- * anchored to at least one shared file. Thresholds favour silence: a missed
- * link costs one retro insight; a false one accuses a healthy fix.
+ * The closed problem report the new `content` reopens, or null. A `⟲ #N`
+ * marker links to #N when #N is a closed problem report of this project (an
+ * open, unknown, or non-problem #N is ignored — the marker is advisory, and
+ * the missing `[devlog reopen]` echo tells the author it did not take). With
+ * no marker, only a text identical to a closed report links.
  */
 export function detectReopen(
-  data: DevLogData, project: string, tag: string, content: string, files?: string[],
+  data: DevLogData, project: string, tag: string, content: string,
 ): ReopenMatch | null {
   if (!PROBLEM_TAGS.has(tag)) return null;
-  const newTok = tokens(content);
-  if (newTok.size < 3) return null;
-  const newFiles = new Set((files ?? []).map(normFile));
+  const closed = closedItems(data, project).filter(c => typeof c.num === "number" && PROBLEM_TAGS.has(c.kind));
+  const toMatch = (c: (typeof closed)[number], via: ReopenMatch["via"]): ReopenMatch =>
+    ({ num: c.num as number, text: c.text, ...(c.closedAt ? { closedAt: c.closedAt } : {}), via });
 
-  let best: ReopenMatch | null = null;
-  let bestScore = 0;
-  for (const c of closedItems(data, project)) {
-    if (typeof c.num !== "number" || !PROBLEM_TAGS.has(c.kind)) continue;
-    const sim = jaccard(newTok, tokens(c.text));
-    const fileHit = newFiles.size > 0 && (c.files ?? []).some(f => newFiles.has(normFile(f)));
-    if (!(sim >= 0.6 || (fileHit && sim >= 0.35))) continue;
-    const score = sim + (fileHit ? 0.25 : 0);
-    if (score > bestScore) {
-      bestScore = score;
-      best = { num: c.num, text: c.text, ...(c.closedAt ? { closedAt: c.closedAt } : {}) };
-    }
+  const mark = REOPEN_MARK_RE.exec(content);
+  if (mark) {
+    const num = Number(mark[1]);
+    const hit = closed.find(c => c.num === num);
+    return hit ? toMatch(hit, "marker") : null;
   }
-  return best;
+
+  const norm = normalizeTagContent(content);
+  if (!norm) return null;
+  // Newest closure first (closedItems sorts by closedAt desc): a defect closed
+  // twice already points at its latest fix.
+  const twin = closed.find(c => normalizeTagContent(c.text) === norm);
+  return twin ? toMatch(twin, "identical") : null;
 }

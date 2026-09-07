@@ -39,9 +39,12 @@ import type { DevLogData, PlanStep, ProjectProfile, TagEntry } from "./types";
  * issue entirely; this helper is the safety net for the legacy text path.
  */
 export function normalizeTagContent(s: string): string {
+  // Inline code keeps its CONTENT — only the backticks are formatting (#1186).
+  // The span used to be erased whole, so «crash in `parseA`» and «crash in
+  // `parseB`» normalized to the same key and one text closer closed both.
   return s
-    .replace(/`[^`\n]*`/g, " ") // strip inline-code (` `code` ` → ` `)
-    .replace(/`/g, "")           // any stray backticks
+    .replace(/`([^`\n]*)`/g, "$1") // unwrap inline-code (`code` → code)
+    .replace(/`/g, "")             // any stray backticks
     .replace(/\s+/g, " ")        // collapse whitespace
     .trim()
     .toLowerCase();
@@ -187,7 +190,11 @@ export function inflightClosures(entries: { tag: string; content?: string }[]): 
   const byNum = new Map<number, Set<string>>();
   const deferred = new Set<number>();
   for (const e of entries) {
-    const nums = [...String(e.content || "").matchAll(/#(\d+)/g)].map(m => parseInt(m[1], 10));
+    // LEADING run only, like closedNums (#1025): a `#M` in the cause prose of
+    // `-(bug fix) #12 same root as #13` must not count #13 as closed — the
+    // server-side release guard read it that way and let a release through
+    // with #13 still open.
+    const nums = leadingNums(String(e.content || ""));
     if (!nums.length) continue;
     if (e.tag === "upcoming") { for (const n of nums) deferred.add(n); continue; }
     if (!CLOSURE_TAGS.has(e.tag)) continue;

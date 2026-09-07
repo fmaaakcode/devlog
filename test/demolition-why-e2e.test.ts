@@ -6,20 +6,21 @@
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import type { Subprocess } from "bun";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startServer, stopServer, waitForServer, runHook, PROJECT_ROOT } from "./_helpers";
+import { startServer, stopServer, waitForServer, runHook, PROJECT_ROOT, HOOK_STATE_DIR } from "./_helpers";
 
 const TEST_PORT = 17977;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
-const TURN_STATE_DIR = join(PROJECT_ROOT, ".devlog", "turn-state");
+const TURN_STATE_DIR = join(HOOK_STATE_DIR, "turn-state");
 const ACK_DIR = join(PROJECT_ROOT, ".devlog", "demolition-ack");
 
 let dataDir: string, projDir: string, server: Subprocess;
 const rnd = Math.random().toString(36).slice(2, 8);
 const sidQuiet = `demowhy-quiet-${Date.now()}-${rnd}`;
 const sidGood = `demowhy-good-${Date.now()}-${rnd}`;
+const sidEarlier = `demowhy-earlier-${Date.now()}-${rnd}`;
 
 const safe = (s: string) => s.replace(/[^a-zA-Z0-9_-]/g, "_");
 
@@ -75,8 +76,11 @@ afterAll(async () => {
   await stopServer(server);
   rmSync(dataDir, { recursive: true, force: true });
   rmSync(projDir, { recursive: true, force: true });
-  for (const sid of [sidQuiet, sidGood]) {
+  for (const sid of [sidQuiet, sidGood, sidEarlier]) {
     rmSync(join(TURN_STATE_DIR, `${sid}.json`), { force: true });
+    // F-9.64: a beforeAll that died before the first writeAck leaves no ACK_DIR;
+    // an unguarded readdirSync here then buried the real failure under ENOENT.
+    if (!existsSync(ACK_DIR)) continue;
     for (const f of readdirSync(ACK_DIR).filter(n => n.startsWith(safe(sid)))) rmSync(join(ACK_DIR, f), { force: true });
   }
 });
@@ -102,5 +106,27 @@ describe("demolition-why whisper (narrative layer P4)", () => {
       "أعدت بناء النواة.\n\n-(decision) أعدت بناء النواة على الطابور بدل الأقفال: الأقفال جرّبت وفشلت تحت التوازي",
       sidGood);
     expect(out).not.toContain("demolition-why");
+  });
+
+  // F-9.65: the case above is silenced by the hook's LOCAL regex (the decision
+  // sits in the same turn). The server-side half — `knowledgeTags` counted by
+  // /api/changes/session over the session's STORED tags — had no witness: a
+  // decision recorded in an EARLIER turn must silence the whisper on a later
+  // tag-less turn, and the first whisper of this session is exactly where a
+  // broken count (filtered by project instead of session, KNOWLEDGE set
+  // shrunk) would show.
+  test("a decision stored in an EARLIER turn silences the whisper server-side (knowledgeTags)", async () => {
+    const core = join(projDir, "src", "core.ts");
+    // Turn 1: the why is recorded — and STORED (this turn carries no override yet).
+    const t1 = await turn("E1", "قررت.\n\n-(decision) النواة تُعاد على الطابور: الأقفال فشلت تحت التوازي", sidEarlier);
+    expect(t1).not.toContain("demolition-why");
+    const stored = await (await fetch(`${BASE}/api/changes/session?session_id=${encodeURIComponent(sidEarlier)}`)).json() as { knowledgeTags: number };
+    expect(stored.knowledgeTags).toBe(1);                 // the server sees the earlier why
+    // Turn 2: override happens, and this turn's text carries NO why-tag at all —
+    // only the server's count can keep the whisper quiet.
+    writeAck(sidEarlier, core);
+    await postEdit(sidEarlier, core);
+    const t2 = await turn("E2", "أكملت التعديل.\n\n-(note) لمسة على النواة", sidEarlier);
+    expect(t2).not.toContain("demolition-why");
   });
 });

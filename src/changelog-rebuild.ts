@@ -6,6 +6,12 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { DevLogData, TagEntry } from "./types";
+import { currentLang } from "./i18n";
+
+/** The changelog file's first line. ONE definition for both writers (append
+ *  path in export.ts, rebuild here) and DEVLOG_LANG-aware (F-5.56): it used to
+ *  be a hard-coded Arabic heading on every English install. */
+export const changelogHeader = (): string => (currentLang() === "ar" ? "# سجل التغييرات\n" : "# Changelog\n");
 
 const tagIcon: Record<string, string> = {
   built: "✅", "bug fix": "🔧", security: "🔒", release: "📦",
@@ -61,7 +67,7 @@ export async function rebuildChangelog(devlogDir: string, tags: TagEntry[]): Pro
   const unique = tags
     .filter(t => { if (seen.has(t.id)) return false; seen.add(t.id); return true; })
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-  let out = "# سجل التغييرات\n";
+  let out = changelogHeader();
   let lastDay = "";
   for (const t of unique) {
     const day = t.timestamp.split("T")[0];

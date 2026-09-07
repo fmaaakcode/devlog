@@ -2,6 +2,8 @@
 // Extracts functions, classes, methods, structs, enums with high accuracy
 
 import { type Token, TokenType, tokenize, condenseBrackets, significantTokens, extractIncludes } from "./tokenizer";
+import { bodyEnd, groupText, simplifyParams } from "./symbols-shared";
+import { extractCpp } from "./symbols-cpp";
 
 export interface Symbol {
   name: string;
@@ -50,78 +52,62 @@ export function extractSymbols(source: string, ext: string): { symbols: Symbol[]
   return { symbols, includes };
 }
 
-// Deepest ABSOLUTE line reached inside a group (recursion propagates absolute
-// lines only — #764: the old recursion returned a line COUNT and compared it
-// against `maxLine`, an absolute number, so any function ending in a nested
-// block far from its opener was truncated to a few lines, corrupting fn.lines,
-// the analysis body window, and pagerank's small-function penalty).
-function groupEndLine(group: Token): number {
-  let maxLine = group.line;
-  for (const c of group.children ?? []) {
-    if (c.line > maxLine) maxLine = c.line;
-    if (c.children) {
-      const inner = groupEndLine(c);
-      if (inner > maxLine) maxLine = inner;
+const TS_STATEMENT_KEYWORDS = new Set(["const", "let", "var", "export", "function", "class", "import", "return", "if", "for", "while", "switch", "async", "interface", "enum"]);
+
+// Starting AT a `:` that introduces a TS return type, walk over the type and
+// return the index of the body brace group (or -1 when the declaration has no
+// body). A brace group belongs to the type when what follows it continues a
+// type (`| null`, `[]`, `=>`, `.`); otherwise it is the body. The old scan took
+// the FIRST brace group as the body, so `(): { a: T } {` reported the type's
+// fields as the function and ended it one line later (#1086).
+function skipReturnType(tokens: Token[], from: number): number {
+  let j = from + 1;
+  while (j < tokens.length) {
+    const tok = tokens[j];
+    if (tok.type === TokenType.Group && tok.groupType === "brace") {
+      const nx = tokens[j + 1];
+      const continues = nx && (
+        (nx.type === TokenType.Operator && ["|", "&", "=>", ".", "?"].includes(nx.value)) ||
+        (nx.type === TokenType.Group && (nx.groupType === "bracket" || nx.groupType === "brace"))
+      );
+      if (!continues) return j;
+    } else if (tok.type === TokenType.Semicolon || (tok.type === TokenType.Keyword && TS_STATEMENT_KEYWORDS.has(tok.value))) {
+      return -1;
     }
+    j++;
   }
-  return maxLine;
+  return -1;
 }
 
-// Count lines in a group token (brace body)
-function groupLines(group: Token): number {
-  if (!group.children) return 1;
-  return groupEndLine(group) - group.line + 1;
+// Body of a class/object method whose `(params)` group sits at idx-1: either
+// the brace group right there, or the one after a `:` return type (#1086).
+function methodBody(inner: Token[], idx: number): Token | null {
+  if (idx >= inner.length) return null;
+  const tok = inner[idx];
+  if (tok.type === TokenType.Group && tok.groupType === "brace") return tok;
+  if (tok.type === TokenType.Operator && tok.value === ":") {
+    const b = skipReturnType(inner, idx);
+    return b === -1 ? null : inner[b];
+  }
+  return null;
 }
 
-// Get text content of a group (for params)
-function groupText(group: Token): string {
-  if (!group.children) return "";
-  return group.children.map(c => {
-    if (c.type === TokenType.Group) return `(${groupText(c)})`;
-    return c.value;
-  }).join(" ").replace(/\s+/g, " ").trim();
-}
-
-// Simplify params: strip types, keep names
-function simplifyParams(raw: string, ext: string): string {
-  if (!raw) return "()";
-  if (["ts", "tsx", "js", "jsx"].includes(ext)) {
-    // Remove type annotations, keep names
-    const parts = raw.split(",").map(p => {
-      let clean = p.trim();
-      // Remove generics first
-      let prev = "";
-      while (prev !== clean) { prev = clean; clean = clean.replace(/<[^<>]*>/g, ""); }
-      clean = clean.replace(/:\s*.+$/, "").replace(/\s*=\s*.+$/, "").trim();
-      return clean;
-    }).filter(Boolean);
-    return `(${parts.join(", ")})`;
+// For `(params): ReturnType => body`, find the arrow's own `=>`: a `=>` that
+// directly follows a paren group is a function TYPE inside the annotation
+// (`(x: T) => void`), never the arrow itself. Returns -1 when no arrow follows
+// before the statement ends. The old scan stopped at the first Operator, which
+// was the `:` itself, so every typed arrow was dropped (#1085).
+function findArrowAfterType(tokens: Token[], from: number): number {
+  for (let j = from; j < tokens.length; j++) {
+    const tok = tokens[j];
+    if (tok.type === TokenType.Operator && tok.value === "=>") {
+      const prev = tokens[j - 1];
+      if (!(prev && prev.type === TokenType.Group && prev.groupType === "paren") || j === from) return j;
+      continue;
+    }
+    if (tok.type === TokenType.Semicolon || (tok.type === TokenType.Keyword && TS_STATEMENT_KEYWORDS.has(tok.value))) return -1;
   }
-  if (["cpp", "cc", "cxx", "c", "h", "hpp", "hxx", "cu", "cuh"].includes(ext)) {
-    const parts = raw.split(",").map(p => {
-      const trimmed = p.trim();
-      // Last word is usually the param name
-      const words = trimmed.split(/\s+/);
-      const last = words[words.length - 1]?.replace(/[*&]/, "") || "";
-      return last;
-    }).filter(p => p && p !== "void" && p !== "const");
-    return `(${parts.join(", ")})`;
-  }
-  if (ext === "rs") {
-    const parts = raw.split(",").map(p => {
-      const trimmed = p.trim();
-      const name = trimmed.split(":")[0]?.trim().replace(/^&?\s*(?:mut\s+)?/, "");
-      return name;
-    }).filter(p => p && p !== "self" && p !== "&self" && p !== "&mut self");
-    return `(${parts.join(", ")})`;
-  }
-  if (ext === "py") {
-    const parts = raw.split(",").map(p => {
-      return p.trim().split(":")[0]?.split("=")[0]?.trim();
-    }).filter(p => p && p !== "self" && p !== "cls");
-    return `(${parts.join(", ")})`;
-  }
-  return `(${raw})`;
+  return -1;
 }
 
 // ============ JavaScript / TypeScript ============
@@ -160,15 +146,20 @@ function extractJS(tokens: Token[]): Symbol[] {
           params = groupText(tokens[j]);
           j++;
         }
-        // Body (brace group) — skip return type annotations until we find brace
-        while (j < tokens.length && !(tokens[j].type === TokenType.Group && tokens[j].groupType === "brace")) j++;
-        const bodyLines = (j < tokens.length && tokens[j].type === TokenType.Group && tokens[j].groupType === "brace") ? groupLines(tokens[j]) : 0;
-        const endLine = t.line + bodyLines;
+        // Body (brace group) — a `:` return type is walked with type awareness
+        // so an object-typed return is not mistaken for the body (#1086).
+        if (j < tokens.length && tokens[j].type === TokenType.Operator && tokens[j].value === ":") {
+          const b = skipReturnType(tokens, j);
+          j = b === -1 ? tokens.length : b;
+        } else {
+          while (j < tokens.length && !(tokens[j].type === TokenType.Group && tokens[j].groupType === "brace")) j++;
+        }
+        const body = (j < tokens.length && tokens[j].type === TokenType.Group && tokens[j].groupType === "brace") ? tokens[j] : null;
 
         symbols.push({
           name, kind: "function", params: simplifyParams(params, "ts"),
-          isExported, isAsync, line: t.line, endLine,
-          bodyTokens: j < tokens.length ? tokens[j].children : undefined,
+          isExported, isAsync, line: t.line, endLine: body ? bodyEnd(body) : t.line,
+          bodyTokens: body?.children,
         });
       }
     }
@@ -189,17 +180,14 @@ function extractJS(tokens: Token[]): Symbol[] {
           if (j < tokens.length && tokens[j].type === TokenType.Group && tokens[j].groupType === "paren") {
             const paramsGroup = tokens[j];
             j++;
-            // Skip type annotation
-            while (j < tokens.length && tokens[j].type !== TokenType.Operator) j++;
-            if (j < tokens.length && tokens[j].type === TokenType.Operator && tokens[j].value === "=>") {
-              j++;
-              let bodyLines = 1;
-              if (j < tokens.length && tokens[j].type === TokenType.Group && tokens[j].groupType === "brace") {
-                bodyLines = groupLines(tokens[j]);
-              }
+            // `(params) =>` or `(params): ReturnType =>` (#1085)
+            const arrow = findArrowAfterType(tokens, j);
+            if (arrow !== -1) {
+              j = arrow + 1;
+              const body = (j < tokens.length && tokens[j].type === TokenType.Group && tokens[j].groupType === "brace") ? tokens[j] : null;
               symbols.push({
                 name, kind: "function", params: simplifyParams(groupText(paramsGroup), "ts"),
-                isExported, isAsync, line: t.line, endLine: t.line + bodyLines,
+                isExported, isAsync, line: t.line, endLine: body ? bodyEnd(body) : t.line + 1,
               });
             }
           }
@@ -210,7 +198,7 @@ function extractJS(tokens: Token[]): Symbol[] {
             if (methods.length > 0) {
               symbols.push({
                 name, kind: "class", params: `{${methods.length} methods}`,
-                isExported, isAsync: false, line: t.line, endLine: t.line + groupLines(body),
+                isExported, isAsync: false, line: t.line, endLine: bodyEnd(body),
                 children: methods.map(m => m.name.split(".").pop() ?? m.name),
               });
               symbols.push(...methods);
@@ -233,7 +221,7 @@ function extractJS(tokens: Token[]): Symbol[] {
           const body = tokens[j];
           symbols.push({
             name, kind: "class", params: "",
-            isExported, isAsync: false, line: t.line, endLine: t.line + groupLines(body),
+            isExported, isAsync: false, line: t.line, endLine: bodyEnd(body),
           });
           // Extract class methods from body
           if (body.children) {
@@ -243,13 +231,10 @@ function extractJS(tokens: Token[]): Symbol[] {
                 const mName = inner[k].value;
                 if (["if", "for", "while", "switch", "catch", "return"].includes(mName)) continue;
                 const mParams = groupText(inner[k + 1]);
-                let mLines = 0;
-                if (k + 2 < inner.length && inner[k + 2].type === TokenType.Group && inner[k + 2].groupType === "brace") {
-                  mLines = groupLines(inner[k + 2]);
-                }
+                const mBody = methodBody(inner, k + 2);
                 symbols.push({
                   name: `${name}.${mName}`, kind: "method", params: simplifyParams(mParams, "ts"),
-                  isExported: false, isAsync: false, line: inner[k].line, endLine: inner[k].line + mLines,
+                  isExported: false, isAsync: false, line: inner[k].line, endLine: mBody ? bodyEnd(mBody) : inner[k].line,
                   parent: name,
                 });
               }
@@ -291,165 +276,15 @@ function extractObjectMethods(body: Token, parentName: string): Symbol[] {
       const mName = inner[k].value;
       if (["if", "for", "while", "switch", "catch", "return", "handler", "callback", "listener"].includes(mName)) continue;
       const mParams = groupText(inner[k + 1]);
-      let mLines = 0;
-      if (k + 2 < inner.length && inner[k + 2].type === TokenType.Group && inner[k + 2].groupType === "brace") {
-        mLines = groupLines(inner[k + 2]);
-      }
+      const mBody = methodBody(inner, k + 2);
       methods.push({
         name: `${parentName}.${mName}`, kind: "method", params: simplifyParams(mParams, "ts"),
-        isExported: false, isAsync, line: inner[k].line, endLine: inner[k].line + mLines,
+        isExported: false, isAsync, line: inner[k].line, endLine: mBody ? bodyEnd(mBody) : inner[k].line,
         parent: parentName,
       });
     }
   }
   return methods;
-}
-
-// ============ C/C++ ============
-
-function extractCpp(tokens: Token[]): Symbol[] {
-  const symbols: Symbol[] = [];
-  const typeKeywords = new Set(["void", "int", "bool", "char", "float", "double", "long", "short", "unsigned", "signed", "auto", "const", "static", "extern", "virtual", "inline", "explicit", "constexpr", "HRESULT", "LRESULT", "BOOL", "DWORD", "HWND", "HANDLE", "LPVOID", "SOCKET", "ComPtr", "size_t"]);
-
-  for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i];
-
-    // class/struct Name { ... };
-    if (t.type === TokenType.Keyword && (t.value === "class" || t.value === "struct")) {
-      let j = i + 1;
-      if (j < tokens.length && tokens[j].type === TokenType.Identifier) {
-        const name = tokens[j].value;
-        j++;
-        // Skip : public Base — look for brace body or semicolon (forward declaration)
-        while (j < tokens.length && !(tokens[j].type === TokenType.Group && tokens[j].groupType === "brace") && tokens[j].type !== TokenType.Semicolon) j++;
-        if (j < tokens.length && tokens[j].type === TokenType.Group && tokens[j].groupType === "brace") {
-          const body = tokens[j];
-          const sym: Symbol = {
-            name, kind: t.value as "class" | "struct", params: "",
-            isExported: true, isAsync: false, line: t.line, endLine: t.line + groupLines(body),
-            children: [],
-          };
-          // Extract method declarations from class body
-          if (body.children) {
-            const inner = significantTokens(body.children);
-            for (let k = 0; k < inner.length; k++) {
-              // Look for: identifier(params)
-              if (inner[k].type === TokenType.Identifier && k + 1 < inner.length && inner[k + 1].type === TokenType.Group && inner[k + 1].groupType === "paren") {
-                const mName = inner[k].value;
-                if (["if", "for", "while", "switch", "catch", "return", "sizeof", "decltype"].includes(mName)) continue;
-                sym.children ??= [];
-                sym.children.push(mName);
-                // Check if has body (definition) or just declaration
-                let mLines = 0;
-                if (k + 2 < inner.length && inner[k + 2].type === TokenType.Group && inner[k + 2].groupType === "brace") {
-                  mLines = groupLines(inner[k + 2]);
-                }
-                symbols.push({
-                  name: `${name}::${mName}`, kind: "method",
-                  params: simplifyParams(groupText(inner[k + 1]), "cpp"),
-                  isExported: true, isAsync: false, line: inner[k].line, endLine: inner[k].line + mLines,
-                  parent: name,
-                });
-              }
-            }
-          }
-          symbols.push(sym);
-        }
-      }
-    }
-
-    // enum (class)? Name { ... };
-    if (t.type === TokenType.Keyword && t.value === "enum") {
-      let j = i + 1;
-      if (j < tokens.length && tokens[j].type === TokenType.Keyword && tokens[j].value === "class") j++;
-      if (j < tokens.length && tokens[j].type === TokenType.Identifier) {
-        symbols.push({
-          name: tokens[j].value, kind: "enum", params: "",
-          isExported: true, isAsync: false, line: t.line, endLine: t.line,
-        });
-      }
-    }
-
-    // Type ClassName::MethodName(params) { body } — out-of-class definition
-    if ((t.type === TokenType.Identifier || t.type === TokenType.Keyword) && isTypeToken(t, typeKeywords)) {
-      let j = i + 1;
-      // Skip pointer/ref qualifiers and type keywords (but NOT PascalCase identifiers followed by ::)
-      while (j < tokens.length && (
-        (tokens[j].type === TokenType.Operator && ["*", "&"].includes(tokens[j].value)) ||
-        (tokens[j].type === TokenType.Keyword && typeKeywords.has(tokens[j].value)) ||
-        (tokens[j].type === TokenType.Group && tokens[j].groupType === "angle")
-      )) j++;
-
-      // ClassName::MethodName
-      if (j + 2 < tokens.length && tokens[j].type === TokenType.Identifier && tokens[j + 1].type === TokenType.Operator && tokens[j + 1].value === "::" && tokens[j + 2].type === TokenType.Identifier) {
-        const className = tokens[j].value;
-        const methodName = tokens[j + 2].value;
-        j += 3;
-        // Skip template params
-        if (j < tokens.length && tokens[j].type === TokenType.Group && tokens[j].groupType === "angle") j++;
-        // (params)
-        if (j < tokens.length && tokens[j].type === TokenType.Group && tokens[j].groupType === "paren") {
-          const params = groupText(tokens[j]);
-          j++;
-          // Skip const/override/noexcept
-          while (j < tokens.length && tokens[j].type === TokenType.Keyword && ["const", "override", "noexcept"].includes(tokens[j].value)) j++;
-          // {body}
-          let bodyLines = 0;
-          if (j < tokens.length && tokens[j].type === TokenType.Group && tokens[j].groupType === "brace") {
-            bodyLines = groupLines(tokens[j]);
-          }
-          // Skip if already found from class body
-          if (!symbols.some(s => s.name === `${className}::${methodName}` && s.endLine > s.line)) {
-            symbols.push({
-              name: `${className}::${methodName}`, kind: "method",
-              params: simplifyParams(params, "cpp"),
-              isExported: true, isAsync: false, line: t.line, endLine: t.line + bodyLines,
-              parent: className,
-            });
-          } else {
-            // Update line count for existing declaration
-            const existing = symbols.find(s => s.name === `${className}::${methodName}`);
-            if (existing && bodyLines > 0) { existing.endLine = t.line + bodyLines; }
-          }
-        }
-      }
-      // Top-level function: Type FuncName(params) { body }
-      else if (j < tokens.length && tokens[j].type === TokenType.Identifier) {
-        const funcName = tokens[j].value;
-        if (["if", "for", "while", "switch", "catch", "return", "else", "sizeof", "typeof"].includes(funcName)) continue;
-        j++;
-        if (j < tokens.length && tokens[j].type === TokenType.Group && tokens[j].groupType === "paren") {
-          const params = groupText(tokens[j]);
-          j++;
-          while (j < tokens.length && tokens[j].type === TokenType.Keyword) j++;
-          let bodyLines = 0;
-          if (j < tokens.length && tokens[j].type === TokenType.Group && tokens[j].groupType === "brace") {
-            bodyLines = groupLines(tokens[j]);
-          }
-          if (bodyLines > 0 && !symbols.some(s => s.name.endsWith(`::${funcName}`))) {
-            symbols.push({
-              name: funcName, kind: "function",
-              params: simplifyParams(params, "cpp"),
-              isExported: true, isAsync: false, line: t.line, endLine: t.line + bodyLines,
-            });
-          }
-        }
-      }
-    }
-
-    // template<...> — skip, the next symbol will be captured
-    if (t.type === TokenType.Keyword && t.value === "template") {
-      if (i + 1 < tokens.length && tokens[i + 1].type === TokenType.Group && tokens[i + 1].groupType === "angle") {
-        i++; // skip the angle group, let next iteration capture the class/function
-      }
-    }
-  }
-
-  return symbols;
-}
-
-function isTypeToken(t: Token, typeKeywords: Set<string>): boolean {
-  return (t.type === TokenType.Keyword && typeKeywords.has(t.value)) || (t.type === TokenType.Identifier && /^[A-Z]/.test(t.value));
 }
 
 // ============ Rust ============
@@ -482,13 +317,10 @@ function extractRust(tokens: Token[]): Symbol[] {
           }
           // Skip return type and where clause — find brace body
           while (j < tokens.length && !(tokens[j].type === TokenType.Group && tokens[j].groupType === "brace")) j++;
-          let bodyLines = 0;
-          if (j < tokens.length && tokens[j].type === TokenType.Group && tokens[j].groupType === "brace") {
-            bodyLines = groupLines(tokens[j]);
-          }
+          const body = j < tokens.length ? tokens[j] : null;
           symbols.push({
             name, kind: "function", params: simplifyParams(params, "rs"),
-            isExported, isAsync, line: t.line, endLine: t.line + bodyLines,
+            isExported, isAsync, line: t.line, endLine: body ? bodyEnd(body) : t.line,
           });
         }
       }
@@ -512,9 +344,28 @@ function extractRust(tokens: Token[]): Symbol[] {
       // Skip generics
       if (j < tokens.length && tokens[j].type === TokenType.Group && tokens[j].groupType === "angle") j++;
       if (j < tokens.length && tokens[j].type === TokenType.Identifier) {
-        const structName = tokens[j].value;
-        j++;
-        // Skip for Trait — find brace body
+        // `impl [<…>] Path::Name[<…>] [for Path::Type[<…>]] [where …] { … }` —
+        // methods belong to the TYPE after `for`, not to the trait: naming
+        // them by the trait collapsed `impl Display for A` and `impl Display
+        // for B` into one `Display::fmt` (#1088).
+        const readPath = (): string => {
+          let last = "";
+          while (j < tokens.length) {
+            const tok = tokens[j];
+            if (tok.type === TokenType.Identifier) { last = tok.value; j++; continue; }
+            if (tok.type === TokenType.Operator && (tok.value === "::" || tok.value === "&" || tok.value === "*")) { j++; continue; }
+            if (tok.type === TokenType.Group && tok.groupType === "angle") { j++; continue; }
+            if (tok.type === TokenType.Keyword && (tok.value === "mut" || tok.value === "dyn")) { j++; continue; }
+            break;
+          }
+          return last;
+        };
+        let structName = readPath();
+        if (j < tokens.length && tokens[j].type === TokenType.Keyword && tokens[j].value === "for") {
+          j++;
+          structName = readPath() || structName;
+        }
+        // Skip where clause — find brace body
         while (j < tokens.length && !(tokens[j].type === TokenType.Group && tokens[j].groupType === "brace")) j++;
         if (j < tokens.length && tokens[j].type === TokenType.Group && tokens[j].groupType === "brace") {
           // Extract methods inside impl block
@@ -656,16 +507,13 @@ function extractGo(tokens: Token[]): Symbol[] {
         }
         // Skip return type — find brace body
         while (j < tokens.length && !(tokens[j].type === TokenType.Group && tokens[j].groupType === "brace")) j++;
-        let bodyLines = 0;
-        if (j < tokens.length && tokens[j].type === TokenType.Group && tokens[j].groupType === "brace") {
-          bodyLines = groupLines(tokens[j]);
-        }
+        const body = j < tokens.length ? tokens[j] : null;
         symbols.push({
           name: receiver ? `${receiver}.${name}` : name,
           kind: receiver ? "method" : "function",
           params: simplifyParams(params, "go"),
           isExported: name[0] === name[0].toUpperCase(),
-          isAsync: false, line: t.line, endLine: t.line + bodyLines,
+          isAsync: false, line: t.line, endLine: body ? bodyEnd(body) : t.line,
           parent: receiver || undefined,
         });
       }

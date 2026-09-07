@@ -94,10 +94,22 @@ describe("computeNextVersion — semver bump from intent", () => {
     expect(computeNextVersion("2.11.2", "minor")).toBe("2.12.0");
     expect(computeNextVersion("2.11.2", "major")).toBe("3.0.0");
   });
-  test("strips v prefix and pre-release/build suffix", () => {
+  test("strips v prefix and build suffix", () => {
     expect(computeNextVersion("v2.11.2", "patch")).toBe("2.11.3");
-    expect(computeNextVersion("1.0.0-rc1", "minor")).toBe("1.1.0");
     expect(computeNextVersion("1.2.3+build", "major")).toBe("2.0.0");
+  });
+  // #1124: a pre-release GRADUATES to the version it announced. The old
+  // suffix-dropping arithmetic turned 2.0.0-rc.1 + patch into 2.0.1, so the
+  // 2.0.0 final could never be reached through the auto path.
+  test("a pre-release graduates to its own final (npm `version` semantics)", () => {
+    expect(computeNextVersion("2.0.0-rc.1", "patch")).toBe("2.0.0");
+    expect(computeNextVersion("2.0.0-rc.1", "minor")).toBe("2.0.0");
+    expect(computeNextVersion("2.0.0-rc.1", "major")).toBe("2.0.0");
+    expect(computeNextVersion("1.0.0-rc1", "minor")).toBe("1.0.0");
+    // A bump type HIGHER than what the pre-release already claimed still moves.
+    expect(computeNextVersion("1.5.0-beta.1", "major")).toBe("2.0.0");
+    expect(computeNextVersion("1.5.2-beta.1", "minor")).toBe("1.6.0");
+    expect(computeNextVersion("1.5.2-beta.1", "patch")).toBe("1.5.2");
   });
   test("handles missing/short versions gracefully", () => {
     expect(computeNextVersion("", "patch")).toBe("0.0.1");
@@ -177,15 +189,26 @@ describe("bumpManifests — Claude Code plugin manifest", () => {
   });
 });
 
-describe("compareSemver — numeric triple ordering, pre-release ignored", () => {
+describe("compareSemver — numeric ordering, then semver §11 pre-release precedence", () => {
   test.each([
     ["1.0.0", "2.0.0", -1],
     ["2.0.0", "1.0.0", 1],
     ["1.2.3", "1.2.3", 0],
     ["v2.7.0", "v2.7.0", 0],
     ["1.2.10", "1.2.9", 1],
-    ["1.0.0-rc1", "1.0.0", 0],
     ["2.0.0", "10.0.0", -1],
+    // #1124 — the pin that used to read `0` here locked the rc→final door shut.
+    ["1.0.0-rc1", "1.0.0", -1],
+    ["2.0.0", "2.0.0-rc.1", 1],
+    ["2.0.0-rc.1", "2.0.0-rc.2", -1],
+    ["2.0.0-rc.2", "2.0.0-rc.10", -1],   // numeric identifiers by value, not ASCII
+    ["2.0.0-alpha", "2.0.0-beta", -1],
+    ["2.0.0-beta", "2.0.0-beta.1", -1],   // shorter prefix is lower
+    ["2.0.0-1", "2.0.0-rc", -1],          // numeric sorts below alphanumeric
+    ["2.0.0-rc.1", "2.0.0-rc.1", 0],
+    ["2.0.0-rc.1", "2.0.1-alpha", -1],    // numeric core still decides first
+    ["2.0.0+build.7", "2.0.0", 0],        // build metadata never participates (§10)
+    ["2.0.0-rc.1+build", "2.0.0-rc.1", 0],
   ])("compareSemver(%p, %p) === %p", (a, b, expected) => {
     expect(compareSemver(a as string, b as string)).toBe(expected);
   });

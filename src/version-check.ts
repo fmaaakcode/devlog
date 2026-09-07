@@ -7,6 +7,7 @@
 // (for users who don't want their dashboard pinging GitHub).
 
 import { join } from "node:path";
+import { compareSemver } from "./version-writer";
 
 export type ToolUpdateInfo = {
   name: string;
@@ -91,18 +92,12 @@ function stripV(s: string): string {
   return s.replace(/^v/i, "");
 }
 
-function isNewer(local: string, remote: string): boolean {
-  const parse = (v: string) =>
-    stripV(v).split(/[-+]/)[0].split(".").map(s => Number(s) || 0);
-  const a = parse(local);
-  const b = parse(remote);
-  for (let i = 0; i < 3; i++) {
-    const ai = a[i] || 0;
-    const bi = b[i] || 0;
-    if (bi > ai) return true;
-    if (bi < ai) return false;
-  }
-  return false;
+// One comparison for the whole project (#1124 sweep): this used to be a
+// private three-part copy that dropped the pre-release suffix, so a daemon
+// running 3.55.0-rc.1 never saw the 3.55.0 final as an update. Exported for
+// the regression test only.
+export function isNewer(local: string, remote: string): boolean {
+  return compareSemver(remote, local) > 0;
 }
 
 export async function checkAllToolUpdates(): Promise<UpdatesState> {

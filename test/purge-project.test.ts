@@ -1,7 +1,10 @@
 // Regression for the delete-remnants bug: purgeProjectData originally swept
 // only the four bulk arrays (tags/plans/events/worklog), so a deleted project
 // left its injections, rejections, and meta.json injection-config key behind
-// forever. The purge must clear every per-project store in DevLogData.
+// forever. The purge must clear every per-project store in DevLogData —
+// including prompts (the user's own words) and descendants, which this test
+// once enumerated around (#1068/#1195: the fixator listed the six stores the
+// purge swept, so the two it forgot stayed invisible).
 
 import { describe, it, expect } from "bun:test";
 import { purgeProjectData } from "../src/maintenance";
@@ -24,7 +27,8 @@ function makeData(): DevLogData {
     injections: both(p => ({ ...row(p), type: "SessionStart", content: "c", chars: 1 })),
     injectionConfig: {} as DevLogData["injectionConfig"],
     projectInjectionConfigs: { doomed: { primer: false }, survivor: { primer: true } },
-    descendants: [],
+    descendants: both(p => ({ pid: 1, name: "node", command: "", parentPid: 0, claudePid: 0, sessionId: "s", project: p, firstSeen: NOW, lastSeen: NOW, orphaned: false })),
+    prompts: both(p => ({ ...row(p), text: "كلمات المستخدم", tagIds: [] })),
     rejections: both(p => ({ ...row(p), reason: "r", detail: "d" })),
   } as unknown as DevLogData;
 }
@@ -35,12 +39,12 @@ describe("purgeProjectData sweeps every per-project store", () => {
 
     const removed = purgeProjectData(data, new Set(["doomed"]));
 
-    for (const store of ["tags", "plans", "events", "worklog", "injections", "rejections"] as const) {
+    for (const store of ["tags", "plans", "events", "worklog", "injections", "rejections", "prompts", "descendants"] as const) {
       const rows = data[store] as Array<{ project: string }>;
       expect(rows.map(r => r.project)).toEqual(["survivor"]);
     }
     expect(Object.keys(data.projectInjectionConfigs)).toEqual(["survivor"]);
-    expect(removed).toBe(7); // 6 rows + 1 config key
+    expect(removed).toBe(9); // 8 rows + 1 config key
   });
 
   it("tolerates a store snapshot with no rejections field", () => {

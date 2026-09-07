@@ -1,8 +1,11 @@
-// Standards library — a global, reusable store of the user's coding rules and
-// project criteria, so they don't have to repeat the same instructions to
-// Claude every session. Lives outside any single project (`~/.claude/standards`)
-// because a rule like "Rust → always use Result, no unwrap" applies to *every*
-// Rust project; storing it per-project would defeat the whole point.
+// Standards library — the user's coding rules and project criteria, so they
+// don't have to repeat the same instructions to Claude every session. Two
+// layers: a GLOBAL library (`<claude config>/standards`) for rules like "Rust →
+// always use Result, no unwrap" that apply to *every* Rust project, and a
+// PROJECT layer (`<root>/.devlog/standards`, #222) for rules that only make
+// sense in one project. Writes land in the project layer by default when the
+// hook runs inside a tracked project (see defaultWriteScope): the old
+// global-by-default leaked project rules into every other project (issue #1).
 //
 // Layout (axes): each `.md` file is one CATEGORY. Folders are orthogonal axes:
 //   languages/   rust.md, c.md, cpp.md
@@ -16,11 +19,16 @@
 // imports it directly and serves/writes rules even when the server is down.
 // The server only reads the catalog NAMES for SessionStart awareness injection.
 
-import { readdir, readFile, writeFile, mkdir } from "node:fs/promises";
-import { addAck, findDevlogDir, listAcks } from "./standards-ack";
+import { readdir, readFile, mkdir } from "node:fs/promises";
+import { atomicWriteText } from "./atomic-write";
+import { addAck, listAcks } from "./standards-ack";
 import { join } from "node:path";
-import { normalizeSlashes } from "./path-utils";
-import { homedir } from "node:os";
+import { claudeConfigDir, normalizeSlashes } from "./path-utils";
+import { categoryMatches, defaultWriteScope, findCategory, projectStandardsDir, splitScopePrefix } from "./standards-scope";
+import type { StandardsScope } from "./standards-scope";
+// Re-exported so existing importers (hooks, tests) keep one entry point.
+export { projectStandardsDir, defaultWriteScope, splitScopePrefix } from "./standards-scope";
+export type { StandardsScope } from "./standards-scope";
 import { currentLang } from "./i18n";
 import { escapeRegex } from "./regex-escape";
 
@@ -31,9 +39,13 @@ const L = <T>(en: T, ar: T): T => (currentLang() === "ar" ? ar : en);
 
 // Read dynamically (not a captured const) so a process that changes
 // DEVLOG_STANDARDS_DIR after load — and the test suite, which points it at a
-// temp dir — sees the current value on every call.
+// temp dir — sees the current value on every call. Rooted at claudeConfigDir()
+// (#1241): a hardcoded homedir()/.claude ignored CLAUDE_CONFIG_DIR, so on a
+// machine whose Claude folder was relocated the memory cards and sessions
+// followed the move (#135) while the standards library kept reading the old
+// place.
 export function standardsDir(): string {
-  return process.env.DEVLOG_STANDARDS_DIR || join(homedir(), ".claude", "standards");
+  return process.env.DEVLOG_STANDARDS_DIR || join(claudeConfigDir(), "standards");
 }
 
 // The command verbs Claude can emit. Parsed by a dedicated regex here — kept
@@ -69,16 +81,6 @@ const rulesHeading = () => L("## Rules", "## القواعد");
 // ── Catalog discovery ────────────────────────────────────────────────────────
 function isHiddenFile(name: string): boolean {
   return name.startsWith("_") || /^readme\.md$/i.test(name);
-}
-
-/**
- * The project-local standards layer (#222): `<project-root>/.devlog/standards`.
- * Walks up from `cwd` to the nearest dir holding `.devlog` (so it resolves from a
- * subfolder too), like isEnforcementDisabled. Returns null if no project root.
- */
-export function projectStandardsDir(cwd: string): string | null {
-  const dl = findDevlogDir(cwd);
-  return dl ? join(dl, "standards") : null;
 }
 
 /** Walk one base dir one level deep (axis folders) plus root-level .md files. */
@@ -125,22 +127,23 @@ export async function scanCatalog(cwd?: string): Promise<CatalogEntry[]> {
 }
 
 /** Compact "axis: a, b | axis2: c" line for SessionStart awareness injection. */
-export function formatCatalogNames(catalog: CatalogEntry[]): string {
+/** `markScope`: star project-local entries (`vercel*`) with a trailing legend
+ *  so the SessionStart line never presents another layer's category as this
+ *  project's (issue #1). A star, not a word: Claude copies these names into
+ *  `-(ask:rules)`, and a space-separated tag would parse as a second category.
+ *  listCatalog already splits the layers and passes false. */
+export function formatCatalogNames(catalog: CatalogEntry[], markScope = true): string {
   const byAxis = new Map<string, string[]>();
+  let starred = false;
   for (const e of catalog) {
     const arr = byAxis.get(e.axis) || [];
-    arr.push(e.category);
+    const star = markScope && e.scope === "project";
+    starred ||= star;
+    arr.push(star ? `${e.category}*` : e.category);
     byAxis.set(e.axis, arr);
   }
-  return [...byAxis.entries()].map(([axis, cats]) => `${axis}: ${cats.join(", ")}`).join(" | ");
-}
-
-function findCategory(catalog: CatalogEntry[], cat: string): CatalogEntry | undefined {
-  const norm = cat.trim().toLowerCase();
-  const matches = catalog.filter(e => e.category.toLowerCase() === norm);
-  // Write commands (rule:add / rule:rm / dup-check) target the GLOBAL file by
-  // default — the project layer is augment-on-read, edited as plain files.
-  return matches.find(e => e.scope === "global") ?? matches[0];
+  const line = [...byAxis.entries()].map(([axis, cats]) => `${axis}: ${cats.join(", ")}`).join(" | ");
+  return starred ? `${line} | ${L("* = project-local", "* = خاص بالمشروع")}` : line;
 }
 
 // ── Command parsing ──────────────────────────────────────────────────────────
@@ -199,14 +202,26 @@ const BULLET_RE = /^[ \t]*-[ \t]+(?:\[[ xX]\][ \t]+)?(.*\S)\s*$/;
 
 interface RuleBlock { headingIdx: number; bullets: Array<{ lineIdx: number; text: string }>; }
 
-/** Locate the rules block (`## القواعد` / `## Rules`) and its bullet lines. */
+/** Locate the rules block (`## القواعد` / `## Rules`) and its bullet lines.
+ *  The block runs until the next heading of the SAME or a higher level (#1128):
+ *  authors group rules under `### 1) …` sub-headings inside the section, and
+ *  ending at the first `###` hid 12 of design.md's 15 rules from every command
+ *  (unnumbered in ask:rules, unreachable by rule:rm, invisible to rule:add's
+ *  dedup and to checkRules). Bullets inside fenced code are examples, never
+ *  rules. */
 function locateRules(lines: string[]): RuleBlock {
   const headingIdx = lines.findIndex(l => RULES_HEADINGS.has(l.trim()));
   const bullets: Array<{ lineIdx: number; text: string }> = [];
   if (headingIdx < 0) return { headingIdx, bullets };
+  const level = (lines[headingIdx].match(/^(#{1,6})[ \t]/)?.[1].length) ?? 2;
+  let inFence = false;
   for (let i = headingIdx + 1; i < lines.length; i++) {
-    if (/^#{1,6}[ \t]/.test(lines[i])) break; // next heading ends the block
-    const m = lines[i].match(BULLET_RE);
+    const line = lines[i];
+    if (/^[ \t]*(```|~~~)/.test(line)) { inFence = !inFence; continue; }
+    if (inFence) continue;
+    const h = line.match(/^(#{1,6})[ \t]/);
+    if (h && h[1].length <= level) break;   // a peer/parent heading ends the block; a sub-heading does not
+    const m = line.match(BULLET_RE);
     if (m) bullets.push({ lineIdx: i, text: m[1].trim() });
   }
   return { headingIdx, bullets };
@@ -314,15 +329,32 @@ export async function readCategories(cats: string[], cwd?: string): Promise<Read
 // ── Add a rule (append-only, dedup, never overwrites) ────────────────────────
 export interface AddResult { ok: boolean; message: string; }
 
-export async function addRule(cat: string, text: string): Promise<AddResult> {
+export async function addRule(cat: string, text: string, cwd?: string, scopeArg?: StandardsScope): Promise<AddResult> {
   const ruleText = text.trim();
   if (!ruleText) return { ok: false, message: L("empty rule text.", "نص القاعدة فارغ.") };
-  const catalog = await scanCatalog();
-  const entry = findCategory(catalog, cat);
+  const scope = scopeArg ?? defaultWriteScope(cwd);
+  const catalog = await scanCatalog(cwd);
+  let entry = findCategory(catalog, cat, scope);
+  if (!entry && scope === "project") {
+    // The name exists only globally: start a project-local file under the same
+    // axis instead of appending to the shared one (issue #1). The rule was
+    // written from inside THIS project, so this is where it belongs until
+    // someone promotes it with `global:`.
+    const twin = findCategory(catalog, cat, "global");
+    const projDir = cwd ? projectStandardsDir(cwd) : null;
+    if (twin && projDir) {
+      const axisDir = twin.axis === "(root)" ? projDir : join(projDir, twin.axis);
+      const path = join(axisDir, `${twin.category}.md`);
+      await mkdir(axisDir, { recursive: true });
+      if (!(await Bun.file(path).exists())) await atomicWriteText(path, categoryTemplate(twin.category));
+      entry = { category: twin.category, axis: twin.axis, path, scope: "project" };
+    }
+  }
   if (!entry) {
+    const hint = scope === "global" ? "global:" : "";
     return { ok: false, message: L(
-      `category "${cat}" does not exist. Create it first with -(rule:new) <axis>/${cat}`,
-      `التصنيف "${cat}" غير موجود. أنشئه أولاً بـ -(rule:new) <محور>/${cat}`) };
+      `category "${cat}" does not exist${scope === "global" ? " in the global library" : ""}. Create it first with -(rule:new) ${hint}<axis>/${cat}`,
+      `التصنيف "${cat}" غير موجود${scope === "global" ? " في المكتبة العامة" : ""}. أنشئه أولاً بـ -(rule:new) ${hint}<محور>/${cat}`) };
   }
   const raw = await readFile(entry.path, "utf-8");
   const lines = raw.split("\n");
@@ -365,10 +397,10 @@ export async function addRule(cat: string, text: string): Promise<AddResult> {
     }
     lines.splice(insertAt, 0, ...bulletBlock);
   }
-  await writeFile(entry.path, lines.join("\n"), "utf-8");
+  await atomicWriteText(entry.path, lines.join("\n"));
   return { ok: true, message: L(
-    `added to "${entry.category}" (#${bullets.length + 1}).`,
-    `أُضيفت لـ "${entry.category}" (#${bullets.length + 1}).`) };
+    `added to "${entry.category}" (#${bullets.length + 1}, ${entry.scope === "project" ? "project-local" : "global"}).`,
+    `أُضيفت لـ "${entry.category}" (#${bullets.length + 1}، ${entry.scope === "project" ? "خاص بالمشروع" : "عام"}).`) };
 }
 
 // ── Create a new category ────────────────────────────────────────────────────
@@ -394,9 +426,12 @@ ${rulesHeading()}
 
 export interface NewResult { ok: boolean; message: string; }
 
-/** `-(rule:new) <axis>/<category>` (or "<axis> <category>"). Claude picks the
- *  axis from its understanding of the rule. Creates the folder if needed. */
-export async function createCategory(axisRaw: string, cat: string): Promise<NewResult> {
+/** `-(rule:new) [global:|project:]<axis>/<category>` (or "<axis> <category>").
+ *  Claude picks the axis from its understanding of the rule. Creates the
+ *  folder if needed. Scope defaults per defaultWriteScope (project layer
+ *  inside a tracked project, global outside); the prefix overrides it. */
+export async function createCategory(axisRaw: string, cat: string, cwd?: string, scopeArg?: StandardsScope): Promise<NewResult> {
+  const scope = scopeArg ?? defaultWriteScope(cwd);
   const axis = axisRaw.trim().toLowerCase();
   const category = cat.trim().toLowerCase();
   if (!axis || !category) return { ok: false, message: L("syntax: -(rule:new) <axis>/<category>", "الصيغة: -(rule:new) <محور>/<تصنيف>") };
@@ -413,29 +448,76 @@ export async function createCategory(axisRaw: string, cat: string): Promise<NewR
       `invalid axis name: "${axis}" (lowercase letters, digits and - only).`,
       `اسم محور غير صالح: "${axis}" (حروف صغيرة وأرقام و - فقط).`) };
   }
-  const catalog = await scanCatalog();
-  if (findCategory(catalog, category)) {
-    return { ok: false, message: L(
-      `category "${category}" already exists — use -(rule:add) to extend it.`,
-      `التصنيف "${category}" موجود مسبقاً — استخدم -(rule:add) للإضافة إليه.`) };
+  // With cwd the scan sees the project layer too (#1130): a category that
+  // lives only in .devlog/standards is "already exists", not an invitation to
+  // mint a global twin with the same name.
+  // Project scope needs a project: the layer lives under the nearest `.devlog`
+  // above cwd, and a cwd outside any tracked project has nowhere to write.
+  let baseDir = standardsDir();
+  if (scope === "project") {
+    const projDir = cwd ? projectStandardsDir(cwd) : null;
+    if (!projDir) {
+      return { ok: false, message: L(
+        "project-local category needs a DevLog-tracked project (no .devlog folder above the working directory).",
+        "التصنيف الخاص بالمشروع يحتاج مشروعًا يتتبعه DevLog (لا مجلد .devlog فوق مجلد العمل).") };
+    }
+    baseDir = projDir;
   }
+  const catalog = await scanCatalog(cwd);
+  const matches = categoryMatches(catalog, category);
+  // Only a same-scope twin blocks. A twin in the other scope is what two
+  // layers are FOR (augment-on-read, #222; promote or shadow deliberately) —
+  // say so instead of refusing.
+  const existing = findCategory(catalog, category, scope);
+  if (existing) {
+    const where = existing.scope === "project" ? L(" (project-local, .devlog/standards)", " (خاص بالمشروع، .devlog/standards)") : "";
+    return { ok: false, message: L(
+      `category "${category}" already exists${where} — use -(rule:add) to extend it.`,
+      `التصنيف "${category}" موجود مسبقاً${where} — استخدم -(rule:add) للإضافة إليه.`) };
+  }
+  const other = matches.find(e => e.scope !== scope);
+  const augments = other ? L(
+    ` — alongside the ${other.scope === "global" ? "global" : "project-local"} "${category}" (ask:rules shows both)`,
+    ` — بجانب "${category}" ${other.scope === "global" ? "العام" : "الخاص بالمشروع"} (ask:rules يعرض الاثنين)`) : "";
   const axisHint = KNOWN_AXES.includes(axis) ? "" : L(
     ` (new axis outside the usual: ${KNOWN_AXES.join("/")})`,
     ` (محور جديد خارج المعتاد: ${KNOWN_AXES.join("/")})`);
-  const dir = join(standardsDir(), axis);
+  const dir = join(baseDir, axis);
+  const target = join(dir, `${category}.md`);
+  // #1129: the catalog scan above swallows a readdir failure as "no entries",
+  // so on a transient read error `-(rule:new) languages/rust` sailed past the
+  // duplicate check and REPLACED rust.md with the empty template. The disk is
+  // the authority for "already exists" — ask it directly before writing.
+  if (await Bun.file(target).exists()) {
+    return { ok: false, message: L(
+      `category file already exists at ${target} — the catalog scan could not list it; nothing was overwritten. Use -(rule:add) to extend it.`,
+      `ملف التصنيف موجود فعلًا في ${target} — تعذّر على مسح الكتالوج إدراجه، ولم يُستبدل شيء. استخدم -(rule:add) للإضافة إليه.`) };
+  }
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, `${category}.md`), categoryTemplate(category), "utf-8");
+  await atomicWriteText(target, categoryTemplate(category));
+  const place = scope === "project" ? L("project-local category", "تصنيف خاص بالمشروع") : L("global category", "تصنيف عام");
+  const under = scope === "project" ? `.devlog/standards/${axis}/` : `${axis}/`;
   return { ok: true, message: L(
-    `created category "${category}" under ${axis}/${axisHint}. Add its rules with -(rule:add) ${category}`,
-    `أُنشئ تصنيف "${category}" في ${axis}/${axisHint}. أضِف قواعده بـ -(rule:add) ${category}`) };
+    `created ${place} "${category}" under ${under}${axisHint}${augments}. Add its rules with -(rule:add) ${category}`,
+    `أُنشئ ${place} "${category}" في ${under}${axisHint}${augments}. أضِف قواعده بـ -(rule:add) ${category}`) };
 }
 
 // ── Remove a rule by number ──────────────────────────────────────────────────
-export interface RemoveResult { ok: boolean; message: string; }
+export interface RemoveResult {
+  ok: boolean;
+  message: string;
+  /** The removed rule's bullet text (kind marker included) — the lifecycle
+   *  `remove` record carries its first line so rule-effect can pair it with
+   *  the adopt record and end that rule's after-window (#1131). */
+  removed?: string;
+}
 
-export async function removeRule(cat: string, num: number): Promise<RemoveResult> {
-  const catalog = await scanCatalog();
-  const entry = findCategory(catalog, cat);
+export async function removeRule(cat: string, num: number, cwd?: string, scopeArg?: StandardsScope): Promise<RemoveResult> {
+  const scope = scopeArg ?? defaultWriteScope(cwd);
+  const catalog = await scanCatalog(cwd);
+  // Project scope falls through to the global twin (nothing to create here);
+  // an explicit `global:` never touches the project file.
+  const entry = findCategory(catalog, cat, scope, scope === "project");
   if (!entry) return { ok: false, message: L(`category "${cat}" does not exist.`, `التصنيف "${cat}" غير موجود.`) };
   const raw = await readFile(entry.path, "utf-8");
   const lines = raw.split("\n");
@@ -451,10 +533,10 @@ export async function removeRule(cat: string, num: number): Promise<RemoveResult
   while (end < lines.length && /^[ \t]+\S/.test(lines[end]) && !lines[end].match(BULLET_RE)) end++;
   const removed = bullets[num - 1].text;
   lines.splice(target.lineIdx, end - target.lineIdx);
-  await writeFile(entry.path, lines.join("\n"), "utf-8");
-  return { ok: true, message: L(
-    `removed #${num} from "${entry.category}": ${removed.slice(0, 60)}`,
-    `حُذفت #${num} من "${entry.category}": ${removed.slice(0, 60)}`) };
+  await atomicWriteText(entry.path, lines.join("\n"));
+  return { ok: true, removed, message: L(
+    `removed #${num} from "${entry.category}" (${entry.scope === "project" ? "project-local" : "global"}): ${removed.slice(0, 60)}`,
+    `حُذفت #${num} من "${entry.category}" (${entry.scope === "project" ? "خاص بالمشروع" : "عام"}): ${removed.slice(0, 60)}`) };
 }
 
 // ── List the catalog ─────────────────────────────────────────────────────────
@@ -466,7 +548,7 @@ export async function listCatalog(cwd?: string): Promise<string> {
   const globalCats = catalog.filter(e => e.scope === "global");
   const projectCats = catalog.filter(e => e.scope === "project");
   let out = `${L("catalog", "الكتالوج")} (${catalog.length} ${L("categories", "تصنيف")}):\n${formatCatalogNames(globalCats)}`;
-  if (projectCats.length) out += `\n${L("project-local", "خاص بالمشروع")} (.devlog/standards): ${formatCatalogNames(projectCats)}`;
+  if (projectCats.length) out += `\n${L("project-local", "خاص بالمشروع")} (.devlog/standards): ${formatCatalogNames(projectCats, false)}`;
   const unfilled: string[] = [];
   for (const e of catalog) {
     let raw = "";
@@ -474,17 +556,31 @@ export async function listCatalog(cwd?: string): Promise<string> {
     if (lacksWhenApplies(raw)) unfilled.push(e.category);
   }
   if (unfilled.length) out += `\n${L(
-    `⚠ no "when it applies" line yet (template text still there): ${unfilled.join(", ")} — fill the line under "## When it applies" in the file, one sentence.`,
-    `⚠ بلا شرط تطبيق بعد (نص القالب ما زال فيها): ${unfilled.join(", ")} — عبّئ السطر تحت «## متى تنطبق» في الملف بجملة واحدة.`)}`;
+    `⚠ no "when it applies" line yet (section missing, empty, or still the template text): ${unfilled.join(", ")} — fill the line under "## When it applies" in the file, one sentence.`,
+    `⚠ بلا شرط تطبيق بعد (القسم غائب أو فارغ أو ما زال نص القالب): ${unfilled.join(", ")} — عبّئ السطر تحت «## متى تنطبق» في الملف بجملة واحدة.`)}`;
   return out;
 }
 
-// The "when it applies" placeholder rule:new writes (both languages — files
-// outlive the env that created them). A category still carrying it gives Claude
-// nothing to decide the pull with; rules:list flags it so the gap is visible.
-const WHEN_PLACEHOLDER_RE = /\((?:One line: when should Claude pull this category\.|اشرح بسطر متى يسحب كلود هذا التصنيف\.)\)/;
+// A category gives Claude a pull criterion only when its "when it applies"
+// section holds a real sentence. #1174 / F-9.32: the check used to match the
+// template placeholder rule:new writes and nothing else, so an author who
+// DELETED the section instead of filling it, or edited the placeholder by one
+// character, read as "has a condition" and rules:list never warned. Now the
+// section must exist (either language) and carry a line that is neither blank
+// nor a parenthesised placeholder — the template text is just one such line.
+const WHEN_HEADING_RE = /^#{1,6}[ \t]+(?:When it applies|متى تنطبق)[ \t]*$/im;
 export function lacksWhenApplies(content: string): boolean {
-  return WHEN_PLACEHOLDER_RE.test(content);
+  const lines = content.split("\n");
+  const start = lines.findIndex(l => WHEN_HEADING_RE.test(l));
+  if (start < 0) return true;
+  for (let i = start + 1; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (/^#{1,6}[ \t]/.test(t)) break;               // next section — nothing found
+    if (!t) continue;
+    if (/^\(.*\)$/.test(t)) continue;                // a parenthesised placeholder, template or edited
+    return false;
+  }
+  return true;
 }
 
 // ── Per-project markers (exemption + acks) — extracted to standards-ack.ts ───
@@ -626,18 +722,20 @@ export async function runRuleCommands(cmds: RuleCommand[], cwd?: string, events?
       const r = await readCategories(cats, cwd);
       parts.push(r.output);
     } else if (c.cmd === "rule:add") {
-      const tokens = c.argLine.split(/\s+/);
+      const { scope, rest } = splitScopePrefix(c.argLine);
+      const tokens = rest.split(/\s+/);
       const cat = tokens[0] || "";
       const inlineRest = tokens.slice(1).join(" ");
       const ruleText = [inlineRest, c.body].filter(Boolean).join("\n").trim();
       if (!cat) { parts.push(L("⚠ -(rule:add) without a category.", "⚠ -(rule:add) بلا تصنيف.")); continue; }
-      const r = await addRule(cat, ruleText);
+      const r = await addRule(cat, ruleText, cwd, scope);
       if (r.ok) events?.push({ action: "adopt", rule: cat, detail: ruleText.split("\n")[0].slice(0, 200) });
       parts.push(`${r.ok ? "✓" : "✗"} rule:add ${cat}: ${r.message}`);
     } else if (c.cmd === "rule:new") {
-      const m = c.argLine.match(/^([^/\s]+)\s*[/\s]\s*([^/\s]+)/);
-      if (!m) { parts.push(L("⚠ syntax: -(rule:new) <axis>/<category>", "⚠ الصيغة: -(rule:new) <محور>/<تصنيف>")); continue; }
-      const r = await createCategory(m[1], m[2]);
+      const { scope, rest } = splitScopePrefix(c.argLine);
+      const m = rest.match(/^([^/\s]+)\s*[/\s]\s*([^/\s]+)/);
+      if (!m) { parts.push(L("⚠ syntax: -(rule:new) [global:|project:]<axis>/<category>", "⚠ الصيغة: -(rule:new) [global:|project:]<محور>/<تصنيف>")); continue; }
+      const r = await createCategory(m[1], m[2], cwd, scope);
       parts.push(`${r.ok ? "✓" : "✗"} rule:new: ${r.message}`);
     } else if (c.cmd === "rules:list") {
       parts.push(await listCatalog(cwd));
@@ -651,10 +749,13 @@ export async function runRuleCommands(cmds: RuleCommand[], cwd?: string, events?
     } else if (c.cmd === "rule:acks") {
       parts.push(listAcks(cwd || ""));
     } else if (c.cmd === "rule:rm") {
-      const m = c.argLine.match(/^(\S+)\s+#?(\d+)/);
-      if (!m) { parts.push(L("⚠ syntax: -(rule:rm) <category> #N", "⚠ الصيغة: -(rule:rm) <تصنيف> #N")); continue; }
-      const r = await removeRule(m[1], parseInt(m[2], 10));
-      if (r.ok) events?.push({ action: "remove", rule: `${m[1]} #${m[2]}` });
+      const { scope, rest } = splitScopePrefix(c.argLine);
+      const m = rest.match(/^(\S+)\s+#?(\d+)/);
+      if (!m) { parts.push(L("⚠ syntax: -(rule:rm) [global:]<category> #N", "⚠ الصيغة: -(rule:rm) [global:]<تصنيف> #N")); continue; }
+      const r = await removeRule(m[1], parseInt(m[2], 10), cwd, scope);
+      // `detail` = the removed rule's text: `#N` slides after every removal,
+      // so the number alone can never be paired with the adopt record (#1131).
+      if (r.ok) events?.push({ action: "remove", rule: `${m[1]} #${m[2]}`, ...(r.removed ? { detail: classifyRule(r.removed).text.slice(0, 200) } : {}) });
       parts.push(`${r.ok ? "✓" : "✗"} rule:rm: ${r.message}`);
     }
   }

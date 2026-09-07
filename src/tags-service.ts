@@ -15,7 +15,7 @@ import {
   CLOSER_KINDS, CLOSER_FOR, OPENER_TO_CLOSER, NUMBERED_OPENABLE, singleHashNum, leadingNums, isStepClosed, inflightClosures,
   latestCloserTs,
 } from "./data";
-import { appendDoc, writeDoc, applyTaskCompletion, applyTaskDrop, extractCheckboxes } from "./doc-store";
+import { applyTaskCompletion, applyTaskDrop, extractCheckboxes } from "./doc-store";
 import { writeReleaseHtml, parseVersion, parseVersionMarker, isRealVersion } from "./release-html";
 import { compareSemver, computeNextVersion, readManifestVersion, type VersionReject, type BumpType } from "./version-writer";
 import { pathsEqual } from "./path-utils";
@@ -85,42 +85,6 @@ export function registerPlan(
     });
   }
   return { ok: true };
-}
-
-// ── doc:* routing ─────────────────────────────────────────────────────────--
-/**
- * Render a doc:* tag to .md + .html under the project's .devlog/docs/, and (for
- * doc:plan with checkboxes) register/update the matching PlanEntry. Rejects when
- * body.cwd doesn't match the server-recorded project path (never trust the
- * client to pick an arbitrary writable doc root).
- */
-export async function handleDocTag(
-  entry: { tag: string },
-  rawContent: string,
-  data: DevLogData,
-  project: string,
-  effectiveCwd: string,
-): Promise<void> {
-  const projectPath = data.projects[project]?.path;
-  if (!projectPath || !effectiveCwd || !pathsEqual(projectPath, effectiveCwd)) {
-    pushRejection(data, project, "cwd-mismatch",
-      `\`-(${entry.tag})\` rejected — registered='${projectPath ?? "(none)"}' vs effectiveCwd='${effectiveCwd || ""}'`);
-    return;
-  }
-  const docType = entry.tag.slice(4); // "report"|"analysis"|...|"update"
-  try {
-    const result = (docType === "update")
-      ? await appendDoc(projectPath, project, rawContent)
-      : await writeDoc(projectPath, project, docType, rawContent);
-    // doc:plan with checkboxes → register/update a PlanEntry so the dashboard's
-    // plan tracker and -(done)/-(dropped) wiring work against the same source of
-    // truth as the rendered .md/.html.
-    if (result.type === "plan" && result.steps.length > 0) {
-      registerPlan(data, project, result.slug, result.steps, result.mdPath);
-    }
-  } catch (e) {
-    console.error(`[/api/tags doc] error:`, (e as Error)?.message);
-  }
 }
 
 // ── Atomic-content enforcement ────────────────────────────────────────────--
@@ -325,6 +289,11 @@ export interface ClosureMismatch {
   usedCloser: string;  // the verb Claude emitted, e.g. "done"
   openerTag?: string;  // (already-closed-)wrong-verb: the item's actual type, e.g. "bug found"
   suggested?: string;  // wrong-verb only: the verb that WOULD close it, e.g. "bug fix"
+  /** already-closed only (T-152): this same response ALSO opened exactly one
+   *  compatible item that nothing closes — the #465 slip shape with a REAL
+   *  (yesterday's) number instead of a phantom one. Surfaced, never auto-paired:
+   *  the number names a real item, so the model must confirm which it meant. */
+  batchOpenerNum?: number;
 }
 
 /**
@@ -413,10 +382,12 @@ export interface ReleaseResult {
   version: string;
   bumped: { file: string; from: string; to: string }[];
   // Manifests the writer refused or couldn't reach: "downgrade" (current is
-  // NEWER than the released version — a typo caught, not silently written) or
+  // NEWER than the released version — a typo caught, not silently written),
   // "unsupported-layout" (no literal version to bump, e.g. a virtual Cargo
-  // workspace). Surfaced to Claude so the user learns the manifest lagged.
-  rejected: { file: string; current: string; attempted: string; reason?: "downgrade" | "unsupported-layout" }[];
+  // workspace or a version-less package.json) or "io-error" (the write itself
+  // failed — `error` says why, #1126). Surfaced to Claude so the user learns
+  // the manifest lagged instead of reading "no manifest to bump".
+  rejected: { file: string; current: string; attempted: string; reason?: "downgrade" | "unsupported-layout" | "io-error"; error?: string }[];
   htmlGenerated: boolean;
 }
 
@@ -509,7 +480,11 @@ export interface ReleaseIntentConflict { declared: BumpType; version: string; }
 // faster» slipped past it as an explicit version and minted a phantom 2.5.
 // Exported for release-leap.ts — the ONE spelling of "a whole-token version at
 // the start of the content"; a second copy is how #742/#773 happened.
-export const EXPLICIT_VERSION_RE = /^v?\d+(?:\.\d+)+(?:-[\w.]+)?(?=$|[\s—–:|،,])/i;
+// Build metadata (`+build.7`) is part of the token (#1023): applyRelease and
+// the version writer both capture it, so a `-(release) v2.0.0+build.7 …` that
+// failed THIS test was treated as a version-less intent, given a computed
+// number, and the user's own number was swallowed into the prose.
+export const EXPLICIT_VERSION_RE = /^v?\d+(?:\.\d+)+(?:-[\w.]+)?(?:\+[\w.]+)?(?=$|[\s—–:|،,])/i;
 
 export function detectReleaseIntentConflict(tag: string, content: string): ReleaseIntentConflict | null {
   const declared: BumpType | null =
@@ -670,12 +645,12 @@ export async function applyRelease(tagEntry: TagEntry, data: DevLogData, project
       // Remember the version we bumped FROM so a future rollback can restore it
       // even with no earlier release tag to fall back on (QA #2).
       if (bumped.length) tagEntry.prevVersion = bumped[0].from;
-      for (const r of rej) rejected.push({ file: r.file, current: r.current, attempted: r.attempted, reason: r.reason });
+      for (const r of rej) rejected.push({ file: r.file, current: r.current, attempted: r.attempted, reason: r.reason, ...(r.error ? { error: r.error } : {}) });
       if (bumped.length) {
         console.log(`[/api/tags release] bumped: ${bumped.map(u => `${u.file} ${u.from}→${u.to}`).join(", ")}`);
       }
       if (rejected.length) {
-        console.error(`[/api/tags release] manifest rejects: ${rejected.map(u => u.reason === "unsupported-layout" ? `${u.file} (unsupported layout)` : `${u.file} ${u.current}→${u.attempted}`).join(", ")}`);
+        console.error(`[/api/tags release] manifest rejects: ${rejected.map(u => u.reason === "unsupported-layout" ? `${u.file} (unsupported layout)` : u.reason === "io-error" ? `${u.file} (write failed: ${u.error})` : `${u.file} ${u.current}→${u.attempted}`).join(", ")}`);
       }
     } catch (e) {
       console.error("[/api/tags release version-bump] error:", (e as Error)?.message);

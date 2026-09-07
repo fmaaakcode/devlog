@@ -204,24 +204,32 @@ export function shouldFoldIntoParent(
 // registered project and fold into it ONLY when `shouldFoldIntoParent` agrees;
 // every other case (no encloser, or an enclosing container) registers the cwd as
 // its own project. `gitRootOf` is injectable for tests; production omits it.
+//
+// `registered` says whether the name came from the registry (exact or fold) or
+// is the basename fallback — a name that is only a folder's last segment and
+// may collide with a registered project living somewhere else (§5.1, #1066).
+// Registration paths ignore it (the fallback IS how a new project is born);
+// attribution-only readers (telemetry stamp) must not stamp a fallback name.
+export interface ResolvedProject { name: string; cwd: string; registered: boolean }
+
 export function resolveProjectFor(
   data: { projects: ProjectsMap },
   cwd: string,
   gitRootOf: GitRootFn = gitToplevel,
   hasMarkers: MarkerFn = hasOwnProjectMarkers,
-): { name: string; cwd: string } {
-  const fallback = { name: baseName(cwd), cwd };
+): ResolvedProject {
+  const fallback: ResolvedProject = { name: baseName(cwd), cwd, registered: false };
   if (!cwd) return fallback;
 
-  let candidate: { name: string; cwd: string } | null = null;
+  let candidate: ResolvedProject | null = null;
   let bestLen = -1;
   for (const [n, p] of Object.entries(data.projects)) {
     const ppath = p?.path;
     if (!ppath) continue;
-    if (pathsEqual(ppath, cwd)) return { name: n, cwd: ppath };   // exact match wins
+    if (pathsEqual(ppath, cwd)) return { name: n, cwd: ppath, registered: true };   // exact match wins
     if (isPathInside(ppath, cwd)) {
       const len = normalizePath(ppath).length;
-      if (len > bestLen) { bestLen = len; candidate = { name: n, cwd: ppath }; }
+      if (len > bestLen) { bestLen = len; candidate = { name: n, cwd: ppath, registered: true }; }
     }
   }
 
@@ -240,7 +248,11 @@ export function resolveProjectFor(
     if (candidate) return candidate;
     if (base === ".devlog") {
       const parent = parentDir(cwd);
-      if (parent) return { name: baseName(parent), cwd: parent };
+      if (parent) {
+        const pn = baseName(parent);
+        const registered = !!data.projects[pn]?.path && pathsEqual(data.projects[pn].path as string, parent);
+        return { name: pn, cwd: parent, registered };
+      }
     }
     return fallback;
   }

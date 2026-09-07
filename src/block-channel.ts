@@ -63,11 +63,20 @@ export const GUARD_RULES = [
   "near-miss", "backtick-nudge", "dep-freshness", "untagged-guard", "root-cause",
 ] as const;
 
-/** Every rule name the `turn` gate can carry: the guards plus the counted block
- *  sites. Delivery keys are excluded — they are never recorded, so listing them
- *  would report a permanent, meaningless silence. */
+/** Turn-gate rules that never block — they whisper on the feedback channel and
+ *  record themselves from parse-tags.ts, outside hook-guards.ts. Listed here
+ *  (#1177 / F-9.66) for the same reason as the guards: a whisper that dies
+ *  (an ack directory renamed, a fetch that always fails) must show up as
+ *  "silent" in ask:retro's turn summary, and a name missing from TURN_RULES is
+ *  a silence nobody can see. Pinned against parse-tags.ts by the same test. */
+export const WHISPER_RULES = ["demolition-why"] as const;
+
+/** Every rule name the `turn` gate can carry: the guards, the whispers and the
+ *  counted block sites. Delivery keys are excluded — they are never recorded,
+ *  so listing them would report a permanent, meaningless silence. */
 export const TURN_RULES: readonly string[] = [
   ...GUARD_RULES,
+  ...WHISPER_RULES,
   ...(Object.keys(BLOCK_RULES) as BlockKey[])
     .map(k => ruleForBlock(k))
     .filter((r): r is string => r !== null),

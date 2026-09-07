@@ -129,6 +129,7 @@ export function renameProjectData(
   fix(data.plans);
   fix(data.events);
   fix(data.worklog);
+  fix(data.prompts);   // the user's own words (#1017) — narrative layer, keyed by project too
   fix(data.injections);
   fix(data.descendants);
   fix(data.rejections);

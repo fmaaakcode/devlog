@@ -21,13 +21,15 @@
 // caller.
 
 import { existsSync, readdirSync } from "node:fs";
-import { mkdir, open, rename } from "node:fs/promises";
+import { mkdir, rename } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import type { DevLogData, InjectionConfig } from "./types";
-import { normalizeSlashes } from "./path-utils";
-import { withLockRetry } from "./fs-retry";
+import { dirname } from "node:path";
+import type { DevLogData, InjectionConfig, TagEntry } from "./types";
+import { normalizeSlashes, type ExistsProbe } from "./path-utils";
+import { diskExists } from "./disk-probe";
+import { atomicWriteText } from "./atomic-write";
 import { assertTestDataDirIsolated } from "./data-guard";
+import { resolveDataDir } from "./hook-state-dir";
 import { isStepClosed, normalizeTagContent, NUMBERED_TAGS } from "./open-items";
 
 // Tag semantics moved to ./open-items (file-size ratchet); re-exported so the
@@ -103,8 +105,9 @@ export const DATA_FILE = `${DIR}/data.json`;            // legacy (kept for migr
 // updates. DEVLOG_DATA_DIR always overrides; a manual `bun start` from the repo
 // (no CLAUDE_PLUGIN_ROOT) keeps the in-repo .devlog-data as before.
 export const PLUGIN_MODE = !!process.env.CLAUDE_PLUGIN_ROOT;
-export const DATA_DIR = process.env.DEVLOG_DATA_DIR
-  || (PLUGIN_MODE ? join(homedir(), ".devlog", "data") : `${DIR}/.devlog-data`);
+// The rule itself lives in hook-state-dir.ts, shared with the Stop hook (#1040)
+// so hook state and store data resolve to the same place on every machine.
+export const DATA_DIR = resolveDataDir(process.env, DIR, homedir());
 // Refuse a non-temporary DATA_DIR under bun test (#736) — see data-guard.ts.
 assertTestDataDirIsolated(process.env.NODE_ENV, DATA_DIR, tmpdir());
 
@@ -260,24 +263,11 @@ async function migrateToSplit(data: DevLogData) {
   }
 }
 
-// Write to a sibling .tmp file then atomically rename over the target.
-// Crash mid-write leaves an orphan .tmp; the canonical file stays intact.
-// fsync before the rename: without it the content can sit in the page cache
-// while the rename's metadata hits the journal first — a power cut then leaves
-// a truncated/empty canonical file. ~1-5ms per store write; the lastWritten
-// hash-skip keeps the hook path well under 10ms.
-async function atomicWrite(path: string, body: string): Promise<void> {
-  const tmp = `${path}.tmp.${process.pid}.${Date.now()}`;
-  const fh = await open(tmp, "w");
-  try {
-    await fh.writeFile(body);
-    await fh.sync();
-  } finally {
-    await fh.close();
-  }
-  // #781: the rename is where a transient AV lock lands; canonical stays intact.
-  await withLockRetry(() => rename(tmp, path));
-}
+// Write to a sibling .tmp file then atomically rename over the target — the
+// shared writer in atomic-write.ts (temp + fsync + rename, sibling unlinked on
+// failure; see its header). ~1-5ms per store write; the lastWritten hash-skip
+// keeps the hook path well under 10ms.
+const atomicWrite = atomicWriteText;
 
 // Hash of the last body written to each section file, so an append that only
 // touches `events` doesn't rewrite the (much larger) `tags`+`events`+rest blob
@@ -348,17 +338,21 @@ const CLEANUP_INTERVAL = 3600000; // 1 hour
 // Backup housekeeping (cleanupOldBackups / backupStores) moved to
 // ./maintenance.ts with the upcoming feature — file-size budget.
 
-export async function cleanupMissingProjects(data: DevLogData): Promise<boolean> {
+export async function cleanupMissingProjects(data: DevLogData, exists: ExistsProbe = diskExists): Promise<boolean> {
   if (Date.now() - lastCleanup < CLEANUP_INTERVAL) return false;
   lastCleanup = Date.now();
   // P1.1: never auto-delete. A missing path may be a temporarily disconnected
   // external drive, WSL mount, or network share — silent deletion of all tags
   // + plans is unrecoverable. Mark instead; a manual cleanup endpoint can
   // delete tombstones older than e.g. 30 days when the user opts in.
+  // The marker is the first step of that 30-day fuse, so it uses diskExists
+  // (#1067): only ENOENT is "missing". existsSync read a permission denial or a
+  // busy handle as gone, and a live project on a locked drive walked the whole
+  // fuse to a purge.
   let changed = false;
   for (const [_name, project] of Object.entries(data.projects)) {
     if (!project.path) continue;
-    const present = existsSync(project.path);
+    const present = exists(project.path);
     if (!present && !project.disconnectedSince) {
       project.disconnectedSince = new Date().toISOString();
       changed = true;
@@ -443,8 +437,11 @@ export async function withData<T>(fn: (data: DevLogData) => Promise<T> | T): Pro
 const BAD_TOKENS = new Set(["undefined", "null", "unknown", "system", "bundled", ""]);
 // Match `name@version — message`. Version may contain hyphens (e.g.
 // `vendored-unknown`) so the version-stop class only excludes whitespace
-// and the em-dash separator, NOT the hyphen.
-const MALFORMED_PARSE_RE = /^([^@\s]*)@([^\s—]*?)\s*[—-]\s/;
+// and the em-dash separator, NOT the hyphen. The name may START with `@`
+// (npm scope: `@types/node@18.0.0 — …`, #1016) — without the optional `@`
+// the split landed on the scope's own `@`, the name came out "" (a BAD_TOKEN)
+// and every scoped package read as malformed.
+const MALFORMED_PARSE_RE = /^(@?[^@\s]*)@([^\s—]*?)\s*[—-]\s/;
 
 export function isMalformedPkgDescriptor(content: string): boolean {
   const m = content.match(MALFORMED_PARSE_RE);
@@ -469,15 +466,31 @@ export function isMalformedPkgDescriptor(content: string): boolean {
 // clean: these were scanner artifacts, and a phantom incident shouldn't appear
 // in release notes as "vulnerability resolved". Idempotent; returns the number
 // of tags removed.
-function cleanupMalformedTags(data: DevLogData, tag: string, v1Key: string, v2Key: string): number {
+/** Archive hook for the cleanups: receives the rows about to be removed, returns
+ *  false to REFUSE the removal (nothing is spliced, the migration is not
+ *  stamped, the next boot retries). server.ts passes the `undone` archive
+ *  stream; tests pass a stub. Injected rather than imported because
+ *  event-archive imports DATA_DIR from this module. */
+export type CleanupArchiver = (rows: TagEntry[]) => Promise<boolean>;
+
+async function cleanupMalformedTags(data: DevLogData, tag: string, v1Key: string, v2Key: string, archive: CleanupArchiver): Promise<number> {
   if (!data.migrations) data.migrations = {};
   if (data.migrations[v2Key]) return 0;
-  const before = data.tags.length;
-  data.tags = data.tags.filter(t => !(t.tag === tag && isMalformedPkgDescriptor(t.content)));
-  const removed = before - data.tags.length;
+  const doomed = data.tags.filter(t => t.tag === tag && isMalformedPkgDescriptor(t.content));
+  // Archive BEFORE the splice (#1016). These rows are machine-derived, but the
+  // classifier has been wrong before (every scoped npm package read as
+  // malformed until the `@?` fix above) and the ONLY thing standing between a
+  // mis-classification and 17 deleted security tags was two flags in the same
+  // meta.json whose loss re-arms this cleanup. Recoverable via GET /api/undone.
+  if (doomed.length && !(await archive(doomed))) {
+    console.error(`[migrate] ${v2Key}: archive refused — ${doomed.length} tag(s) kept, migration not stamped`);
+    return 0;
+  }
+  const gone = new Set(doomed.map(t => t.id));
+  data.tags = data.tags.filter(t => !gone.has(t.id));
   data.migrations[v1Key] = true;
   data.migrations[v2Key] = true;
-  return removed;
+  return doomed.length;
 }
 
 /**
@@ -494,8 +507,8 @@ function cleanupMalformedTags(data: DevLogData, tag: string, v1Key: string, v2Ke
  * check that hit a 4xx response and produced `undefined  — undefined`. The
  * root cause is fixed at the call site, so this is purely retrospective.
  */
-export function cleanupMalformedSecurityTags(data: DevLogData): number {
-  return cleanupMalformedTags(data, "security", "cleanup_malformed_security_v1", "cleanup_malformed_security_v2");
+export function cleanupMalformedSecurityTags(data: DevLogData, archive: CleanupArchiver): Promise<number> {
+  return cleanupMalformedTags(data, "security", "cleanup_malformed_security_v1", "cleanup_malformed_security_v2", archive);
 }
 
 /**
@@ -508,8 +521,8 @@ export function cleanupMalformedSecurityTags(data: DevLogData): number {
  * v2 re-runs because the regex was fixed to keep hyphens inside the version
  * capture (so `vendored-unknown` isn't truncated to `vendored` and skipped).
  */
-export function cleanupMalformedOutdatedTags(data: DevLogData): number {
-  return cleanupMalformedTags(data, "outdated", "cleanup_malformed_outdated_v1", "cleanup_malformed_outdated_v2");
+export function cleanupMalformedOutdatedTags(data: DevLogData, archive: CleanupArchiver): Promise<number> {
+  return cleanupMalformedTags(data, "outdated", "cleanup_malformed_outdated_v1", "cleanup_malformed_outdated_v2", archive);
 }
 
 /**

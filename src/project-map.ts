@@ -37,6 +37,10 @@ export interface ProjectMap {
   query?: string;
   /** True when a query matched nothing and the top-N was served instead. */
   fellBack?: boolean;
+  /** How many files the query matched in total — larger than `entries.length`
+   *  when the MAP_MAX_FILTERED cap cut the list (F-5.111: the cap was silent, so
+   *  «30 files match (of 177)» hid that 60 did). */
+  matched?: number;
 }
 
 /** Default breadth of an unfiltered map: enough to see the shape of a project,
@@ -84,10 +88,17 @@ export function buildMap(analysis: ProjectAnalysis, query = "", topN = MAP_TOP_N
   }));
   // analyzeProject already returns files in PageRank order; keep it.
   const q = query.trim();
-  const qTokens = tokens(q);
+  let qTokens = tokens(q);
+  if (!qTokens.length && q) {
+    // A query made ONLY of short tokens (`ws`, `db`, `ui`, `ci`, `go`) names
+    // real subsystems: keep its two-letter tokens rather than dropping them and
+    // silently serving the unfiltered top-N as if nothing had been asked (#1114).
+    qTokens = q.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(t => t.length >= 2);
+    if (!qTokens.length) return { entries: all.slice(0, topN), total: all.length, query: q, fellBack: true };
+  }
   if (qTokens.length) {
     const hit = all.filter(e => matches(e, qTokens));
-    if (hit.length) return { entries: hit.slice(0, MAP_MAX_FILTERED), total: all.length, query: q };
+    if (hit.length) return { entries: hit.slice(0, MAP_MAX_FILTERED), total: all.length, query: q, matched: hit.length };
     return { entries: all.slice(0, topN), total: all.length, query: q, fellBack: true };
   }
   return { entries: all.slice(0, topN), total: all.length };

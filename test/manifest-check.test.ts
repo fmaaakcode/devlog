@@ -32,7 +32,7 @@ describe("parseCppManifest", () => {
     expect(parseCppManifest("add_executable(app main.cpp)")).toEqual({ edition: null, version: null });
   });
   test("an old C++ standard is behind the C++23 target", () => {
-    const v = checkToolchain(parseCppManifest("set(CMAKE_CXX_STANDARD 17)"), { latestVersion: null, latestEdition: "C++23" });
+    const v = checkToolchain(parseCppManifest("set(CMAKE_CXX_STANDARD 17)"), { latestEdition: "C++23" });
     expect(v).toEqual([{ field: "edition", found: "C++17", target: "C++23" }]);
   });
 });
@@ -67,14 +67,14 @@ describe("editionBehind", () => {
 });
 
 describe("checkToolchain", () => {
-  const target = { latestVersion: "1.96.0", latestEdition: "2024" };
+  const target = { latestEdition: "2024" };
 
-  test("flags both an old edition and an old version", () => {
+  test("flags an old edition; rust-version (MSRV) is never a violation, however far behind (#1112)", () => {
+    // firewall/mshfr live shape: rust-version = "1.95" with the toolchain pinned
+    // in rust-toolchain.toml — raising the MSRV to the newest stable would break
+    // the build ("package requires rustc 1.98 or newer").
     const v = checkToolchain({ edition: "2021", version: "1.84" }, target);
-    expect(v).toEqual([
-      { field: "edition", found: "2021", target: "2024" },
-      { field: "version", found: "1.84", target: "1.96.0" },
-    ]);
+    expect(v).toEqual([{ field: "edition", found: "2021", target: "2024" }]);
   });
 
   test("compliant manifest → no violations", () => {
@@ -85,14 +85,12 @@ describe("checkToolchain", () => {
     expect(checkToolchain({ edition: null, version: null }, target)).toEqual([]);
   });
 
-  test("version check FAILS OPEN when target version unknown (network down)", () => {
-    const v = checkToolchain({ edition: "2021", version: "1.84" }, { latestVersion: null, latestEdition: "2024" });
-    // edition still blocks (network-free), version is skipped.
-    expect(v).toEqual([{ field: "edition", found: "2021", target: "2024" }]);
+  test("no edition target (no edition concept) → nothing to judge", () => {
+    expect(checkToolchain({ edition: "2021", version: "1.84" }, { latestEdition: null })).toEqual([]);
   });
 
-  test("edition check works with no version target at all", () => {
-    const v = checkToolchain({ edition: "2018", version: null }, { latestVersion: null, latestEdition: "2024" });
+  test("edition check with a null MSRV", () => {
+    const v = checkToolchain({ edition: "2018", version: null }, { latestEdition: "2024" });
     expect(v).toEqual([{ field: "edition", found: "2018", target: "2024" }]);
   });
 });

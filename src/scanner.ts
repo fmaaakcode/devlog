@@ -27,8 +27,9 @@ import { existsSync } from "node:fs";
 import { join, extname, } from "node:path";
 import { claudeConfigDir, claudeProjectSlug, normalizeSlashes, pathsEqual } from "./path-utils";
 import { NESTED_MANIFEST_DIRS } from "./lockfile-tree";
+import { NOISE_DIRS, readDevignore } from "./skip-dirs";
 import { parseCargoDeps, resolveWorkspaceMemberDirs, type CargoDep } from "./cargo-workspace";
-import { bunSpawnSync } from "./spawn";
+import { readIndex as readDocIndex } from "./doc-store";
 import { softFail } from "./soft-fail";
 import type { ProjectProfile, MemoryFile, RuntimeInfo, DevLogData } from "./types";
 
@@ -88,7 +89,9 @@ function parseRepoSlug(url: string): string | undefined {
   return undefined;
 }
 
-const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "__pycache__", "target", "vendor", ".venv", "venv", "cache", "tmp", "temp", ".cache", ".tmp", "release", "debug", "old"]);
+// Shared with tree.ts and analyze.ts (F-5.39): the file count, the tree and
+// the stack map used to carry three drifting copies of this set.
+const SKIP_DIRS = NOISE_DIRS;
 const SKIP_EXT = new Set(["exe", "dll", "so", "dylib", "o", "obj", "pdb", "lib", "a", "bin", "dat", "db", "db-journal", "7z", "zip", "tar", "gz", "pma", "compiled", "ppu", "res"]);
 
 export async function scanDirectory(dirPath: string): Promise<Record<string, number>> {
@@ -97,35 +100,18 @@ export async function scanDirectory(dirPath: string): Promise<Record<string, num
   async function walk(dir: string, depth: number) {
     if (depth > 5) return;
     try {
-      // Read .devignore for file-level ignores
-      const ignoredFiles = new Set<string>();
-      let skipDir = false;
-      const devignoreFile = Bun.file(join(dir, ".devignore"));
-      if (await devignoreFile.exists()) {
-        const content = await devignoreFile.text();
-        if (content.trim()) {
-          for (const line of content.split("\n")) {
-            const t = line.trim();
-            if (t && !t.startsWith("#")) ignoredFiles.add(t);
-          }
-        } else {
-          skipDir = true;
-        }
-      }
-      if (skipDir && depth > 0) return;
+      // .devignore: empty file = skip this dir (below the root), names = hide them.
+      const ignore = await readDevignore(dir);
+      if (ignore.skipDir && depth > 0) return;
 
       const entries = await readdir(dir, { withFileTypes: true });
       for (const entry of entries) {
         if (entry.name.startsWith(".")) continue;
         if (SKIP_DIRS.has(entry.name)) continue;
-        if (ignoredFiles.has(entry.name)) continue;
+        if (ignore.names.has(entry.name)) continue;
         const full = join(dir, entry.name);
         if (entry.isDirectory()) {
-          const childIgnore = Bun.file(join(full, ".devignore"));
-          if (await childIgnore.exists()) {
-            const c = await childIgnore.text();
-            if (!c.trim()) continue;
-          }
+          if ((await readDevignore(full)).skipDir) continue;
           await walk(full, depth + 1);
         } else {
           const ext = extname(entry.name).toLowerCase().replace(".", "") || "other";
@@ -143,14 +129,25 @@ export async function scanDirectory(dirPath: string): Promise<Record<string, num
 export function detectLanguage(files: Record<string, number>): string {
   const scores: Record<string, number> = {};
   const map: Record<string, string> = {
-    ts: "TypeScript", tsx: "TypeScript", js: "JavaScript", jsx: "JavaScript",
+    ts: "TypeScript", tsx: "TypeScript", mts: "TypeScript", cts: "TypeScript",
+    js: "JavaScript", jsx: "JavaScript", mjs: "JavaScript", cjs: "JavaScript",
     py: "Python", rs: "Rust", go: "Go", java: "Java", kt: "Kotlin",
-    cs: "C#", cpp: "C++", c: "C", rb: "Ruby", php: "PHP",
+    cs: "C#", cpp: "C++", cc: "C++", cxx: "C++", hpp: "C++", hxx: "C++", hh: "C++",
+    c: "C", rb: "Ruby", php: "PHP",
     swift: "Swift", dart: "Dart", vue: "Vue", svelte: "Svelte",
   };
   for (const [ext, count] of Object.entries(files)) {
     const lang = map[ext];
     if (lang) scores[lang] = (scores[lang] || 0) + count;
+  }
+  // `.h` is shared by C and C++ (F-5.39): a header-only C++ library scored
+  // Unknown because the extension was unmapped, and mapping it to C alone
+  // would flip a C++ project with many headers to "C". It follows the C++
+  // score when any C++-only extension is present, otherwise it is C.
+  const headers = files.h || 0;
+  if (headers > 0) {
+    const lang = scores["C++"] ? "C++" : "C";
+    scores[lang] = (scores[lang] || 0) + headers;
   }
   const sorted = Object.entries(scores).sort((a, b) => b[1] - a[1]);
   return sorted[0]?.[0] || "Unknown";
@@ -384,6 +381,19 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<Detec
   return result;
 }
 
+// `.devlog/docs`: the doc-store index is the metadata (name/type), the .md is
+// the body. Missing index → no docs (the store never writes one without the other).
+async function readDocFiles(dir: string): Promise<MemoryFile[]> {
+  const out: MemoryFile[] = [];
+  for (const e of await readDocIndex(dir)) {
+    const file = `${e.slug}.md`;
+    let body = "";
+    try { body = (await Bun.file(join(dir, file)).text()).trim().slice(0, 3000); } catch { continue; }   // index row without its file → skip
+    out.push({ file, name: e.name, description: e.type, type: e.type, body });
+  }
+  return out;
+}
+
 async function readMdFiles(dir: string): Promise<MemoryFile[]> {
   const results: MemoryFile[] = [];
   try {
@@ -466,18 +476,20 @@ export async function detectRuntime(dirPath: string, language: string): Promise<
           if (p.engines?.node) return { name: "Node", version: p.engines.node, ...(edition && { edition }) };
         } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
       }
-      // Fallback: bun.lockb or bun.lock → Bun
-      const bunLock = Bun.file(join(dirPath, "bun.lockb"));
-      const bunLock2 = Bun.file(join(dirPath, "bun.lock"));
-      const isBun = await bunLock.exists() || await bunLock2.exists();
-      // Get version from system
-      let sysVer = "";
-      try {
-        const proc = bunSpawnSync(["bun", "--version"], { stdout: "pipe", stderr: "pipe" });
-        sysVer = proc.stdout.toString().trim();
-      } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
-      if (isBun || sysVer) {
-        return { name: "Bun", version: sysVer, ...(edition && { edition }) };
+      // Fallback: the lockfile names the runtime FAMILY, never a version — the
+      // project declares no version, so none is reported. `bun --version` used
+      // to fill it in and `isBun || sysVer` was always true because DevLog
+      // itself runs on bun: a Node project with package-lock.json came out as
+      // "Bun <this machine's version>" and that reached the client report as
+      // the project's runtime (#1090).
+      const isBun = await Bun.file(join(dirPath, "bun.lockb")).exists() || await Bun.file(join(dirPath, "bun.lock")).exists();
+      if (isBun) return { name: "Bun", version: "", ...(edition && { edition }) };
+      const isNode = await Bun.file(join(dirPath, "package-lock.json")).exists() || await Bun.file(join(dirPath, "yarn.lock")).exists()
+        || await Bun.file(join(dirPath, "pnpm-lock.yaml")).exists() || await Bun.file(join(dirPath, ".nvmrc")).exists();
+      if (isNode) {
+        let version = "";
+        try { version = (await Bun.file(join(dirPath, ".nvmrc")).text()).trim().replace(/^v/, ""); } catch { /* no .nvmrc → version unknown */ }
+        return { name: "Node", version, ...(edition && { edition }) };
       }
       return edition ? { name: "Bun", version: "", edition } : undefined;
     }
@@ -505,28 +517,14 @@ export async function detectRuntime(dirPath: string, language: string): Promise<
       if (!version && await toolchainPlain.exists()) {
         version = (await toolchainPlain.text()).trim();
       }
-      // Fallback: rustc --version
-      if (!version) {
-        try {
-          const proc = bunSpawnSync(["rustc", "--version"], { stdout: "pipe", stderr: "pipe" });
-          version = proc.stdout.toString().match(/(\d+\.\d+[.\d]*)/)?.[1] || "";
-        } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
-      }
+      // No `rustc --version` fallback: that is the developer machine's
+      // toolchain, not the project's (#1090).
       if (edition || version) return { name: "rustc", version, ...(edition && { edition }) };
     }
 
-    // Go — prefer installed version, fall back to go.mod declared minimum
+    // Go — the go.mod directive is the project's declaration; the installed
+    // `go version` was the machine's (#1090)
     if (language === "Go") {
-      const goCandidates = process.platform === "win32"
-        ? ["go", "go.exe", "C:\\Program Files\\Go\\bin\\go.exe", join(process.env.LOCALAPPDATA || "", "Programs\\Go\\bin\\go.exe")]
-        : ["go"];
-      for (const cmd of goCandidates) {
-        try {
-          const proc = bunSpawnSync([cmd, "version"], { stdout: "pipe", stderr: "pipe" });
-          const v = proc.stdout.toString().match(/go(\d+\.\d+(?:\.\d+)?)/)?.[1];
-          if (v) return { name: "Go", version: v };
-        } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
-      }
       const goMod = Bun.file(join(dirPath, "go.mod"));
       if (await goMod.exists()) {
         const text = await goMod.text();
@@ -582,34 +580,22 @@ export async function detectRuntime(dirPath: string, language: string): Promise<
       }
     }
 
-  } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
+  } catch { /* best-effort probe: missing/unreadable source → detection left empty */ }
 
-  // Fallback: detect from system commands
-  try {
-    const cmds: Record<string, [string, string]> = {
-      TypeScript: ["bun --version", "Bun"],
-      JavaScript: ["bun --version", "Bun"],
-      Rust: ["rustc --version", "rustc"],
-      Go: ["go version", "Go"],
-      Python: ["python --version", "Python"],
-      "C++": ["g++ --version", "G++"],
-      C: ["gcc --version", "GCC"],
-      PHP: ["php --version", "PHP"],
-    };
-    const entry = cmds[language];
-    if (entry) {
-      const proc = bunSpawnSync(entry[0].split(" "), { stdout: "pipe", stderr: "pipe" });
-      const out = proc.stdout.toString().trim();
-      if (out) {
-        const ver = out.match(/(\d+\.\d+[.\d]*)/)?.[1] || "";
-        if (ver) return { name: entry[1], version: ver };
-      }
-    }
-  } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
+  // No system-command fallback (`python --version`, `g++ --version`, …): the
+  // runtime is what the PROJECT declares in its own files. Whatever happens to
+  // be installed on the developer machine was reported to the client as the
+  // project's runtime (#1090). Undeclared → undefined, and the consumers say so.
   return undefined;
 }
 
 export async function scanProject(cwd: string, nameFromPath: (p: string) => string): Promise<ProjectProfile> {
+  // A folder that is not there yields an EMPTY profile (scanDirectory swallows
+  // the readdir failure), and applyPreservedScan would then replace the real
+  // profile with it — language gone, libraries gone, the next vuln scan
+  // returning early on 0 libraries (#1063). Refuse instead; every caller
+  // already treats a scan throw as "no fresh profile".
+  if (!existsSync(cwd)) throw new Error(`project folder is not accessible: ${cwd}`);
   const name = nameFromPath(cwd);
   const files = await scanDirectory(cwd);
   const totalFiles = Object.values(files).reduce((a, b) => a + b, 0);
@@ -633,9 +619,11 @@ export async function scanProject(cwd: string, nameFromPath: (p: string) => stri
   const memoryDir = slug ? join(claudeConfigDir(), "projects", slug, "memory") : "";
   const memoryFiles = memoryDir ? await readMdFiles(memoryDir) : [];
 
-  // Read doc files
+  // Read doc files. DevLog's own docs (doc-store.ts) are body-only .md files
+  // described by index.json — they carry no frontmatter, so the memory-file
+  // reader above returned [] for them forever and `docFiles` was dead (#1089).
   const docsDir = join(cwd, ".devlog", "docs");
-  const docFiles = await readMdFiles(docsDir);
+  const docFiles = await readDocFiles(docsDir);
 
   // Read external about file if present. Source of truth for `about` —
   // overrides any in-memory value on rescan, so user edits to the file
@@ -711,6 +699,7 @@ export function applyPreservedScan(data: DevLogData, name: string, fresh: Projec
   merged.blueprint = old?.blueprint || [];
   if (old?.vulnResults) merged.vulnResults = old.vulnResults;
   if (old?.vulnScanDate) merged.vulnScanDate = old.vulnScanDate;
+  if (old?.libScanDate) merged.libScanDate = old.libScanDate;
   // System state a disk scan cannot regenerate: the monotonic item counter and
   // the disconnection stamp. Dropping the counter forced assignNum back onto
   // max+1 alone (and made a later .bak restore hand out duplicate #N numbers);
@@ -719,6 +708,17 @@ export function applyPreservedScan(data: DevLogData, name: string, fresh: Projec
   if (old?.disconnectedSince !== undefined) merged.disconnectedSince = old.disconnectedSince;
   data.projects[name] = merged;
   return merged;
+}
+
+/** May a debounced (watcher-driven) rescan of `cwd` proceed for the project
+ *  stored under `name`? "missing": the project was deleted since the watcher
+ *  fired — rescanning would RE-CREATE it with a bare profile (#1052).
+ *  "collision": the name now belongs to another folder. Pure; server.ts
+ *  applies it before and after the off-lock disk walk. */
+export function rescanVerdict(stored: ProjectProfile | undefined, cwd: string): "ok" | "missing" | "collision" {
+  if (!stored) return "missing";
+  if (!pathsEqual(stored.path, cwd)) return "collision";
+  return "ok";
 }
 
 export async function rescanPreserve(

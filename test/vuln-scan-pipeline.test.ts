@@ -9,12 +9,20 @@
 // and the vulnResults storage/sanitization loop.
 //
 // Seam design (no new deps, per project policy):
-//   • DEVLOG_DATA_DIR → a temp dir, set BEFORE the dynamic import so the data
-//     layer's captured DATA_DIR const points at throwaway files. We seed through
-//     the real `withData` (keeping the module cache consistent) rather than
-//     writing JSON by hand.
+//   • The store is the run-wide throwaway DEVLOG_DATA_DIR the preload set
+//     (test/_isolation.preload.ts). bun test runs every file in ONE process and
+//     src/data.ts freezes DATA_DIR at first import, so a per-file
+//     `process.env.DEVLOG_DATA_DIR = tmp` before a dynamic import changes
+//     nothing once any earlier file imported data.ts — this suite used to
+//     believe it had its own dir, seeded/wiped the shared one, and deleted an
+//     unused folder in afterAll while leaving the env pointed at it (#1207 /
+//     F-9.300). Now it asserts the isolation it relies on instead of faking it,
+//     and seeds through the real `withData` (module cache and disk agree).
 //   • globalThis.fetch → an in-memory router for BOTH the registry (freshness)
 //     and OSV (advisories) calls, so the pipeline runs fully offline.
+//   • check-flags freezes REGISTRY/VULN_CHECK_DISABLED at first import too: the
+//     suite asserts both are OFF in this process — a shell that exports either
+//     would otherwise turn every case here into a silent no-op.
 // Package names are unique per test so registry.ts's 6h response cache never
 // serves a stale hit across cases.
 
@@ -24,8 +32,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProjectProfile, TagEntry } from "../src/types";
 
-let dataDir: string;
 let projDir: string;
+let DATA_DIR: string;
 let runVulnScan: typeof import("../src/vuln-scan").runVulnScan;
 let loadData: typeof import("../src/data").loadData;
 let withData: typeof import("../src/data").withData;
@@ -121,21 +129,32 @@ async function seed(project: ProjectProfile, tags: TagEntry[] = []) {
 const tagsFor = async (name: string, kind: string) =>
   (await loadData()).tags.filter(t => t.project === name && t.tag === kind);
 
+const PREV_FLAGS = { registry: process.env.DEVLOG_REGISTRY_CHECK_DISABLED, vuln: process.env.DEVLOG_VULN_CHECK_DISABLED };
+
 beforeAll(async () => {
-  dataDir = mkdtempSync(join(tmpdir(), "devlog-vs-data-"));
   projDir = mkdtempSync(join(tmpdir(), "devlog-vs-proj-"));
-  process.env.DEVLOG_DATA_DIR = dataDir;
+  // Only effective if this file is the first importer of check-flags — kept so
+  // a solo run of this file behaves like the full run; the assertion below is
+  // what actually guarantees the pipeline is live in BOTH modes.
   delete process.env.DEVLOG_REGISTRY_CHECK_DISABLED;
   delete process.env.DEVLOG_VULN_CHECK_DISABLED;
-  // Dynamic import AFTER env is set so data.ts captures our temp DATA_DIR.
   ({ runVulnScan } = await import("../src/vuln-scan"));
-  ({ loadData, withData } = await import("../src/data"));
+  const data = await import("../src/data");
+  ({ loadData, withData } = data);
+  DATA_DIR = data.DATA_DIR;
+  const flags = await import("../src/check-flags");
+  expect(flags.REGISTRY_CHECK_DISABLED).toBe(false);
+  expect(flags.VULN_CHECK_DISABLED).toBe(false);
+  // The store this suite seeds and wipes is the preload's throwaway, under the run root.
+  const norm = (p: string) => p.replace(/\\/g, "/").toLowerCase();
+  expect(norm(DATA_DIR).startsWith(norm(tmpdir()))).toBe(true);
 });
 
 afterAll(() => {
   globalThis.fetch = realFetch;
-  rmSync(dataDir, { recursive: true, force: true });
   rmSync(projDir, { recursive: true, force: true });
+  if (PREV_FLAGS.registry === undefined) delete process.env.DEVLOG_REGISTRY_CHECK_DISABLED; else process.env.DEVLOG_REGISTRY_CHECK_DISABLED = PREV_FLAGS.registry;
+  if (PREV_FLAGS.vuln === undefined) delete process.env.DEVLOG_VULN_CHECK_DISABLED; else process.env.DEVLOG_VULN_CHECK_DISABLED = PREV_FLAGS.vuln;
 });
 
 beforeEach(() => {
@@ -244,6 +263,18 @@ describe("runVulnScan — freshness axis (outdated / update tags)", () => {
     expect(out).toHaveLength(1);
     expect(out[0].content.startsWith("olda@1.0.0")).toBe(true);
     expect(await tagsFor("p-old", "security")).toHaveLength(0);   // freshness must not forge security
+  });
+
+  test("an unparsable registry date is stored as empty, never as text (#1155)", async () => {
+    // A registry answering «unknown» for the publish date reached the dashboard
+    // verbatim, where `new Date(...).toISOString()` threw and took the whole
+    // project view down. Storage now keeps only dates that parse.
+    cfg.registry = { baddate: { latest: "5.0.0", date: "unknown" } };
+    await seed(makeProject({ name: "p-baddate", libraries: [{ name: "baddate", version: "1.0.0" }] }));
+    await runVulnScan("p-baddate");
+    const stored = (await loadData()).projects["p-baddate"]?.vulnResults?.baddate;
+    expect(stored).toBeDefined();
+    expect(stored?.latestReleaseDate).toBe("");
   });
 
   test("dep now on latest with a prior outdated tag → drops it + records an update tag", async () => {
@@ -490,5 +521,135 @@ describe("runVulnScan — safety invariants (the reason for this suite)", () => 
     expect(await tagsFor("p-cpp", "security")).toHaveLength(1);
     expect(await tagsFor("p-cpp", "security fix")).toHaveLength(0);
     expect(await tagsFor("p-cpp", "outdated")).toHaveLength(1);
+  });
+});
+
+// ── Audit round 10, wave 4 ─────────────────────────────────────────────────────
+// Message language comes from DEVLOG_LANG (user-level on the dev machine may be
+// "ar"); the fixtures below pin it explicitly so wording assertions hold anywhere.
+const withLang = async (lang: string, fn: () => Promise<unknown>) => {
+  const prev = process.env.DEVLOG_LANG;
+  process.env.DEVLOG_LANG = lang;
+  try { await fn(); } finally { if (prev === undefined) delete process.env.DEVLOG_LANG; else process.env.DEVLOG_LANG = prev; }
+};
+describe("wave 4 — the tree complements the direct list (#1099 F-5.65, #1100 F-5.66)", () => {
+  test("direct lib missing from a stale lockfile is still judged — its open tag is NOT auto-closed as 'fixed'", async () => {
+    // Stale package-lock.json lacks the newly added direct dep. Before: no verdict
+    // → "no CVE" → the open security tag was closed with a security fix that
+    // never happened, and no tag could ever be created for it.
+    const treeDir = mkdtempSync(join(tmpdir(), "devlog-vs-stale-"));
+    writeFileSync(join(treeDir, "package-lock.json"), JSON.stringify({
+      packages: { "": { name: "root" }, "node_modules/oldie": { version: "1.0.0" } },
+    }));
+    cfg.registry = { oldie: { latest: "1.0.0" }, newdep: { latest: "4.17.21" } };
+    cfg.osvVulns = { newdep: [advisory("newdep", "4.17.21")] };
+    const openSec: TagEntry = {
+      id: "stale-sec", project: "p-stale", tag: "security",
+      content: "newdep@4.17.15 — 1 vuln(s) (high) — upgrade to 4.17.21", timestamp: "2026-01-01T00:00:00Z", num: 1,
+    };
+    await seed(makeProject({
+      name: "p-stale", path: treeDir,
+      libraries: [{ name: "oldie", version: "1.0.0", eco: "npm" }, { name: "newdep", version: "4.17.15", eco: "npm" }],
+    }), [openSec]);
+
+    await withLang("en", () => runVulnScan("p-stale"));
+    expect(await tagsFor("p-stale", "security fix")).toHaveLength(0);
+    const sec = await tagsFor("p-stale", "security");
+    expect(sec.some(t => t.content.startsWith("newdep@4.17.15"))).toBe(true);
+    rmSync(treeDir, { recursive: true, force: true });
+  });
+
+  test("Django + React: pypi direct libs reach OSV although only an npm lockfile exists", async () => {
+    const treeDir = mkdtempSync(join(tmpdir(), "devlog-vs-mixed-"));
+    writeFileSync(join(treeDir, "package-lock.json"), JSON.stringify({
+      packages: { "": { name: "root" }, "node_modules/reacto": { version: "18.0.0" } },
+    }));
+    cfg.registry = { reacto: { latest: "18.0.0" } };
+    cfg.osvByEco = { "PyPI:djangoish": [advisory("djangoish", "3.2.0", { affected: [{ package: { name: "djangoish", ecosystem: "PyPI" }, ranges: [{ type: "ECOSYSTEM", events: [{ introduced: "0" }, { fixed: "3.2.0" }] }] }] })] };
+    await seed(makeProject({
+      name: "p-dj", path: treeDir, language: "Python",
+      libraries: [{ name: "djangoish", version: "3.0.0", eco: "pypi" }, { name: "reacto", version: "18.0.0", eco: "npm" }],
+    }));
+
+    await runVulnScan("p-dj");
+    const sec = await tagsFor("p-dj", "security");
+    expect(sec.some(t => t.content.startsWith("djangoish@3.0.0"))).toBe(true);
+    expect(sec[0].secKey).toBe("pypi:djangoish@3.0.0");
+    rmSync(treeDir, { recursive: true, force: true });
+  });
+});
+
+describe("wave 4 — security-tag identity is eco:name@version, not the wording (#1101 F-5.67)", () => {
+  test("a language flip rewords the open tag in place: same #N, no phantom 'security fix'", async () => {
+    cfg.registry = { flipper: { latest: "2.0.0" } };
+    cfg.osvVulns = { flipper: [advisory("flipper", "2.0.0")] };
+    await seed(makeProject({ name: "p-flip", libraries: [{ name: "flipper", version: "1.0.0", eco: "npm" }] }));
+    await withLang("en", () => runVulnScan("p-flip"));
+    const first = (await tagsFor("p-flip", "security"))[0];
+    expect(first.content).toContain("upgrade to 2.0.0");
+    await withLang("ar", () => runVulnScan("p-flip"));
+    const sec = await tagsFor("p-flip", "security");
+    expect(sec).toHaveLength(1);
+    expect(sec[0].num).toBe(first.num);
+    expect(sec[0].id).toBe(first.id);
+    expect(sec[0].content).toContain("رقِّ لـ2.0.0");
+    expect(await tagsFor("p-flip", "security fix")).toHaveLength(0);
+  });
+
+  test("a different pinned version IS a new claim: the old one is superseded, the new one numbered", async () => {
+    cfg.registry = { pinny: { latest: "3.0.0" } };
+    cfg.osvVulns = { pinny: [advisory("pinny", "3.0.0")] };
+    await seed(makeProject({ name: "p-pin", libraries: [{ name: "pinny", version: "1.0.0", eco: "npm" }] }));
+    await runVulnScan("p-pin");
+    await withData(d => { d.projects["p-pin"].libraries = [{ name: "pinny", version: "2.0.0", eco: "npm" }]; });
+    await runVulnScan("p-pin");
+    const sec = await tagsFor("p-pin", "security");
+    expect(sec.map(t => t.secKey)).toEqual(["npm:pinny@1.0.0", "npm:pinny@2.0.0"]);
+    expect(await tagsFor("p-pin", "security fix")).toHaveLength(1);
+  });
+
+  test("a legacy text-identity tag with the same wording is adopted under the key (no fork)", async () => {
+    cfg.registry = { legacyx: { latest: "2.0.0" } };
+    cfg.osvVulns = { legacyx: [advisory("legacyx", "2.0.0")] };
+    const legacy: TagEntry = {
+      id: "legacy-sec", project: "p-legacy", tag: "security",
+      content: "legacyx@1.0.0 — 1 vuln(s) (high) — upgrade to 2.0.0", timestamp: "2026-01-01T00:00:00Z", num: 7,
+    };
+    await seed(makeProject({ name: "p-legacy", libraries: [{ name: "legacyx", version: "1.0.0", eco: "npm" }] }), [legacy]);
+    await withLang("en", () => runVulnScan("p-legacy"));
+    const sec = await tagsFor("p-legacy", "security");
+    expect(sec).toHaveLength(1);
+    expect(sec[0].num).toBe(7);
+    expect(sec[0].secKey).toBe("npm:legacyx@1.0.0");
+  });
+});
+
+describe("wave 4 — two scan clocks (#1104 F-5.71 / #1139 F-6.45)", () => {
+  test("C++/vcpkg project: libScanDate stamped, vulnScanDate never (and a stale one is removed)", async () => {
+    cfg.registry = { cpplib2: { latest: "2.0.0" } };
+    await seed(makeProject({ name: "p-clock-cpp", language: "C++", vulnScanDate: "2026-05-01T00:00:00Z", libraries: [{ name: "cpplib2", version: "1.0.0" }] }));
+    await runVulnScan("p-clock-cpp");
+    const p = (await loadData()).projects["p-clock-cpp"];
+    expect(p.libScanDate).toBeTruthy();
+    expect(p.vulnScanDate).toBeUndefined();
+  });
+
+  test("OSV outage: the previous real security date survives, the sweep clock still advances", async () => {
+    cfg.registry = { outy: { latest: "1.0.0" } };
+    cfg.osvThrows = true;
+    await seed(makeProject({ name: "p-clock-out", vulnScanDate: "2026-05-01T00:00:00Z", libraries: [{ name: "outy", version: "1.0.0", eco: "npm" }] }));
+    await runVulnScan("p-clock-out");
+    const p = (await loadData()).projects["p-clock-out"];
+    expect(p.vulnScanDate).toBe("2026-05-01T00:00:00Z");
+    expect(p.libScanDate).toBeTruthy();
+  });
+
+  test("complete OSV pass stamps both", async () => {
+    cfg.registry = { cleany: { latest: "1.0.0" } };
+    await seed(makeProject({ name: "p-clock-ok", libraries: [{ name: "cleany", version: "1.0.0", eco: "npm" }] }));
+    await runVulnScan("p-clock-ok");
+    const p = (await loadData()).projects["p-clock-ok"];
+    expect(p.vulnScanDate).toBeTruthy();
+    expect(p.vulnScanDate).toBe(p.libScanDate as string);
   });
 });

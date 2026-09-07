@@ -14,30 +14,19 @@
 // un-serialized write path.
 
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
-import { asJson, stopServer } from "./_helpers";
-import { spawn, type Subprocess } from "bun";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { asJson, stopServer, startServer as bootServer } from "./_helpers";
+import type { Subprocess } from "bun";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 
 const TEST_PORT = 17790;            // unique to this file
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
-const PROJECT_ROOT = join(import.meta.dir, "..");
 
-function startServer(dataDir: string): Subprocess {
-  return spawn({
-    cmd: ["bun", join("src", "server.ts")],
-    cwd: PROJECT_ROOT,
-    env: {
-      ...process.env,
-      DEVLOG_DATA_DIR: dataDir,
-      DEVLOG_PORT: String(TEST_PORT),
-      DEVLOG_VERSION_CHECK_DISABLED: "1",
-    },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-}
+// Shared harness boot (#1184 / T-143): the private copy inherited the shell's
+// DEVLOG_* wholesale and left the OSV/registry lookups ON for a project with a
+// real manifest — a network round-trip inside a concurrency test.
+const startServer = (dataDir: string): Subprocess => bootServer(dataDir, TEST_PORT);
 
 async function waitForServer(maxMs = 15000): Promise<void> {
   const deadline = Date.now() + maxMs;
@@ -113,5 +102,20 @@ describe("concurrency — hook + inject through withData lose no writes", () => 
     const events: Array<{ project: string }> = data.events || [];
     const mine = events.filter(e => e.project === name);
     expect(mine.length).toBe(2 * N);
+
+    // #1184 (F-9.131): "the data file stays valid" was read back through
+    // /api/data — the in-memory cache — so a torn or partial save with an intact
+    // cache passed. Read the store from DISK and parse it: the file itself must
+    // be valid JSON and carry every one of the 2N events. Saves are atomic per
+    // withData turn; poll briefly in case the last one is still landing.
+    const eventsFile = join(dataDir, "events.json");
+    const deadline = Date.now() + 3000;
+    let onDisk: Array<{ project: string }> = [];
+    while (Date.now() < deadline) {
+      onDisk = (JSON.parse(readFileSync(eventsFile, "utf8")) as Array<{ project: string }>).filter(e => e.project === name);
+      if (onDisk.length >= 2 * N) break;
+      await Bun.sleep(50);
+    }
+    expect(onDisk.length).toBe(2 * N);
   }, 20000);
 });

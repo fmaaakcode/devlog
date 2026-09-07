@@ -56,14 +56,29 @@ describe("appendRuleTelemetry / loadRuleTelemetry", () => {
     expect(all.every(r => r.gate !== ("bad" as never))).toBe(true);
   });
 
-  test("cap keeps only the newest N", async () => {
+  test("cap keeps only the newest N counters", async () => {
     await appendRuleTelemetry([
       { gate: "install", action: "pass", rule: "npm:first" },
       { gate: "install", action: "pass", rule: "npm:last" },
     ]);
-    const capped = await loadRuleTelemetry(1);
-    expect(capped.length).toBe(1);
-    expect(capped[0].rule).toBe("npm:last");
+    // The cap is spent on lifecycle records first (#1134); one slot beyond them
+    // is exactly one counter — the newest.
+    const isCounter = (r: { action: string }) => r.action === "pass" || r.action === "fire" || r.action === "ack";
+    const lifecycleN = (await loadRuleTelemetry()).filter(r => !isCounter(r)).length;
+    const capped = await loadRuleTelemetry(lifecycleN + 1);
+    const counters = capped.filter(isCounter);
+    expect(counters.length).toBe(1);
+    expect(counters[0].rule).toBe("npm:last");
+  });
+
+  test("#1134: the cap never drops lifecycle records — the oldest adopt survives any number of newer counters", async () => {
+    await appendRuleTelemetry([{ gate: "lifecycle", action: "adopt", rule: "rust", detail: "oldest adoption" }]);
+    await appendRuleTelemetry(Array.from({ length: 5 }, (_, i) => ({ gate: "install" as const, action: "pass" as const, rule: `npm:c${i}` })));
+    const capped = await loadRuleTelemetry(2);
+    const adopts = capped.filter(r => r.action === "adopt" && r.detail === "oldest adoption");
+    expect(adopts.length).toBe(1);
+    // Oldest-first order is preserved after the merge.
+    for (let i = 1; i < capped.length; i++) expect(capped[i - 1].ts <= capped[i].ts).toBe(true);
   });
 
   test("empty append is a no-op; missing file loads as empty (fresh install)", async () => {

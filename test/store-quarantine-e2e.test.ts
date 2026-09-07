@@ -8,8 +8,8 @@
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import type { Subprocess } from "bun";
-import { asJson, startServer, waitForServer } from "./_helpers";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { asJson, startServer, stopServer, waitForServer } from "./_helpers";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -51,9 +51,17 @@ describe("corrupt store quarantine (#432)", () => {
   test("a later save cannot bury the evidence: quarantine file survives a write", async () => {
     const r = await fetch(`${BASE}/api/tags`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cwd: join(dataDir, "nowhere"), response: "-(note) بعد التلف" }),
+      // A real folder: /api/tags refuses a cwd absent from disk (#1199). The
+      // body carries `entries` — the shape the route stores. The old fixture
+      // sent `response: "-(note) …"`, a field the route ignores: it answered
+      // `count: 0`, tags.json stayed `[]`, and "survives a write" was asserted
+      // over a write that never happened (#1205).
+      body: JSON.stringify({ cwd: dataDir, session_id: "quarantine-e2e", entries: [{ tag: "note", content: "بعد التلف" }] }),
     });
     expect(r.status).toBe(200);
+    expect((await asJson(r)).count).toBe(1);
+    const saved = JSON.parse(readFileSync(join(dataDir, "tags.json"), "utf8")) as Array<{ tag: string; content: string }>;
+    expect(saved.some(t => t.tag === "note" && t.content === "بعد التلف")).toBe(true);   // the write landed on disk
     const corrupt = readdirSync(dataDir).filter(f => f.startsWith("tags.json.corrupt-"));
     expect(corrupt).toHaveLength(1);
     expect(await Bun.file(join(dataDir, corrupt[0])).text()).toBe(CORRUPT_BYTES);
@@ -70,5 +78,30 @@ describe("corrupt store quarantine (#432)", () => {
       await Bun.sleep(100);
     }
     expect(baks).toContain(`projects.${stamp}.bak`);
+    // The quarantine left tags.json as a fresh `[]`; an empty store takes no
+    // daily slot (found here, wave 9: the boot copy of that `[]` used to claim
+    // the day, and the real rows saved minutes later got no copy until tomorrow).
+    expect(baks).not.toContain(`tags.${stamp}.bak`);
+  });
+
+  // #1205: the case above proves the REGISTRY copy only, yet the header claims
+  // the daily backup "covers the history stores". tags.json was quarantined at
+  // the first boot and empty until the save above, so the claim needs a SECOND
+  // boot after a real save. Restart the same data dir: the daily copy of
+  // tags.json must now exist, parse, and carry the note the earlier save wrote.
+  test("after a save, the next boot's daily backup covers tags.json (the history store) with the saved rows", async () => {
+    const stamp = new Date().toISOString().slice(0, 10);
+    await stopServer(server);
+    server = startServer(dataDir, TEST_PORT);
+    await waitForServer(BASE);
+    const deadline = Date.now() + 4000;
+    let bak = join(dataDir, `tags.${stamp}.bak`);
+    while (Date.now() < deadline && !existsSync(bak)) await Bun.sleep(100);
+    expect(existsSync(bak)).toBe(true);
+    const rows = JSON.parse(readFileSync(bak, "utf8")) as Array<{ tag: string; content: string }>;
+    expect(rows.some(r => r.tag === "note" && r.content === "بعد التلف")).toBe(true);
+    // The quarantined corrupt bytes were never "backed up" as tags.json.
+    expect(readFileSync(bak, "utf8")).not.toBe(CORRUPT_BYTES);
+    bak = "";
   });
 });

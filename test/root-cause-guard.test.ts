@@ -123,10 +123,21 @@ describe("it says it once", () => {
     expect((await run("-(bug fix) #5", { served })).blocks).toEqual([]);
   });
 
-  test("a continuation caused by an earlier block never re-fires", async () => {
-    // stopHookActive is the "you are here because something blocked" signal —
-    // the rule that keeps every Stop guard from looping forever.
-    expect((await run("-(bug fix) #5", { stopHookActive: true })).blocks).toEqual([]);
+  // #1034 / F-3.10: stopHookActive used to silence this guard entirely, so when
+  // near-miss (or an ask) blocked FIRST, the continuation carried the same bare
+  // `-(bug fix) #5` past a guard that returned before ever marking it — closed
+  // with no cause and no notice, against the "blocked once" promise. Loop
+  // safety is the per-number key, not the continuation flag.
+  test("a continuation still fires for a number never blocked before — once", async () => {
+    const served = new Set<string>();
+    expect((await run("-(bug fix) #5", { stopHookActive: true, served })).blocks).toHaveLength(1);
+    expect((await run("-(bug fix) #5", { stopHookActive: true, served })).blocks).toEqual([]);
+  });
+
+  test("a continuation for a number already blocked never re-fires", async () => {
+    const served = new Set<string>();
+    expect((await run("-(bug fix) #5", { served })).blocks).toHaveLength(1);          // the first pass blocked it
+    expect((await run("-(bug fix) #5", { stopHookActive: true, served })).blocks).toEqual([]);
   });
 });
 

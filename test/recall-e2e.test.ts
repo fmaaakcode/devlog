@@ -7,7 +7,7 @@
 // trigger/gate matrix lives in the unit suite (recall.test.ts).
 
 import { test, expect, beforeAll, afterAll } from "bun:test";
-import { asJson, runHook, PROJECT_ROOT as REPO_ROOT } from "./_helpers";
+import { asJson, runHook, HOOK_STATE_DIR, scrubbedEnv } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -74,7 +74,7 @@ beforeAll(async () => {
     cmd: ["bun", join("src", "server.ts")],
     cwd: PROJECT_ROOT,
     env: {
-      ...process.env, DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT),
+      ...scrubbedEnv(), DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT),
       DEVLOG_VERSION_CHECK_DISABLED: "1", DEVLOG_REGISTRY_CHECK_DISABLED: "1", DEVLOG_LANG: "en",
     },
     stdout: "pipe", stderr: "pipe",
@@ -88,7 +88,7 @@ afterAll(async () => {
   rmSync(dataDir, { recursive: true, force: true });
   rmSync(projDir, { recursive: true, force: true });
   // Scrub the per-session ledger the hook test wrote into the repo's .devlog.
-  rmSync(join(REPO_ROOT, ".devlog", "turn-state", `${SESSION}-hook.json`), { force: true });
+  rmSync(join(HOOK_STATE_DIR, "turn-state", `${SESSION}-hook.json`), { force: true });
 });
 
 // --- /api/recall (read-only — must run before the injects mutate the log) ---

@@ -11,6 +11,7 @@ import { normalizeSlashes } from "./path-utils";
 import { spawnSync } from "./spawn";
 import { openTodos, openBugs, openSecurity, isStepClosed } from "./data";
 import { checkInvariants, type Finding } from "./doctor-invariants";
+import { isAcked } from "./standards-ack";
 import { currentLang } from "./i18n";
 import type { DevLogData, TagEntry, PlanEntry } from "./types";
 
@@ -47,12 +48,47 @@ async function fetchData(): Promise<DevLogData | null> {
   try {
     // #458: 127.0.0.1, not localhost — on Windows `localhost` resolves to ::1
     // first and hangs ~200ms per connection before falling back to IPv4.
-    const r = await fetch(`http://127.0.0.1:${devlogPort()}/api/data`);
+    // Bounded (F-4.101): a half-open daemon used to hang the CLI forever, and
+    // under the release guard's 8s cap a hang meant a truncated JSON → null →
+    // "no critical findings" — the guard failing open on the doctor's silence.
+    const r = await fetch(`http://127.0.0.1:${devlogPort()}/api/data`, { signal: AbortSignal.timeout(6000) });
     if (!r.ok) return null;
     return await r.json() as DevLogData;
   } catch {
     return null;
   }
+}
+
+// ── git helpers ──────────────────────────────────────────────────────────────
+// A version-shaped tag: `v1.2.3`, `1.2.3`, `v1.0.0-rc1`, `v2.0.0+build`. The
+// old glob `v*.*.*` missed bare `1.2.3` and matched `v1.0.0-rc1` while the
+// release-file filter refused it — every prerelease was a permanent high (#1072).
+const VERSION_TAG_RE = /^v?\d+\.\d+\.\d+(?:[-+][\w.]+)*$/;
+const verOf = (s: string) => s.replace(/^v/, "");
+
+/** tag → creation time (ms) for every tag in the repo, one git call. */
+function gitTagDates(cwd: string): Map<string, number> {
+  const out = new Map<string, number>();
+  const raw = git(cwd, ["for-each-ref", "--format=%(refname:short)%00%(creatordate:unix)", "refs/tags"]);
+  for (const line of raw.split("\n")) {
+    const [name, ts] = line.split("\x00");
+    if (name) out.set(name, (parseInt(ts || "0", 10) || 0) * 1000);
+  }
+  return out;
+}
+
+/** The commit message a tag points at, minus trailers: `Co-Authored-By`,
+ *  `Claude-Session`, `Signed-off-by`, generator footers. Counting trailers made
+ *  a title-only commit "not thin" (#1070). */
+const TRAILER_RE = /^(?:(?:Co-Authored-By|Co-authored-by|Claude-Session|Signed-off-by|Reviewed-by|Acked-by|Tested-by|Change-Id|Refs?|Fixes|Closes):\s.*|🤖 .*|https?:\/\/\S+)$/;
+function tagCommitMessage(cwd: string, tag: string): string {
+  const raw = git(cwd, ["log", "-1", "--format=%s%n%b", tag]);
+  return raw.split("\n").filter(l => !TRAILER_RE.test(l.trim())).join("\n").trim();
+}
+
+/** Repo root for `cwd`, or "" when git is unavailable / not a repo. */
+function gitTopLevel(cwd: string): string {
+  return git(cwd, ["rev-parse", "--show-toplevel"]);
 }
 
 function findProjectKey(data: DevLogData, targetPath: string): string | null {
@@ -70,7 +106,9 @@ async function listReleaseFiles(projectPath: string): Promise<string[]> {
   if (!existsSync(dir)) return [];
   try {
     const files = await readdir(dir);
-    return files.filter(f => /^v\d+\.\d+\.\d+\.html$/.test(f)).map(f => f.replace(/\.html$/, ""));
+    // Prereleases included — safeVerSlug writes `v1.0.0-rc1.html` and the old
+    // filter refused it, so every release candidate counted as missing (#1072).
+    return files.filter(f => /^v\d+\.\d+\.\d+(?:[-+][\w.]+)*\.html$/.test(f)).map(f => f.replace(/\.html$/, ""));
   } catch { return []; }
 }
 
@@ -82,18 +120,24 @@ async function diagnose(projectPath: string): Promise<DoctorReport> {
   if (!data) {
     throw new Error(`Cannot reach devlog server at http://localhost:${devlogPort()}. Start it with: bun src/server.ts`);
   }
-  const projectKey = findProjectKey(data, absPath) || basename(absPath);
-  const project = data.projects?.[projectKey];
-  if (!project) {
+  // Identity is the PATH, never the folder name (#1071 / F-4.99): the old
+  // basename fallback silently diagnosed a registered project of the same name
+  // at another path — a second worktree read the original's record, found none
+  // of its release files, and every git tag became a critical finding "for
+  // helper". An unregistered path is reported as exactly that, and nothing
+  // below is compared against a record that isn't this project's.
+  const projectKey = findProjectKey(data, absPath);
+  if (!projectKey) {
     findings.push({
       severity: "medium",
       code: "PROJECT_NOT_INDEXED",
-      title: L("Project not indexed in the dashboard", "المشروع غير مسجَّل في الداشبورد"),
+      title: L("This path is not a registered project", "هذا المسار ليس مشروعًا مسجَّلًا"),
       detail: L(
-        `No entry for '${projectKey}' in data. Run a rescan or open the dashboard from the project root.`,
-        `لا يوجد مدخل لـ '${projectKey}' في data. شغّل rescan أو افتح dashboard من جذر المشروع.`,
+        `No project is registered at '${absPath}'. Run a rescan or open the dashboard from the project root. (A same-named project at another path is NOT this one.)`,
+        `لا مشروع مسجَّل على المسار '${absPath}'. شغّل rescan أو افتح dashboard من جذر المشروع. (مشروع بنفس الاسم على مسار آخر ليس هو.)`,
       ),
     });
+    return { project: basename(absPath), path: absPath, findings, stats: { tags: 0, plans: 0, openItems: 0, gitTags: 0, releaseFiles: 0 } };
   }
 
   const tags: TagEntry[] = (data.tags || []).filter(t => t.project === projectKey);
@@ -172,46 +216,92 @@ async function diagnose(projectPath: string): Promise<DoctorReport> {
     });
   }
 
-  // ─── Check 4: git tags vs devlog release files ─────────────────
-  const gitTags = git(absPath, ["tag", "-l", "v*.*.*"]).split("\n").filter(Boolean);
+  // ─── Checks 4/5/7 share the git-tag view ───────────────────────
+  // Scope (#1072 / F-4.100): tags belong to the REPOSITORY, release files to
+  // the PROJECT FOLDER. A project registered inside a subfolder of a larger
+  // repo (12 of 65 live projects) inherits every tag of the parent and its
+  // sibling packages and owns none of their files — so the tag checks run only
+  // when the project IS the repo root; a nested project gets one low note.
+  // Adoption (#1069 / F-4.97, decision §5.2 2026-09-06): a tag created BEFORE
+  // this project's first recorded -(release) can never be answered with a
+  // -(release) for the past, so it is informational (medium), never critical.
+  // Post-adoption gaps stay high — and a high the developer has judged is
+  // acknowledged with `-(rule:ack) doctor:<CODE>` (downgraded below), so the
+  // release guard has a recorded way through instead of an off switch.
+  const releaseTags = tags.filter(t => t.tag === "release").sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+  const adoptionMs = releaseTags.length ? Math.min(...releaseTags.map(t => Date.parse(t.timestamp) || Infinity)) : Infinity;
+  const topLevel = gitTopLevel(absPath);
+  const norm = (p: string) => normalizeSlashes(resolve(p)).toLowerCase();
+  const nested = !!topLevel && norm(topLevel) !== norm(absPath);
+  const tagDates = nested ? new Map<string, number>() : gitTagDates(absPath);
+  const gitTags = [...tagDates.keys()].filter(t => VERSION_TAG_RE.test(t));
+  const preAdoption = (t: string) => (tagDates.get(t) || 0) < adoptionMs;
+  const postTags = gitTags.filter(t => !preAdoption(t));
   const releaseFiles = await listReleaseFiles(absPath);
+  const fileVersions = new Set(releaseFiles.map(verOf));
   stats.gitTags = gitTags.length;
   stats.releaseFiles = releaseFiles.length;
-  const missingReleaseFiles = gitTags.filter(t => !releaseFiles.includes(t));
-  if (missingReleaseFiles.length) {
+  if (nested) {
+    findings.push({
+      severity: "low",
+      code: "NESTED_PROJECT_GIT_TAGS",
+      title: L("Project sits inside a larger repository — git tags not compared", "المشروع داخل مستودع أكبر — لم تُقارَن تاقات git"),
+      detail: L(
+        `The repository root is '${topLevel}'; its tags belong to the parent (or sibling packages), not to this folder's release files.`,
+        `جذر المستودع '${topLevel}'؛ تاقاته تخصّ الأب (أو الحزم الشقيقة) لا ملفات إصدار هذا المجلد.`,
+      ),
+    });
+  }
+
+  // ─── Check 4: git tags vs devlog release files ─────────────────
+  const missing = gitTags.filter(t => !fileVersions.has(verOf(t)));
+  const missingPost = missing.filter(t => !preAdoption(t));
+  const missingPre = missing.filter(preAdoption);
+  if (missingPost.length) {
     findings.push({
       severity: "high",
       code: "MISSING_RELEASE_NOTES",
-      title: L(`${missingReleaseFiles.length} git releases without a release-notes file`, `${missingReleaseFiles.length} إصدارات في git بدون ملف release notes`),
-      detail: L(".devlog/releases/vX.Y.Z.html is missing — the release shipped without a -(release) tag in DevLog.", ".devlog/releases/vX.Y.Z.html مفقود — يعني الـrelease خرج بدون -(release) tag في DevLog."),
-      items: missingReleaseFiles,
+      title: L(`${missingPost.length} git releases without a release-notes file`, `${missingPost.length} إصدارات في git بدون ملف release notes`),
+      detail: L(
+        ".devlog/releases/vX.Y.Z.html is missing — the release shipped without a -(release) tag in DevLog. Deliberate? record it: -(rule:ack) doctor:MISSING_RELEASE_NOTES",
+        ".devlog/releases/vX.Y.Z.html مفقود — يعني الـrelease خرج بدون -(release) tag في DevLog. مقصود؟ سجّله: -(rule:ack) doctor:MISSING_RELEASE_NOTES",
+      ),
+      items: missingPost,
+    });
+  }
+  if (missingPre.length) {
+    findings.push({
+      severity: "medium",
+      code: "PRE_ADOPTION_RELEASES",
+      title: L(`${missingPre.length} git releases predate DevLog adoption (no release notes — informational)`, `${missingPre.length} إصدارات في git سابقة لتبنّي DevLog (بلا ملاحظات إصدار — للعلم)`),
+      detail: L(
+        "Tagged before this project's first -(release); a note cannot be recorded for the past, so this never blocks a release.",
+        "وُسمت قبل أول -(release) لهذا المشروع؛ لا يمكن تسجيل ملاحظة للماضي، فلا يحجب هذا إصدارًا أبدًا.",
+      ),
+      items: missingPre,
     });
   }
 
   // ─── Check 5: thin release commits ─────────────────────────────
-  const releaseLog = git(absPath, ["log", "--format=%H%x00%s%x00%b%x1e", "--grep=^release: v"]);
+  // The commit each post-adoption tag points at (#1070 / F-4.98): the old
+  // `--grep=^release: v` matched no convention this repo — or its docs — ever
+  // used (`feat: vX — …`, `chore(release): vX`), so the check never fired.
   const thinReleases: string[] = [];
-  if (releaseLog) {
-    for (const entry of releaseLog.split("\x1e").filter(Boolean)) {
-      const [hash, subject = "", body = ""] = entry.trim().split("\x00");
-      const fullMsg = `${subject}\n${body}`.trim();
-      if (fullMsg.length < THIN_RELEASE_MIN_CHARS) {
-        thinReleases.push(`${(hash || "").slice(0, 7)} ${subject} (${fullMsg.length} chars)`);
-      }
-    }
+  for (const t of postTags.slice(-30)) {
+    const msg = tagCommitMessage(absPath, t);
+    if (msg && msg.length < THIN_RELEASE_MIN_CHARS) thinReleases.push(`${t}: ${msg.split("\n")[0].slice(0, 60)} (${msg.length} chars)`);
   }
   if (thinReleases.length) {
     findings.push({
       severity: "high",
       code: "THIN_RELEASE_COMMITS",
       title: L(`${thinReleases.length} release commits under ${THIN_RELEASE_MIN_CHARS} chars`, `${thinReleases.length} commits لـrelease أقل من ${THIN_RELEASE_MIN_CHARS} حرف`),
-      detail: L("The GitHub specialist pushed a release without describing what shipped. The body must list the closed items.", "خبير جيت هب رفع release بدون توضيح المنجزات. يجب أن يحوي body قائمة المهام المُغلقة."),
+      detail: L("The release commit does not describe what shipped (trailers excluded). The body must list the closed items. Deliberate? -(rule:ack) doctor:THIN_RELEASE_COMMITS", "التزام الإصدار لا يصف ما شُحن (بلا الذيول). يجب أن يحوي body قائمة المهام المُغلقة. مقصود؟ -(rule:ack) doctor:THIN_RELEASE_COMMITS"),
       items: thinReleases,
     });
   }
 
   // ─── Check 6: open bug/security shipped past a release ─────────
-  const releaseTags = tags.filter(t => t.tag === "release").sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
   const latestRelease = releaseTags[0];
   if (latestRelease) {
     const openBefore = openItems.filter(t =>
@@ -238,9 +328,11 @@ async function diagnose(projectPath: string): Promise<DoctorReport> {
 
   // ─── Check 7: devlog release tags vs git tags (presence) ───────
   const devlogReleaseVersions = releaseTags
-    .map(t => (t.content || "").match(/v?\d+\.\d+\.\d+/)?.[0])
+    .map(t => (t.content || "").match(/v?\d+\.\d+\.\d+(?:[-+][\w.]+)*/)?.[0])
     .filter(Boolean) as string[];
-  const ghostReleases = gitTags.filter(gt => !devlogReleaseVersions.some(dv => dv.replace(/^v/, "") === gt.replace(/^v/, "")));
+  // Post-adoption tags only: a pre-adoption tag has no DevLog record by
+  // definition and is already reported (informational) by PRE_ADOPTION_RELEASES.
+  const ghostReleases = postTags.filter(gt => !devlogReleaseVersions.some(dv => verOf(dv) === verOf(gt)));
   // Any git tag without a matching -(release) in DevLog is a "ghost" — a version
   // shipped but never logged. The worst case is when EVERY git tag is a ghost
   // (the project releases via git but never records -(release) at all); the old
@@ -292,6 +384,19 @@ async function diagnose(projectPath: string): Promise<DoctorReport> {
   // AUTOMATE this (integrityWarning): a doctor nobody remembers to type is a
   // doctor that never sees the patient.
   findings.push(...checkInvariants(tags, plans));
+
+  // Acknowledged highs (#1069 / F-4.97): `-(rule:ack) doctor:<CODE>` in the
+  // project records a deliberate judgement on a finding the protocol cannot
+  // otherwise resolve (an old release twin, a tag shipped without notes). It
+  // stays visible as a medium warning — never erased — but no longer refuses
+  // every release for the rest of the project's life, which is what turned the
+  // release guard into a switch people flip off (DEVLOG_RELEASE_GUARD=0).
+  for (const f of findings) {
+    if (f.severity === "high" && isAcked(absPath, "doctor", f.code)) {
+      f.severity = "medium";
+      f.title = `${f.title} ${L("(acknowledged: -(rule:ack) doctor:", "(مؤكَّد: -(rule:ack) doctor:")}${f.code})`;
+    }
+  }
 
   return { project: projectKey, path: absPath, findings, stats };
 }

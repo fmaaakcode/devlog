@@ -54,11 +54,17 @@ export async function readActiveSessions(): Promise<ClaudeSession[]> {
   return sessions;
 }
 
-interface WinProc {
+export interface WinProc {
   pid: number;
   ppid: number;
   name: string;
   command: string;
+  /** Process start, epoch ms; 0 when WMI withheld it. The parent link of a
+   *  process is only trusted when the parent started BEFORE it (#1061): a
+   *  ParentProcessId names a pid, and Windows reuses pids, so a dead parent's
+   *  number can now belong to an unrelated process — a short-lived hook shell
+   *  once "inherited" csrss/wininit/lsass this way. */
+  created: number;
 }
 
 // One snapshot serves every caller in a 2s window (and every caller while one
@@ -76,7 +82,11 @@ async function snapshotAllProcessesUncached(): Promise<WinProc[]> {
   // return empty instead of spawning a missing `powershell` every poll cycle
   // (code-quality R2 #3). The dashboard still works; only process panels stay empty.
   if (process.platform !== "win32") return [];
-  const script = "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress";
+  // CreationDate → epoch ms computed IN PowerShell: ConvertTo-Json renders a
+  // DateTime as "\/Date(ms)\/" on 5.1 and as ISO on 7+, so the shape would
+  // otherwise depend on which PowerShell answered. Probed on 5.1 (2026-09-06):
+  // present even for csrss/System, where CommandLine is withheld.
+  const script = "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,@{n='Created';e={ if ($_.CreationDate) { [DateTimeOffset]::new($_.CreationDate).ToUnixTimeMilliseconds() } else { 0 } }} | ConvertTo-Json -Compress";
   try {
     // windowsHide (defaulted by the spawn wrapper, #406): without a parent console
     // (daemon respawned detached by /api/server/restart) every powershell poll pops
@@ -102,6 +112,7 @@ async function snapshotAllProcessesUncached(): Promise<WinProc[]> {
       ppid: Number(p.ParentProcessId) || 0,
       name: String(p.Name ?? ""),
       command: String(p.CommandLine ?? ""),
+      created: Number(p.Created) || 0,
     }));
   } catch {
     return [];
@@ -117,10 +128,26 @@ async function batchCheckAlive(pids: number[]): Promise<Set<number>> {
   return alive;
 }
 
-export function buildDescendantTree(rootPids: number[], allProcs: WinProc[]): Map<number, number[]> {
-  // ppid -> children
+/** Is `parent` really the process that spawned `child`? ParentProcessId alone
+ *  is a pid, and pids are reused: the link holds only when both start times
+ *  are known and the parent started no later than the child. Unknown (0) on
+ *  either side → NOT trusted; this feeds the kill path, so the safe answer to
+ *  "maybe" is "no". The server's own pid is never anyone's ancestor here — the
+ *  daemon may itself be a session's child, and its WMI helpers are not the
+ *  user's background work. */
+export function isTrustedParent(parent: WinProc | undefined, child: WinProc, selfPid = process.pid): boolean {
+  if (!parent || parent.pid === selfPid) return false;
+  if (!parent.created || !child.created) return false;
+  return parent.created <= child.created;
+}
+
+export function buildDescendantTree(rootPids: number[], allProcs: WinProc[], selfPid = process.pid): Map<number, number[]> {
+  const byPid = new Map(allProcs.map(p => [p.pid, p]));
+  // ppid -> children, keeping only links whose parent is provably older (#1061).
   const childrenOf = new Map<number, number[]>();
   for (const p of allProcs) {
+    if (p.pid === selfPid) continue;
+    if (!isTrustedParent(byPid.get(p.ppid), p, selfPid)) continue;
     let kids = childrenOf.get(p.ppid);
     if (!kids) { kids = []; childrenOf.set(p.ppid, kids); }
     kids.push(p.pid);
@@ -150,12 +177,24 @@ const MAX_DESCENDANTS = 500;
 
 // Pure core of the no-sessions branch (#775): prune entries whose pid is dead,
 // KEEP the living ones marked orphaned. Exported for unit tests.
+//
+// "Alive" means the SAME process (#1062): the stored start time must match the
+// live one, else the pid was recycled and the row describes a stranger. Rows
+// stored before start times existed (no `created`) cannot be verified and are
+// dropped — the live store carried 137 such "orphans", all system processes
+// swallowed through a recycled parent pid; nothing re-derived is lost (undo.ts
+// contract exemption 1: machine-derived rows the next refresh rebuilds).
 export function pruneDescendantsAgainst(
-  descendants: DevLogData["descendants"], living: Set<number>, now: string,
+  descendants: DevLogData["descendants"], living: Map<number, WinProc>, now: string,
 ): DevLogData["descendants"] {
-  const kept = descendants.filter(d => living.has(d.pid));
+  const kept = descendants.filter(d => sameProcess(d, living.get(d.pid)));
   for (const d of kept) { d.orphaned = true; d.lastSeen = now; }
   return kept;
+}
+
+/** The stored row and the live process are one and the same: pid AND start time. */
+export function sameProcess(stored: { pid: number; created?: number }, live: WinProc | undefined): boolean {
+  return !!live && !!stored.created && live.created === stored.created;
 }
 
 export async function refreshDescendants(data: DevLogData): Promise<void> {
@@ -171,7 +210,7 @@ export async function refreshDescendants(data: DevLogData): Promise<void> {
     const snapshot = await snapshotAllProcesses();
     if (snapshot.length === 0) return;   // transient WMI failure — change nothing
     data.descendants = pruneDescendantsAgainst(
-      data.descendants, new Set(snapshot.map(p => p.pid)), new Date().toISOString(),
+      data.descendants, new Map(snapshot.map(p => [p.pid, p])), new Date().toISOString(),
     );
     return;
   }
@@ -181,7 +220,6 @@ export async function refreshDescendants(data: DevLogData): Promise<void> {
   const procMap = new Map(allProcs.map(p => [p.pid, p]));
   const trees = buildDescendantTree(aliveSessions.map(s => s.pid), allProcs);
   const now = new Date().toISOString();
-  const aliveSet = new Set(allProcs.map(p => p.pid));
 
   // Index existing descendants by pid
   const existing = new Map(data.descendants.map(d => [d.pid, d]));
@@ -207,12 +245,14 @@ export async function refreshDescendants(data: DevLogData): Promise<void> {
         prev.command = proc.command || prev.command;
         prev.name = proc.name || prev.name;
         prev.parentPid = proc.ppid;
+        prev.created = proc.created;
       } else {
         data.descendants.push({
           pid,
           name: proc.name,
           command: proc.command,
           parentPid: proc.ppid,
+          created: proc.created,
           claudePid: session.pid,
           sessionId: session.sessionId,
           project: projectName_,
@@ -227,8 +267,9 @@ export async function refreshDescendants(data: DevLogData): Promise<void> {
   // Mark orphans (stored descendants whose claude session is gone but they're still alive)
   const aliveSessionPids = new Set(aliveSessions.map(s => s.pid));
   data.descendants = data.descendants.filter(d => {
-    // Remove if process is dead
-    if (!aliveSet.has(d.pid)) return false;
+    // Remove if the process is dead — or if the pid now belongs to a stranger
+    // (start time differs), or the row predates start-time tracking (#1062).
+    if (!sameProcess(d, procMap.get(d.pid))) return false;
     // If its claude parent session is no longer alive → orphan
     if (!aliveSessionPids.has(d.claudePid)) d.orphaned = true;
     d.lastSeen = now;
@@ -242,8 +283,22 @@ export async function refreshDescendants(data: DevLogData): Promise<void> {
   }
 }
 
-export async function killProcess(pid: number): Promise<{ ok: boolean; error?: string }> {
+/** Kill a tracked process — after re-identifying it at kill time (#1062). The
+ *  tracked row may be up to a poll interval old; if the pid has since been
+ *  recycled, `taskkill /T` would take down a stranger and its whole tree. So
+ *  the FRESH snapshot (never the 2s cache) must show the same pid with the
+ *  same start time and name, or the kill is refused. */
+export async function killProcess(
+  pid: number, expected?: { name: string; created?: number },
+): Promise<{ ok: boolean; error?: string; identityChanged?: boolean }> {
   if (process.platform !== "win32") return { ok: false, error: "process kill is Windows-only" };
+  if (expected) {
+    const live = (await snapshotAllProcessesUncached()).find(p => p.pid === pid);
+    if (!live) return { ok: false, error: `pid ${pid} is no longer running`, identityChanged: true };
+    if (!sameProcess({ pid, created: expected.created }, live) || live.name !== expected.name) {
+      return { ok: false, identityChanged: true, error: `pid ${pid} now belongs to ${live.name || "another process"} (started ${live.created}) — not the tracked ${expected.name}; refusing to kill` };
+    }
+  }
   try {
     const proc = bunSpawn(["taskkill", "/PID", String(pid), "/F", "/T"], {
       stdout: "pipe", stderr: "pipe",

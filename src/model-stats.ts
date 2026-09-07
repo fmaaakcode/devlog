@@ -11,7 +11,7 @@
 
 import type { DevLogData } from "./types";
 import { closedItems } from "./closed-items";
-import { touchesTests } from "./retro";
+import { isFixedReport, testEvidence } from "./retro";
 import { openBugs, openSecurity, isReport } from "./data";
 
 export interface ModelScore {
@@ -78,11 +78,16 @@ export function modelScorecard(data: DevLogData, project: string): ModelStats {
       s.closeDaysSum += Math.max(0, (+new Date(c.closedAt) - +new Date(c.openedAt)) / DAY_MS);
       s.closeDaysN++;
     }
-    if (!isReport(c.kind)) continue;
+    // A `-(dropped) #N` on a report is a WITHDRAWAL, not a fix (#1121): it
+    // counts as a closure above, never as a fix, and is never judged for a test.
+    if (!isFixedReport(c)) continue;
     s.fixes++;
-    if (c.closerFiles?.length) {
+    // #1200: a Rust-only footprint is unjudgeable by path (in-source tests) —
+    // neither credited nor charged.
+    const evidence = testEvidence(c.closerFiles);
+    if (evidence !== "unjudgeable") {
       s.fixesJudged++;
-      if (!touchesTests(c.closerFiles)) s.fixesWithoutTest++;
+      if (evidence === "no") s.fixesWithoutTest++;
     }
   }
 

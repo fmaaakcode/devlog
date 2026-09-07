@@ -68,6 +68,34 @@ describe("collectClientReport", () => {
     expect(f.stack.securityOpen).toBe(0);
   });
 
+  test("«new in vX» follows the resolved attribution, not the raw tag window (#1140)", () => {
+    const f = collectClientReport(makeData([
+      ...baseTags(),
+      // A backfill for a PAST release emitted after the current one: it must
+      // stay out of the news and never show its marker to the client.
+      t("release", "v1.3.0 — next", { ts: "2026-02-01T00:00:00.000Z" }),
+      t("feature", "[v1.2.0] customers can save a cart", { num: 4, ts: "2026-02-05T00:00:00.000Z" }),
+      // A capability declared for the CURRENT release after it was cut (the
+      // feature-nudge continuation shape) belongs in the news.
+      t("feature", "[v1.3.0] customers can track parcels", { num: 5, ts: "2026-02-05T00:01:00.000Z" }),
+    ]), P);
+    expect(f.latest?.version).toBe("v1.3.0");
+    expect(f.latestNews?.features).toEqual(["customers can track parcels"]);
+    const saved = f.features.find(x => x.num === 4);
+    expect(saved?.sinceVersion).toBe("v1.2.0");
+    expect(saved?.text).toBe("customers can save a cart");
+  });
+
+  test("a marker naming no recorded release adds no phantom group (#1188)", () => {
+    const f = collectClientReport(makeData([
+      ...baseTags(),
+      t("feature", "[v7.7.7] a typo'd backfill", { num: 4, ts: "2026-01-05T00:00:00.000Z" }),
+    ]), P);
+    const versions = new Set(f.features.map(x => x.sinceVersion));
+    expect(versions.has("v7.7.7")).toBe(false);
+    expect(renderClientReportHtml(f)).not.toContain("v7.7.7");
+  });
+
   test("upcoming (deferred) items don't count as in-progress", () => {
     const tags = baseTags();
     const deferred = t("todo", "someday idea", { num: 9 });

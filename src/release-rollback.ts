@@ -6,7 +6,8 @@
  * delete the release page, rebuild the index (now excluding the release), and
  * drop a changelog line recording the rollback.
  */
-import { unlink } from "node:fs/promises";
+import { appendFile, unlink } from "node:fs/promises";
+import { currentLang } from "./i18n";
 import { join } from "node:path";
 import type { DevLogData, TagEntry } from "./types";
 import { parseVersion, safeVerSlug, releasesDirFor, writeReleaseIndex } from "./release-html";
@@ -25,10 +26,16 @@ async function appendRollbackLine(projectPath: string, version: string, restored
   const f = Bun.file(file);
   if (!(await f.exists())) return; // no changelog yet → nothing to annotate
   const time = new Date().toISOString().split("T")[1]?.slice(0, 5) || "00:00";
-  const to = restoredTo ? `استُرجِعت النسخة ${restoredTo}` : "لا إصدار سابق";
+  // Follows DEVLOG_LANG like every other changelog line (F-6.21 — the rollback
+  // line was the one Arabic-only writer left after #906).
+  const L = (en: string, ar: string): string => (currentLang() === "ar" ? ar : en);
+  const to = restoredTo
+    ? L(`manifest restored to ${restoredTo}`, `استُرجِعت النسخة ${restoredTo}`)
+    : L("manifest untouched (the release did not bump a version)", "المانيفست لم يُمسّ (الإصدار لم يرفع نسخة)");
   // Shaped like appendChangelog's dedup pattern so it's never duplicated.
-  const line = `\n- ⏪ **rollback** تراجُع عن الإصدار ${version} — ${to} (${time})\n`;
-  await Bun.write(file, (await f.text()) + line);
+  const line = L(`\n- ⏪ **rollback** of release ${version} — ${to} (${time})\n`,
+    `\n- ⏪ **rollback** تراجُع عن الإصدار ${version} — ${to} (${time})\n`);
+  await appendFile(file, line, "utf-8");
 }
 
 /**
@@ -42,13 +49,16 @@ export async function rollbackRelease(releaseTag: TagEntry, data: DevLogData, pr
   if (!version) return null;
   const projectPath = data.projects[project]?.path;
 
-  // Version to restore: the most recent REMAINING release tag, else the version
-  // this release captured at bump time (QA #2) — so rolling back the FIRST/only
-  // release still puts the manifest back instead of leaving it silently bumped.
-  const prev = data.tags
-    .filter(t => t.project === project && t.tag === "release")
-    .sort((a, b) => +new Date(b.timestamp) - +new Date(a.timestamp))[0];
-  const restoredTo = (prev ? parseVersion(prev.content).version : null) ?? releaseTag.prevVersion ?? null;
+  // Version to restore = what the manifests ACTUALLY held before this release
+  // bumped them (`prevVersion`, stamped by applyRelease only when a write
+  // happened). Nothing else is trustworthy (#1125): the previous release TAG
+  // used to win, so (a) undoing a release the writer had REFUSED (a downgrade
+  // that never touched the file) rewrote a 3.0.0 manifest down to the earlier
+  // tag's 2.4.0, and (b) a manual bump between two releases was undone to the
+  // older tag instead of the version the release really replaced. No
+  // prevVersion ⇒ this release bumped nothing ⇒ the manifests are not ours to
+  // touch.
+  const restoredTo = releaseTag.prevVersion ?? null;
 
   let manifestsRestored: string[] = [];
   let htmlDeleted = false;

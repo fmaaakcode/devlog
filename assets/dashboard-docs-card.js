@@ -31,6 +31,9 @@
             if (!p) return;
             try {
                 const r = await fetch(`${API}/api/docs?project=${encodeURIComponent(projectName)}`);
+                // A JSON error body has no `docs` — it used to wipe the card to
+                // «لا توجد ملفات» (F-7.26); keep the last good list instead.
+                if (!r.ok) return;
                 const { docs = [] } = await r.json();
                 const sig = JSON.stringify(docs.map(d => [d.slug, d.updatedAt]));
                 if (p.__docsSig === sig) return;

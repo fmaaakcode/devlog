@@ -16,10 +16,10 @@ import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import { readdirSync, readFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROJECT_ROOT, runHook } from "./_helpers";
+import { runHook, HOOK_STATE_DIR } from "./_helpers";
 
 const TEST_PORT = 17963;
-const QUEUE_DIR = join(PROJECT_ROOT, ".devlog", "tag-queue");
+const QUEUE_DIR = join(HOOK_STATE_DIR, "tag-queue");
 
 let projDir: string;
 let stub: ReturnType<typeof Bun.serve>;

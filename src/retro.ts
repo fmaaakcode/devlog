@@ -10,7 +10,7 @@
 
 import type { DevLogData, TagEntry } from "./types";
 import { openBugs, openSecurity, isReport } from "./data";
-import { closedItems } from "./closed-items";
+import { closedItems, type ClosedItem } from "./closed-items";
 import { projectRelativeFiles } from "./path-utils";
 
 export interface RetroItem {
@@ -20,7 +20,7 @@ export interface RetroItem {
   openedAt: string;      // ISO timestamp
   closedAt?: string;     // absent = still open
   ageDays: number;       // opened → closed (or → now while open), whole days
-  files?: string[];      // project-relative; the problem's footprint
+  files?: string[];      // project-relative; the problem's footprint — the source paths the report NAMES, else its session's files (#1135)
   reopenOf?: number;     // the closed report this one reopened (#556)
   failureClass?: string; // #998: the closer's failure class — the axis a class-scoped rule-effect measures on
   /** #1014: the class was assigned by the reviewed backfill, not by the closer.
@@ -33,15 +33,115 @@ const DAY_MS = 86_400_000;
 const ageDays = (openedAt: string, closedAt?: string): number =>
   Math.max(0, Math.round(((closedAt ? +new Date(closedAt) : Date.now()) - +new Date(openedAt)) / DAY_MS));
 
+/** A report closed by `-(dropped) #N` was WITHDRAWN — "not a defect" — so it is
+ *  neither a problem the project had nor a fix anyone made (#1136/#1121). Every
+ *  reflection surface built on closed reports (corpus, fragile files, the
+ *  regression-test gap, the model scorecard, rule-effect windows) must skip it:
+ *  counted as a report it inflates «الأكثر كسرًا» and the before/after windows;
+ *  counted as a fix it charges the withdrawing model with "a fix without a
+ *  test" for something that was never fixed. */
+export const isWithdrawn = (c: Pick<ClosedItem, "closedBy">): boolean => c.closedBy === "dropped";
+/** A closed report that was actually FIXED (bug fix / bug fix:interim / security fix). */
+export const isFixedReport = (c: Pick<ClosedItem, "kind" | "closedBy">): boolean => isReport(c.kind) && !isWithdrawn(c);
+
+// ── The report's footprint (#1135) ───────────────────────────────────────────
+// Position memory stamps a tag with the files ITS SESSION touched — which is
+// where the report was WRITTEN, not what it is about. A session that files 27
+// reports about parse-tags.ts while editing only `audits/round 10/*.md` gave
+// every one of them a Markdown footprint: «الأكثر كسرًا» showed parse-tags.ts
+// with `open: 0`, the audit notes were about to enter the list as files that
+// "break", and the language-scoped rule-effect counted those reports as zero
+// TypeScript reports. So the footprint is, first, the source paths the report
+// NAMES in its own text; the session files remain the fallback when it names
+// none (a report written in prose still has a where).
+const MENTION_EXT = "tsx?|m?jsx?|cjs|json|md|html?|css|sh|ps1|py|rs|go|java|kts?|cs|cpp|cc|hpp|h|toml|ya?ml|sql|rb|php|swift|dart|vue|svelte";
+const MENTION_RE = new RegExp(`(?<![\\w@./\\\\-])((?:[\\w.-]+[/\\\\])*[\\w.-]+\\.(?:${MENTION_EXT}))(?![\\w/\\\\-])(?!\\.\\w)`, "g");
+
+/** basename → the project-relative paths that basename is known under (from
+ *  every footprint the project's tags carry) — how a bare `data.ts` in a
+ *  report resolves to `src/data.ts`. */
+export type BasenameIndex = Map<string, Set<string>>;
+
+export function basenameIndex(tags: TagEntry[], root: string): BasenameIndex {
+  const idx: BasenameIndex = new Map();
+  const add = (key: string, f: string) => {
+    let set = idx.get(key);
+    if (!set) { set = new Set(); idx.set(key, set); }
+    set.add(f);
+  };
+  for (const t of tags) {
+    for (const f of projectRelativeFiles(t.files, root) ?? []) {
+      const base = f.split("/").pop() || f;
+      add(base, f);
+      // #1229: reports name modules by STEM as often as by file — «parse-tags
+      // يعلّم كل الأسطر», «doctor-invariants يدفع صفًا مكررًا». Index the
+      // extension-less stem too, only for kebab-case names (a hyphen makes
+      // the token an identifier; a lone `data` or `server` stays prose and is
+      // never a stem key, so it cannot charge src/data.ts on a common word).
+      const stem = base.replace(/\.[^.]+$/, "");
+      if (stem !== base && KEBAB_STEM.test(stem)) add(stem, f);
+    }
+  }
+  return idx;
+}
+
+/** A kebab-case identifier: two or more `[a-z0-9]` runs joined by hyphens. */
+const KEBAB_STEM = /^[a-z0-9]+(?:-[a-z0-9]+)+$/i;
+/** A bare kebab-case token in prose that is NOT already part of a path or a
+ *  dotted name (those are MENTION_RE's business): `parse-tags` yes,
+ *  `dashboard-tree-ws.js` no (the `.js` fails the lookahead), `text-align:right`
+ *  matches but resolves to nothing and is dropped. */
+const STEM_RE = /(?<![\w@./\\-])([a-z0-9]+(?:-[a-z0-9]+)+)(?![\w./\\-])/gi;
+
+/** Source paths a report names in its text, project-relative, deduped, in
+ *  order of mention. A bare basename resolves through the index when exactly
+ *  one known path carries it; an ambiguous one is dropped (a guess would
+ *  charge the wrong file); an unknown one is kept as written (root files
+ *  such as `parse-tags.ts` are their own relative path). */
+export function mentionedFiles(text: string, index: BasenameIndex): string[] {
+  const out: string[] = [];
+  for (const m of (text || "").matchAll(MENTION_RE)) {
+    const raw = m[1].replace(/\\/g, "/").replace(/^\.\//, "");
+    let path = raw;
+    if (!raw.includes("/")) {
+      const known = index.get(raw);
+      if (known && known.size > 1) continue;
+      if (known && known.size === 1) path = [...known][0];
+    }
+    if (!out.includes(path)) out.push(path);
+  }
+  // #1229: extension-less kebab-case stems resolve ONLY through the index —
+  // exactly one known file carries the stem, or the token is prose and dropped
+  // (never kept as written: `text-align` is not a file).
+  for (const m of (text || "").matchAll(STEM_RE)) {
+    const known = index.get(m[1]);
+    if (known?.size !== 1) continue;
+    const path = [...known][0];
+    if (!out.includes(path)) out.push(path);
+  }
+  return out;
+}
+
+/** The footprint rule: named paths first, session files as the fallback.
+ *  Shared with the `ask:why` dossier (#1229), which used to charge a file with
+ *  every report its SESSION wrote — the same mis-attribution this rule fixed
+ *  for «الأكثر كسرًا». */
+export function footprint(text: string, sessionFiles: string[] | undefined, root: string, index: BasenameIndex): string[] | undefined {
+  const named = mentionedFiles(text, index);
+  if (named.length) return named;
+  return projectRelativeFiles(sessionFiles, root);
+}
+
 /** All problem reports of `project`, oldest first (recurrence reads best in
  *  chronological order). Open items carry no closedAt and age until now. */
 export function retroCorpus(data: DevLogData, project: string): RetroItem[] {
   const root = data.projects[project]?.path || "";
   const tags = data.tags.filter((t: TagEntry) => t.project === project);
+  const index = basenameIndex(tags, root);
   const out: RetroItem[] = [];
 
   for (const t of [...openBugs(tags), ...openSecurity(tags)]) {
-    const files = projectRelativeFiles(t.files, root);
+    const files = footprint(t.content, t.files, root, index);
     out.push({
       ...(typeof t.num === "number" ? { num: t.num } : {}),
       kind: t.tag, text: t.content, openedAt: t.timestamp,
@@ -52,8 +152,8 @@ export function retroCorpus(data: DevLogData, project: string): RetroItem[] {
   }
 
   for (const c of closedItems(data, project)) {
-    if (!isReport(c.kind) || !c.openedAt) continue;
-    const files = projectRelativeFiles(c.files, root);
+    if (!isFixedReport(c) || !c.openedAt) continue;
+    const files = footprint(c.text, c.files, root, index);
     out.push({
       ...(c.failureClass ? { failureClass: c.failureClass } : {}),
       ...(c.failureClassBackfilled ? { failureClassBackfilled: true as const } : {}),
@@ -127,14 +227,41 @@ export function fragileFiles(data: DevLogData, project: string, top = 5, isGone?
 // not in any single verdict. It surfaces only where a human is already reflecting:
 // the retro header and the study aggregates.
 
-const TEST_SEGMENT = /(^|[/\\])(tests?|__tests__|specs?)([/\\]|$)/i;
-const TEST_FILENAME = /(^test_|[._-](test|spec)\.[a-z0-9]+$|_test\.[a-z0-9]+$)/i;
+const TEST_SEGMENT = /(^|[/\\])(tests?|__tests__|specs?|androidTest|testFixtures)([/\\]|$)/i;
+const TEST_FILENAME = /(^test_|[._-](test|spec|tests)\.[a-z0-9]+$|_test\.[a-z0-9]+$|_spec\.rb$)/i;
+// PascalCase suffix conventions (#1200): `FooTest.java`, `FooTests.cs`,
+// `FooSpec.kt`, `FooTest.cpp`. Case-SENSITIVE on purpose — a case-insensitive
+// `tests?\.cs$` would credit `protests.cs` or `requests.cs` with a test.
+const TEST_FILENAME_PASCAL = /[A-Za-z0-9](Tests?|Specs?|IT)\.(java|kt|kts|cs|cpp|cc|cxx|scala|swift|php|groovy|m|mm|dart)$/;
 
 /** Does this footprint include anything that looks like a test? Path conventions
  *  across ecosystems: a `test/`-ish folder, `*.test.ts` / `*_test.go` /
- *  `test_*.py` / `*.spec.js`. */
+ *  `test_*.py` / `*.spec.js` / `FooTest.java` / `FooTests.cs`. */
 export function touchesTests(files: string[] | undefined): boolean {
-  return (files || []).some(f => TEST_SEGMENT.test(f) || TEST_FILENAME.test(f.split(/[/\\]/).pop() || ""));
+  return (files || []).some(f => {
+    const base = f.split(/[/\\]/).pop() || "";
+    return TEST_SEGMENT.test(f) || TEST_FILENAME.test(base) || TEST_FILENAME_PASCAL.test(base);
+  });
+}
+
+// Languages whose official convention keeps unit tests INSIDE the source file
+// (Rust `#[cfg(test)] mod tests`). A fix that touched only such files may well
+// carry its regression test in the same file — the path says nothing either way.
+const IN_SOURCE_TEST_EXT = /\.rs$/i;
+
+export type TestEvidence = "yes" | "no" | "unjudgeable";
+
+/**
+ * What a fix's footprint says about a regression test (#1200). `yes` = a test
+ * path was touched; `no` = files were touched and none is a test by path
+ * convention; `unjudgeable` = no test path, but the footprint includes a file
+ * whose language tests in-source (Rust) — the path cannot tell, so the fix is
+ * neither credited nor charged. Before this, every Rust fix read "no test".
+ */
+export function testEvidence(files: string[] | undefined): TestEvidence {
+  if (!files?.length) return "unjudgeable";
+  if (touchesTests(files)) return "yes";
+  return files.some(f => IN_SOURCE_TEST_EXT.test(f)) ? "unjudgeable" : "no";
 }
 
 export interface TestGapItem { num?: number; kind: string; text: string; closedAt?: string }
@@ -157,10 +284,11 @@ export interface TestGap {
  *
  * KNOWN BLIND SPOTS, deliberately not "fixed" by widening the heuristic:
  *   · Rust (and any language with in-source `#[cfg(test)]` tests) writes the
- *     regression test INSIDE the module it fixes — a real test, invisible here.
+ *     regression test INSIDE the module it fixes — invisible by path, so such a
+ *     footprint is counted `unknown`, never `withoutTest` (#1200).
  *   · A fix whose test was written in a LATER session isn't credited.
- * Both inflate `withoutTest`. That is survivable for a quiet ratio and fatal for a
- * blocking check, which is exactly why this one never blocks.
+ * The second inflates `withoutTest`. That is survivable for a quiet ratio and
+ * fatal for a blocking check, which is exactly why this one never blocks.
  */
 export function regressionGap(data: DevLogData, project: string, top = 8): TestGap {
   const root = data.projects[project]?.path || "";
@@ -170,10 +298,11 @@ export function regressionGap(data: DevLogData, project: string, top = 8): TestG
   const items: TestGapItem[] = [];
 
   for (const c of closedItems(data, project)) {
-    if (!isReport(c.kind)) continue;          // only bugs + security: a -(done) todo owes no test
+    if (!isFixedReport(c)) continue;          // only FIXED bugs + security: a -(done) todo owes no test, a -(dropped) report was never fixed (#1136)
     const fixFiles = projectRelativeFiles(c.closerFiles, root);
-    if (!fixFiles?.length) { unknown++; continue; }
-    if (touchesTests(fixFiles)) { withTest++; continue; }
+    const evidence = testEvidence(fixFiles);
+    if (evidence === "unjudgeable") { unknown++; continue; }   // no footprint, or an in-source-test language (#1200)
+    if (evidence === "yes") { withTest++; continue; }
     withoutTest++;
     items.push({
       ...(typeof c.num === "number" ? { num: c.num } : {}),

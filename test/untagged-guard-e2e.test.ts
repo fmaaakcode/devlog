@@ -11,7 +11,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import type { Subprocess } from "bun";
-import { startServer, stopServer, waitForServer, runHook as runHookRaw } from "./_helpers";
+import { startServer, stopServer, waitForServer, runHook as runHookRaw, HOOK_STATE_DIR } from "./_helpers";
 import { mkdtempSync, rmSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -19,8 +19,7 @@ import { join } from "node:path";
 
 const TEST_PORT = 17815;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
-const PROJECT_ROOT = join(import.meta.dir, "..");
-const TURN_STATE_DIR = join(PROJECT_ROOT, ".devlog", "turn-state");
+const TURN_STATE_DIR = join(HOOK_STATE_DIR, "turn-state");
 
 // Seed a code-write event for the session, exactly as the PostToolUse hook would.
 async function seedEdit(cwd: string, sid: string, filePath: string): Promise<void> {
@@ -131,6 +130,28 @@ describe("untagged-session guard (e2e, real hook)", () => {
     const r = await runHook(projDir, sid, "updated the readme.");
     expect(r.code).toBe(0);
     expect(blockReason(r.out)).toBe("");
+  });
+
+  // F-9.296: the #676 trigger through the REAL hook. The Superpowers incident's
+  // exact shape — a session that writes ONLY manual tracking markdown
+  // (tasks.md / decisions.md / plans/*.md) and no code — used to end with zero
+  // tags and zero objection because isCodeWrite excludes .md. The wiring
+  // hook-guards → isTrackingFile → shouldNudgeUntagged had unit tests on each
+  // half and no proof the halves meet in the hook: here the nudge fires on
+  // markdown alone and names the tracking files, while README.md (above) never
+  // trips it.
+  test("tracking-file-only writes (tasks.md, plans/*.md) trigger the nudge with the tracking line (#676)", async () => {
+    const sid = freshSid();
+    await seedEdit(projDir, sid, join(projDir, "tasks.md"));
+    await seedEdit(projDir, sid, join(projDir, "plans", "rollout.md"));
+
+    const r = await runHook(projDir, sid, "wrote the plan and task list.");
+    expect(r.code).toBe(0);
+    const reason = blockReason(r.out);
+    expect(reason).toContain("DevLog Untagged Session");
+    expect(reason).toContain("2 manual tracking file(s)");
+    expect(reason).toContain("-(doc:plan)");
+    expect(reason).not.toContain("code file(s) were written");   // no code was touched
   });
 
   test("stop_hook_active continuation is exempt", async () => {

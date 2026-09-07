@@ -5,6 +5,7 @@
 // also driven by the periodic sweep), so it's injected via deps. Spread into
 // server.ts's routeDefs.
 
+import { existsSync } from "node:fs";
 import { loadData, withData, normalizeTagContent, assignNum, openSecurity } from "./data";
 import { runVulnScan } from "./vuln-scan";
 import { scanFreshProfile, applyPreservedScan } from "./scanner";
@@ -130,6 +131,12 @@ export function makeScanRoutes({ checkAndRescanIfStale }: ScanRouteDeps): Record
           // Only the cheap merge runs under the lock, same as /api/hook.
           const snapshot = await loadData();
           const path0 = snapshot.projects[name]?.path || "";
+          // #1063: a folder that is not reachable right now (unplugged drive,
+          // network share, deleted) must not be scanned — the empty result
+          // would replace the real profile. Say so; the profile stays intact.
+          if (path0 && !existsSync(path0)) {
+            return Response.json({ error: "project folder is not accessible", path: path0 }, { status: 409 });
+          }
           let fresh: ProjectProfile | null = null;
           if (path0) {
             try { fresh = await scanFreshProfile(path0); } catch (e) { softFail("scan.scanFreshProfile", e); }

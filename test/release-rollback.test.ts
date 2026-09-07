@@ -62,14 +62,16 @@ describe("rollbackRelease — reverses all effects", () => {
     await seedReleaseArtifacts("v2.0.0");
 
     const v1 = rel("v1.0.0 — first", "2026-01-01T00:00:00Z");
-    const v2 = rel("v2.0.0 — second", "2026-02-01T00:00:00Z");
+    // The release recorded what the manifest held before it bumped (#1125:
+    // prevVersion is the ONLY trustworthy source — the earlier tag is not).
+    const v2 = rel("v2.0.0 — second", "2026-02-01T00:00:00Z", "1.0.0");
     // data.tags already EXCLUDES the rolled-back release (caller splices first).
     const d = data([v1]);
 
     const res = await rollbackRelease(v2, d, PROJ);
 
     expect(res).not.toBeNull();
-    expect(res?.restoredTo).toBe("v1.0.0");
+    expect(res?.restoredTo).toBe("1.0.0");
     expect(res?.htmlDeleted).toBe(true);
     expect(res?.indexRebuilt).toBe(true);
 
@@ -106,6 +108,39 @@ describe("rollbackRelease — reverses all effects", () => {
     expect(JSON.parse(await readFile(join(TMP, "package.json"), "utf-8")).version).toBe("0.9.0");
   });
 
+  // #1125 (F-6.20): the writer REFUSED this release (manifest 3.0.0 > v2.5.0),
+  // so the tag carries no prevVersion — yet the earlier tag (v2.4.0) used to be
+  // restored over a manifest the release never touched: 3.0.0 → 2.4.0 on undo.
+  test("undoing a release the writer refused leaves the (newer) manifest untouched", async () => {
+    await writeFile(join(TMP, "package.json"), JSON.stringify({ name: "x", version: "3.0.0" }, null, 2), "utf-8");
+    await seedReleaseArtifacts("v2.5.0");
+    const refused = rel("v2.5.0 — mistyped release", "2026-03-01T00:00:00Z"); // no prevVersion: nothing was bumped
+    const d = data([rel("v2.4.0 — earlier", "2026-02-01T00:00:00Z")]);
+
+    const res = await rollbackRelease(refused, d, PROJ);
+
+    expect(res?.restoredTo).toBeNull();
+    expect(res?.manifestsRestored).toEqual([]);
+    expect(JSON.parse(await readFile(join(TMP, "package.json"), "utf-8")).version).toBe("3.0.0");
+    expect(res?.htmlDeleted).toBe(true); // the page still goes — only the manifest is off-limits
+  });
+
+  // #1125 (T-34): a manual bump between two releases. Tag A = 1.0.0, the user
+  // edits the manifest to 1.1.0 by hand, release B auto-bumps 1.1.0 → 1.1.1 and
+  // records prevVersion=1.1.0. Undoing B must return to 1.1.0 — what B
+  // replaced — not to tag A's 1.0.0.
+  test("a manual bump between releases is honored: rollback restores prevVersion, not the earlier tag", async () => {
+    await writeFile(join(TMP, "package.json"), JSON.stringify({ name: "x", version: "1.1.1" }, null, 2), "utf-8");
+    await seedReleaseArtifacts("v1.1.1");
+    const b = rel("v1.1.1 — after a manual bump", "2026-03-01T00:00:00Z", "1.1.0");
+    const d = data([rel("v1.0.0 — A", "2026-01-01T00:00:00Z")]);
+
+    const res = await rollbackRelease(b, d, PROJ);
+
+    expect(res?.restoredTo).toBe("1.1.0");
+    expect(JSON.parse(await readFile(join(TMP, "package.json"), "utf-8")).version).toBe("1.1.0");
+  });
+
   test("with NEITHER a prior release NOR a prevVersion, the manifest is left untouched", async () => {
     await writeFile(join(TMP, "package.json"), JSON.stringify({ name: "x", version: "1.0.0" }, null, 2), "utf-8");
     await seedReleaseArtifacts("v1.0.0");
@@ -122,14 +157,14 @@ describe("applyUndo wiring — undoing a release triggers the rollback", () => {
 
     const d = data([
       rel("v1.0.0 — first", "2026-01-01T00:00:00Z"),
-      rel("v2.0.0 — second", "2026-02-01T00:00:00Z"),
+      rel("v2.0.0 — second", "2026-02-01T00:00:00Z", "1.0.0"),
     ]);
 
     const res = await applyUndo("v2.0.0 — second", d, PROJ);
 
     // The rollback outcome is now returned to the caller (surfaced — QA #2).
-    expect(res?.version).toBe("v2.0.0");
-    expect(res?.restoredTo).toBe("v1.0.0");
+    expect(res.rollback?.version).toBe("v2.0.0");
+    expect(res.rollback?.restoredTo).toBe("1.0.0");
     // Tag gone.
     expect(d.tags.some(t => t.tag === "release" && t.content.startsWith("v2.0.0"))).toBe(false);
     // Manifest restored to v1.
@@ -149,7 +184,7 @@ describe("applyUndo wiring — undoing a release triggers the rollback", () => {
 
     const res = await applyUndo("v2.5.0 — only release", d, PROJ);
 
-    expect(res?.restoredTo).toBe("2.0.0");
+    expect(res.rollback?.restoredTo).toBe("2.0.0");
     // Manifest restored despite NO earlier release tag — the QA #2 silent-bump gap.
     expect(JSON.parse(await readFile(join(TMP, "package.json"), "utf-8")).version).toBe("2.0.0");
   });

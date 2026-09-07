@@ -18,11 +18,11 @@ import type { Subprocess } from "bun";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { asJson, startServer, stopServer, waitForServer, runHook as runHookRaw } from "./_helpers";
+import { asJson, startServer, stopServer, waitForServer, runHook as runHookRaw, HOOK_STATE_DIR } from "./_helpers";
 
 const TEST_PORT = 17831;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
-const TURN_STATE_DIR = join(import.meta.dir, "..", ".devlog", "turn-state");
+const TURN_STATE_DIR = join(HOOK_STATE_DIR, "turn-state");
 const RELEASE_LINE = "-(release) ترقية أداة التطوير بعد قياس أثرها على الشجرة";
 
 function writeTranscript(dir: string, userUuid: string, assistantTexts: string[]): string {

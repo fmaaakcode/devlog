@@ -71,8 +71,12 @@ describe("normalizeTagContent", () => {
   test("collapses whitespace, lowercases, trims", () => {
     expect(normalizeTagContent("  Fix   The   Bug  ")).toBe("fix the bug");
   });
-  test("removes inline-code spans wholesale (content + backticks → space)", () => {
-    expect(normalizeTagContent("call `foo()` now")).toBe("call now");
+  test("unwraps inline-code spans — the identifier is CONTENT, only the backticks are formatting (#1186)", () => {
+    expect(normalizeTagContent("call `foo()` now")).toBe("call foo() now");
+  });
+  test("two reports that differ only by the quoted identifier stay distinct (#1186)", () => {
+    // Erasing the span made these collide, so one text closer closed both.
+    expect(normalizeTagContent("crash in `parseA`")).not.toBe(normalizeTagContent("crash in `parseB`"));
   });
   test("strips a stray (unpaired) backtick", () => {
     expect(normalizeTagContent("foo`bar")).toBe("foobar");
@@ -245,6 +249,8 @@ describe("isMalformedPkgDescriptor", () => {
 });
 
 describe("cleanupMalformedSecurityTags / cleanupMalformedOutdatedTags", () => {
+  // #1016: the cleanups archive before they splice; a stub archiver that accepts.
+  const ok = async () => true;
   const malformedSec = () => [
     tag("security", "undefined@undefined — GHSA-1", { num: 1 }),
     tag("security", "rnnoise@vendored-unknown — GHSA-2", { num: 2 }),
@@ -253,51 +259,51 @@ describe("cleanupMalformedSecurityTags / cleanupMalformedOutdatedTags", () => {
     tag("security:dep", "null@null — hand written", { num: 5 }),
   ];
 
-  test("splices out phantom `security` tags and reports the count", () => {
+  test("splices out phantom `security` tags and reports the count", async () => {
     const data = baseData(malformedSec());
-    expect(cleanupMalformedSecurityTags(data)).toBe(2);
+    expect(await cleanupMalformedSecurityTags(data, ok)).toBe(2);
     expect(data.tags.map(t => t.num)).toEqual([3, 4, 5]);
   });
 
-  test("user-authored security:own / security:dep are never touched", () => {
+  test("user-authored security:own / security:dep are never touched", async () => {
     const data = baseData(malformedSec());
-    cleanupMalformedSecurityTags(data);
+    await cleanupMalformedSecurityTags(data, ok);
     expect(data.tags.filter(t => t.tag.startsWith("security:")).length).toBe(2);
   });
 
-  test("it is idempotent — a second run removes nothing", () => {
+  test("it is idempotent — a second run removes nothing", async () => {
     const data = baseData(malformedSec());
-    expect(cleanupMalformedSecurityTags(data)).toBe(2);
+    expect(await cleanupMalformedSecurityTags(data, ok)).toBe(2);
     expect(data.migrations?.cleanup_malformed_security_v1).toBe(true);
     expect(data.migrations?.cleanup_malformed_security_v2).toBe(true);
     data.tags.push(tag("security", "null@null — GHSA-3", { num: 6 }));
-    expect(cleanupMalformedSecurityTags(data)).toBe(0);
+    expect(await cleanupMalformedSecurityTags(data, ok)).toBe(0);
     expect(data.tags.some(t => t.num === 6)).toBe(true);
   });
 
-  test("a data blob with no `migrations` object gets one", () => {
+  test("a data blob with no `migrations` object gets one", async () => {
     const data = baseData(malformedSec());
     delete (data as { migrations?: unknown }).migrations;
-    expect(cleanupMalformedSecurityTags(data)).toBe(2);
+    expect(await cleanupMalformedSecurityTags(data, ok)).toBe(2);
     expect(data.migrations?.cleanup_malformed_security_v2).toBe(true);
   });
 
-  test("the outdated cleanup mirrors it and stays in its own lane", () => {
+  test("the outdated cleanup mirrors it and stays in its own lane", async () => {
     const data = baseData([
       tag("outdated", "rnnoise@vendored-unknown — احدث: 0.1.8", { num: 1 }),
       tag("outdated", "astro@5.11.0 — احدث: 5.12.0", { num: 2 }),
       tag("security", "undefined@undefined — GHSA-1", { num: 3 }),
     ]);
-    expect(cleanupMalformedOutdatedTags(data)).toBe(1);
+    expect(await cleanupMalformedOutdatedTags(data, ok)).toBe(1);
     expect(data.tags.map(t => t.num)).toEqual([2, 3]);   // the malformed SECURITY tag survives
     expect(data.migrations?.cleanup_malformed_outdated_v1).toBe(true);
-    expect(cleanupMalformedOutdatedTags(data)).toBe(0);
+    expect(await cleanupMalformedOutdatedTags(data, ok)).toBe(0);
   });
 
-  test("a clean store loses nothing but is still stamped", () => {
+  test("a clean store loses nothing but is still stamped", async () => {
     const data = baseData([tag("security", "astro@5.12.0 — GHSA-real", { num: 1 })]);
-    expect(cleanupMalformedSecurityTags(data)).toBe(0);
-    expect(cleanupMalformedOutdatedTags(data)).toBe(0);
+    expect(await cleanupMalformedSecurityTags(data, ok)).toBe(0);
+    expect(await cleanupMalformedOutdatedTags(data, ok)).toBe(0);
     expect(data.tags.length).toBe(1);
     expect(data.migrations?.cleanup_malformed_outdated_v2).toBe(true);
   });

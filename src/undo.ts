@@ -48,30 +48,40 @@ const L = <T>(en: T, ar: T): T => (currentLang() === "ar" ? ar : en);
 // archive write REFUSES the removal (the same contract runRetention follows when
 // it puts un-archivable events back). A refused undo is visible: it rides the
 // rejections channel into the next SessionStart context.
-async function removeTagAt(idx: number, data: DevLogData, project: string): Promise<RollbackResult | null> {
+async function removeTagAt(idx: number, data: DevLogData, project: string): Promise<UndoResult> {
   const target = data.tags[idx];
-  if (!target) return null;
+  if (!target) return { outcome: "no-match", rollback: null };
   if (!(await archiveUndone([{ undoneAt: new Date().toISOString(), project, kind: "tag", entry: target }]))) {
     console.error(`[/api/tags undo] archive failed — REFUSING to remove [${target.tag}] ${(target.content || "").slice(0, 60)}`);
     pushRejection(data, project, "undo-archive-failed", L(
       `\`-(undo)\` was refused: the tag could not be archived, and DevLog never deletes a row it can't keep a copy of. Check the archive folder's permissions and retry.`,
       `رُفض \`-(undo)\`: تعذّرت أرشفة التاق، وDevLog لا يحذف صفًّا لا يستطيع الاحتفاظ بنسخة منه. افحص صلاحيات مجلد الأرشيف وأعد المحاولة.`));
-    return null;
+    return { outcome: "archive-failed", rollback: null };
   }
 
   const [removed] = data.tags.splice(idx, 1);
+  let rollback: RollbackResult | null = null;
   if (removed && removed.tag === "release") {
     try {
       const { rollbackRelease } = await import("./release-rollback");
-      return await rollbackRelease(removed, data, project);
+      rollback = await rollbackRelease(removed, data, project);
     } catch (e) { console.error("[/api/tags undo release-rollback] error:", (e as Error)?.message); }
   }
-  return null;
+  return { outcome: "removed", rollback };
 }
 
-// Returns the RollbackResult when the undone tag was a release (so the caller
-// can surface the outcome — QA #2), else null.
-export async function applyUndo(content: string, data: DevLogData, project: string): Promise<RollbackResult | null> {
+/** What an `-(undo)` actually did (#1206). `removed` is the only success; every
+ *  other outcome removed NOTHING and has already pushed a rejection so the model
+ *  hears it — a silent null here was indistinguishable from success, and an
+ *  undo aimed at the wrong `#N` is exactly the case this module exists for. */
+export type UndoOutcome = "removed" | "no-match" | "ambiguous" | "archive-failed";
+export interface UndoResult { outcome: UndoOutcome; rollback: RollbackResult | null }
+
+const NONE: UndoResult = { outcome: "no-match", rollback: null };
+
+// `rollback` is the RollbackResult when the undone tag was a release (so the
+// caller can surface the outcome — QA #2), else null.
+export async function applyUndo(content: string, data: DevLogData, project: string): Promise<UndoResult> {
   const num = singleHashNum(content);
   if (num !== null) {
     const idx = data.tags.findIndex(t => t.project === project && t.num === num);
@@ -93,7 +103,7 @@ export async function applyUndo(content: string, data: DevLogData, project: stri
         pushRejection(data, project, "undo-archive-failed", L(
           `\`-(undo) #${num}\` was refused: the plan step could not be archived, and DevLog never deletes a row it can't keep a copy of.`,
           `رُفض \`-(undo) #${num}\`: تعذّرت أرشفة خطوة الخطة، وDevLog لا يحذف صفًّا لا يستطيع الاحتفاظ بنسخة منه.`));
-        return null;
+        return { outcome: "archive-failed", rollback: null };
       }
       plan.steps.splice(stepIdx, 1);
       const projectPath = data.projects[project]?.path;
@@ -102,17 +112,24 @@ export async function applyUndo(content: string, data: DevLogData, project: stri
         catch (e) { console.error("[/api/tags undo plan-step] error:", (e as Error)?.message); }
       }
       plan.updatedAt = new Date().toISOString();
-      return null;
+      return { outcome: "removed", rollback: null };
     }
     console.log(`[/api/tags undo] no tag or plan-step found for #${num} in ${project}`);
-    return null;
+    pushRejection(data, project, "undo-no-match", L(
+      `\`-(undo) #${num}\` removed NOTHING — no tag or plan step carries #${num} in this project. Check the number (-(ask:closed) #${num} shows what it names).`,
+      `\`-(undo) #${num}\` لم يحذف شيئًا — لا تاق ولا خطوة خطة تحمل #${num} في هذا المشروع. تحقّق من الرقم (-(ask:closed) #${num} يبيّن ما يسمّيه).`));
+    return NONE;
   }
 
   const norm = (s: string) => s.toLowerCase().replace(/[—–-]+/g, "-").replace(/\s+/g, " ").trim();
   const needle = content ? norm(content) : "";
   if (!needle) {
     const idx = data.tags.findLastIndex(t => t.project === project);
-    return idx >= 0 ? await removeTagAt(idx, data, project) : null;
+    if (idx >= 0) return await removeTagAt(idx, data, project);
+    pushRejection(data, project, "undo-no-match", L(
+      "`-(undo)` removed NOTHING — this project has no tags to remove.",
+      "`-(undo)` لم يحذف شيئًا — لا تاقات في هذا المشروع لتُحذف."));
+    return NONE;
   }
   const exactIdxs = data.tags
     .map((t, i) => ({ t, i }))
@@ -136,8 +153,11 @@ export async function applyUndo(content: string, data: DevLogData, project: stri
       `\`-(undo) ${content.slice(0, 60)}\` matches ${substrIdxs.length} tags. Use \`-(undo) #N\` by number to avoid ambiguity. Candidates: ${candidates}`,
       `\`-(undo) ${content.slice(0, 60)}\` يطابق ${substrIdxs.length} تاقات. استخدم \`-(undo) #N\` بالرقم لتجنب اللبس. المرشحون: ${candidates}`));
     console.log(`[/api/tags undo] AMBIGUOUS: '${content.slice(0, 60)}' matches ${substrIdxs.length} tags in ${project}; skipping`);
-  } else {
-    console.log(`[/api/tags undo] no match for '${content.slice(0, 60)}' in ${project}`);
+    return { outcome: "ambiguous", rollback: null };
   }
-  return null;
+  console.log(`[/api/tags undo] no match for '${content.slice(0, 60)}' in ${project}`);
+  pushRejection(data, project, "undo-no-match", L(
+    `\`-(undo) ${content.slice(0, 60)}\` removed NOTHING — no tag in this project matches that text. Use \`-(undo) #N\` by number.`,
+    `\`-(undo) ${content.slice(0, 60)}\` لم يحذف شيئًا — لا تاق في هذا المشروع يطابق هذا النص. استخدم \`-(undo) #N\` بالرقم.`));
+  return NONE;
 }

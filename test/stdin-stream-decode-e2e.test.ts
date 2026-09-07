@@ -9,7 +9,7 @@
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import { spawn, type Subprocess } from "bun";
-import { asJson, PROJECT_ROOT, startServer, stopServer, waitForServer } from "./_helpers";
+import { asJson, PROJECT_ROOT, startServer, stopServer, waitForServer, scrubbedEnv } from "./_helpers";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -52,7 +52,7 @@ describe("Stop-hook stdin decoding across chunk boundaries (#767)", () => {
     const proc = spawn({
       cmd: ["bun", "parse-tags.ts"],
       cwd: PROJECT_ROOT,
-      env: { ...process.env, DEVLOG_PORT: String(TEST_PORT), DEVLOG_LANG: "en", DEVLOG_DEBUG: "0", DEVLOG_ENV_DRIFT_CHECK: "0", CLAUDE_PROJECT_DIR: "" },
+      env: { ...scrubbedEnv(), DEVLOG_PORT: String(TEST_PORT), DEVLOG_LANG: "en", DEVLOG_DEBUG: "0", DEVLOG_ENV_DRIFT_CHECK: "0", CLAUDE_PROJECT_DIR: "" },
       stdin: "pipe", stdout: "pipe", stderr: "pipe",
     });
     proc.stdin.write(bytes.slice(0, cut));

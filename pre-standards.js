@@ -20,12 +20,36 @@ const raw = await new Response(Bun.stdin.stream()).text();
 let data;
 try { data = JSON.parse(raw); } catch { process.exit(0); }
 
-const filePath = data.tool_input?.file_path || "";
+const toolName = data.tool_name || "";
 const sessionId = data.session_id || "";
 // Attribution anchor (see attributionCwd in src/hooks.ts): the session's
 // project dir outranks the payload cwd, which follows the shell's `cd` drift.
 const cwd = process.env.CLAUDE_PROJECT_DIR || data.cwd || "";
-if (!sessionId || !filePath) process.exit(0);
+
+// The files this tool call writes. Write/Edit name one; a shell command
+// (#1038 / F-3.46) names the paths its redirects, `sed -i`, tee/cp/mv/rm and
+// inline-script write APIs target — the unified detector in src/shell-write.ts
+// decides, and relative targets resolve against the SHELL's cwd (the payload's,
+// which follows `cd`), so `cat > src/types.ts <<EOF` hashes to the same ack as
+// a Write of the absolute path. Capped at 8 so one sprawling command can't run
+// the gate past its timeout. Without this the bypass-permissions mode — which
+// steers the model to heredocs/sed instead of Write/Edit — never fired a gate.
+const SHELL_TOOLS = new Set(["Bash", "PowerShell"]);
+let paths = [];
+if (SHELL_TOOLS.has(toolName)) {
+  try {
+    const { shellWriteTargets } = await import("./src/shell-write.ts");
+    const { resolve, isAbsolute } = await import("node:path");
+    const shellCwd = data.cwd || cwd;
+    paths = shellWriteTargets(data.tool_input?.command || "").targets
+      .map(t => (isAbsolute(t) ? t : resolve(shellCwd, t)))
+      .slice(0, 8);
+  } catch { /* fail-open — a detector fault must never wedge a command */ }
+} else if (data.tool_input?.file_path) {
+  paths = [data.tool_input.file_path];
+}
+if (!sessionId || !paths.length) process.exit(0);
+const filePath = paths[0];
 
 // ── Tracking-file gate ────────────────────────────────────────────────────────
 // Layer 1 of the tag-enforcement pair (layer 2 = the Stop-time untagged guard).
@@ -39,17 +63,20 @@ if (!sessionId || !filePath) process.exit(0);
 if (process.env.DEVLOG_TRACKING_GATE !== "0") {
   try {
     const { isTrackingFile, trackingTagFor } = await import("./src/tracking-files.ts");
-    if (isTrackingFile(filePath)) {
-      const ackDir = join(import.meta.dir, ".devlog", "tracking-ack");
-      const safeSid = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-      const ackFile = join(ackDir, `${safeSid}-${Bun.hash(filePath.toLowerCase()).toString(36)}.txt`);
-      if (!existsSync(ackFile)) {
+    const ackDir = join(import.meta.dir, ".devlog", "tracking-ack");
+    const safeSid = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const ackFor = p => join(ackDir, `${safeSid}-${Bun.hash(p.toLowerCase()).toString(36)}.txt`);
+    // First tracking file this call writes that the session was not yet told about.
+    const trackingPath = paths.find(p => isTrackingFile(p) && !existsSync(ackFor(p)));
+    if (trackingPath) {
+      const ackFile = ackFor(trackingPath);
+      {
         await mkdir(ackDir, { recursive: true });
         await Bun.write(ackFile, String(Date.now())); // ack BEFORE block — a crash can only lose the nudge, never loop it
         const LANG = (process.env.DEVLOG_LANG || "").trim().toLowerCase().startsWith("ar") ? "ar" : "en";
         const L = (en, ar) => (LANG === "ar" ? ar : en);
-        const fileName = filePath.split(/[\\/]/).pop() || filePath;
-        const tag = trackingTagFor(filePath);
+        const fileName = trackingPath.split(/[\\/]/).pop() || trackingPath;
+        const tag = trackingTagFor(trackingPath);
         process.stderr.write(`${[
           "════════ DevLog Tracking Gate ════════",
           `📋 ${L(
@@ -76,27 +103,38 @@ if (process.env.DEVLOG_TRACKING_GATE !== "0") {
 if (process.env.DEVLOG_DEMOLITION_GATE !== "0") {
   try {
     const { GATED_TOOLS, decideDemolition } = await import("./src/demolition-gate.ts");
-    if (GATED_TOOLS.has(data.tool_name || "")) {
+    if (GATED_TOOLS.has(toolName)) {
       const ackDir = join(import.meta.dir, ".devlog", "demolition-ack");
       const safeSid = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-      const ackFile = join(ackDir, `${safeSid}-${Bun.hash(filePath.toLowerCase()).toString(36)}.txt`);
-      if (!existsSync(ackFile)) {
+      const ackFor = p => join(ackDir, `${safeSid}-${Bun.hash(p.toLowerCase()).toString(36)}.txt`);
+      const fresh = paths.filter(p => !existsSync(ackFor(p)));
+      if (fresh.length) {
         const port = process.env.DEVLOG_PORT || "7777";
-        const url = `http://127.0.0.1:${port}/api/file-weight?cwd=${encodeURIComponent(cwd)}&file=${encodeURIComponent(filePath)}`;
-        let weight = null;
-        try {
-          const r = await fetch(url, { signal: AbortSignal.timeout(4000) });
-          if (r.ok) weight = await r.json();
-        } catch { /* daemon down — fail open, as decideDemolition also would */ }
         const LANG = (process.env.DEVLOG_LANG || "").trim().toLowerCase().startsWith("ar") ? "ar" : "en";
-        const decision = decideDemolition({ weight, acked: false }, LANG);
-        if (decision.block) {
+        // All targets weighed in parallel: one 4s budget for the call, not one per file.
+        const decisions = await Promise.all(fresh.map(async p => {
+          const url = `http://127.0.0.1:${port}/api/file-weight?cwd=${encodeURIComponent(cwd)}&file=${encodeURIComponent(p)}`;
+          let weight = null;
+          try {
+            const r = await fetch(url, { signal: AbortSignal.timeout(4000) });
+            if (r.ok) weight = await r.json();
+          } catch { /* daemon down — fail open, as decideDemolition also would */ }
+          return { path: p, decision: decideDemolition({ weight, acked: false }, LANG) };
+        }));
+        const blocking = decisions.filter(d => d.decision.block);
+        if (blocking.length) {
           await mkdir(ackDir, { recursive: true });
           // The path rides IN the ack (narrative layer P4): the Stop hook reads
           // these to ask "you overrode the gate on X — where is the why?", and
           // the filename only carries a hash. Sweeps key on mtime, unaffected.
-          await Bun.write(ackFile, JSON.stringify({ t: Date.now(), file: filePath }));   // ack BEFORE block
-          process.stderr.write(`${decision.message}\n`);
+          // Every load-bearing target of this call is acked at once, so a
+          // re-issue passes instead of blocking again on the second file.
+          for (const b of blocking) await Bun.write(ackFor(b.path), JSON.stringify({ t: Date.now(), file: b.path }));   // ack BEFORE block
+          const more = blocking.slice(1).map(b => b.path.split(/[\\/]/).pop() || b.path);
+          const tail = more.length
+            ? (LANG === "ar" ? `\n(وأيضًا جدران حاملة في نفس الأمر: ${more.join("، ")})` : `\n(also load-bearing in this command: ${more.join(", ")})`)
+            : "";
+          process.stderr.write(`${blocking[0].decision.message}${tail}\n`);
           process.exit(2);
         }
       }
@@ -104,8 +142,9 @@ if (process.env.DEVLOG_DEMOLITION_GATE !== "0") {
   } catch { /* fail-open — never wedge an edit on this gate's account */ }
 }
 
-// Same off-switch as the Stop-hook check.
-if (process.env.DEVLOG_STANDARDS_CHECK === "0") process.exit(0);
+// Same off-switch as the Stop-hook check. The write-checkers below read the
+// written CONTENT, which a shell command does not carry — shell writes stop here.
+if (process.env.DEVLOG_STANDARDS_CHECK === "0" || SHELL_TOOLS.has(toolName)) process.exit(0);
 
 try {
   const { scanCatalog, isEnforcementDisabled } = await import("./src/standards.ts");

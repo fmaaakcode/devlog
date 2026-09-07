@@ -5,6 +5,7 @@
 import { renderMarkdown, escapeHtml } from "./md-render";
 import { currentLang } from "./i18n";
 import { DL_THEME_ROOT } from "./dl-theme";
+import { clipUnits } from "./text-clip";
 
 const L = (en: string, ar: string): string => (currentLang() === "ar" ? ar : en);
 
@@ -134,10 +135,20 @@ ${body}
 </html>`;
 }
 
-// Slug generation: lowercase, alphanumeric + hyphens, max 80 chars.
+// Windows device names: a file called `con.md`/`nul.md` (any extension) is the
+// DEVICE on Win32, so the write "succeeds" into nowhere and the doc is reported
+// stored (#1203 / F-9.281). Reserved on every platform so a repo shared across
+// OSes never carries a name one of them cannot check out.
+const WINDOWS_RESERVED_RE = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/;
+
+// Slug generation: lowercase, alphanumeric + hyphens, max 80 UTF-16 units.
 export function docSlug(name: string): string {
-  return name.trim().toLowerCase()
+  const folded = name.trim().toLowerCase()
     .replace(/[^\p{L}\p{N}-]+/gu, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80) || "doc";
+    .replace(/^-+|-+$/g, "");
+  // clipUnits, not slice: the 80-unit cut used to split an astral character,
+  // writing `<slug>�.md` to disk while index.json kept the lone surrogate
+  // (F-2.53). Trailing hyphens can reappear after the cut, so strip again.
+  const slug = clipUnits(folded, 80).replace(/-+$/, "") || "doc";
+  return WINDOWS_RESERVED_RE.test(slug) ? `${slug}-doc` : slug;
 }

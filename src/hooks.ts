@@ -10,20 +10,33 @@
 // Two guards live here because they belong to interpretation, not storage:
 // content fields are capped (MAX_DIFF_FIELD_BYTES) so a huge paste can't bloat
 // the store, and sensitive paths (.env and friends) are redacted before the
-// content ever reaches disk.
+// content ever reaches disk. The command channel gets the value-level
+// counterpart (secret-redact.ts): a token typed inline in a shell command is
+// blanked, the rest of the command is kept.
 
 import type { EventEntry } from "./types";
 import { projectName } from "./data";
 import { isTestCommand } from "./verify-hint";
 import { isSensitivePath } from "./sensitive-paths";
+import { redactSecrets } from "./secret-redact";
+import { clipUnits } from "./text-clip";
 
 const MAX_DIFF_FIELD_BYTES = 10000;
 
 function capContent(s: unknown): string | undefined {
   if (typeof s !== "string" || s.length === 0) return undefined;
   if (s.length <= MAX_DIFF_FIELD_BYTES) return s;
-  return `${s.slice(0, MAX_DIFF_FIELD_BYTES)}\n…[truncated, original ${s.length} chars]`;
+  // clipUnits, not slice (F-3.7): a cut inside an astral pair left a lone
+  // surrogate that every viewer rendered as U+FFFD.
+  return `${clipUnits(s, MAX_DIFF_FIELD_BYTES)}\n…[truncated, original ${s.length} chars]`;
 }
+
+// F-3.4: only content/old/new were capped; `command`, `description` and the
+// agent prompt were stored whole — a 200,000-char subagent prompt landed in
+// events.json as one description (verified live), and pushEvent's retention
+// bounds the COUNT of events, never their size. Same cap as the diff fields;
+// the marker keeps the truncation visible to every reader.
+const capField = (s: unknown): string => capContent(s) ?? "";
 
 /**
  * Attribution cwd for a hook request: prefer the session's PROJECT DIR (the
@@ -75,7 +88,12 @@ interface HookBody {
 const EXIT_CODE_FIELDS = ["exit_code", "exitCode", "code", "returnCode"] as const;
 // [1-9]\d* on purpose: "0 fail"/"0 failed" is a PASS line, not a failure.
 const FAIL_COUNT_RE = /(?:^|[^\w.])([1-9]\d*)\s+fail(?:ed|ures?|ing)?\b/i;
-const FAIL_MARK_RE = /(?:^|\s)FAIL(?:ED)?(?::|\s|$)/;   // case-sensitive: go test / jest suite lines
+// Case-sensitive AND line-anchored (F-3.2): go's `--- FAIL: TestX` / `FAIL\tpkg`,
+// jest's `FAIL src/x.test.ts` and pytest's `FAILED tests/x.py::t` all start
+// the line. The old `(?:^|\s)FAIL` matched the word anywhere, so a PASSING
+// test whose NAME contains it (`✓ returns FAIL when input empty`) read as a
+// red suite — and the marker check runs before the pass summary can rescue it.
+const FAIL_MARK_RE = /^(?:--- )?FAIL(?:ED)?(?::|\s|$)/m;
 const PASS_RE = /\b\d+\s+pass(?:ed|ing)?\b|\b0\s+fail(?:ed)?\b|\ball tests passed\b/i;
 
 export function commandOutcome(resp: unknown, command: string): { exit_code?: number; ok?: boolean } {
@@ -109,9 +127,11 @@ type EventPatch = (body: HookBody) => Partial<EventEntry>;
 const shellCommand: EventPatch = body => {
   const command = body.tool_input?.command || "";
   const outcome = commandOutcome(body.tool_response, command);
+  // The verdict is derived from the RAW command (it classifies the shape);
+  // only the stored text has its secret values blanked (F-3.5).
   return {
-    tool: body.tool_name || "", type: "command", command,
-    description: body.tool_input?.description || "",
+    tool: body.tool_name || "", type: "command", command: capField(redactSecrets(command)),
+    description: capField(body.tool_input?.description),
     ...(outcome.exit_code !== undefined && { exit_code: outcome.exit_code }),
     ...(outcome.ok !== undefined && { ok: outcome.ok }),
   };
@@ -141,7 +161,7 @@ const TOOL_EVENTS: Record<string, EventPatch> = {
   PowerShell: shellCommand,
   Agent: body => ({
     tool: "Agent", type: "agent",
-    description: body.tool_input?.prompt || body.tool_input?.description || "",
+    description: capField(body.tool_input?.prompt || body.tool_input?.description),
     agent_type: body.tool_input?.subagent_type || "",
   }),
   // Plan-mode descriptions are English on purpose (audit C4): the description
@@ -158,11 +178,11 @@ const LIFECYCLE_EVENTS: Record<string, EventPatch> = {
     type: "agent", event: "SubagentStart",
     agent_type: body.agent_type || "",
     agent_id: body.agent_id || "",
-    description: body.tool_input?.description || body.tool_input?.prompt || "",
+    description: capField(body.tool_input?.description || body.tool_input?.prompt),
   }),
   SubagentStop: body => ({ type: "agent", event: "SubagentStop", agent_id: body.agent_id || "" }),
-  TaskCreated: body => ({ type: "task", event: "TaskCreated", description: body.tool_input?.subject || body.tool_input?.description || "" }),
-  TaskCompleted: body => ({ type: "task", event: "TaskCompleted", description: body.tool_input?.subject || "" }),
+  TaskCreated: body => ({ type: "task", event: "TaskCreated", description: capField(body.tool_input?.subject || body.tool_input?.description) }),
+  TaskCompleted: body => ({ type: "task", event: "TaskCompleted", description: capField(body.tool_input?.subject) }),
 };
 
 export function parseHookEvent(body: HookBody): EventEntry {

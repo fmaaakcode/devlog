@@ -37,7 +37,10 @@ function cachedAnalysis(path: string): Promise<ProjectAnalysis> {
   if (!get) {
     // Never cache an empty walk: an unreadable/half-mounted project would
     // otherwise serve "this project has no files" for the whole window.
-    get = ttlCached(MAP_TTL_MS, () => analyzeProject(path), a => a.files.length > 0);
+    // Stale-while-revalidate (#1064): the demolition gate probes this under a
+    // 4s budget; after a 5-minute quiet spell the expired graph is served at
+    // once and refreshed behind it, instead of the gate timing out to "unknown".
+    get = ttlCached(MAP_TTL_MS, () => analyzeProject(path), a => a.files.length > 0, { staleWhileRevalidate: true });
     analysisCaches.set(path, get, ANALYSIS_ENTRY_TTL_MS);
   }
   return get();

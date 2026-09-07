@@ -187,25 +187,41 @@ export function duplicateTags(tags: TagEntry[]): Finding | null {
  * re-emitted the tag with a fuller wording — which slips past the server's content
  * dedup precisely BECAUSE the text changed. Either way the log now carries two
  * entries for one event, which is the finding. The cause is for the human to read.
+ *
+ * Two DISTINCT numbered items are never twins (#1073 / F-4.104): a response that
+ * opens `-(todo) parser tests` and then `-(todo) parser tests for empty input`
+ * is two intended items with two numbers, and the old rule called them a
+ * critical twin, blocked the release, and advised deleting one with -(undo) —
+ * i.e. deleting real open work to satisfy a detector. A twin is the same tag
+ * where at least one side carries no number, or both carry the SAME number.
+ * Chains are grouped: a ⊂ b ⊂ c is one event reported once, not three rows.
  */
 export function bloatedTwins(tags: TagEntry[]): Finding | null {
   const sorted = [...tags].sort((a, b) => ms(a.timestamp) - ms(b.timestamp));
   const twins: string[] = [];
+  const consumed = new Set<number>();
+  const sameIdentity = (a: TagEntry, b: TagEntry) =>
+    typeof a.num !== "number" || typeof b.num !== "number" || a.num === b.num;
   for (let i = 0; i < sorted.length; i++) {
+    if (consumed.has(i)) continue;
     const a = sorted[i];
     const an = norm(a.content);
     if (an.length < 10) continue;                    // too short to judge a prefix on
+    let longest: TagEntry | null = null;
     for (let j = i + 1; j < sorted.length; j++) {
       const b = sorted[j];
       if (ms(b.timestamp) - ms(a.timestamp) > NEAR_MS) break;
-      if (b.tag !== a.tag) continue;
+      if (b.tag !== a.tag || consumed.has(j) || !sameIdentity(a, b)) continue;
       const bn = norm(b.content);
       if (an === bn || !bn.startsWith(an)) continue;  // identical isn't a twin; only growth
-      twins.push(L(
-        `[${a.tag}] «${(a.content || "").slice(0, 40)}…» then a copy ${bn.length - an.length} chars longer`,
-        `[${a.tag}] «${(a.content || "").slice(0, 40)}…» ثم نسخة أطول بـ${bn.length - an.length} حرفًا`,
-      ));
+      consumed.add(j);
+      if (!longest || bn.length > norm(longest.content).length) longest = b;
     }
+    if (!longest) continue;
+    twins.push(L(
+      `[${a.tag}] «${(a.content || "").slice(0, 40)}…» then a copy ${norm(longest.content).length - an.length} chars longer`,
+      `[${a.tag}] «${(a.content || "").slice(0, 40)}…» ثم نسخة أطول بـ${norm(longest.content).length - an.length} حرفًا`,
+    ));
   }
   if (!twins.length) return null;
   return {

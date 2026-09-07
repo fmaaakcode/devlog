@@ -83,7 +83,10 @@ export function parseCargoDeps(text: string): CargoDep[] {
 function parseWorkspaceStringArray(rootText: string, key: string): string[] {
   const wsBlock = rootText.match(/\[workspace\][\s\S]*?(?=\n\[|$)/);
   if (!wsBlock) return [];
-  const arrMatch = wsBlock[0].match(new RegExp(`${key}\\s*=\\s*\\[([\\s\\S]*?)\\]`));
+  // Anchored to the start of a line: bare `members\s*=` also matched inside
+  // `default-members = [...]`, so when that key came first the DEFAULT subset
+  // was read as the member list and the other members vanished from the scan (#1113).
+  const arrMatch = wsBlock[0].match(new RegExp(`(?:^|\\n)\\s*${key}\\s*=\\s*\\[([\\s\\S]*?)\\]`));
   if (!arrMatch) return [];
   return Array.from(arrMatch[1].matchAll(/"([^"]+)"/g)).map((m) => m[1]);
 }

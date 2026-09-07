@@ -135,7 +135,10 @@ function parseFunctions(section: string): StackFunction[] {
       const signature = boldMatch ? boldMatch[1] : signatureRaw;
       const isExported = !!boldMatch;
       const isAsync = /^async\s+/.test(signature);
-      const nameMatch = signature.replace(/^async\s+/, "").match(/^([A-Za-z0-9_$]+)/);
+      // Qualified names survive: `Iterator::next` / `Cdp.send` used to be cut at
+      // the separator, so every method of a Rust/C++ file was listed under its
+      // type's or trait's name and methods became indistinguishable (#1091).
+      const nameMatch = signature.replace(/^async\s+/, "").match(/^([A-Za-z0-9_$~]+(?:(?:::|\.)[A-Za-z0-9_$~]+)*)/);
       const fn: StackFunction = {
         file: currentFile,
         name: nameMatch ? nameMatch[1] : signature,

@@ -38,6 +38,19 @@ describe("tokenize — Arabic/English normalization", () => {
     expect(toks).not.toContain("في");
   });
 
+  test("#1028: على/إلى are dropped AFTER normalization (the list is folded like the tokens)", () => {
+    const toks = tokenize("مشكلة على الشاشة إلى اليسار تظهر");
+    expect(toks).not.toContain("علي");
+    expect(toks).not.toContain("الي");
+    expect(toks).not.toContain("على");
+    expect(toks).toEqual(["مشكله", "شاشه", "يسار", "تظهر"]);
+    // The live false positive: two unrelated reports used to share 3 tokens
+    // (على، إلى، تظهر) and trip the auto-recall gate; now they share one.
+    const a = new Set(tokenize("مشكلة على الشاشة إلى اليسار تظهر"));
+    const shared = tokenize("خطأ على الطاولة إلى الحافة تظهر").filter(t => a.has(t));
+    expect(shared).toEqual(["تظهر"]);
+  });
+
   test("file paths and identifiers become searchable terms", () => {
     const toks = tokenize("fix in src/inject.ts newSecurityAlerts");
     expect(toks).toContain("src");

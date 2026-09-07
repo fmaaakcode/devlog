@@ -30,13 +30,15 @@ export function makePlanRoutes(): Record<string, unknown> {
           const parsed = parsePlanMarkdown(content);
 
           return await withData(async (data) => {
-            const { name: project } = resolveProjectFor(data, cwd);
+            const { name: project, cwd: effectiveCwd } = resolveProjectFor(data, cwd);
             const result = registerPlan(data, project, parsed.title, parsed.steps, filePath);
             if ("skipped" in result) {
               return Response.json({ ok: true, skipped: result.skipped, owner: result.owner });
             }
 
-            if (cwd) await exportStatusMd(cwd, data, project);
+            // The project root, not the hook's cwd (#1053 family, F-4.37): a
+            // FileChanged hook from a subfolder wrote `.devlog/` there.
+            if (effectiveCwd) await exportStatusMd(effectiveCwd, data, project);
             broadcast("plan", { project });
             return Response.json({ ok: true });
           });

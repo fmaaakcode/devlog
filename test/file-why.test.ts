@@ -72,6 +72,38 @@ describe("a file with no history still answers", () => {
   });
 });
 
+describe("reports follow their footprint, not the session stamp (#1229)", () => {
+  test("a report NAMING another file is not charged to this one, even when its session touched it", () => {
+    const d = data([
+      tag("bug found", "Cargo.toml parser drops workspace members", { num: 1 }),   // files: [F] (session stamp)
+      tag("bug found", "core.ts mis-orders the queue", { num: 2 }),
+      tag("bug found", "prose report with no path at all", { num: 3 }),
+    ]);
+    const nums = buildFileWhy(d, PROJ, F).reports.map(r => r.num);
+    expect(nums).toEqual([2, 3]);   // named → core.ts only; no name → session fallback keeps it
+  });
+
+  test("a report naming another module by its kebab-case stem leaves this dossier too", () => {
+    const d = data([
+      tag("built", "x", { files: [`${ROOT}/src/parse-tags.ts`] }),               // teaches the stem
+      tag("bug found", "parse-tags يعلّم كل الأسطر مخدومة بعد جلبة واحدة", { num: 1 }),   // session stamp = F
+      tag("bug found", "prose report", { num: 2 }),
+    ]);
+    expect(buildFileWhy(d, PROJ, F).reports.map(r => r.num)).toEqual([2]);
+    expect(buildFileWhy(d, PROJ, `${ROOT}/src/parse-tags.ts`).reports.map(r => r.num)).toEqual([1]);
+  });
+
+  test("a report naming this file reaches its dossier from a session that edited elsewhere", () => {
+    const d = data([
+      tag("bug found", "src/core.ts leaks the handle", { num: 7, files: [`${ROOT}/docs/notes.md`] }),
+      tag("bug fix", "#7 close-before-return", { files: [`${ROOT}/docs/notes.md`] }),
+    ]);
+    const [r] = buildFileWhy(d, PROJ, F).reports;
+    expect(r.num).toBe(7);
+    expect(r.open).toBe(false);
+  });
+});
+
 describe("caps report their remainder — never a silent cut", () => {
   test("decisions cap at 8 and count the rest", () => {
     const tags = Array.from({ length: 11 }, (_, i) => tag("decision", `قرار ${i}`));
@@ -87,11 +119,18 @@ describe("caps report their remainder — never a silent cut", () => {
     expect(w.workMore).toBe(2);
   });
 
-  test("reports cap at 12 and count the rest", () => {
-    const tags = Array.from({ length: 15 }, (_, i) => tag("bug found", `خطأ ${i}`, { num: i + 1 }));
+  test("reports cap at 12, count the rest, and keep the NEWEST (#1122)", () => {
+    // Distinct timestamps so the two ends are distinguishable (#1170): the old
+    // fixture shared one timestamp and was blind to which side got cut.
+    const tags = Array.from({ length: 15 }, (_, i) =>
+      tag("bug found", `خطأ ${i}`, { num: i + 1, timestamp: `2026-01-${String(i + 1).padStart(2, "0")}T00:00:00.000Z` }));
     const w = buildFileWhy(data(tags), PROJ, F);
     expect(w.reports).toHaveLength(12);
     expect(w.reportsMore).toBe(3);
+    const nums = w.reports.map(r => r.num);
+    expect(nums).toContain(15);          // the latest report survives
+    expect(nums).not.toContain(1);       // the oldest is what folds into "…N more"
+    expect(nums[nums.length - 1]).toBe(15);   // still oldest → newest
   });
 
   test("an over-long line is clipped at a word boundary with an ellipsis", () => {

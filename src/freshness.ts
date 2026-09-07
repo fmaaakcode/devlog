@@ -205,17 +205,23 @@ export function shouldAutoRestart(c: AutoRestartCheck): boolean {
  * degrades to a plain stop — acceptable for a human click, never for a timer).
  * The timer is unref'd so it never holds the process open by itself.
  */
-export function startAutoRestart(opts: { root: string; bootMs: number; stop: () => void; intervalMs?: number }): ReturnType<typeof setInterval> | null {
+export function startAutoRestart(opts: {
+  root: string; bootMs: number; stop: () => void; intervalMs?: number;
+  /** The hand-over itself; defaults to scheduleRestart. Injectable so the loop
+   *  (re-arm rule, env switches) is testable without spawning a successor (#1197). */
+  restart?: (stop: () => void) => void;
+}): ReturnType<typeof setInterval> | null {
   if (process.env.DEVLOG_AUTO_RESTART === "0") return null;
   if (process.env.DEVLOG_NO_RESPAWN) return null;
   let attemptedForMtime = 0;
+  const restart = opts.restart ?? scheduleRestart;
   const timer = setInterval(async () => {
     try {
       const newest = await newestSourceMtime(opts.root);
       if (!shouldAutoRestart({ now: Date.now(), bootMs: opts.bootMs, newestSourceMs: newest, lastMutationMs, attemptedForMtime })) return;
       attemptedForMtime = newest;
       console.log("[freshness] disk code newer than this process and nothing in flight — self-restarting to serve it");
-      scheduleRestart(opts.stop);
+      restart(opts.stop);
     } catch { /* stat hiccup — try again next beat */ }
   }, opts.intervalMs ?? 60_000);
   timer.unref?.();

@@ -48,7 +48,16 @@ export const DICT = {
   "tagLabel.refactor": { en: "Refactor", ar: "إعادة هيكلة" },
   "tagLabel.outdated": { en: "Outdated", ar: "قديم" },
   "tagLabel.decision": { en: "Decision", ar: "قرار" },
-  "tagLabel.insight": { en: "Insight", ar: "تحقيق" },
+  "tagLabel.insight": { en: "Insight", ar: "استبصار" },
+  // Stored types that had no label (#1145) — rendered raw in an Arabic UI.
+  "tagLabel.story": { en: "Story", ar: "قصة" },
+  "tagLabel.about": { en: "About", ar: "تعريف" },
+  "tagLabel.desc": { en: "Identity", ar: "هوية" },
+  "tagLabel.doc:report": { en: "Report", ar: "تقرير" },
+  "tagLabel.doc:analysis": { en: "Analysis", ar: "تحليل" },
+  "tagLabel.doc:plan": { en: "Plan doc", ar: "وثيقة خطة" },
+  "tagLabel.doc:comparison": { en: "Comparison", ar: "مقارنة" },
+  "tagLabel.doc:readme": { en: "README", ar: "README" },
   "tagLabel.security:dep": { en: "Security (dep)", ar: "أمني (تبعية)" },
   "tagLabel.security:own": { en: "Security (code)", ar: "أمني (كود)" },
   "tagLabel.feature": { en: "Feature", ar: "ميزة" },
@@ -123,6 +132,15 @@ export const DICT = {
   "err.failedMsg": { en: "Failed: {msg}", ar: "فشل: {msg}" },
   "err.connServer": { en: "Server connection failed: {msg}", ar: "فشل الاتصال بالخادم: {msg}" },
   "err.connGeneric": { en: "Couldn't reach the server", ar: "تعذّر الاتصال بالخادم" },
+  "err.http": { en: "The server refused the request (HTTP {status}) {msg}", ar: "رفض الخادم الطلب (HTTP {status}) {msg}" },
+  "err.renderProject": { en: "The server answered, but rendering \"{name}\" failed: {msg}", ar: "أجاب الخادم لكن تعذّر عرض \"{name}\": {msg}" },
+  "err.badHash": { en: "The #project= link in the address bar is malformed and was ignored", ar: "رابط #project= في شريط العنوان مشوَّه وتم تجاهله" },
+  "sess.loadFail": { en: "Failed to load sessions & processes: {msg}", ar: "فشل تحميل الجلسات والعمليات: {msg}" },
+  "models.loadFail": { en: "Failed to load model performance: {msg}", ar: "فشل تحميل أداء النماذج: {msg}" },
+  "inj.saveFail": { en: "Saving the injection setting failed: {msg}", ar: "فشل حفظ إعداد الحقن: {msg}" },
+  "scan.failed": { en: "Rescan failed: {msg}", ar: "فشلت إعادة المسح: {msg}" },
+  "stack.saveFail": { en: "Layout not saved: {msg}", ar: "لم يُحفظ الترتيب: {msg}" },
+  "stack.resetFail": { en: "Saved layout not cleared on the server: {msg}", ar: "لم يُمسح الترتيب المحفوظ على الخادم: {msg}" },
 
   // ===== daemon freshness =====
   "fresh.stale": {
@@ -319,6 +337,10 @@ export const DICT = {
   },
   "imp.ok": { en: "Import", ar: "استورد" },
   "imp.fail": { en: "Import failed", ar: "فشل الاستيراد" },
+  "imp.detached": {
+    en: "\nThe other machine’s folder ({path}) does not exist here, so the project was registered without a path. Open the local clone in Claude Code once and DevLog will link it.",
+    ar: "\nمجلد الجهاز الآخر ({path}) غير موجود هنا، فسُجِّل المشروع بلا مسار. افتح النسخة المحلية في Claude Code مرة واحدة وسيربطها DevLog.",
+  },
   "imp.done": {
     en: "Import complete: +{tags} tags, +{events} events, +{plans} plans (+{steps} steps), archive +{archive} lines.\nSkipped (already present): {skipped} · renumbered: {renumbered}.",
     ar: "اكتمل الاستيراد: +{tags} تاق، +{events} حدث، +{plans} خطة (+{steps} خطوة)، أرشيف +{archive} سطر.\nمتخطّى (موجود مسبقًا): {skipped} · معاد ترقيمه: {renumbered}.",
@@ -503,6 +525,8 @@ export const DICT = {
     ar: "بلا غرض مسجَّل — اطلب من كلود: <span dir=\"ltr\">-(ask:deps)</span>",
   },
   "depsPage.latestTitle": { en: "Latest version", ar: "النسخة الأحدث" },
+  "depsPage.orphansHead": { en: "Recorded purposes with no matching manifest library ({n})", ar: "أغراض مسجَّلة بلا مكتبة مطابقة في المانيفست ({n})" },
+  "depsPage.orphanBadge": { en: "not in manifest", ar: "ليست في المانيفست" },
 
   // ===== stack map page =====
   "stack.back": { en: "← Home", ar: "← الرئيسية" },
@@ -564,7 +588,7 @@ export const DICT = {
     en: "Claude ends its reply with <code>-(tag) content</code> markers. The Stop hook scans the reply, captures them and sends them to the dashboard — built, bug fix, todo, security note, architectural decision… with no manual file.",
     ar: "كلود يُنهي ردّه بعلامات <code>-(tag) محتوى</code>. خطّاف Stop يمسح الرد، يلتقطها، ويرسلها للداش بورد — مبنيّ، إصلاح خطأ، todo، ملاحظة أمنية، قرار معماري… بلا أي ملف يدوي.",
   },
-  "feat.captureApi": { en: "Captured by <b>parse-tags.js</b> ← <b>POST /api/tags</b>", ar: "يلتقطها <b>parse-tags.js</b> ← <b>POST /api/tags</b>" },
+  "feat.captureApi": { en: "Captured by <b>parse-tags.sh → parse-tags.ts</b> ← <b>POST /api/tags</b>", ar: "يلتقطها <b>parse-tags.sh → parse-tags.ts</b> ← <b>POST /api/tags</b>" },
   "feat.dPlanTitle": { en: "Plan: login feature", ar: "خطة: ميزة تسجيل الدخول" },
   "feat.dPlanS1": { en: "Login page", ar: "صفحة الدخول" },
   "feat.dPlanS2": { en: "Form validation", ar: "التحقق من النموذج" },
@@ -610,10 +634,10 @@ export const DICT = {
     en: "Stores <code>old_string</code> / <code>new_string</code> for every edit Claude makes and renders the <b>diff in-house</b> — at the level of a single edit, a file, or a whole session.",
     ar: "يخزّن <code>old_string</code> / <code>new_string</code> لكل تعديل يجريه كلود ويعرض <b>diff داخلياً</b> — على مستوى التعديل الواحد، أو الملف، أو الجلسة كاملة.",
   },
-  "feat.stackH3": { en: "Cross-project stack map", ar: "خريطة Stack عبر المشاريع" },
+  "feat.stackH3": { en: "Project stack map", ar: "خريطة Stack المشروع" },
   "feat.stackP": {
-    en: "A bird's-eye view of every project's languages, frameworks and libraries on one page, with a saveable layout — see your technologies from above across the whole portfolio.",
-    ar: "نظرة شاملة على لغات وأُطر ومكتبات كل مشاريعك في صفحة واحدة، مع تخطيط قابل للحفظ — لترى تقنياتك من علٍ عبر المحفظة كلها.",
+    en: "One project's files drawn as a dependency graph — who imports whom, entry points, clusters by folder and recently active files — with a layout you can drag and save. Opens per project from the dashboard header.",
+    ar: "ملفات مشروع واحد مرسومة كرسم اعتماديات — من يستورد من، نقاط الدخول، عناقيد بحسب المجلد والملفات النشطة مؤخرًا — بترتيب تسحبه وتحفظه. تُفتح لكل مشروع من رأس الداشبورد.",
   },
   "feat.dInjPreview": { en: "↓ injection preview", ar: "↓ معاينة الحقن" },
   "feat.treeH3": { en: "Tree browser · export · injection preview", ar: "متصفّح الشجرة · التصدير · معاينة الحقن" },
@@ -687,7 +711,10 @@ export function t(key, params) {
   const entry = DICT[key];
   let s = entry ? (entry[ensureLang()] ?? entry.ar ?? entry.en) : key;
   if (params) {
-    for (const [k, v] of Object.entries(params)) s = s.replaceAll(`{${k}}`, String(v));
+    // split/join, not replaceAll: a string replacement pattern interprets
+    // `$&`, `$'`, `` $` `` and `$$` in the VALUE (GetSubstitution), so a plan
+    // titled «Cost $& revenue» rendered as «Cost {title} revenue» (#1149).
+    for (const [k, v] of Object.entries(params)) s = s.split(`{${k}}`).join(String(v));
   }
   return s;
 }

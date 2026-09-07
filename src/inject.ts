@@ -15,7 +15,7 @@
 // Pure: no I/O, no globals. The caller (server.ts doInject) loads the data,
 // applies the once-per-session/once-per-file gating, and logs the injection.
 
-import type { DevLogData, InjectionConfig, ProjectProfile, TagEntry } from "./types";
+import type { DevLogData, InjectionConfig, ProjectProfile, TagEntry, InjectionEntry } from "./types";
 import {
   DEFAULT_INJECTION_CONFIG, CLOSURE_TAGS,
   openTodos, openBugs, openSecurity, openPlanSteps, openOutdatedLibs, type OpenPlanStep,
@@ -51,6 +51,10 @@ function safe(s: string): string {
   return s.replace(/</g, "‹").replace(/>/g, "›");
 }
 
+// Newest `#N`s named per open-items line (#1193); `#1234, ` is 7 chars, so the
+// line stays under the 300-char budget with room for the «(+N more)» tail.
+const MAX_OPEN_PER_LINE = 30;
+
 // Per-line caps for the free-text sections (#808). The block is rebuilt from
 // live tags every session, so its size tracks how verbosely tags happen to be
 // written — and that drifted hard: the median `built` line went 68 → 260 chars
@@ -65,6 +69,17 @@ function safe(s: string): string {
 const MAX_BUILT_LINE = 120;
 const MAX_RELEASE_LINE = 240;   // ~the recent median (239); kills the 1424 outlier
 const MAX_REJECTION_LINE = 120;
+export const MAX_REJECTIONS_SHOWN = 3;
+
+/** Ids of the rejections a SessionStart build for `project` lists — the newest
+ *  MAX_REJECTIONS_SHOWN, and NONE when the summary is off (the block is not
+ *  built there). doInject clears exactly these after the injection (F-3.64 /
+ *  F-4.6): clearing the whole project used to drop the fourth-and-older
+ *  unseen, and drop them even when nothing was shown. */
+export function shownRejectionIds(data: DevLogData, project: string): string[] {
+  if (!getEffectiveConfig(data, project).sessionStart) return [];
+  return (data.rejections || []).filter(r => r.project === project).slice(-MAX_REJECTIONS_SHOWN).map(r => r.id);
+}
 const MAX_DESC_LINE = 200;     // a one-line project identity, not a paragraph
 
 /** Truncate at a word boundary, falling back to a hard cut when a single token
@@ -102,8 +117,16 @@ function formatOpenSummary(data: DevLogData, project: string, showUpcoming: bool
   const total = todos.length + bugs.length + security.length + planSteps.length;
   if (total === 0 && !(showUpcoming && upcoming.length)) return [];
 
-  const fmt = (items: TagEntry[]) =>
-    items.map(t => typeof t.num === "number" ? `#${t.num}` : safe(t.content.slice(0, 30))).join(", ");
+  // Per-line cap (#1193): the size guard pins «no line over 300» against a
+  // 20-item fixture, but this join had no bound of its own — the live store's
+  // 174 open bugs rendered a ~1200-char line under a green test. The heading
+  // keeps the true total; the line names the newest MAX_OPEN_PER_LINE.
+  const fmt = (items: TagEntry[]) => {
+    const shown = items.slice(-MAX_OPEN_PER_LINE);
+    const line = shown.map(t => typeof t.num === "number" ? `#${t.num}` : safe(t.content.slice(0, 30))).join(", ");
+    const more = items.length - shown.length;
+    return more > 0 ? `${line}${L(` (+${more} more)`, ` (+${more} أخرى)`)}` : line;
+  };
 
   const out: string[] = [];
   if (total > 0) {
@@ -226,6 +249,31 @@ function outdatedSection(profile: ProjectProfile, config: InjectionConfig): stri
 }
 
 /**
+ * Cap the injections log at `cap` rows, evicting oldest-first but sparing each
+ * (project, session)'s newest NON-story row (#1051). The cap is global across
+ * projects and sessions, and that newest row is the session's alert watermark
+ * (lastInjectionTime): a busy sibling session pushing 100 file stories used to
+ * evict it, `since` fell to 0, and security/recall/closure reminders stayed
+ * silent for the rest of the session. The cap itself stays hard — only the
+ * eviction ORDER changed — so watermarks of long-gone sessions still age out.
+ */
+export function trimInjectionsLog(log: InjectionEntry[], cap: number): InjectionEntry[] {
+  if (log.length <= cap) return log;
+  const keep = new Set<string>();
+  const seen = new Set<string>();
+  for (let i = log.length - 1; i >= 0; i--) {
+    const inj = log[i];
+    if (inj.type === "PreToolUse") continue;
+    const k = `${inj.project} ${inj.session_id ?? ""}`;
+    if (seen.has(k)) continue;
+    seen.add(k); keep.add(inj.id);
+  }
+  const gone = new Set(log.filter(i => !keep.has(i.id)).slice(0, log.length - cap).map(i => i.id));
+  const out = log.filter(i => !gone.has(i.id));
+  return out.length > cap ? out.slice(-cap) : out;
+}
+
+/**
  * Returns ISO timestamp of the most recent injection for this session, or 0
  * if there has been none. Used to gate UserPromptSubmit injection on
  * "did anything happen since last time?".
@@ -236,6 +284,11 @@ function lastInjectionTime(data: DevLogData, project: string, sessionId: string 
   for (const inj of data.injections) {
     if (inj.project !== project) continue;
     if (inj.session_id !== sessionId) continue;
+    // A PreToolUse file story carries NO alerts (buildContext short-circuits to
+    // the story), so it must not advance the watermark (#1050): a security tag
+    // opened between two Reads was stamped "already delivered" by the second
+    // Read and the UserPromptSubmit reminder never showed it.
+    if (inj.type === "PreToolUse") continue;
     const t = +new Date(inj.timestamp);
     if (t > max) max = t;
   }
@@ -390,7 +443,10 @@ export function buildContext(
     const config = getEffectiveConfig(data, project);
     const last = lastInjectionTime(data, project, ctx.sessionId);
     const closures = hasClosureSince(data, project, last);
-    const builtSince = data.tags.filter(t =>
+    // No baseline (last === 0) → nothing is "since" (#1039), like the three
+    // sibling checks. Comparing against 0 counted every `built` in the
+    // project's history and reminded «⚠ 900 -(built) without a closure».
+    const builtSince = last === 0 ? [] : data.tags.filter(t =>
       t.project === project && t.tag === "built" && +new Date(t.timestamp) > last,
     );
     const secAlerts = newSecurityAlerts(data, project, ctx.sessionId);
@@ -500,8 +556,8 @@ export function buildContext(
     parts.push(L("## Available standards", "## معايير متاحة (Standards)"));
     parts.push(ctx.catalogNames);
     parts.push(L(
-      "> Pull what fits your task with `-(ask:rules) <category>` (multiple allowed). Add a rule with `-(rule:add)`, full list with `-(rules:list)`.",
-      "> اسحب المناسب لمهمتك بـ `-(ask:rules) <التصنيف>` (عدّة مسموحة). أضِف قاعدة بـ `-(rule:add)`، القائمة الكاملة بـ `-(rules:list)`."));
+      "> Pull what fits your task with `-(ask:rules) <category>` (multiple allowed). Add a rule with `-(rule:add)`, full list with `-(rules:list)`. Rules land in this project's layer; `global:` promotes one that fits every project.",
+      "> اسحب المناسب لمهمتك بـ `-(ask:rules) <التصنيف>` (عدّة مسموحة). أضِف قاعدة بـ `-(rule:add)`، القائمة الكاملة بـ `-(rules:list)`. القواعد تُكتب لهذا المشروع؛ `global:` يرفع ما ينفع الجميع."));
   }
 
   if (built.length) {
@@ -567,12 +623,16 @@ export function buildContext(
   }
 
   // P1.9: surface rejected closures from previous sessions so Claude can
-  // learn the pattern. doInject clears them after this is built.
+  // learn the pattern. doInject clears exactly the ones listed here
+  // (shownRejectionIds) — the rest ride the next SessionStart (F-3.64).
   const projectRejections = (data.rejections || []).filter(r => r.project === project);
   if (projectRejections.length) {
+    const shown = projectRejections.slice(-MAX_REJECTIONS_SHOWN);
+    const more = projectRejections.length - shown.length;
     parts.push("");
-    parts.push(L(`## ⚠ Previously rejected (${projectRejections.length})`, `## ⚠ رُفِض في السابق (${projectRejections.length})`));
-    for (const r of projectRejections.slice(-3)) parts.push(`- ${safe(clipLine(r.detail, MAX_REJECTION_LINE))}`);
+    parts.push(L(`## ⚠ Previously rejected (${projectRejections.length})${more > 0 ? ` — last ${shown.length}, ${more} more next session` : ""}`,
+      `## ⚠ رُفِض في السابق (${projectRejections.length})${more > 0 ? ` — آخر ${shown.length}، و${more} في الجلسة التالية` : ""}`));
+    for (const r of shown) parts.push(`- ${safe(clipLine(r.detail, MAX_REJECTION_LINE))}`);
   }
 
   parts.push("</devlog-context>");

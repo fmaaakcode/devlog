@@ -125,9 +125,10 @@ export interface RuleEffectRow {
   scope: EffectScope;
   /** Scope "class" only: the failure classes the rule is measured against. */
   classes?: string[];
-  /** Scope "class" only: share of ALL reports in each window that carry a
-   *  class (0–1). Under MIN_CLASS_COVERAGE the window cannot be rated. A
-   *  window with no reports at all has nothing to misclassify → 1. */
+  /** Scope "class" only: share of the CLOSED reports in each window that carry
+   *  a class (0–1) — open reports have no closer yet, so they are not
+   *  unclassified (#1133). Under MIN_CLASS_COVERAGE the window cannot be
+   *  rated. A window with no closed reports has nothing to misclassify → 1. */
   coverageBefore?: number;
   coverageAfter?: number;
   /** Scope "class" only (#1014): the part of each window's coverage that came
@@ -147,16 +148,42 @@ export interface RuleEffectRow {
    *  and always null for scope "all", which has no rate worth reading (#997). */
   beforeRatePerMonth: number | null;
   afterRatePerMonth: number | null;
-  /** "insufficient" = the windows are too young to say, or (scope "class")
-   *  too few of their reports are classified; "unmeasurable" = the scope can
-   *  never say (cross-cutting category with no class family, #997). Both are
-   *  answers. */
+  /** #1131: the rule was later removed (`rule:rm`) — the after-window ends
+   *  here instead of running to today. Only a remove record that names the
+   *  same category AND the same rule text can close a window; older remove
+   *  records (identity `cat #N`, a sliding number) cannot and are ignored. */
+  removedAt?: string;
+  /** "insufficient" = the windows are too young to say, too few matching
+   *  reports fell in them (MIN_REPORTS_FOR_VERDICT, #1132), or (scope "class")
+   *  too few of their closed reports are classified; "unmeasurable" = the
+   *  scope can never say (cross-cutting category with no class family, #997).
+   *  Both are answers. */
   verdict: "improved" | "worse" | "flat" | "insufficient" | "unmeasurable";
 }
 
 const DAY_MS = 86_400_000;
 export const MIN_WINDOW_DAYS = 14;
 export const LOOKBACK_DAYS = 90;
+/** Matching reports across BOTH windows before any improved/worse/flat verdict
+ *  (#1132). One security report in 90 days followed by zero in 14 is not
+ *  "improved" — it is one event; a rate built on it is noise with a label. */
+export const MIN_REPORTS_FOR_VERDICT = 3;
+
+/** Rule text identity for adopt ↔ remove pairing: first line, whitespace and
+ *  backticks folded, case-insensitive — the same identity addRule dedups on. */
+const ruleIdentity = (s: string | undefined): string =>
+  (s || "").split("\n")[0].replace(/`/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+
+export interface RuleEffectOptions {
+  /** The project whose reports `retro` holds. Adopt records are stamped with
+   *  the project they were typed in (#1131); only that project's adoptions
+   *  are measured here — an afThL rule about product cards has no business
+   *  being rated against helper's matcher bugs. A record with no stamp
+   *  (pre-stamp history) cannot be placed and is kept. */
+  project?: string;
+  langOf?: (file: string) => string | null;
+  isLang?: (cat: string) => boolean;
+}
 
 const matcherFor = (
   category: string,
@@ -176,18 +203,23 @@ const matcherFor = (
 /**
  * One row per ADOPT record (a category can be adopted into repeatedly — each
  * addition is its own row, distinguished by detail). `retro` is the project's
- * report corpus; adopt records are global-catalog events, so every adoption is
- * measured against THIS project's reports regardless of where it was typed.
+ * report corpus. Adopt records live in the global telemetry file but each is
+ * stamped with the project it was typed in, and a rule is measured ONLY against
+ * that project's reports (#1131) — pass `opts.project`; without it every
+ * adoption is measured (the pre-#1131 behaviour, kept for pure callers that
+ * pass a single-project record set).
  */
 export function ruleEffect(
   records: RuleTelemetryRecord[],
   retro: RetroItem[],
   now = Date.now(),
-  langOf: (file: string) => string | null = langForFile,
-  isLang: (cat: string) => boolean = isLanguageCategory,
+  opts: RuleEffectOptions = {},
 ): RuleEffectRow[] {
-  const adopts = records.filter(r => r.action === "adopt");
+  const langOf = opts.langOf ?? langForFile;
+  const isLang = opts.isLang ?? isLanguageCategory;
+  const adopts = records.filter(r => r.action === "adopt" && (!opts.project || !r.project || r.project === opts.project));
   if (!adopts.length) return [];
+  const removes = records.filter(r => r.action === "remove" && r.detail);
   const firstReportMs = retro.length ? Math.min(...retro.map(it => +new Date(it.openedAt) || now)) : now;
   const rows: RuleEffectRow[] = [];
 
@@ -195,25 +227,40 @@ export function ruleEffect(
     const adoptedMs = +new Date(a.ts);
     if (!adoptedMs) continue;
     const { scope, classes, match } = matcherFor(a.rule, langOf, isLang);
+    // #1131: a later `rule:rm` of the SAME rule (category + text identity)
+    // ends the after-window — a removed rule cannot keep earning credit for
+    // every quiet month after it stopped existing.
+    const cat = a.rule.toLowerCase();
+    const ident = ruleIdentity(a.detail);
+    const removed = ident ? removes.find(r =>
+      +new Date(r.ts) > adoptedMs
+      && r.rule.toLowerCase().split(/\s+/)[0] === cat
+      && ruleIdentity(r.detail) === ident) : undefined;
+    const endMs = removed ? Math.min(+new Date(removed.ts), now) : now;
     const beforeStartMs = Math.max(adoptedMs - LOOKBACK_DAYS * DAY_MS, firstReportMs);
     const beforeDays = Math.max(0, Math.round((adoptedMs - beforeStartMs) / DAY_MS));
-    const afterDays = Math.max(0, Math.round((now - adoptedMs) / DAY_MS));
+    const afterDays = Math.max(0, Math.round((endMs - adoptedMs) / DAY_MS));
 
     let reportsBefore = 0;
     let reportsAfter = 0;
     // Scope "class" also needs the window totals and how many of them carry
     // ANY class — a match count over unclassified history is a count of
-    // nothing (#998).
+    // nothing (#998). Coverage is measured over CLOSED reports only (#1133):
+    // a class is written by the CLOSER, so an open report is not "unclassified
+    // history" — it is a report nobody has closed yet, and counting it drove a
+    // live after-window to 8% coverage the day a 111-report audit was filed.
     let allBefore = 0, allAfter = 0, classedBefore = 0, classedAfter = 0;
     let backfilledBefore = 0, backfilledAfter = 0;   // #1014: of the classed, how many after the fact
     for (const it of retro) {
       const t = +new Date(it.openedAt) || 0;
       const inBefore = t >= beforeStartMs && t < adoptedMs;
-      const inAfter = !inBefore && t >= adoptedMs && t <= now;
+      const inAfter = !inBefore && t >= adoptedMs && t <= endMs;
       if (!inBefore && !inAfter) continue;
-      const bf = !!it.failureClass && !!it.failureClassBackfilled;
-      if (inBefore) { allBefore++; if (it.failureClass) classedBefore++; if (bf) backfilledBefore++; }
-      else { allAfter++; if (it.failureClass) classedAfter++; if (bf) backfilledAfter++; }
+      if (it.closedAt) {
+        const bf = !!it.failureClass && !!it.failureClassBackfilled;
+        if (inBefore) { allBefore++; if (it.failureClass) classedBefore++; if (bf) backfilledBefore++; }
+        else { allAfter++; if (it.failureClass) classedAfter++; if (bf) backfilledAfter++; }
+      }
       if (!match(it)) continue;
       if (inBefore) reportsBefore++; else reportsAfter++;
     }
@@ -233,10 +280,14 @@ export function ruleEffect(
     const beforeRate = scope === "all" ? null : rate(reportsBefore, beforeDays);
     const afterRate = scope === "all" ? null : rate(reportsAfter, afterDays);
 
+    // #1132: a verdict needs events to stand on. Below the minimum the windows
+    // are real and the counts are shown, but the row says "insufficient" —
+    // including 0/0, which used to read "flat" as if a change had been measured.
+    const tooFew = reportsBefore + reportsAfter < MIN_REPORTS_FOR_VERDICT;
+
     let verdict: RuleEffectRow["verdict"];
     if (scope === "all") verdict = "unmeasurable";
-    else if (beforeRate === null || afterRate === null || underCovered) verdict = "insufficient";
-    else if (beforeRate === 0 && afterRate === 0) verdict = "flat";
+    else if (beforeRate === null || afterRate === null || underCovered || tooFew) verdict = "insufficient";
     else if (afterRate <= beforeRate * 0.7) verdict = "improved";
     else if (afterRate >= beforeRate * 1.3) verdict = "worse";
     else verdict = "flat";
@@ -244,6 +295,7 @@ export function ruleEffect(
     rows.push({
       rule: a.rule, ...(a.detail ? { detail: a.detail } : {}), adoptedAt: a.ts, scope,
       ...(scope === "class" ? { classes, coverageBefore, coverageAfter, backfilledBefore: bfBefore, backfilledAfter: bfAfter } : {}),
+      ...(removed ? { removedAt: removed.ts } : {}),
       beforeDays, afterDays, reportsBefore, reportsAfter,
       beforeRatePerMonth: beforeRate, afterRatePerMonth: afterRate, verdict,
     });

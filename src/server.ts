@@ -17,20 +17,20 @@
 // headers/CSP, and the process-level error net that keeps a background-loop
 // failure from silently killing history capture mid-session.
 
-import { isAbsolute } from "node:path";
 import { existsSync, watch } from "node:fs";
 import { loadData, withData, dropCache, PORT, DATA_DIR, backfillNums, cleanupMalformedSecurityTags, cleanupMalformedOutdatedTags } from "./data";
 import { storyInjected, recordStoryInjection } from "./file-story";
 import { cleanupOrphanClosures } from "./orphan-closures";
-import { cleanupOldBackups, backupStores } from "./maintenance";
+import { cleanupOldBackups, cleanupOrphanTmp, backupStores } from "./maintenance";
 import { acquireDaemonLock, releaseDaemonLock } from "./daemon-lock";
 import { wsClients, broadcast } from "./broadcast";
-import { scanFreshProfile, applyPreservedScan, freshOrRelocatedProfile } from "./scanner";
+import { applyPreservedScan, freshOrRelocatedProfile } from "./scanner";
+import { makeRescanScheduler } from "./rescan-scheduler";
 import { FRESHNESS_FILES, freshnessDirs, firstChangedSince } from "./manifest-freshness";
 import { parseHookEvent, attributionCwd } from "./hooks";
 import { exportStatusMd, generateStackMd } from "./export";
 import { rebuildChangelogsMigration } from "./changelog-rebuild";
-import { buildContext, getEffectiveConfig, isDynamicTypeEnabled, newSecurityAlerts } from "./inject";
+import { buildContext, getEffectiveConfig, isDynamicTypeEnabled, newSecurityAlerts, shownRejectionIds, trimInjectionsLog } from "./inject";
 import { primerFor } from "./primer";
 import { migrateLegacyData } from "./migrate";
 import { refreshDescendants } from "./sessions";
@@ -39,13 +39,13 @@ import { migrateMemoryDir } from "./project-rename";
 import { resolveProjectFor } from "./project-resolve";
 import { startVersionCheckLoop } from "./version-check";
 import { pruneEvents, pushEvent } from "./retention";
-import { archiveEvents } from "./event-archive";
-import { pathsEqual, isPathInside, normalizeSlashes } from "./path-utils";
+import { archiveEvents, archiveUndone } from "./event-archive";
+import { pathsEqual, isPathInside, normalizeSlashes, isRealCwd } from "./path-utils";
 import { withLockRetry } from "./fs-retry";
 import { str } from "./validators";
 import { checkToken, readOrCreateToken, TOKEN_REQUIRED } from "./token";
 import { scanCatalog, formatCatalogNames } from "./standards";
-import type { ProjectProfile } from "./types";
+import type { ProjectProfile, TagEntry } from "./types";
 import { softFail } from "./soft-fail";
 import { runVulnScan } from "./vuln-scan";
 import { makeStaticRoutes } from "./routes-static";
@@ -98,36 +98,8 @@ async function renameWithRetry(from: string, to: string, attempts = 6): Promise<
   await withLockRetry(() => fsRename(from, to), attempts);
 }
 
-const rescanTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-function scheduleRescan(cwd: string, name: string) {
-  const existing = rescanTimers.get(cwd);
-  if (existing) clearTimeout(existing);
-  const timer = setTimeout(async () => {
-    rescanTimers.delete(cwd);
-    try {
-      // Two-phase like /api/hook (R9 sweep, same class as #730): the full disk
-      // walk ran inside withData on every debounced manifest change, freezing
-      // writers for its duration. Collision-check on a snapshot, scan off the
-      // lock, re-check + cheap merge under it.
-      const snap = await loadData();
-      const existing0 = snap.projects[name];
-      if (existing0 && !pathsEqual(existing0.path, cwd)) {
-        console.warn(`[scheduleRescan] folder-name collision: cwd=${cwd} differs from stored '${name}' at ${existing0.path}. Skipping.`);
-        return;
-      }
-      const fresh = await scanFreshProfile(cwd);
-      await withData(async (data) => {
-        const stored = data.projects[name];
-        if (stored && !pathsEqual(stored.path, cwd)) return;   // collision appeared between phases
-        applyPreservedScan(data, name, fresh);
-      });
-      broadcast("scan", { project: name });
-      runVulnScan(name).catch(e => softFail("runVulnScan", e));
-    } catch (e) { softFail("scheduleRescan", e); }
-  }, RESCAN_DEBOUNCE_MS);
-  rescanTimers.set(cwd, timer);
-}
+// Debounced manifest rescans + cancel-on-delete live in ./rescan-scheduler (#1052).
+const { scheduleRescan, cancelRescan } = makeRescanScheduler(RESCAN_DEBOUNCE_MS);
 
 const VULN_STALE_MS = 24 * 60 * 60 * 1000;
 
@@ -148,7 +120,10 @@ async function checkAndRescanIfStale(name: string) {
       return;
     }
     // Manifests unchanged — but vuln data may be stale (CVEs published since last scan)
-    const lastVulnMs = project.vulnScanDate ? new Date(project.vulnScanDate).getTime() : 0;
+    // libScanDate is the sweep clock (any pass); vulnScanDate alone is the
+    // security claim and stays absent for projects OSV can't cover (#1104).
+    const lastScan = project.libScanDate || project.vulnScanDate;
+    const lastVulnMs = lastScan ? new Date(lastScan).getTime() : 0;
     if (!lastVulnMs || Date.now() - lastVulnMs > VULN_STALE_MS) {
       runVulnScan(name).catch(e => softFail("runVulnScan", e));
     }
@@ -166,10 +141,8 @@ async function checkAndRescanIfStale(name: string) {
 // — exactly what produced the stray `$NAME/` folder. A real project cwd is
 // absolute AND present on disk; anything else is treated as "no project".
 // Empty cwd stays legal (callers already gate on it) — only a *non-empty* but
-// malformed cwd is rejected here.
-function isRealCwd(cwd: string): boolean {
-  return !!cwd && isAbsolute(cwd) && existsSync(cwd);
-}
+// malformed cwd is rejected here. The predicate itself lives in path-utils
+// (#1199) so /api/tags gates on the SAME definition.
 
 async function doInject(body: Record<string, unknown>) {
   // Attribution anchor: the session's project dir (X-DevLog-Project-Dir, from
@@ -289,16 +262,21 @@ async function doInject(body: Record<string, unknown>) {
             timestamp: new Date().toISOString(),
             ...(injFile ? { file_path: injFile } : {}),
           });
-          if (data.injections.length > MAX_INJECTIONS_LOG) {
-            data.injections = data.injections.slice(-MAX_INJECTIONS_LOG);
-          }
+          // Watermark-sparing eviction (#1051) — see trimInjectionsLog.
+          data.injections = trimInjectionsLog(data.injections, MAX_INJECTIONS_LOG);
           // Recorded only when content actually went out, mirroring the old
           // log-based check: an empty build must not silence the next Read.
           if (type === "PreToolUse" && injFile && sessionId) recordStoryInjection(sessionId, injFile);
-          // Clear surfaced rejections for this project (P1.9): they've been
-          // shown once, don't repeat on every prompt.
+          // Clear the rejections this SessionStart actually SHOWED (P1.9 —
+          // shown once, never repeated). Only those (F-3.64): the old filter
+          // dropped every rejection of the project while the block listed the
+          // last three, so the fourth onward was never seen by anyone; and it
+          // dropped them even when the summary is off and the block was never
+          // built (F-4.6) — a silent discard. The unshown remainder rides the
+          // next SessionStart.
           if (type === "SessionStart" && data.rejections?.length) {
-            data.rejections = data.rejections.filter(r => r.project !== name);
+            const shown = new Set(shownRejectionIds(data, name));
+            if (shown.size) data.rejections = data.rejections.filter(r => !shown.has(r.id));
           }
           broadcast("inject", { project: name, type, chars: content.length });
           additionalContext = content;
@@ -308,7 +286,10 @@ async function doInject(body: Record<string, unknown>) {
 
     // Not on PreToolUse: a status.md rewrite per file OPEN would put disk I/O
     // on the read hot-path for zero new information (no event was recorded).
-    if (cwd && type !== "PreToolUse") await exportStatusMd(cwd, data, name);
+    // effectiveCwd, not the raw cwd (#1053): a subfolder folded into its parent
+    // project wrote `.devlog/` INSIDE the subfolder — a phantom folder git saw
+    // — while routes-events and routes-tags already wrote at the project root.
+    if (effectiveCwd && type !== "PreToolUse") await exportStatusMd(effectiveCwd, data, name);
   });
   if (stackJob) {
     const { cwd: stackCwd, profile } = stackJob;
@@ -474,7 +455,7 @@ const routeDefs = {
 
     // Project delete/rename routes live in ./routes-projects (plan 3.1). The three
     // fs.watch helpers own the server's live watcher map, so they're injected.
-    ...makeProjectRoutes({ releaseWatchersUnder, refreshWatchers, renameWithRetry }),
+    ...makeProjectRoutes({ releaseWatchersUnder, refreshWatchers, renameWithRetry, cancelRescan }),
 
     // Workspace-mutation routes (worklog, ignore) live in ./routes-workspace
     // (plan 3.1); spread here.
@@ -578,12 +559,17 @@ console.log(`DevLog running at http://127.0.0.1:${PORT} (also http://localhost:$
         dirty = true;
         console.log("[backfill] assigned nums to legacy items");
       }
-      const removedSec = cleanupMalformedSecurityTags(data);
+      // Archive-before-delete for the one-time cleanups (#1016): the rows go to
+      // the `undone` stream first; a refused archive keeps them and retries next boot.
+      const archiveRows = (rows: TagEntry[]) => archiveUndone(rows.map(entry => ({
+        undoneAt: new Date().toISOString(), project: entry.project, kind: "tag" as const, entry,
+      })));
+      const removedSec = await cleanupMalformedSecurityTags(data, archiveRows);
       if (removedSec > 0) {
         dirty = true;
         console.log(`[migrate] cleanup_malformed_security_v2: removed ${removedSec} tag(s)`);
       }
-      const removedOut = cleanupMalformedOutdatedTags(data);
+      const removedOut = await cleanupMalformedOutdatedTags(data, archiveRows);
       if (removedOut > 0) {
         dirty = true;
         console.log(`[migrate] cleanup_malformed_outdated_v2: removed ${removedOut} tag(s)`);
@@ -612,6 +598,10 @@ console.log(`DevLog running at http://127.0.0.1:${PORT} (also http://localhost:$
   } catch (e) {
     console.error("[cleanup .bak] error:", (e as Error)?.message);
   }
+  // Crash-orphaned atomic-write siblings (F-4.94): named so a recurring orphan
+  // points at the store whose write keeps dying.
+  const orphanTmp = await cleanupOrphanTmp(DATA_DIR);
+  if (orphanTmp.length) console.log(`[cleanup] removed ${orphanTmp.length} orphan tmp file(s) (>1h): ${orphanTmp.join(", ")}`);
   // Daily store safety copies (boot + 24h beat): registry + the history
   // stores nothing else can rebuild; see backupStores's doc.
   const backed = await backupStores(DATA_DIR);

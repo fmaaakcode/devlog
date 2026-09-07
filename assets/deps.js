@@ -66,7 +66,7 @@ async function load() {
     return;
   }
   if (!payload.project) { status.textContent = tr("depsPage.unknownProject"); return; }
-  if (!payload.libraries.length) { status.textContent = tr("depsPage.noLibs"); return; }
+  if (!payload.libraries.length && !(Array.isArray(payload.orphans) && payload.orphans.length)) { status.textContent = tr("depsPage.noLibs"); return; }
 
   const cov = document.getElementById("coverage");
   const total = Number(payload.total) || 0;
@@ -75,7 +75,15 @@ async function load() {
     ? tr("depsPage.coverageFull", { n: total })
     : tr("depsPage.coverageMissing", { missing: total - withPurpose, total });
 
-  list.innerHTML = payload.libraries.map(card).join("");
+  // Purposes recorded for names outside the manifest (#1115): shown as their
+  // own rows so a typo or a CDN library is visible instead of vanishing.
+  const orphans = Array.isArray(payload.orphans) ? payload.orphans : [];
+  const orphanCards = orphans.map(o => `<div class="card orphan" data-search="${esc(`${o.name} ${o.purpose || ""}`.toLowerCase())}">
+    <div class="row1"><span class="badge">${tr("depsPage.orphanBadge")}</span><span class="name">${esc(o.name)}</span></div>
+    <div class="purpose">${esc(o.purpose || "")}</div>
+  </div>`);
+  const orphanHead = orphans.length ? `<h2 class="orphans-head">${tr("depsPage.orphansHead", { n: orphans.length })}</h2>` : "";
+  list.innerHTML = payload.libraries.map(card).join("") + orphanHead + orphanCards.join("");
   status.hidden = true;
   list.hidden = false;
 

@@ -117,6 +117,17 @@ describe("workspace member resolution", () => {
     expect(parseWorkspaceMembers(text)).toEqual(["crates/core", "cli"]);
   });
 
+  test("`default-members` listed BEFORE `members` is not read as the member list (#1113)", () => {
+    const text = [
+      "[workspace]",
+      'default-members = ["cli"]',
+      'members = ["crates/core", "crates/net", "cli"]',
+    ].join("\n");
+    expect(parseWorkspaceMembers(text)).toEqual(["crates/core", "crates/net", "cli"]);
+    // and a workspace with ONLY default-members declares no members
+    expect(parseWorkspaceMembers('[workspace]\ndefault-members = ["cli"]')).toEqual([]);
+  });
+
   test("resolveWorkspaceMemberDirs expands the trailing /* glob", async () => {
     const dir = await mkdtemp(join(tmpdir(), "cargo-ws-"));
     try {

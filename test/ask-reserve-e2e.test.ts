@@ -14,10 +14,10 @@ import type { Subprocess } from "bun";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startServer, stopServer, waitForServer, runHook as runHookRaw, PROJECT_ROOT } from "./_helpers";
+import { startServer, stopServer, waitForServer, runHook as runHookRaw, HOOK_STATE_DIR } from "./_helpers";
 
 const TEST_PORT = 17861;
-const TURN_STATE_DIR = join(PROJECT_ROOT, ".devlog", "turn-state");
+const TURN_STATE_DIR = join(HOOK_STATE_DIR, "turn-state");
 const DEAD_PORT = 17999;   // nothing listens here → a fetch to it fails fast
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
 

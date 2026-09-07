@@ -33,6 +33,23 @@ describe("monthlyTrend", () => {
     expect(rows[1]).toEqual({ month: "2026-02", opened: 1, closed: 1, released: 0 });
   });
 
+  test("closed plan steps don't count as closures — they were never counted as opened (#1137)", () => {
+    const data = makeData([
+      { tag: "todo", project: "p", num: 1, content: "task", timestamp: "2026-04-01T00:00:00Z" },
+      { tag: "done", project: "p", content: "#1 task", timestamp: "2026-04-02T00:00:00Z" },
+    ]);
+    data.plans = [{
+      id: "pl1", project: "p", title: "plan", timestamp: "2026-04-01T00:00:00Z",
+      steps: [
+        { num: 2, text: "step a", completed: true, completedAt: "2026-04-03T00:00:00Z" },
+        { num: 3, text: "step b", dropped: true, completedAt: "2026-04-04T00:00:00Z" },
+        { num: 4, text: "step c" },
+      ],
+    }];
+    const rows = monthlyTrend(data, "p");
+    expect(rows).toEqual([{ month: "2026-04", opened: 1, closed: 1, released: 0 }]);
+  });
+
   test("non-version release tags and other projects don't count", () => {
     const rows = monthlyTrend(makeData([
       { tag: "release", project: "p", content: "not a version", timestamp: "2026-03-01T00:00:00Z" },

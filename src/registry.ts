@@ -40,7 +40,7 @@ const UA = "devlog-version-check (https://github.com/fmaaakcode/devlog)";
 // (optional chaining + Array.isArray guards at every use). Typing them replaces a
 // blanket `any` with a checked contract at the network boundary, without pretending
 // the remote data is trustworthy.
-interface NpmResponse { "dist-tags"?: { latest?: string }; time?: Record<string, string>; description?: string; }
+interface NpmResponse { "dist-tags"?: { latest?: string }; time?: Record<string, string>; description?: string; versions?: Record<string, { deprecated?: string }>; }
 interface CratesVersion { num?: string; created_at?: string | null; yanked?: boolean; }
 interface CratesResponse { crate?: { max_stable_version?: string; newest_version?: string; description?: string }; versions?: CratesVersion[]; }
 interface PypiFile { upload_time_iso_8601?: string; upload_time?: string; }
@@ -273,10 +273,23 @@ export async function latestVersions(
 // it (npm `time`, crates `versions`, pypi `releases`), so this is a different read
 // of the same source — no new infrastructure. Pure-ish: network in fetchJson,
 // the matured/verdict math lives in dep-check.ts (testable without network).
-export interface VersionEntry { version: string; date: string | null; }
+export interface VersionEntry {
+  version: string; date: string | null;
+  /** The registry marks this release deprecated: crates.io's `+deprecated`
+   *  build tag (serde_yaml 0.9.34+deprecated is its official newest — it used to
+   *  fail the stable regex and hand the advisor 0.9.33 as "latest", hiding the
+   *  abandonment, #1111), or npm's per-version `deprecated` message. */
+  deprecated?: boolean;
+}
 
-// Stable only: plain major.minor[.patch], no prerelease/build suffix.
-const STABLE_VER_RE = /^\d+\.\d+(?:\.\d+)?$/;
+// Stable only: plain major.minor[.patch], no prerelease suffix. SemVer BUILD
+// metadata (`+…`) does not change precedence and is allowed; the stored version
+// is stripped of it (`cargo add x@0.9.34` resolves to 0.9.34+deprecated).
+const STABLE_VER_RE = /^\d+\.\d+(?:\.\d+)?(?:\+[0-9A-Za-z.-]+)?$/;
+const splitBuild = (ver: string): { version: string; build: string } => {
+  const plus = ver.indexOf("+");
+  return plus < 0 ? { version: ver, build: "" } : { version: ver.slice(0, plus), build: ver.slice(plus + 1) };
+};
 
 function sortVersionsDesc(entries: VersionEntry[]): VersionEntry[] {
   // One TOTAL order, honoring Array.sort's contract — a comparator built on
@@ -310,7 +323,8 @@ async function queryHistory(ecosystem: string, name: string): Promise<VersionEnt
       const out: VersionEntry[] = [];
       for (const [ver, date] of Object.entries(time)) {
         if (ver === "created" || ver === "modified" || !STABLE_VER_RE.test(ver)) continue;
-        out.push({ version: ver, date: typeof date === "string" ? date : null });
+        const dep = typeof j?.versions?.[ver]?.deprecated === "string" && j.versions[ver].deprecated !== "";
+        out.push({ version: splitBuild(ver).version, date: typeof date === "string" ? date : null, ...(dep ? { deprecated: true } : {}) });
       }
       return sortVersionsDesc(out);
     }
@@ -321,7 +335,8 @@ async function queryHistory(ecosystem: string, name: string): Promise<VersionEnt
       for (const v of j.versions) {
         const ver = String(v?.num || "");
         if (!ver || v?.yanked || !STABLE_VER_RE.test(ver)) continue;
-        out.push({ version: ver, date: v?.created_at ?? null });
+        const { version, build } = splitBuild(ver);
+        out.push({ version, date: v?.created_at ?? null, ...(/deprecated/i.test(build) ? { deprecated: true } : {}) });
       }
       return sortVersionsDesc(out);
     }

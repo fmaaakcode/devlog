@@ -3,7 +3,7 @@
 // the group through the real subprocess server (shapes + validation paths).
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
-import { asJson } from "./_helpers";
+import { asJson, scrubbedEnv } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,6 +16,7 @@ const JSON_HEADERS = { "Content-Type": "application/json" };
 
 let server: Subprocess;
 let dataDir: string;
+let projDir: string;
 
 async function waitForServer(maxMs = 8000): Promise<void> {
   const deadline = Date.now() + maxMs;
@@ -34,23 +35,28 @@ beforeAll(async () => {
   server = spawn({
     cmd: ["bun", join("src", "server.ts")],
     cwd: PROJECT_ROOT,
-    env: { ...process.env, DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT), DEVLOG_VERSION_CHECK_DISABLED: "1" },
+    env: { ...scrubbedEnv(), DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT), DEVLOG_VERSION_CHECK_DISABLED: "1" },
     stdout: "pipe",
     stderr: "pipe",
   });
   await waitForServer();
+  // F-4.87: the worklog stamps REGISTERED projects only, so register one the
+  // way a session does (SessionStart inject) before the notes below.
+  projDir = mkdtempSync(join(tmpdir(), "devlog-ws-proj-"));
+  await fetch(`${BASE}/api/inject?cwd=${encodeURIComponent(projDir)}&session_id=ws-e2e&type=SessionStart`, { signal: AbortSignal.timeout(10000) });
 });
 
 afterAll(async () => {
   try { server.kill(); } catch { /* dead */ }
   await Promise.race([server.exited, Bun.sleep(2000)]);
   rmSync(dataDir, { recursive: true, force: true });
+  rmSync(projDir, { recursive: true, force: true });
 });
 
 describe("routes-workspace (extracted group) still mounts + behaves", () => {
   test("POST /api/worklog → 200 and appends to the worklog", async () => {
     const r = await fetch(`${BASE}/api/worklog`, {
-      method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ cwd: "", text: "did a thing" }),
+      method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ cwd: projDir, text: "did a thing" }),
     });
     expect(r.status).toBe(200);
     expect((await asJson(r)).ok).toBe(true);

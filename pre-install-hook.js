@@ -12,10 +12,12 @@
  * Behavior:
  *   - Blind install (no pinned version, or a floating @latest-style tag):
  *     BLOCK (stderr + exit 2) with the advisor's exact pick in the message, so
- *     Claude re-issues the command pinned — enforcement, not discipline.
+ *     Claude re-issues the command pinned — enforcement, not discipline. Never
+ *     acked: a verbatim re-issue is blocked again (#1047 — the old command-hash
+ *     ack let the reflexive re-issue install blind within seconds).
  *   - Pinned install that disagrees with the advisor: advisory block ONCE
- *     (same ack mechanism as pre-release-hook) — re-issuing the identical
- *     command passes, because a pin is a deliberate choice (possibly the
+ *     (ack keyed by the package+pin set, 10 min) — re-issuing the same packages
+ *     and pins passes, because a pin is a deliberate choice (possibly the
  *     user's explicit order) and must stay possible.
  *   - Server down / network failure / unknown names: exit 0 (fail-open) — the
  *     backstops (vuln scan + next-prompt security alert) catch what slips.
@@ -78,12 +80,19 @@ const sendTelemetry = async (action, detail) => {
 await mkdir(ACK_DIR, { recursive: true });
 log(`fire: cmd=${cmd.slice(0, 120)} pkgs=${pkgs.map(p => p.name).join(",")}`);
 
-// Ack: this exact command was already gated for this session recently — a
-// re-issue is the sanctioned conscious-override path, let it through. If the
-// gated command carried KNOWN-vulnerable pins (#630), passing it is the moment
-// the risk becomes real: open the security item(s) NOW (fire-and-forget,
-// fail-open) instead of waiting for the next scan sweep to notice.
-const ackFile = join(ACK_DIR, `${encodeURIComponent(sessionId || "no-session")}-${Bun.hash(cmd).toString(36)}.txt`);
+// Ack: this OUTCOME was already gated for this session recently — a re-issue
+// is the sanctioned conscious-override path, let it through. Keyed by the set
+// of packages and their pins (#1047 / F-3.82), not by the command's text: the
+// old command-hash key acked a blind `bun add lodash` too, so the model's
+// reflexive re-issue after the block installed it with no version and no OSV
+// verdict — and a stray space defeated the ack for a deliberate pin. An ack is
+// only ever WRITTEN for overridable outcomes (see hardBlocks below), so a blind
+// set never has one to find here. If the gated command carried KNOWN-
+// vulnerable pins (#630), passing it is the moment the risk becomes real: open
+// the security item(s) NOW (fire-and-forget, fail-open) instead of waiting for
+// the next scan sweep to notice.
+const ackKey = pkgs.map(p => `${p.eco}:${p.name}@${p.version}`).sort().join(",");
+const ackFile = join(ACK_DIR, `${encodeURIComponent(sessionId || "no-session")}-${Bun.hash(ackKey).toString(36)}.txt`);
 if (existsSync(ackFile)) {
   try {
     const rawAck = await readFile(ackFile, "utf8");
@@ -132,43 +141,58 @@ async function strictBlock(reason) {
 
 // Ask the advisor (explicit eco prefix per package — no project guessing).
 // Cached server-side (6h), so only the first ask per package pays the network.
-let items = [];
+const items = [];
 try {
   // A pinned package travels as `eco:name@version` so the advisor also
   // OSV-checks that exact version (#630) — the block message can then name
   // the pin's own vulnerabilities, not just the advisor's preference.
-  const names = pkgs.map(p => `${p.eco}:${p.name}${p.version && /^[0-9]/.test(p.version) ? `@${p.version}` : ""}`).join(",");
-  const r = await fetch(
-    `http://127.0.0.1:${PORT}/api/lib-advice?cwd=${encodeURIComponent(cwd)}&names=${encodeURIComponent(names)}`,
+  // The advisor answers 8 names per call; a longer command is asked in
+  // parallel batches (#1037 / F-3.36) so the ninth package is gated like the
+  // first instead of installing blind behind a silent parser cap.
+  const names = pkgs.map(p => `${p.eco}:${p.name}${p.version && /^[0-9]/.test(p.version) ? `@${p.version}` : ""}`);
+  const batches = [];
+  for (let i = 0; i < names.length; i += 8) batches.push(names.slice(i, i + 8));
+  const replies = await Promise.all(batches.map(b => fetch(
+    `http://127.0.0.1:${PORT}/api/lib-advice?cwd=${encodeURIComponent(cwd)}&names=${encodeURIComponent(b.join(","))}`,
     { signal: AbortSignal.timeout(20000) },
-  );
-  if (!r.ok) {
-    if (STRICT) await strictBlock(`HTTP ${r.status}`);
-    log(`advice ${r.status} — fail open`);
+  )));
+  const bad = replies.find(r => !r.ok);
+  if (bad) {
+    if (STRICT) await strictBlock(`HTTP ${bad.status}`);
+    log(`advice ${bad.status} — fail open`);
     process.exit(0);
   }
-  items = (await r.json()).items || [];
+  for (const r of replies) items.push(...((await r.json()).items || []));
 } catch (e) {
   if (STRICT) await strictBlock(e.name === "TimeoutError" ? "timeout" : e.message);
   log(`advice fetch error: ${e.message} — fail open`);
   process.exit(0);
 }
 
-const { blocks, warns, vulnPins } = decideGate(pkgs, items, LANG, STRICT);
+const { blocks, warns, vulnPins, hardBlocks } = decideGate(pkgs, items, LANG, STRICT);
 if (!blocks.length && !warns.length) { log("clean — pass"); await sendTelemetry("pass"); process.exit(0); }
 
-// Write the ack BEFORE blocking so the very next identical issue passes. It
-// carries the vulnerable pins so the pass-through above can record them.
-await writeFile(ackFile, JSON.stringify({ ts: Date.now(), vulnPins })).catch(() => { /* ack is best-effort */ });
+// The ack is written AS PART OF the block (a crash between the two can only
+// lose the override, never repeat a block) — and ONLY for overridable outcomes.
+// A hard block (blind / no-clean / no-mature) gets no ack: re-issuing the same
+// blind command is blocked again, every time; the way through is a pinned
+// version, which is a different set and a different key. The ack carries the
+// vulnerable pins so the pass-through above can record the accepted risk.
+const overridable = hardBlocks === 0;
+if (overridable) await writeFile(ackFile, JSON.stringify({ ts: Date.now(), vulnPins })).catch(() => { /* ack is best-effort */ });
 
 const out = [];
 out.push("════════ DevLog Install Gate ════════");
 out.push(...blocks, ...warns);
 out.push("");
-if (blocks.length) {
+if (!overridable) {
   out.push(L(
-    "Re-run with the advised pin — or re-issue the SAME command verbatim for a conscious override (passes for 10 min).",
-    "أعد التنفيذ بالنسخة الموصى بها — أو أعد الأمر نفسه حرفياً لتجاوز واعٍ (يمرّ لمدة 10 دقائق)."));
+    "Re-run with the advised pin. A blind install is never passed on re-issue — pinning the version is the only way through.",
+    "أعد التنفيذ بالنسخة الموصى بها. التركيب الأعمى لا يمرّ بإعادة الأمر أبداً — تثبيت النسخة هو المخرج الوحيد."));
+} else if (blocks.length) {
+  out.push(L(
+    "Re-run with the advised pin — or re-issue the SAME packages and pins verbatim for a conscious override (passes for 10 min).",
+    "أعد التنفيذ بالنسخة الموصى بها — أو أعد نفس الحزم والنسخ حرفياً لتجاوز واعٍ (يمرّ لمدة 10 دقائق)."));
 } else {
   out.push(L(
     "One-time advisory — the same command passes on re-issue.",

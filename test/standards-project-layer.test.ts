@@ -10,6 +10,7 @@ import { join } from "node:path";
 const GTMP = join(import.meta.dir, ".tmp-std-global");
 const PROJ = join(import.meta.dir, ".tmp-std-project");
 const PSTD = join(PROJ, ".devlog", "standards");
+const PREV_STD = process.env.DEVLOG_STANDARDS_DIR;   // restored in afterAll (#1166)
 process.env.DEVLOG_STANDARDS_DIR = GTMP;
 // The scope-label assertions pin the Arabic variants (#906 made messages
 // bilingual; CI has no DEVLOG_LANG and would get English). Restored in afterAll.
@@ -42,6 +43,8 @@ afterAll(async () => {
   await rm(PROJ, { recursive: true, force: true });
   if (PREV_LANG === undefined) delete process.env.DEVLOG_LANG;
   else process.env.DEVLOG_LANG = PREV_LANG;
+  if (PREV_STD === undefined) delete process.env.DEVLOG_STANDARDS_DIR;
+  else process.env.DEVLOG_STANDARDS_DIR = PREV_STD;
 });
 
 describe("scanCatalog — merges global + project layers", () => {

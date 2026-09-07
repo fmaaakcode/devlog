@@ -1,12 +1,13 @@
-// Unit tests for reopen detection (#556): a new problem report matching a
-// CLOSED one gets linked (relatedTo); open reports, dissimilar texts and
-// non-problem tags never link. Thresholds favour silence — a false link
-// accuses a healthy fix.
+// Unit tests for reopen linkage (#556, reshaped by #1118): a new problem
+// report links to a CLOSED one only when the author marks it (`⟲ #N`,
+// `reopen #N`) or re-reports the closed text word for word. Similar wording
+// never links — the old Jaccard thresholds were unreachable by human reports
+// (live maximum 0.28), so a fixture that reaches them proves nothing.
 
 import { describe, test, expect } from "bun:test";
 import type { DevLogData, ProjectProfile, TagEntry } from "../src/types";
 import { DEFAULT_INJECTION_CONFIG } from "../src/data";
-import { detectReopen } from "../src/reopen";
+import { detectReopen, REOPEN_MARK_RE } from "../src/reopen";
 
 const P = "reopenproj";
 
@@ -36,41 +37,71 @@ function t(tag: string, content: string, opts: { num?: number; files?: string[] 
   };
 }
 
-// A closed bug: opener #5 + a `#5 cure` closer.
+// A realistic closed report (150–200 chars, the shape humans actually write)
+// + its `#5 cause` closer.
+const CLOSED_TEXT = "watchTree في scanner.ts يعيد بناء كاش الثغرات عند كل حدث rename فتتصادم كتابتان متزامنتان على vuln-cache.json ويبقى الملف نصف مكتوب بعد إعادة الفحص من الداشبورد";
 const closedBug = () => [
-  t("bug found", "race in the scanner tree walk corrupts the vuln cache", { num: 5, files: ["D:/tmp/reopenproj/src/scanner.ts"] }),
-  t("bug fix", "#5 serialized the writes behind the existing lock"),
+  t("bug found", CLOSED_TEXT, { num: 5, files: ["D:/tmp/reopenproj/src/scanner.ts"] }),
+  t("bug fix", "#5 [توقيت] serialized the writes behind the existing lock"),
 ];
 
-describe("detectReopen", () => {
-  test("a strong text echo of a CLOSED report links to it", () => {
+describe("detectReopen — explicit marker", () => {
+  test("`⟲ #N` naming a CLOSED problem report links, via marker", () => {
     const data = makeData(closedBug());
-    const m = detectReopen(data, P, "bug found", "race in the scanner tree walk corrupts the vuln cache again");
-    expect(m).toMatchObject({ num: 5 });
+    const m = detectReopen(data, P, "bug found", "⟲ #5 كاش الثغرات يعود نصف مكتوب بعد تحديث Bun 1.3 رغم القفل");
+    expect(m).toMatchObject({ num: 5, via: "marker" });
     expect(m?.closedAt).toBeTruthy();
   });
 
-  test("a medium echo anchored to the same file links; without the file it doesn't", () => {
+  test("`reopen #N` / `⟲#N` / Arabic phrasing are accepted, anywhere in the text", () => {
     const data = makeData(closedBug());
-    // Jaccard vs the closed report ≈ 0.4 — below the text-only 0.6 bar,
-    // above the file-anchored 0.35 bar.
-    const text = "scanner tree walk drops entries from the vuln cache intermittently during rescan sweeps";
-    expect(detectReopen(data, P, "bug found", text, ["D:/tmp/reopenproj/src/scanner.ts"]))
-      .toMatchObject({ num: 5 });
-    expect(detectReopen(data, P, "bug found", text)).toBeNull();
+    for (const text of [
+      "vuln cache truncated again — reopen #5",
+      "vuln cache truncated again (⟲#5)",
+      "الكاش يعود مبتورًا، إعادة فتح #5",
+    ]) expect(detectReopen(data, P, "bug found", text)?.num).toBe(5);
+  });
+
+  test("a marker at an OPEN, unknown, or non-problem #N is ignored — and does not fall through to text matching", () => {
+    const openBug = t("bug found", "still open defect", { num: 9 });
+    const closedTodo = [t("todo", "write the migration", { num: 6 }), t("done", "#6 wrote it")];
+    const data = makeData([...closedBug(), openBug, ...closedTodo]);
+    expect(detectReopen(data, P, "bug found", "⟲ #9 back again")).toBeNull();
+    expect(detectReopen(data, P, "bug found", "⟲ #404 back again")).toBeNull();
+    expect(detectReopen(data, P, "bug found", "⟲ #6 back again")).toBeNull();
+    // A wrong marker on a word-for-word re-report is still ignored (marker wins the decision).
+    expect(detectReopen(data, P, "bug found", `⟲ #404 ${CLOSED_TEXT}`)).toBeNull();
+  });
+
+  test("REOPEN_MARK_RE takes the first marker only", () => {
+    expect(REOPEN_MARK_RE.exec("⟲ #5 then ⟲ #7")?.[1]).toBe("5");
+    expect(REOPEN_MARK_RE.test("fix #5 reopened the dialog")).toBe(false); // `reopened` ≠ reopen(s) #N
+  });
+});
+
+describe("detectReopen — identical text (#593)", () => {
+  test("a word-for-word re-report of a CLOSED report links, via identical", () => {
+    const data = makeData(closedBug());
+    expect(detectReopen(data, P, "bug found", CLOSED_TEXT)).toMatchObject({ num: 5, via: "identical" });
+    expect(detectReopen(data, P, "bug found", `  ${CLOSED_TEXT}  `)?.num).toBe(5); // normalised whitespace
+  });
+
+  test("similar wording never links — a realistic near-duplicate stays silent", () => {
+    const data = makeData(closedBug());
+    const near = "watchTree في scanner.ts يعيد بناء كاش الثغرات عند كل حدث rename فيبقى vuln-cache.json نصف مكتوب بعد إعادة الفحص";
+    expect(detectReopen(data, P, "bug found", near)).toBeNull();
   });
 
   test("an OPEN report is never a reopen candidate", () => {
-    const data = makeData([
-      t("bug found", "race in the scanner tree walk corrupts the vuln cache", { num: 5 }),
-    ]);
-    expect(detectReopen(data, P, "bug found", "race in the scanner tree walk corrupts the vuln cache again")).toBeNull();
+    const data = makeData([t("bug found", CLOSED_TEXT, { num: 5 })]);
+    expect(detectReopen(data, P, "bug found", CLOSED_TEXT)).toBeNull();
+    expect(detectReopen(data, P, "bug found", "⟲ #5 again")).toBeNull();
   });
 
-  test("dissimilar text and non-problem tags stay silent", () => {
+  test("non-problem tags stay silent even with a marker or identical text", () => {
     const data = makeData(closedBug());
-    expect(detectReopen(data, P, "bug found", "dashboard tooltip renders behind the modal overlay")).toBeNull();
-    expect(detectReopen(data, P, "todo", "race in the scanner tree walk corrupts the vuln cache")).toBeNull();
+    expect(detectReopen(data, P, "todo", CLOSED_TEXT)).toBeNull();
+    expect(detectReopen(data, P, "todo", "⟲ #5 redo it")).toBeNull();
   });
 
   test("security family participates like bugs", () => {
@@ -78,7 +109,7 @@ describe("detectReopen", () => {
       t("security:dep", "openssl 1.1.1 vulnerable to CVE-2023-0286 X.400 address confusion", { num: 7 }),
       t("security fix", "#7 bumped openssl to 3.2"),
     ]);
-    expect(detectReopen(data, P, "security:dep", "openssl vulnerable again to CVE-2023-0286 X.400 address confusion"))
-      .toMatchObject({ num: 7 });
+    expect(detectReopen(data, P, "security:dep", "⟲ #7 openssl pinned back to 1.1.1 by the base image"))
+      .toMatchObject({ num: 7, via: "marker" });
   });
 });

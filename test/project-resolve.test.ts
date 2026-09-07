@@ -20,16 +20,16 @@ const noGit: GitRootFn = () => null;
 describe("resolveProjectFor — exact + fallback", () => {
   test("exact path match wins (case/separator-insensitive)", () => {
     const p = projects({ helper: "D:\\helper" });
-    expect(resolveProjectFor({ projects: p }, "D:/helper", noGit)).toEqual({ name: "helper", cwd: "D:\\helper" });
+    expect(resolveProjectFor({ projects: p }, "D:/helper", noGit)).toMatchObject({ name: "helper", cwd: "D:\\helper" });
   });
 
   test("no encloser → registers cwd as its own project (basename)", () => {
     const p = projects({ helper: "D:\\helper" });
-    expect(resolveProjectFor({ projects: p }, "D:\\newproj", noGit)).toEqual({ name: "newproj", cwd: "D:\\newproj" });
+    expect(resolveProjectFor({ projects: p }, "D:\\newproj", noGit)).toMatchObject({ name: "newproj", cwd: "D:\\newproj" });
   });
 
   test("empty cwd → unknown fallback", () => {
-    expect(resolveProjectFor({ projects: {} }, "", noGit)).toEqual({ name: "unknown", cwd: "" });
+    expect(resolveProjectFor({ projects: {} }, "", noGit)).toMatchObject({ name: "unknown", cwd: "" });
   });
 });
 
@@ -41,18 +41,18 @@ describe("POSIX absolute paths keep their leading slash (parentDir)", () => {
   test("convention fold works for a POSIX absolute parent (src-tauri → app)", () => {
     const p = projects({ app: "/home/u/app" });
     expect(resolveProjectFor({ projects: p }, "/home/u/app/src-tauri", noGit, () => false))
-      .toEqual({ name: "app", cwd: "/home/u/app" });
+      .toMatchObject({ name: "app", cwd: "/home/u/app" });
   });
 
   test(".devlog with no encloser resolves to its ABSOLUTE parent directory", () => {
     expect(resolveProjectFor({ projects: {} }, "/home/u/proj/.devlog", noGit))
-      .toEqual({ name: "proj", cwd: "/home/u/proj" });
+      .toMatchObject({ name: "proj", cwd: "/home/u/proj" });
   });
 
   test("a single-segment absolute path still reports no parent (root contract)", () => {
     // "/x/.devlog" has parent "/x"; "/.devlog" has no usable parent → fallback.
     expect(resolveProjectFor({ projects: {} }, "/.devlog", noGit))
-      .toEqual({ name: ".devlog", cwd: "/.devlog" });
+      .toMatchObject({ name: ".devlog", cwd: "/.devlog" });
   });
 });
 
@@ -65,7 +65,7 @@ describe("Layer A — container with sibling projects must not swallow", () => {
   test("the real incident: unregistered subfolder under a container registers independently", () => {
     // cwd is a NEW subfolder; container encloses a sibling (sib-a) → don't fold.
     expect(resolveProjectFor({ projects: p }, "D:\\container\\sib-b", noGit))
-      .toEqual({ name: "sib-b", cwd: "D:\\container\\sib-b" });
+      .toMatchObject({ name: "sib-b", cwd: "D:\\container\\sib-b" });
   });
 
   test("parentHasSiblingProject detects the container", () => {
@@ -74,7 +74,7 @@ describe("Layer A — container with sibling projects must not swallow", () => {
 
   test("an already-registered sibling still resolves to itself (exact match)", () => {
     expect(resolveProjectFor({ projects: p }, "D:\\container\\sib-a", noGit))
-      .toEqual({ name: "sib-a", cwd: "D:\\container\\sib-a" });
+      .toMatchObject({ name: "sib-a", cwd: "D:\\container\\sib-a" });
   });
 
   test("a descendant of cwd is not counted as a sibling", () => {
@@ -93,18 +93,18 @@ describe("Layer B — git identity decides the ambiguous (no-sibling) case", () 
   test("same git repo → fold into parent (the genuine Tauri src-tauri case)", () => {
     const sameRepo: GitRootFn = () => "D:/app";
     expect(resolveProjectFor({ projects: p }, "D:\\app\\src-tauri", sameRepo))
-      .toEqual({ name: "app", cwd: "D:\\app" });
+      .toMatchObject({ name: "app", cwd: "D:\\app" });
   });
 
   test("child has its own repo (parent none) → independent", () => {
     const childOwnRepo: GitRootFn = (d) => (/src-tauri/.test(d) ? "D:/app/src-tauri" : null);
     expect(resolveProjectFor({ projects: p }, "D:\\app\\src-tauri", childOwnRepo))
-      .toEqual({ name: "src-tauri", cwd: "D:\\app\\src-tauri" });
+      .toMatchObject({ name: "src-tauri", cwd: "D:\\app\\src-tauri" });
   });
 
   test("inverted default: no git anywhere → independent (never swallow)", () => {
     expect(resolveProjectFor({ projects: p }, "D:\\app\\sub", noGit))
-      .toEqual({ name: "sub", cwd: "D:\\app\\sub" });
+      .toMatchObject({ name: "sub", cwd: "D:\\app\\sub" });
   });
 
   test("sharesGitRepo is true only when both roots resolve and match", () => {
@@ -130,31 +130,31 @@ describe("convention layer — no-git folds for dot-dirs and conventional subfol
   test("the live incident, step 1: .devlog under a registered no-git parent folds — never minted", () => {
     const p = projects({ "Grn Gsh": "D:\\Grn Gsh" });
     expect(resolveProjectFor({ projects: p }, "D:\\Grn Gsh\\.devlog", noGit))
-      .toEqual({ name: "Grn Gsh", cwd: "D:\\Grn Gsh" });
+      .toMatchObject({ name: "Grn Gsh", cwd: "D:\\Grn Gsh" });
   });
 
   test("a dot-dir anywhere below the parent folds too (.devlog/docs, .github/workflows)", () => {
     const p = projects({ app: "D:\\app" });
     expect(resolveProjectFor({ projects: p }, "D:\\app\\.devlog\\docs", noGit))
-      .toEqual({ name: "app", cwd: "D:\\app" });
+      .toMatchObject({ name: "app", cwd: "D:\\app" });
     expect(resolveProjectFor({ projects: p }, "D:\\app\\.github\\workflows", noGit))
-      .toEqual({ name: "app", cwd: "D:\\app" });
+      .toMatchObject({ name: "app", cwd: "D:\\app" });
   });
 
   test(".devlog with NO enclosing project still refuses to mint itself — parent dir instead", () => {
     expect(resolveProjectFor({ projects: {} }, "D:\\lonely\\.devlog", noGit))
-      .toEqual({ name: "lonely", cwd: "D:/lonely" });
+      .toMatchObject({ name: "lonely", cwd: "D:/lonely" });
   });
 
   test("a real dot-named repo opened directly (no encloser) still registers as itself", () => {
     expect(resolveProjectFor({ projects: {} }, "D:\\.dotfiles", noGit))
-      .toEqual({ name: ".dotfiles", cwd: "D:\\.dotfiles" });
+      .toMatchObject({ name: ".dotfiles", cwd: "D:\\.dotfiles" });
   });
 
   test("the live incident, step 2: src-tauri with no git anywhere folds into its direct parent", () => {
     const p = projects({ "Grn Gsh": "D:\\Grn Gsh" });
     expect(resolveProjectFor({ projects: p }, "D:\\Grn Gsh\\src-tauri", noGit))
-      .toEqual({ name: "Grn Gsh", cwd: "D:\\Grn Gsh" });
+      .toMatchObject({ name: "Grn Gsh", cwd: "D:\\Grn Gsh" });
   });
 
   test("the cascade is broken: an existing phantom sibling no longer blocks the conventional fold", () => {
@@ -166,27 +166,27 @@ describe("convention layer — no-git folds for dot-dirs and conventional subfol
       ".devlog": "D:\\Grn Gsh\\.devlog",   // leftover phantom
     });
     expect(resolveProjectFor({ projects: p }, "D:\\Grn Gsh\\src-tauri", noGit))
-      .toEqual({ name: "Grn Gsh", cwd: "D:\\Grn Gsh" });
+      .toMatchObject({ name: "Grn Gsh", cwd: "D:\\Grn Gsh" });
   });
 
   test("an independent project that happens to use a conventional name keeps its own repo identity", () => {
     const p = projects({ projectsDir: "D:\\projects" });
     const ownRepo: GitRootFn = (d) => (/frontend/.test(d) ? "D:/projects/frontend" : null);
     expect(resolveProjectFor({ projects: p }, "D:\\projects\\frontend", ownRepo))
-      .toEqual({ name: "frontend", cwd: "D:\\projects\\frontend" });
+      .toMatchObject({ name: "frontend", cwd: "D:\\projects\\frontend" });
   });
 
   test("conventional name but NOT a direct child → convention layer stays out of it", () => {
     const p = projects({ app: "D:\\app" });
     // D:\app\packages\frontend: parent of cwd is packages, not the registered app.
     expect(resolveProjectFor({ projects: p }, "D:\\app\\packages\\frontend", noGit))
-      .toEqual({ name: "frontend", cwd: "D:\\app\\packages\\frontend" });
+      .toMatchObject({ name: "frontend", cwd: "D:\\app\\packages\\frontend" });
   });
 
   test("container protection intact: non-conventional sibling under a container is untouched", () => {
     const p = projects({ container: "D:\\container", "sib-a": "D:\\container\\sib-a" });
     expect(resolveProjectFor({ projects: p }, "D:\\container\\sib-b", noGit))
-      .toEqual({ name: "sib-b", cwd: "D:\\container\\sib-b" });
+      .toMatchObject({ name: "sib-b", cwd: "D:\\container\\sib-b" });
   });
 });
 
@@ -202,13 +202,13 @@ describe("scan layer — parent's directories listing folds no-git data subfolde
   test("the live incident: reports/ under a registered no-git parent folds — never minted", () => {
     const p = parentWithDirs("msa3d al moder", "D:\\msa3d al moder", ["reports"]);
     expect(resolveProjectFor({ projects: p }, "D:\\msa3d al moder\\reports", noGit, noMarkers))
-      .toEqual({ name: "msa3d al moder", cwd: "D:\\msa3d al moder" });
+      .toMatchObject({ name: "msa3d al moder", cwd: "D:\\msa3d al moder" });
   });
 
   test("a deep descendant folds too via its first segment (reports/img)", () => {
     const p = parentWithDirs("app", "D:\\app", ["reports"]);
     expect(resolveProjectFor({ projects: p }, "D:\\app\\reports\\img", noGit, noMarkers))
-      .toEqual({ name: "app", cwd: "D:\\app" });
+      .toMatchObject({ name: "app", cwd: "D:\\app" });
   });
 
   test("directory-name match is case-insensitive (Windows paths)", () => {
@@ -219,13 +219,13 @@ describe("scan layer — parent's directories listing folds no-git data subfolde
   test("a child with its own project markers stays independent", () => {
     const p = parentWithDirs("app", "D:\\app", ["reports"]);
     expect(resolveProjectFor({ projects: p }, "D:\\app\\reports", noGit, withMarkers))
-      .toEqual({ name: "reports", cwd: "D:\\app\\reports" });
+      .toMatchObject({ name: "reports", cwd: "D:\\app\\reports" });
   });
 
   test("a parent that never scanned the subfolder gives no signal → inverted default holds", () => {
     const p = parentWithDirs("app", "D:\\app", ["src"]);
     expect(resolveProjectFor({ projects: p }, "D:\\app\\reports", noGit, noMarkers))
-      .toEqual({ name: "reports", cwd: "D:\\app\\reports" });
+      .toMatchObject({ name: "reports", cwd: "D:\\app\\reports" });
   });
 
   test("Layer A still outranks: a container with a registered sibling never swallows via its listing", () => {
@@ -234,7 +234,7 @@ describe("scan layer — parent's directories listing folds no-git data subfolde
       "sib-a": { name: "sib-a", path: "D:\\container\\sib-a" } as ProjectProfile,
     };
     expect(resolveProjectFor({ projects: p }, "D:\\container\\sib-b", noGit, noMarkers))
-      .toEqual({ name: "sib-b", cwd: "D:\\container\\sib-b" });
+      .toMatchObject({ name: "sib-b", cwd: "D:\\container\\sib-b" });
   });
 
   test("shouldFoldIntoParent ranks the scan layer before git", () => {
@@ -253,6 +253,6 @@ describe("deepest enclosing parent is the fold candidate", () => {
     const sameAsInner: GitRootFn = () => "D:/outer/inner";
     // cwd under inner; inner shares its repo → fold into inner, not outer.
     expect(resolveProjectFor({ projects: p }, "D:\\outer\\inner\\sub", sameAsInner))
-      .toEqual({ name: "inner", cwd: "D:\\outer\\inner" });
+      .toMatchObject({ name: "inner", cwd: "D:\\outer\\inner" });
   });
 });

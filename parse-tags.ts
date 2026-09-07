@@ -5,11 +5,22 @@ import { join } from "node:path";
 import { parseTags } from "./src/tag-parser.ts";
 import { claudeConfigDir } from "./src/path-utils.ts";
 import { entryKey, keepLastRelease, loadLedger, saveLedger, subtractConsumed, sweepAckDirs, sweepLegacyStateDirs, sweepTurnState } from "./src/turn-ledger.ts";
-import { makeTagQueue, isPermanentReject } from "./src/tag-queue.ts";
+import { makeTagQueue, isPermanentReject, migrateLegacyQueues } from "./src/tag-queue.ts";
+import { legacyQueueDirs, resolveHookStateDir, shouldMigrateLegacyQueues } from "./src/hook-state-dir.ts";
 import { ASK_ROWS, serveAsks } from "./src/hook-ask-rows.ts";
 import { runTurnGuards } from "./src/hook-guards.ts";
-import { makeBlockChannel } from "./src/block-channel.ts";
+import { makeBlockChannel, type BlockKey } from "./src/block-channel.ts";
 import { runResponseRows } from "./src/hook-response-rows.ts";
+import { runClosureCheck } from "./src/hook-closure-check.ts";
+import { makeBudget } from "./src/hook-budget.ts";
+import { runDemolitionWhy } from "./src/hook-demolition-why.ts";
+
+// One wall-clock budget for every server call in this hook (#1042 / F-3.71):
+// each fetch gets min(its own cap, what is left), so a live-but-slow daemon
+// can no longer push the sum of sequential caps past the wired 30s and get the
+// whole hook — block, ask answers, feedback — killed. DEVLOG_HOOK_BUDGET_MS
+// overrides the total (the e2e harness runs the hook under other timeouts).
+const budget = makeBudget(Date.now(), parseInt(process.env.DEVLOG_HOOK_BUDGET_MS || "", 10) || undefined);
 
 // Single source for the server base — follows DEVLOG_PORT like data.ts /
 // doctor.ts / pre-release-hook.js instead of hardcoding 7777 in six places (R3 P5).
@@ -20,20 +31,22 @@ const SERVER = `http://127.0.0.1:${process.env.DEVLOG_PORT || "7777"}`;
 const LANG = (process.env.DEVLOG_LANG || "").trim().toLowerCase().startsWith("ar") ? "ar" : "en";
 const L = (en: string, ar: string) => (LANG === "ar" ? ar : en);
 
-// Debug log lives next to this script so the project is portable across machines.
-const LOG_DIR = join(import.meta.dir, ".devlog");
-const LOG_PATH = join(LOG_DIR, "parse-tags.debug.log");
-const QUEUE_DIR = join(LOG_DIR, "tag-queue");
-// The turn ledger (src/turn-ledger.ts) — ONE state file per session replacing
-// the three per-mechanism dirs that accumulated as continuation guards
-// (rules-state / verify-state / ask-state). The scope-policy table lives in the
-// module header; every per-turn / per-session dedup below reads and writes the
-// ledger object loaded once after the turnId is known.
-const TURN_STATE_DIR = join(LOG_DIR, "turn-state");
-await mkdir(LOG_DIR, { recursive: true });
-await mkdir(QUEUE_DIR, { recursive: true });
-await mkdir(TURN_STATE_DIR, { recursive: true });
-await Promise.all([sweepTurnState(TURN_STATE_DIR), sweepLegacyStateDirs(LOG_DIR), sweepAckDirs(LOG_DIR)]);
+// Hook state (queue / turn ledger / debug log) lives in the DATA dir by the
+// server's own rule (src/hook-state-dir.ts, #1040) — never next to this script,
+// which for a plugin user is a versioned cache entry whose queue died with it.
+// PreToolUse acks stay next to the hooks that write them (HOOK_DIR_STATE).
+const HOOK_DIR_STATE = join(import.meta.dir, ".devlog");
+const STATE_DIR = resolveHookStateDir(process.env, import.meta.dir);
+const LOG_PATH = join(STATE_DIR, "parse-tags.debug.log");
+const QUEUE_DIR = join(STATE_DIR, "tag-queue");
+const TURN_STATE_DIR = join(STATE_DIR, "turn-state");   // turn ledger (src/turn-ledger.ts): one file per session
+await Promise.all([mkdir(QUEUE_DIR, { recursive: true }), mkdir(TURN_STATE_DIR, { recursive: true })]);
+await Promise.all([
+  sweepTurnState(TURN_STATE_DIR), sweepLegacyStateDirs(HOOK_DIR_STATE), sweepAckDirs(HOOK_DIR_STATE),
+  // One-time pull of pre-#1040 queues (this folder + sibling plugin versions) —
+  // never from a sandboxed hook (explicit DEVLOG_HOOK_STATE_DIR = test harness).
+  shouldMigrateLegacyQueues(process.env) ? migrateLegacyQueues(QUEUE_DIR, legacyQueueDirs(import.meta.dir)) : Promise.resolve(0),
+]);
 
 // Debug logging is OFF by default (#devops-F2): it ran on EVERY Stop hook with
 // no gate and no rotation, so parse-tags.debug.log crept to 4+MB unbounded.
@@ -55,6 +68,8 @@ const log = DEBUG ? (line: string) => appendFile(LOG_PATH, `${line}\n`, "utf-8")
 let finalized = false;
 const { feedback, flushBlock, blockContinue } =
   makeBlockChannel(SERVER, () => cwd, () => finalizeTurn());
+// #1226: a block key a response row deferred to the hook's tail (release-serve).
+let deferredFlush: BlockKey | null = null;
 
 // Disk queue for /api/tags during server outages — extracted to src/tag-queue.ts
 // (drain order, #768 poison quarantine and all).
@@ -96,6 +111,15 @@ try {
 // stored as a second tag; same #486/#487 class the single-line cut fixed for
 // headline tags). Callers parse tags per segment and join only for line-anchored
 // command scans (ask:*/audit), which a segment boundary can't split.
+/** The harness's echo of a LOCAL slash command (`/clear`, `/low-priority`, …):
+ *  a role="user" transcript entry whose text opens with `<command-name>` (or the
+ *  caveat/stdout wrappers the same commands emit). Never a turn boundary and
+ *  never the user's ask (#1228). A real prompt that merely MENTIONS the tag
+ *  mid-text is untouched — only a leading wrapper counts. */
+function isLocalCommandEcho(userText: string): boolean {
+  return /^\s*<(?:command-name|local-command-caveat|local-command-stdout)>/.test(userText);
+}
+
 async function readTurnFromTranscript(transcriptPath: string): Promise<{ text: string; turnId: string; segments: { text: string; model: string }[]; userPrompt: string }> {
   if (!transcriptPath) return { text: "", turnId: "", segments: [], userPrompt: "" };
   try {
@@ -124,19 +148,26 @@ async function readTurnFromTranscript(transcriptPath: string): Promise<{ text: s
         // -(release), a loop only a -(feature) tag could break.
         const isToolResultOnly = Array.isArray(c) && c.length > 0
           && c.every(b => b?.type === "tool_result");
+        let userText = "";
+        if (typeof c === "string") userText = c;
+        else if (Array.isArray(c)) {
+          userText = c
+            .filter((b): b is { type: string; text: string } => b?.type === "text" && typeof b.text === "string")
+            .map(b => b.text).join("\n");
+        }
+        // #1228: a LOCAL command the user typed mid-turn (`/low-priority`,
+        // `/clear`, …) lands as a role="user" entry whose text is the harness's
+        // `<command-name>…` echo — no model turn answers it, so it is neither a
+        // turn boundary (resetting here wiped the segments already written and
+        // re-keyed the ledger) nor the user's words (the batch was attributed
+        // to «/low-priority» while the real ask was «كمل»). Skip it outright.
+        if (isLocalCommandEcho(userText)) continue;
         if (!isToolResultOnly && obj.isMeta !== true) {
           segments = [];
           // Boundary of a new user turn — remember its id as the turn key.
           // Fallback ladder (design §4): uuid → timestamp → content hash of the
           // user text (format-independent, survives a transcript-schema change
           // that drops both fields) → previous boundary's id.
-          let userText = "";
-          if (typeof c === "string") userText = c;
-          else if (Array.isArray(c)) {
-            userText = c
-              .filter((b): b is { type: string; text: string } => b?.type === "text" && typeof b.text === "string")
-              .map(b => b.text).join("\n");
-          }
           const hashed = userText ? `h${Bun.hash(userText).toString(36)}` : "";
           turnId = String(obj.uuid || obj.timestamp || hashed || turnId || "");
           if (userText.trim()) userPrompt = userText.trim();
@@ -218,7 +249,7 @@ async function markAskServed(command: string): Promise<void> {
 // legitimately runs with a different store than the test server).
 if (sessionId && !ledger.session.envDriftChecked && process.env.DEVLOG_ENV_DRIFT_CHECK !== "0") {
   try {
-    const r = await fetch(`${SERVER}/api/boot`, { signal: AbortSignal.timeout(3000) });
+    const r = await fetch(`${SERVER}/api/boot`, { signal: AbortSignal.timeout(budget(3000)) });
     if (r.ok) {
       const { env } = await r.json() as { env?: { dataDir: string; port: number; lang: string } };
       // Mark checked only after a successful fetch (server down → retry next Stop).
@@ -340,9 +371,34 @@ if (msg) {
     if (releaseEntry && cwd && process.env.DEVLOG_RELEASE_GUARD !== "0") {
       try {
         const openRes = await fetch(`${SERVER}/api/open-items?cwd=${encodeURIComponent(cwd)}`, {
-          signal: AbortSignal.timeout(3000),
+          signal: AbortSignal.timeout(budget(3000)),
         });
-        const { items: allItems = [] } = openRes.ok ? await openRes.json() as { items?: any[] } : { items: [] };
+        const openBody = openRes.ok ? await openRes.json() as { items?: any[]; reason?: string } : null;
+        // An UNKNOWN open list refuses the release (#1065 / F-4.80): the daemon
+        // answers `{items: [], reason: "cwd-mismatch"}` when this folder is not
+        // the registered project's path (a same-named project elsewhere, or a
+        // moved folder), and a non-ok reply says nothing at all. Both used to
+        // read as "0 open" — the strict guard failing open in silence.
+        if (!openBody || openBody.reason) {
+          const why = openBody?.reason === "cwd-mismatch"
+            ? L("this folder is not the registered path of its project — DevLog cannot see its open items from here",
+                "هذا المجلد ليس المسار المسجَّل لمشروعه — لا يستطيع DevLog رؤية مفتوحاته من هنا")
+            : L(`the open-items list could not be read (HTTP ${openRes.status})`, `تعذّرت قراءة قائمة المفتوح (HTTP ${openRes.status})`);
+          await log(`release guard: open list unknown (${openBody?.reason || openRes.status}) — refusing`);
+          await consumeRefusedRelease();   // same #1006 rule as the open-items refusal below
+          const unknownOut = [
+            "════════ DevLog Release Guard ════════",
+            `-(release) ${releaseEntry.content.slice(0, 120)}`,
+            "",
+            L(`🛑 Refused: ${why}.`, `🛑 مرفوض: ${why}.`),
+            L("A release ships only against a KNOWN, empty open list — run from the project root / fix the daemon, then re-emit -(release). (bypass once: DEVLOG_RELEASE_GUARD=0)",
+              "لا يخرج إصدار إلا بقائمة مفتوح معلومة وفارغة — نفّذ من جذر المشروع / أصلح الخادم ثم أعد -(release). (تجاوز لمرة واحدة: DEVLOG_RELEASE_GUARD=0)"),
+            L("✗ The release tag was NOT recorded.", "✗ الـrelease tag لم يُسجَّل."),
+            "══════════════════════════════════════",
+          ].join("\n");
+          await blockContinue(unknownOut, "release-guard");
+        }
+        const allItems: any[] = openBody?.items || [];
         // «قادمة» never blocks a release — the deferred tier exists precisely
         // so recorded ambition doesn't gate shipping.
         const rawItems = allItems.filter(it => !it.upcoming);
@@ -439,7 +495,7 @@ if (msg) {
         && await shouldServeAsk("feature-nudge")) {
       try {
         const r = await fetch(`${SERVER}/api/features?cwd=${encodeURIComponent(cwd)}`, {
-          signal: AbortSignal.timeout(3000),
+          signal: AbortSignal.timeout(budget(3000)),
         });
         if (r.ok) {
           const { sinceLastRelease = { built: 0, features: 0 } } =
@@ -531,7 +587,7 @@ if (msg) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(budget(5000)),
       });
       const respBody = await r.text();
       await log(`POST result: ${r.status} ${respBody.slice(0, 200)}`);
@@ -563,6 +619,9 @@ if (msg) {
             L, log, feedback, blockContinue, flushBlock,
             session: ledger.session,
             persistLedger: () => saveLedger(ledgerFile, ledger),
+            // #1226: the release confirmation's own block waits for the tail so
+            // Part 1.5 (standards commands) and 1.5b (asks) still run this turn.
+            deferFlush: (key) => { deferredFlush = key; },
           });
         } catch (e) { await log(`release-response parse error: ${(e as Error).message}`); }
       }
@@ -572,36 +631,8 @@ if (msg) {
       await recordPosted();
     }
 
-    // === Closure check ===
-    // After tags are persisted, ask the server for items STILL open. Any
-    // `-(built)`/`-(refactor)` in this response that fuzzy-matches an open
-    // item without a closure → emit warning to stderr (exit 2 forces Claude
-    // to address it before the turn ends). Skip if DEVLOG_CLOSURE_CHECK=0.
-    if (cwd && process.env.DEVLOG_CLOSURE_CHECK !== "0") {
-      try {
-        const openRes = await fetch(`${SERVER}/api/open-items?cwd=${encodeURIComponent(cwd)}`, {
-          signal: AbortSignal.timeout(3000),
-        });
-        if (openRes.ok) {
-          const { items = [] } = await openRes.json() as { items?: any[] };
-          const mod = await import("./src/closure-check.ts");
-          // «قادمة» items never trigger the built-without-closure block — they
-          // can still be closed explicitly by #N whenever the work happens.
-          const result = mod.checkClosures(entries, items.filter(it => !it.upcoming));
-          await log(`closure-check: unclosed=${result.unclosed.length} warnings=${result.warnings.length}`);
-          if (result.unclosed.length || result.warnings.length) {
-            const msg = mod.formatClosureMessage(result);
-            feedback.push(`\n[devlog closure-check]\n${msg}\n`);
-            if (result.unclosed.length) {
-              // Block: Claude sees the feedback and must respond again.
-              await flushBlock("closure-check");
-            }
-          }
-        }
-      } catch (e) {
-        await log(`closure-check error: ${(e as Error).message}`);
-      }
-    }
+    // === Closure check === (src/hook-closure-check.ts — once per turn, #1041)
+    await runClosureCheck({ server: SERVER, cwd, entries, log, L, feedback, flushBlock, shouldServeAsk, markAskServed, budget });
   }
 }
 
@@ -663,57 +694,10 @@ if (msg) {
 //
 // Fenced + inline code blanked ONCE for every command scanner: a command shown
 // as an EXAMPLE inside code must never trigger a real serve (#407).
-// ── Targeted "why" (plan narrative-layer P4) ─────────────────────────────────
-// This session overrode the demolition gate (re-issued an edit to a
-// load-bearing file) and has recorded NO decision/insight/story anywhere — the
-// rebuild happened, its reason lives nowhere. ONE soft whisper per session on
-// the non-blocking channel (never a block: the blanket "justify every edit"
-// was rejected — compelled prose is filler; a rare, targeted ask gets real
-// answers). Fail-open at every step. Rides DEVLOG_DEMOLITION_GATE=0's switch.
-if (sessionId && cwd && !ledger.session.hintedDemolitionWhy
-    && process.env.DEVLOG_DEMOLITION_GATE !== "0"
-    // A why-tag in THIS turn silences it locally; earlier turns' are counted
-    // server-side (knowledgeTags below — the batch was already POSTed above).
-    && !/^[ \t]*-[ \t]*\((?:decision|insight|story)!?\)/m.test(msg)) {
-  try {
-    const norm = (p: string) => p.replace(/\\/g, "/").toLowerCase();
-    const ackDir = join(LOG_DIR, "demolition-ack");
-    const safeSid = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const acked: string[] = [];
-    for (const name of await readdir(ackDir).catch(() => [] as string[])) {
-      if (!name.startsWith(`${safeSid}-`)) continue;
-      try {
-        const j = JSON.parse(await readFile(join(ackDir, name), "utf-8")) as { file?: string };
-        if (j?.file) acked.push(j.file);
-      } catch { /* pre-P4 ack (bare timestamp) — no path to name, skip */ }
-    }
-    if (acked.length) {
-      const r = await fetch(`${SERVER}/api/changes/session?session_id=${encodeURIComponent(sessionId)}`,
-        { signal: AbortSignal.timeout(3000) });
-      if (r.ok) {
-        const { items = [], knowledgeTags = 0 } = await r.json() as
-          { items?: Array<{ file_path?: string }>; knowledgeTags?: number };
-        const edited = new Set(items.map(i => norm(i.file_path || "")));
-        const overridden = acked.filter(f => edited.has(norm(f)));
-        if (overridden.length && knowledgeTags === 0) {
-          ledger.session.hintedDemolitionWhy = true;
-          await saveLedger(ledgerFile, ledger);
-          const names = overridden.map(f => f.split(/[\\/]/).pop() || f).slice(0, 3).join("، ");
-          feedback.push(`\n[devlog demolition-why]\n${L(
-            `You overrode the load-bearing notice and edited ${names} — and the session records no reason anywhere. If the rebuild had a why (an approach that failed, a constraint), keep it: -(decision) or -(insight). One whisper, no block.`,
-            `تجاوزت تنبيه الجدار الحامل وعدّلت ${names} — والجلسة لا تسجّل السبب في أي مكان. إن كان لإعادة البناء «ليش» (نهج فشل، قيد فرض نفسه) فاحفظه: -(decision) أو -(insight). همسة واحدة، بلا حجب.`)}\n`);
-          try {
-            const { postRuleTelemetry } = await import("./src/telemetry-client.ts");
-            await postRuleTelemetry(SERVER, cwd, [{ gate: "turn", action: "fire", rule: "demolition-why", file: overridden[0], detail: "soft" }]);
-          } catch { /* telemetry never breaks the whisper */ }
-          await log(`demolition-why whispered once: ${overridden.length} overridden file(s), knowledgeTags=0`);
-        }
-      }
-    }
-  } catch (e) {
-    await log(`demolition-why error: ${(e as Error).message}`);
-  }
-}
+// ── Targeted "why" (plan narrative-layer P4) — src/hook-demolition-why.ts ────
+// One soft whisper per session when the demolition gate was overridden and no
+// decision/insight/story was recorded. Never blocks; fail-open throughout.
+await runDemolitionWhy({ msg, sessionId, cwd, server: SERVER, hookStateDir: HOOK_DIR_STATE, ledger, ledgerFile, L, log, feedback, budget });
 
 const strippedMsg = msg
   .replace(/```[\s\S]*?```/g, (s: string) => " ".repeat(s.length))
@@ -722,7 +706,7 @@ const strippedMsg = msg
 await serveAsks(ASK_ROWS, {
   msg, strippedMsg, cwd, sessionId, server: SERVER, lang: LANG,
   // An -(ask:*) answer is delivery: the block channel is how it arrives.
-  L, log, shouldServeAsk, markAskServed, feedback,
+  L, log, shouldServeAsk, markAskServed, feedback, budget,
   blockContinue: (text: string) => blockContinue(text, "serve"),
 });
 
@@ -735,10 +719,14 @@ await serveAsks(ASK_ROWS, {
 // testable); the order is fixed there and explained there.
 await runTurnGuards({
   msg, tagSegments, cwd, sessionId, stopHookActive, server: SERVER,
-  ledger, ledgerFile, L, log, shouldServeAsk, markAskServed, flushTagQueue,
+  ledger, ledgerFile, L, log, shouldServeAsk, markAskServed, flushTagQueue, budget,
   // Guards record themselves by name (blockRecorded) — never count twice here.
   blockContinue: (text: string) => blockContinue(text, "guard-own"),
 });
+
+// #1226: a response row asked for its own block but let the parts above run
+// first (the release confirmation) — deliver it now, as the block it always was.
+if (deferredFlush) await flushBlock(deferredFlush);
 
 // No blocking message fired, but informational notes accrued — chiefly the
 // closure confirmation (`✓ closed #N`). The OLD code wrote these to stderr on
@@ -766,7 +754,7 @@ async function finalizeTurn(): Promise<void> {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cwd, session_id: sessionId }),
-        signal: AbortSignal.timeout(3000),
+        signal: AbortSignal.timeout(budget(3000)),
       });
     } catch (e) {
       await log(`session-summary POST error: ${(e as Error).message}`);
@@ -787,7 +775,7 @@ async function finalizeTurn(): Promise<void> {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ cwd, content, file_path: fp }),
-          signal: AbortSignal.timeout(2000),
+          signal: AbortSignal.timeout(budget(2000)),
         });
       } catch { /* best-effort plan sync — server may be down */ }
     }));

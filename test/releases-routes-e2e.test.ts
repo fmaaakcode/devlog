@@ -98,7 +98,8 @@ describe("/releases routes (E2E)", () => {
     const r = await fetch(`${BASE}/releases/${encodeURIComponent(project)}/preview.html`);
     expect(r.status).toBe(200);
     const html = await r.text();
-    expect(html).toContain("معاينة");                       // the preview banner
+    expect(html).toContain("dl-preview-banner");            // the preview banner (text follows DEVLOG_LANG since F-6.18)
+    expect(html).toMatch(/Live preview|معاينة حية/);
     expect(html).toContain("v1.3.0");                       // built since v1.2.3 → auto minor
     expect(html).toContain("ميزة جديدة بعد الإصدار");        // changelog content
     expect(html).toContain("#7");                           // the open todo listed as a blocker

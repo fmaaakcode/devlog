@@ -1,9 +1,10 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { spawn, type Subprocess } from "bun";
+import type { Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { diagnose } from "../src/doctor";
+import { startServer, stopServer } from "./_helpers";
 
 // diagnose() fetches the live DevLog server over HTTP. To keep this suite
 // self-contained — and not silently pass only because the developer's local
@@ -11,7 +12,6 @@ import { diagnose } from "../src/doctor";
 // boot an isolated subprocess server on a private port with its own data dir.
 // doctor reads DEVLOG_PORT at call time, so pointing the env var here is enough.
 const TEST_PORT = 17857;   // unique — was 17786, shared with routes-processes-e2e (#383)
-const PROJECT_ROOT = join(import.meta.dir, "..");
 
 let server: Subprocess;
 let dataDir: string;
@@ -33,24 +33,14 @@ beforeAll(async () => {
   prevPort = process.env.DEVLOG_PORT;
   process.env.DEVLOG_PORT = String(TEST_PORT);
   dataDir = mkdtempSync(join(tmpdir(), "doctor-test-"));
-  server = spawn({
-    cmd: ["bun", join("src", "server.ts")],
-    cwd: PROJECT_ROOT,
-    env: {
-      ...process.env,
-      DEVLOG_DATA_DIR: dataDir,
-      DEVLOG_PORT: String(TEST_PORT),
-      DEVLOG_VERSION_CHECK_DISABLED: "1",
-    },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  // Shared harness boot (F-9.52): the private spawn forwarded the shell's
+  // DEVLOG_* — including a DEVLOG_STANDARDS_DIR another suite had just deleted.
+  server = startServer(dataDir, TEST_PORT);
   await waitForServer(TEST_PORT);
 });
 
 afterAll(async () => {
-  try { server?.kill(); } catch { /* already dead */ }
-  await Promise.race([server?.exited, Bun.sleep(2000)]);
+  if (server) await stopServer(server);   // waits for the real exit (#729), not a 2s race
   if (dataDir) rmSync(dataDir, { recursive: true, force: true });
   if (prevPort === undefined) delete process.env.DEVLOG_PORT;
   else process.env.DEVLOG_PORT = prevPort;

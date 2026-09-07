@@ -14,6 +14,7 @@ import { spawn, type Subprocess } from "bun";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { scrubbedEnv } from "./_helpers";
 
 const PROJECT_ROOT = join(import.meta.dir, "..");
 const SCRIPT = join(PROJECT_ROOT, "ensure-server.sh").replaceAll("\\", "/");
@@ -59,7 +60,7 @@ async function runScript(opts: { env?: Record<string, string>; args?: string[]; 
   const proc = spawn({
     cmd,
     cwd: PROJECT_ROOT,
-    env: { ...process.env, ...restEnv },
+    env: { ...scrubbedEnv(), ...restEnv },
     stdin: "pipe", stdout: "pipe", stderr: "pipe",
   });
   proc.stdin.write(opts.payload ?? "{}");
@@ -89,7 +90,7 @@ describe.skipIf(!BASH)("ensure-server.sh stdout contract", () => {
     // too; do NOT paper over the scenario tests.
     const proc = spawn({
       cmd: [BASH as string, "-c", 'printf "%s" "$DEVLOG_ENV_PROBE"'],
-      env: { ...process.env, DEVLOG_ENV_PROBE: "probe-7f2" },
+      env: { ...scrubbedEnv(), DEVLOG_ENV_PROBE: "probe-7f2" },
       stdout: "pipe", stderr: "pipe",
     });
     const [code, out] = await Promise.all([proc.exited, new Response(proc.stdout).text()]);
@@ -187,7 +188,7 @@ describe.skipIf(!BASH)("ensure-server.sh inject passthrough (live server)", () =
     server = spawn({
       cmd: ["bun", join("src", "server.ts")],
       cwd: PROJECT_ROOT,
-      env: { ...process.env, DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT), DEVLOG_VERSION_CHECK_DISABLED: "1" },
+      env: { ...scrubbedEnv(), DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT), DEVLOG_VERSION_CHECK_DISABLED: "1" },
       stdout: "pipe", stderr: "pipe",
     });
     const deadline = Date.now() + 8000;

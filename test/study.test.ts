@@ -174,6 +174,20 @@ describe("studyCorpus — aggregates", () => {
   });
 });
 
+describe("studyCorpus — fragile files carry the absence judge (#1180)", () => {
+  test("a deleted file in «الأكثر كسرًا» is labelled missing in the study, exactly as in retro", () => {
+    const tags = [
+      { tag: "bug found", project: "p", num: 1, content: "a", files: ["D:/proj/src/ghost.ts"], timestamp: "2026-01-01T00:00:00Z" },
+      { tag: "bug found", project: "p", num: 2, content: "b", files: ["D:/proj/src/ghost.ts"], timestamp: "2026-01-02T00:00:00Z" },
+    ];
+    const judge = (abs: string) => (abs.endsWith("ghost.ts") ? true as const : undefined);
+    const { aggregates } = studyCorpus(makeData(tags), "p", NOW, null, [], judge);
+    expect(aggregates.problems.fragile).toEqual([{ file: "src/ghost.ts", count: 2, open: 2, missing: true }]);
+    // Without a judge the old shape is unchanged.
+    expect(studyCorpus(makeData(tags), "p", NOW).aggregates.problems.fragile[0].missing).toBeUndefined();
+  });
+});
+
 describe("studyCorpus — behavior profile", () => {
   // Local-time constructors keep the expectations TZ-independent in CI:
   // whatever zone runs the test, getHours() reads back what we constructed.

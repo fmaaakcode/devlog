@@ -11,11 +11,11 @@ import type { Subprocess } from "bun";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startServer, stopServer, waitForServer, runHook, PROJECT_ROOT } from "./_helpers";
+import { startServer, stopServer, waitForServer, runHook, HOOK_STATE_DIR } from "./_helpers";
 
 const TEST_PORT = 17971;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
-const TURN_STATE_DIR = join(PROJECT_ROOT, ".devlog", "turn-state");
+const TURN_STATE_DIR = join(HOOK_STATE_DIR, "turn-state");
 
 let dataDir: string, projDir: string, server: Subprocess;
 const rnd = Math.random().toString(36).slice(2, 8);
@@ -67,6 +67,21 @@ beforeAll(async () => {
     tool_input: { command: "bun test test/checkout.test.ts", description: "run checkout tests" },
     tool_response: { exit_code: 1 },
   });
+  // #1185: a PASSING command and one with an UNKNOWN outcome (no exit code in
+  // the response) ride along, so the digest's count and its ✗ samples can be
+  // pinned — recent.ts counts `ok === false` only; absent is unknown, never
+  // failure. Before, only the failed command's face was asserted, and a
+  // regression treating "absent" as failed (3 of 3 failed) stayed green.
+  await post("/api/hook", {
+    hook_event_name: "PostToolUse", tool_name: "Bash", cwd: projDir, session_id: prevSid,
+    tool_input: { command: "bun run typecheck", description: "typecheck the tree" },
+    tool_response: { exit_code: 0 },
+  });
+  await post("/api/hook", {
+    hook_event_name: "PostToolUse", tool_name: "Bash", cwd: projDir, session_id: prevSid,
+    tool_input: { command: "bun run lint", description: "lint without an exit code" },
+    tool_response: { stdout: "clean" },
+  });
   await post("/api/tags", { cwd: projDir, session_id: prevSid, entries: [
     { tag: "built", content: "مسار الدفع عند انتهاء الجلسة" },
     { tag: "todo", content: "اختبار انتهاء المهلة أثناء الدفع" },
@@ -86,6 +101,13 @@ describe("-(ask:recent) through the real hook", () => {
     expect(out).toContain("مسار الدفع عند انتهاء الجلسة");   // the tag
     expect(out).toContain("src/checkout.ts");                 // the touched file
     expect(out).toContain("run checkout tests");              // the failed command's face
+    // #1185: the COUNT and the ✗ marking — 3 commands, exactly 1 failed; the
+    // passing one and the unknown-outcome one are neither counted as failed nor
+    // listed as samples.
+    expect(out).toContain("Commands: 3, 1 failed");
+    expect(out).toContain("✗ run checkout tests");
+    expect(out).not.toContain("✗ typecheck the tree");
+    expect(out).not.toContain("✗ lint without an exit code");
   });
 
   test("a day window serves the same session; a huge session count caps quietly", async () => {

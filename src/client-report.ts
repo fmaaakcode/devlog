@@ -13,11 +13,12 @@
 // DEVLOG_LANG=ar (the report language follows the developer's working language).
 
 import { mkdir } from "node:fs/promises";
+import { atomicWriteText } from "./atomic-write";
 import { join } from "node:path";
 import type { DevLogData } from "./types";
 import { openTodos, openBugs, openSecurity, openPlanSteps, openOutdatedLibs } from "./data";
 import { featureList, type FeatureItem } from "./features";
-import { isRealVersion, parseVersion } from "./release-html";
+import { isRealVersion, parseVersion, sameVersion } from "./release-html";
 import { currentLang } from "./i18n";
 import { DL_THEME_ROOT } from "./dl-theme";
 import { esc } from "./html-escape";
@@ -68,6 +69,7 @@ export function collectClientReport(data: DevLogData, project: string): ClientRe
 
   // What shipped in the last release: same (prev, last] range the release page
   // uses, reduced to client-relevant facts.
+  const features = featureList(data, project);
   let latestNews: ClientReportFacts["latestNews"] = null;
   if (last) {
     const start = prev ? +new Date(prev.timestamp) : 0;
@@ -76,8 +78,14 @@ export function collectClientReport(data: DevLogData, project: string): ClientRe
       const ms = +new Date(t.timestamp);
       return ms > start && ms <= end;
     };
+    // #1140: capabilities come from the RESOLVED inventory (featureList) — the
+    // same attribution the grouped list below uses — not from raw feature tags
+    // in the time window. The raw path put a `[v2.17.0]` backfill under the
+    // current version with its marker showing to the client, and missed a
+    // `[vCURRENT]` declaration emitted after the release was cut.
+    const lastVersion = parseVersion(last.content).version;
     latestNews = {
-      features: tags.filter(t => t.tag === "feature" && inRange(t)).map(t => t.content),
+      features: features.filter(ft => ft.sinceVersion && sameVersion(ft.sinceVersion, lastVersion)).map(ft => ft.text),
       built: tags.filter(t => (t.tag === "built" || t.tag === "update") && inRange(t)).length,
       fixes: tags.filter(t => t.tag === "bug fix" && inRange(t)).length,
     };
@@ -96,7 +104,7 @@ export function collectClientReport(data: DevLogData, project: string): ClientRe
       ? { version: parseVersion(last.content).version, date: last.timestamp, summary: parseVersion(last.content).summary }
       : null,
     releasesCount: releases.length,
-    features: featureList(data, project),
+    features,
     releaseDates: Object.fromEntries(releases.map(r => [parseVersion(r.content).version, r.timestamp])),
     latestNews,
     inProgress,
@@ -240,7 +248,7 @@ ${techLine}
   const chips: string[] = [];
   if (f.stack.language) chips.push(`<span class="cr-chip"><b>${L("Language", "اللغة")}</b> ${esc(f.stack.language)}</span>`);
   if (f.stack.framework) chips.push(`<span class="cr-chip"><b>${L("Framework", "الإطار")}</b> ${esc(f.stack.framework)}</span>`);
-  if (f.stack.runtime) chips.push(`<span class="cr-chip"><b>Runtime</b> ${esc(f.stack.runtime)}</span>`);
+  if (f.stack.runtime) chips.push(`<span class="cr-chip"><b>${L("Runtime", "بيئة التشغيل")}</b> ${esc(f.stack.runtime)}</span>`);
   const libsLine = f.stack.libsTotal
     ? (f.stack.libsOutdated
       ? L(`Built on ${f.stack.libsTotal} third-party libraries; ${f.stack.libsOutdated} have a newer version available (scheduled maintenance).`,
@@ -302,6 +310,8 @@ export async function writeClientReport(data: DevLogData, project: string): Prom
   const dir = join(p.path, ".devlog");
   await mkdir(dir, { recursive: true });
   const path = join(dir, "client-report.html");
-  await Bun.write(path, html);
+  // Atomic (F-4.43): the file the developer SENDS must never be a truncated
+  // half-render after a crash or an AV lock mid-write.
+  await atomicWriteText(path, html);
   return path;
 }

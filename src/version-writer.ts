@@ -6,11 +6,11 @@
  * Conservative regex replace — preserves formatting, comments, ordering.
  * Returns the list of files actually updated.
  */
-import { readFile, open, rename } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { resolveWorkspaceMemberDirs } from "./cargo-workspace";
-import { withLockRetry } from "./fs-retry";
+import { atomicWriteText } from "./atomic-write";
 import { escapeRegex } from "./regex-escape";
 
 export interface VersionUpdate {
@@ -26,12 +26,20 @@ export interface VersionUpdate {
 //   - "unsupported-layout": the manifest exists but carries no literal version
 //     we can bump — a virtual Cargo workspace without [workspace.package]
 //     version, a crate inheriting `version.workspace = true` with no workspace
-//     block, or a [package] with the version field omitted (#623).
+//     block, or a [package] with the version field omitted (#623) — and, since
+//     #1126, a package.json/plugin.json without a string `"version"` key (a
+//     private monorepo root is the common shape).
+//   - "io-error": the manifest exists and is bumpable but the write failed
+//     (EACCES/ENOSPC/EROFS, a rename that outlived its retries, an unreadable
+//     file). Before #1126 every such failure was a daemon-side console.error
+//     and the hook told the user "no manifest to bump" — the one message that
+//     is false in exactly this case. `error` carries the OS message.
 export interface VersionReject {
   file: string;
   current: string;   // version already in the manifest ("" when none was found)
   attempted: string; // the version the release headline asked for
-  reason: "downgrade" | "unsupported-layout";
+  reason: "downgrade" | "unsupported-layout" | "io-error";
+  error?: string;
 }
 
 // Captures the version IN FULL: extra numeric parts (2.0.0.4) and build
@@ -47,38 +55,88 @@ export function extractVersion(content: string): string | null {
   return m ? m[1] : null;
 }
 
-// Compare two semver-ish strings by ALL their numeric parts, ignoring any
-// pre-release/build suffix. Missing parts read 0 (2.0.0 == 2.0.0.0), so plain
-// X.Y.Z behaves exactly as the old 3-part compare while four-part schemes
-// (2.0.0.4 < 2.0.0.5) order correctly instead of colliding as "equal" — the
-// collision let the downgrade guard wave truncation clobbers through.
-// Returns -1 if a < b, 0 if numerically equal, 1 if a > b.
+// Compare two semver-ish strings by ALL their numeric parts, then by their
+// pre-release identifiers (semver §11). Missing numeric parts read 0
+// (2.0.0 == 2.0.0.0), so plain X.Y.Z behaves exactly as the old 3-part compare
+// while four-part schemes (2.0.0.4 < 2.0.0.5) order correctly instead of
+// colliding as "equal" — the collision let the downgrade guard wave truncation
+// clobbers through. Pre-release ordering (#1124): a pre-release sorts BELOW its
+// final (2.0.0-rc.1 < 2.0.0), two pre-releases compare identifier by
+// identifier (numeric < alphanumeric, numeric by value, otherwise ASCII, a
+// shorter prefix is lower: rc.1 < rc.2 < rc.10, alpha < beta, beta < beta.1).
+// Treating the suffix as noise made 2.0.0-rc.1 EQUAL to 2.0.0, so the final
+// release after an rc was refused as a "downgrade" by the tag guard, the auto
+// bump skipped straight to 2.0.1, and the writer let 2.0.0 → 2.0.0-beta.2
+// through as a non-downgrade. Build metadata (`+…`) never participates (§10).
+// Returns -1 if a < b, 0 if equal, 1 if a > b.
 export function compareSemver(a: string, b: string): number {
-  const parse = (v: string) =>
-    v.replace(/^v/i, "").split(/[-+]/)[0].split(".").map((s) => Number(s) || 0);
+  const parse = (v: string) => {
+    const core = v.replace(/^v/i, "").split("+")[0];
+    const dash = core.indexOf("-");
+    const nums = (dash >= 0 ? core.slice(0, dash) : core).split(".").map((s) => Number(s) || 0);
+    const pre = dash >= 0 ? core.slice(dash + 1).split(".").filter(Boolean) : [];
+    return { nums, pre };
+  };
   const x = parse(a);
   const y = parse(b);
-  for (let i = 0; i < Math.max(x.length, y.length, 3); i++) {
-    const xi = x[i] || 0;
-    const yi = y[i] || 0;
+  for (let i = 0; i < Math.max(x.nums.length, y.nums.length, 3); i++) {
+    const xi = x.nums[i] || 0;
+    const yi = y.nums[i] || 0;
     if (xi < yi) return -1;
     if (xi > yi) return 1;
+  }
+  return comparePreRelease(x.pre, y.pre);
+}
+
+// semver §11.4: no pre-release > any pre-release; otherwise per identifier.
+function comparePreRelease(x: string[], y: string[]): number {
+  if (!x.length && !y.length) return 0;
+  if (!x.length) return 1;
+  if (!y.length) return -1;
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    if (i >= x.length) return -1; // shorter prefix is lower (rc < rc.1)
+    if (i >= y.length) return 1;
+    const xi = x[i];
+    const yi = y[i];
+    const xn = /^\d+$/.test(xi);
+    const yn = /^\d+$/.test(yi);
+    if (xn && yn) {
+      const d = Number(xi) - Number(yi);
+      if (d) return d < 0 ? -1 : 1;
+      continue;
+    }
+    if (xn !== yn) return xn ? -1 : 1; // numeric identifiers sort below alphanumeric
+    if (xi !== yi) return xi < yi ? -1 : 1;
   }
   return 0;
 }
 
+// A version carrying a pre-release suffix (`-rc.1`, `-beta`) — the state a
+// project is in between "the next version is decided" and "it shipped".
+export const isPreRelease = (v: string): boolean =>
+  /-[\w.]+/.test((v || "").replace(/^v/i, "").split("+")[0]);
+
 export type BumpType = "major" | "minor" | "patch";
 
-// Compute the next semver from a current version + a bump type. Any
-// pre-release/build suffix is dropped; always returns a clean X.Y.Z.
+// Compute the next semver from a current version + a bump type. Always returns
+// a clean X.Y.Z. A pre-release GRADUATES instead of skipping past its own
+// final (#1124): from 2.0.0-rc.1 a patch bump is 2.0.0 (the version the rc
+// was announcing), not 2.0.1 — the old suffix-dropping arithmetic made 2.0.0
+// unreachable through the auto path. Same rules as `npm version`: a minor bump
+// from X.Y.0-pre yields X.Y.0 (the minor was already taken by the pre-release)
+// and a major bump from X.0.0-pre yields X.0.0; a bump type HIGHER than what
+// the pre-release already claimed still moves the number (1.5.0-beta.1 +
+// major → 2.0.0).
 export function computeNextVersion(current: string, bump: BumpType): string {
-  const parts = (current || "0.0.0").replace(/^v/i, "").split(/[-+]/)[0].split(".");
+  const raw = (current || "0.0.0").replace(/^v/i, "").split(/[-+]/)[0];
+  const parts = raw.split(".");
   const maj = Number(parts[0]) || 0;
   const min = Number(parts[1]) || 0;
   const pat = Number(parts[2]) || 0;
-  if (bump === "major") return `${maj + 1}.0.0`;
-  if (bump === "minor") return `${maj}.${min + 1}.0`;
-  return `${maj}.${min}.${pat + 1}`;
+  const pre = isPreRelease(current || "");
+  if (bump === "major") return pre && min === 0 && pat === 0 ? `${maj}.0.0` : `${maj + 1}.0.0`;
+  if (bump === "minor") return pre && pat === 0 ? `${maj}.${min}.0` : `${maj}.${min + 1}.0`;
+  return pre ? `${maj}.${min}.${pat}` : `${maj}.${min}.${pat + 1}`;
 }
 
 interface BlockVersion {
@@ -134,27 +192,14 @@ export async function readManifestVersion(projectPath: string): Promise<string |
   return found.reduce((hi, v) => (compareSemver(v, hi) > 0 ? v : hi));
 }
 
-async function atomicWrite(path: string, content: string): Promise<void> {
-  // Real atomicity: write a temp file then rename over the target. rename is
-  // atomic on the same filesystem, so a crash leaves the original manifest
-  // intact (matches data.ts's atomicWrite). Bun.write would truncate the
-  // target first. fsync before the rename: without it the content can sit in
-  // the page cache while the rename's metadata lands first — a power cut then
-  // leaves a truncated manifest.
-  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  const fh = await open(tmp, "w");
-  try {
-    await fh.writeFile(content);
-    await fh.sync();
-  } finally {
-    await fh.close();
-  }
-  // The rename is where a transient Windows lock lands (#781 — AV briefly
-  // holding the fresh file). Without the retry, one EPERM dropped the version
-  // bump: the caller's catch logged it and the release shipped with a stale
-  // manifest.
-  await withLockRetry(() => rename(tmp, path));
-}
+// Real atomicity: temp + fsync + rename over the manifest (atomic-write.ts) so
+// a crash leaves the original intact — Bun.write would truncate the target
+// first. The rename carries the transient-lock retry (#781: one EPERM once
+// dropped the bump and the release shipped with a stale manifest). A rename
+// that still fails no longer leaves `package.json.<pid>.<ts>.tmp` in the
+// user's repo root for `git add -A` to pick up (F-6.4): the shared writer
+// unlinks its sibling before rethrowing.
+const atomicWrite = atomicWriteText;
 
 // Build metadata (`+meta`) carries no precedence (semver §10): a manifest at
 // 2.0.0+build.7 IS 2.0.0. Overwriting it with the bare form would destroy the
@@ -170,7 +215,11 @@ async function bumpPackageJson(filePath: string, newVersion: string, allowDowngr
   // its own "version" (package.json convention; .claude-plugin/plugin.json
   // today). A manifest that breaks that ordering gets its nested field bumped.
   const m = raw.match(/("version"\s*:\s*")([^"]+)(")/);
-  if (!m) return null;
+  // No string "version" key (a `"private": true` monorepo root, a numeric or
+  // empty value): the manifest exists but nothing here is bumpable. A bare
+  // null here made the hook print "no manifest to bump" while the manifest
+  // sat right there (#1126) — the same silent skip Cargo lost in #623.
+  if (!m) return { file: filePath, current: "", attempted: newVersion, reason: "unsupported-layout" };
   const from = m[2];
   if (sameIgnoringBuildMeta(from, newVersion)) return null;
   // Guard against a silent downgrade: only the equality check existed before,
@@ -210,26 +259,21 @@ async function bumpCargoToml(filePath: string, newVersion: string, allowDowngrad
   if (!allowDowngrade && compareSemver(newVersion, primary.from) < 0) {
     return { file: filePath, current: primary.from, attempted: newVersion, reason: "downgrade" };
   }
+  // ALL blocks or NONE (#1127): a hybrid root whose [workspace.package] sits
+  // above the requested version used to get [package] written while the
+  // workspace block was skipped with a console.error — a partial write the
+  // caller reported as a clean bump, after which syncCargoLock stamped every
+  // inheriting member with a version its workspace never had and
+  // `cargo build --locked` failed in CI. One block refusing = the file refuses.
+  const downgraded = allowDowngrade ? undefined : edits.find((t) => compareSemver(newVersion, t.from) < 0);
+  if (downgraded) {
+    return { file: filePath, current: downgraded.from, attempted: newVersion, reason: "downgrade" };
+  }
   const reportFrom = edits[0].from;
   let updated = raw;
-  let skippedDowngrade: BlockVersion | null = null;
   // Splice from the last block backwards so earlier offsets stay valid.
   for (const t of [...edits].sort((a, b) => b.start - a.start)) {
-    if (!allowDowngrade && compareSemver(newVersion, t.from) < 0) {
-      console.error(`[version-writer] skipping downgrade block in ${filePath}: ${t.from} → ${newVersion}`);
-      skippedDowngrade = t;
-      continue;
-    }
     updated = `${updated.slice(0, t.start)}${t.prefix}${newVersion}${t.suffix}${updated.slice(t.start + t.len)}`;
-  }
-  if (updated === raw) {
-    // Nothing written. When the only edit candidate was a skipped downgrade
-    // block ([package] already at target, [workspace.package] newer — the
-    // primary check at the top can't see it), a bare null left the manifest
-    // protected but UNREPORTED (#741) — surface the rejection instead.
-    return skippedDowngrade
-      ? { file: filePath, current: skippedDowngrade.from, attempted: newVersion, reason: "downgrade" }
-      : null;
   }
   await atomicWrite(filePath, updated);
   return { file: filePath, from: reportFrom, to: newVersion };
@@ -320,7 +364,7 @@ async function syncCargoLock(projectPath: string, newVersion: string): Promise<V
 // a release bump enforces the downgrade guard and surfaces rejections into
 // `rejected`; the rollback restore bypasses the guard (`rejected` null) and —
 // as it always has — drops the rejections a bypass can still produce
-// (Cargo's unsupported-layout). `label` prefixes error logs ("restore ").
+// (unsupported-layout, io-error). `label` prefixes error logs ("restore ").
 async function writeManifestVersions(
   projectPath: string,
   version: string,
@@ -336,16 +380,23 @@ async function writeManifestVersions(
       rejected.push(r);
       console.error(r.reason === "downgrade"
         ? `[version-writer] refusing downgrade in ${r.file}: ${r.current} → ${r.attempted}`
-        : `[version-writer] no bumpable version in ${r.file} (unsupported layout) — ${r.attempted} not written`);
+        : r.reason === "io-error"
+          ? `[version-writer] ${label}${r.file} write failed — ${r.attempted} not written: ${r.error}`
+          : `[version-writer] no bumpable version in ${r.file} (unsupported layout) — ${r.attempted} not written`);
     } else {
       out.push(r);
     }
   };
+  // Every I/O failure becomes a VISIBLE rejection (#1126): the caller used to
+  // see an empty `bumped` and an empty `rejected` — indistinguishable from
+  // "no manifest here" — while the release tag was stored without prevVersion.
+  const ioError = (file: string, e: unknown): VersionReject =>
+    ({ file, current: "", attempted: version, reason: "io-error", error: (e as Error)?.message || String(e) });
   const pkg = join(projectPath, "package.json");
   if (existsSync(pkg)) {
     try {
       classify(await bumpPackageJson(pkg, version, allowDowngrade));
-    } catch (e) { console.error(`[version-writer] ${label}package.json error: ${(e as Error).message}`); }
+    } catch (e) { classify(ioError(pkg, e)); }
   }
   const cargo = join(projectPath, "Cargo.toml");
   if (existsSync(cargo)) {
@@ -358,9 +409,9 @@ async function writeManifestVersions(
         try {
           const lockUpdate = await syncCargoLock(projectPath, version);
           if (lockUpdate) out.push(lockUpdate);
-        } catch (e) { console.error(`[version-writer] ${label}Cargo.lock sync error: ${(e as Error).message}`); }
+        } catch (e) { classify(ioError(join(projectPath, "Cargo.lock"), e)); }
       }
-    } catch (e) { console.error(`[version-writer] ${label}Cargo.toml error: ${(e as Error).message}`); }
+    } catch (e) { classify(ioError(cargo, e)); }
   }
   // Claude Code plugin manifest: keep `.claude-plugin/plugin.json` version in
   // sync on release. Plugin updates are gated on this field (users only see a
@@ -371,7 +422,7 @@ async function writeManifestVersions(
   if (existsSync(pluginManifest)) {
     try {
       classify(await bumpPackageJson(pluginManifest, version, allowDowngrade));
-    } catch (e) { console.error(`[version-writer] ${label}plugin.json error: ${(e as Error).message}`); }
+    } catch (e) { classify(ioError(pluginManifest, e)); }
   }
   return out;
 }

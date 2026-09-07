@@ -10,11 +10,11 @@ import type { Subprocess } from "bun";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startServer, stopServer, waitForServer, runHook, PROJECT_ROOT } from "./_helpers";
+import { startServer, stopServer, waitForServer, runHook, HOOK_STATE_DIR } from "./_helpers";
 
 const TEST_PORT = 17893;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
-const TURN_STATE_DIR = join(PROJECT_ROOT, ".devlog", "turn-state");
+const TURN_STATE_DIR = join(HOOK_STATE_DIR, "turn-state");
 
 async function register(cwd: string, sid: string): Promise<void> {
   await fetch(`${BASE}/api/inject?cwd=${encodeURIComponent(cwd)}&session_id=${sid}&type=SessionStart`, { signal: AbortSignal.timeout(4000) });
@@ -75,14 +75,15 @@ describe("near-miss + reopen (E2E)", () => {
     expect((JSON.parse(second.out.trim() || "{}").reason || "")).not.toContain("Near-miss");
   });
 
-  test("a report matching a CLOSED one stores relatedTo, echoes ⟲ and reaches verdicts + retro", async () => {
+  test("a report marked ⟲ #N at a CLOSED one stores relatedTo, echoes ⟲ and reaches verdicts + retro", async () => {
     // Close a bug the ordinary way.
     const opened = await post(projDir, sid, [{ tag: "bug found", content: "race in the scanner tree walk corrupts the vuln cache" }]);
     expect(opened.ok).toBe(true);
     await post(projDir, sid, [{ tag: "bug fix", content: "#1 serialized writes behind the existing lock" }]);
 
-    // Re-report it (wording differs → not a dedup drop) through the REAL hook.
-    const tx = writeTranscript(projDir, "R1", ["-(bug found) race in the scanner tree walk corrupts the vuln cache on rescan"]);
+    // Re-report it through the REAL hook, naming the old report with the
+    // `⟲ #N` marker (#1118: similar wording alone never links).
+    const tx = writeTranscript(projDir, "R1", ["-(bug found) ⟲ #1 vuln cache corrupted again on rescan after the lock change"]);
     const res = await runHook(TEST_PORT, { cwd: projDir, session_id: sid, transcript_path: tx, stop_hook_active: false });
     const parsed = JSON.parse(res.out.trim());
     const feedback = `${parsed.reason || ""}${parsed.hookSpecificOutput?.additionalContext || ""}`;

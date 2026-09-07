@@ -339,3 +339,24 @@ export async function canaryWarningOnce(transcriptPath: string, sessionId: strin
   console.warn(`[transcript-canary] drift in ${hit.path}: ${hit.report.findings.map(f => f.code).join(", ")}`);
   return formatCanaryWarning(hit.report);
 }
+
+/**
+ * The canary's lifeline made visible (#1209). `transcript_path` is a Claude Code
+ * payload field we don't own: if a build stops sending it on UserPromptSubmit,
+ * canaryWarningOnce has nothing to read and goes quietly inert — the exact
+ * silent-failure class it exists to catch. The DEVLOG_DEBUG console line above
+ * only reaches someone tailing the daemon log; this speaks into the session
+ * instead, once (same per-session gate — the drift is a property of the build,
+ * not of the prompt). SessionStart is exempt on purpose: it is not where the
+ * canary does its real reading, and a missing path there would double-report.
+ * Muted with the canary itself (DEVLOG_TRANSCRIPT_CANARY=0).
+ */
+export function transcriptLifelineWarningOnce(sessionId: string): string | null {
+  if (process.env.DEVLOG_TRANSCRIPT_CANARY === "0") return null;
+  if (!sessionId || served.has(sessionId)) return null;
+  served.add(sessionId);
+  console.warn(`[transcript-canary] session=${sessionId} transcript_path MISSING FROM PAYLOAD — canary inert this session`);
+  return currentLang() === "ar"
+    ? "[DevLog] ⚠ حمولة UserPromptSubmit وصلت بلا transcript_path — كناري بنية الترانسكربت معطَّل هذه الجلسة، فانحراف في التقاط التاقات لن يُكتشف. راجع نسخة Claude Code الحالية."
+    : "[DevLog] ⚠ the UserPromptSubmit payload arrived without transcript_path — the transcript-shape canary is inert this session, so drift in tag capture would go unnoticed. Check the current Claude Code build.";
+}

@@ -12,7 +12,7 @@
 // growth path the file-size ratchet exists to make painful.
 
 import { staleInjectWarning, foreignRootWarning, isPluginCacheRoot } from "./freshness";
-import { canaryWarningOnce } from "./transcript-canary";
+import { canaryWarningOnce, transcriptLifelineWarningOnce } from "./transcript-canary";
 import { integrityWarning } from "./doctor-invariants";
 import { loadData } from "./data";
 import { softFail } from "./soft-fail";
@@ -83,7 +83,11 @@ export async function injectSystemMessages(type: string, ctx: InjectWarningCtx):
   // Code build is actually writing, with no session of lag.
   if (type === "SessionStart" || type === "UserPromptSubmit") {
     try {
-      const w = await canaryWarningOnce(ctx.transcriptPath, ctx.sessionId);
+      // #1209: a prompt-time payload with no transcript_path means the canary
+      // above cannot run at all — say so once, instead of failing silently.
+      const w = (type === "UserPromptSubmit" && !ctx.transcriptPath)
+        ? transcriptLifelineWarningOnce(ctx.sessionId)
+        : await canaryWarningOnce(ctx.transcriptPath, ctx.sessionId);
       if (w) out.push(w);
     } catch (e) { softFail("injectWarnings.transcriptCanary", e); }
   }

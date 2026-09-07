@@ -6,7 +6,7 @@
 // 500-entry fail-closed cap, and that the guard still wraps the group.
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
-import { asJson } from "./_helpers";
+import { asJson, scrubbedEnv } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -37,7 +37,7 @@ beforeAll(async () => {
   server = spawn({
     cmd: ["bun", join("src", "server.ts")],
     cwd: PROJECT_ROOT,
-    env: { ...process.env, DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT), DEVLOG_VERSION_CHECK_DISABLED: "1" },
+    env: { ...scrubbedEnv(), DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT), DEVLOG_VERSION_CHECK_DISABLED: "1" },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -117,5 +117,39 @@ describe("routes-tags — siblings + guards", () => {
   test("guard still wraps the group: non-JSON POST → 415", async () => {
     const r = await fetch(`${BASE}/api/tags`, { method: "POST", headers: { "Content-Type": "text/plain" }, body: "x" });
     expect(r.status).toBe(415);
+  });
+});
+
+// #1054 — the 400/500 split. The hook treats a definitive 4xx as poison and
+// parks the batch in `.rejected` for good, so only the CLIENT's faults (unreadable
+// or mis-shaped body) may answer 4xx; everything past validation is ours and
+// answers 5xx, which the queue retries. The live probe (2026-09-06) had a numeric
+// `cwd` answering 400 out of the catch-all — a stage TypeError dressed as poison.
+describe("POST /api/tags — client fault is 400, internal failure is 500 (#1054)", () => {
+  test("a body that is not JSON → 400 (poison, quarantined by the hook)", async () => {
+    const r = await fetch(`${BASE}/api/tags`, { method: "POST", headers: JSON_HEADERS, body: "not-json{{{" });
+    expect(r.status).toBe(400);
+  });
+
+  test("a mis-shaped body → 400 naming the field, before any store work", async () => {
+    for (const [body, field] of [
+      [{ cwd: 123, entries: [] }, "cwd"],
+      [{ cwd: "", entries: [{ tag: "note", content: { nested: true } }] }, "content"],
+      [{ cwd: "", entries: [{ tag: 5, content: "x" }] }, "tag"],
+      [{ cwd: "", entries: "nope" }, "entries"],
+    ] as const) {
+      const r = await fetch(`${BASE}/api/tags`, { method: "POST", headers: JSON_HEADERS, body: JSON.stringify(body) });
+      expect(r.status).toBe(400);
+      expect((await asJson(r)).detail).toContain(field);
+    }
+  });
+
+  test("a well-shaped batch still stores (the validator is not a new gate on good input)", async () => {
+    const r = await fetch(`${BASE}/api/tags`, {
+      method: "POST", headers: JSON_HEADERS,
+      body: JSON.stringify({ cwd: "", entries: [{ tag: "note", content: "شكل سليم يمرّ" }] }),
+    });
+    expect(r.status).toBe(200);
+    expect((await asJson(r)).count).toBe(1);
   });
 });

@@ -34,10 +34,12 @@ export interface ProjectRouteDeps {
   releaseWatchersUnder: (rootPath: string) => void;
   refreshWatchers: () => Promise<void>;
   renameWithRetry: (from: string, to: string, attempts?: number) => Promise<void>;
+  /** Drop a pending debounced rescan for this folder (#1052). */
+  cancelRescan: (rootPath: string) => void;
 }
 
 /** Build the project delete/rename route group. Spread into server.ts's routeDefs. */
-export function makeProjectRoutes({ releaseWatchersUnder, refreshWatchers, renameWithRetry }: ProjectRouteDeps): Record<string, unknown> {
+export function makeProjectRoutes({ releaseWatchersUnder, refreshWatchers, renameWithRetry, cancelRescan }: ProjectRouteDeps): Record<string, unknown> {
   return {
     // #375: names living only in the stores (tags/events/plans/worklog) with
     // no registry entry — leftovers of deleted projects and historical naming
@@ -164,7 +166,14 @@ export function makeProjectRoutes({ releaseWatchersUnder, refreshWatchers, renam
         const name = req.params.name;   // Bun pre-decodes the route param
         await appendAudit("project.delete", req, { target: name });
         return await withData(async (data) => {
-          if (!data.projects[name]) return Response.json({ error: "Not found" }, { status: 404 });
+          const proj = data.projects[name];
+          if (!proj) return Response.json({ error: "Not found" }, { status: 404 });
+          // #1052: a deleted project must not come back. Its fs.watch handles
+          // stayed open (on Windows that also locks the folder for up to the
+          // 5-minute sweep) and a debounced rescan already scheduled — or one a
+          // manifest touch would fire in that window — re-created the project
+          // with a bare profile. Release both BEFORE the rows go.
+          if (proj.path) { releaseWatchersUnder(proj.path); cancelRescan(proj.path); }
           delete data.projects[name];
           purgeProjectData(data, new Set([name]));
           await purgeProjectArchive(new Set([name]));

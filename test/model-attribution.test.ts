@@ -17,12 +17,11 @@ import { join } from "node:path";
 import type { DevLogData, TagEntry } from "../src/types";
 import { DEFAULT_INJECTION_CONFIG } from "../src/data";
 import { closedItems } from "../src/closed-items";
-import { asJson, startServer, stopServer, waitForServer, runHook as runHookRaw } from "./_helpers";
+import { asJson, startServer, stopServer, waitForServer, runHook as runHookRaw, HOOK_STATE_DIR } from "./_helpers";
 
 const TEST_PORT = 17944;   // unique — was 17941, shared with project-transfer-e2e (#729)
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
-const PROJECT_ROOT = join(import.meta.dir, "..");
-const TURN_STATE_DIR = join(PROJECT_ROOT, ".devlog", "turn-state");
+const TURN_STATE_DIR = join(HOOK_STATE_DIR, "turn-state");
 
 // ── Unit: closedItems carries opener/closer models ──────────────────────────
 

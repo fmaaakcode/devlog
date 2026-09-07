@@ -10,7 +10,7 @@
 // without hitting the network, and ack lookups read the project marker (sync).
 
 import { manifestKind, parseCargoManifest, parseCppManifest, checkToolchain } from "./manifest-check";
-import { isUiFile, extractCssRegions, findRawHex } from "./design-check";
+import { isUiFile, findRawHexInFile } from "./design-check";
 import { isAcked } from "./standards";
 
 export interface WriteCtx {
@@ -39,15 +39,16 @@ const baseName = (p: string): string => p.split(/[\\/]/).pop() || p;
 const toolchainChecker: WriteChecker = async (ctx) => {
   if (manifestKind(ctx.filePath) !== "cargo" || !hasCat(ctx, "rust")) return null;
   const state = parseCargoManifest(ctx.content);
-  let latestVersion: string | null = null;
-  try { latestVersion = await ctx.latestVersion("rust"); } catch { /* fail open */ }
-  const violations = checkToolchain(state, { latestVersion, latestEdition: ctx.latestEdition("rust") })
+  // Edition only. `rust-version` is the crate's MINIMUM supported rustc (MSRV),
+  // not the toolchain in use — demanding "raise it to the newest stable" made a
+  // crate refuse every older compiler and broke projects whose real toolchain is
+  // pinned in rust-toolchain.toml (#1112, F-5.98: firewall/mshfr live shape).
+  // No network call needed for the edition target, so nothing to fail open on.
+  const violations = checkToolchain(state, { latestEdition: ctx.latestEdition("rust") })
     .filter(v => !isAcked(ctx.cwd, `cargo-${v.field}`, v.found));
   if (!violations.length) return null;
   const line = (v: { field: string; found: string; target: string }) =>
-    v.field === "edition"
-      ? `• edition = "${v.found}" ← الهدف ${v.target} (لا تثبّت edition أقدم)`
-      : `• rust-version = "${v.found}" ← الأحدث المستقر ${v.target}`;
+    `• edition = "${v.found}" ← الهدف ${v.target} (لا تثبّت edition أقدم)`;
   const ackHint = `(متعمّد؟ أكّد بـ ${violations.map(v => `-(rule:ack) cargo-${v.field}:${v.found}`).join(" أو ")})`;
   return {
     key: "toolchain",
@@ -65,7 +66,7 @@ export const cppStandardChecker: WriteChecker = async (ctx) => {
   const kind = manifestKind(ctx.filePath);
   if ((kind !== "cmake" && kind !== "makefile") || !hasCat(ctx, "cpp")) return null;
   const state = parseCppManifest(ctx.content);
-  const violations = checkToolchain(state, { latestVersion: null, latestEdition: ctx.latestEdition("cpp") })
+  const violations = checkToolchain(state, { latestEdition: ctx.latestEdition("cpp") })
     .filter(v => !isAcked(ctx.cwd, "cpp-standard", v.found));
   if (!violations.length) return null;
   return {
@@ -83,7 +84,7 @@ export const cppStandardChecker: WriteChecker = async (ctx) => {
 // kept defined + exported so it stays unit-tested and re-enables with one line.
 export const designHexChecker: WriteChecker = async (ctx) => {
   if (!isUiFile(ctx.filePath) || !hasCat(ctx, "design") || isAcked(ctx.cwd, "design-hex")) return null;
-  const hits = findRawHex(extractCssRegions(ctx.content, ctx.filePath))
+  const hits = findRawHexInFile(ctx.content, ctx.filePath)
     .filter(h => !isAcked(ctx.cwd, "design-hex", h.hex));
   if (!hits.length) return null;
   const shown = hits.slice(0, 8).map(h => `• سطر ${h.line}: ${h.hex}`);

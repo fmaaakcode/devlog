@@ -40,7 +40,14 @@ export interface ProjectProfile {
   lastScan: string;
   runtime?: RuntimeInfo;
   vulnResults?: Record<string, VulnResult>;
+  /** When the last COMPLETE OSV pass finished (every queried group answered).
+   *  Absent = never security-scanned; a freshness-only round (vcpkg, OSV
+   *  disabled, outage) does not stamp it — the client report reads this as
+   *  "last security scan", so a freshness date here was a false claim (#1104). */
   vulnScanDate?: string;
+  /** When the last library scan (freshness and/or OSV) ran at all — the
+   *  staleness sweep's clock, separate from the security claim above. */
+  libScanDate?: string;
   memoryFiles?: MemoryFile[];
   docFiles?: MemoryFile[];
   // Git/GitHub link (L1). Populated when the project root is a git repo
@@ -179,6 +186,13 @@ export interface TagEntry {
    *  warnings and the "Open now" counts — recorded ambition, not tracked debt.
    *  Set by `-(upcoming)` (create or convert), cleared by `-(todo) #N`. */
   upcoming?: boolean;
+  /** Scanner-authored security tags (#1101): the claim's identity,
+   *  `eco:name@version`. Wording drift (language flip, severity re-rating,
+   *  a new fix version) updates the open tag's text in place instead of
+   *  opening a new numbered item and closing the old one with a "security fix"
+   *  that never happened. Absent on tags stored before this shipped — those
+   *  keep text identity and are never merged (decision 2026-09-06, §5.4). */
+  secKey?: string;
   /** Closers only (#998): the text written after the leading `#N` run — the
    *  cause of a bug fix, the note of a done. Kept HERE because `content` is
    *  rewritten to the opener's text at ingest (#482) and the tail was being
@@ -304,6 +318,10 @@ export interface DescendantProcess {
   name: string;
   command: string;
   parentPid: number;
+  /** Process start (epoch ms) — the identity that survives pid reuse (#1062).
+   *  Absent only on rows stored before it was tracked; those are dropped on
+   *  the next refresh because they cannot be re-identified. */
+  created?: number;
   claudePid: number;
   sessionId: string;
   project: string;

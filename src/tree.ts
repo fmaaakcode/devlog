@@ -13,8 +13,10 @@
 import { readdir } from "node:fs/promises";
 import { join, extname } from "node:path";
 import { softFail } from "./soft-fail";
+import { NOISE_DIRS, readDevignore } from "./skip-dirs";
 
-const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "__pycache__", "target", "vendor", ".venv", "venv", "cache", "tmp", "temp", ".cache", ".tmp", "release", "debug", ".devlog", ".claude", "old"]);
+// Shared with scanner.ts and analyze.ts (F-5.39) — one set, three walkers.
+const SKIP_DIRS = NOISE_DIRS;
 const SKIP_EXT = new Set(["exe", "dll", "so", "dylib", "o", "obj", "pdb", "lib", "a", "bin", "dat", "db", "db-journal", "7z", "zip", "tar", "gz", "pma", "compiled", "ppu", "res", "lock"]);
 
 export interface TreeNode {
@@ -28,19 +30,8 @@ export async function buildTree(dir: string, depth: number): Promise<TreeNode[]>
   if (depth > 4) return [];
   const nodes: TreeNode[] = [];
   try {
-    const ignoredFiles = new Set<string>();
-    const devignoreFile = Bun.file(join(dir, ".devignore"));
-    if (await devignoreFile.exists()) {
-      const content = await devignoreFile.text();
-      if (content.trim()) {
-        for (const line of content.split("\n")) {
-          const t = line.trim();
-          if (t && !t.startsWith("#")) ignoredFiles.add(t);
-        }
-      } else {
-        // Empty .devignore = skip entire dir (handled by parent)
-      }
-    }
+    // Empty .devignore = skip entire dir (handled by parent); names hide entries.
+    const ignoredFiles = (await readDevignore(dir)).names;
 
     const entries = await readdir(dir, { withFileTypes: true });
     const sorted = entries
@@ -55,11 +46,7 @@ export async function buildTree(dir: string, depth: number): Promise<TreeNode[]>
       if (ignoredFiles.has(entry.name)) continue;
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
-        const childIgnore = Bun.file(join(full, ".devignore"));
-        if (await childIgnore.exists()) {
-          const c = await childIgnore.text();
-          if (!c.trim()) continue;
-        }
+        if ((await readDevignore(full)).skipDir) continue;
         const children = await buildTree(full, depth + 1);
         nodes.push({ name: entry.name, type: "dir", children });
       } else {

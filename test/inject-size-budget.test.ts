@@ -28,7 +28,25 @@ const PROJ = "budget-proj";
 // section is now either count-capped or line-clipped. That 3101 is the BOUNDED
 // maximum, so the ceiling sits just above it: exceeding it means a section grew
 // without a bound, which is exactly the failure this file exists to catch.
-const MAX_BLOCK = 3200;
+//
+// Re-measured 2026-09-07 in BOTH languages: the 3101 above was taken on a
+// machine with DEVLOG_LANG=ar set user-wide, and the English fixed prose (the
+// header, the standards hint, the closure rule) is ~135 chars longer than the
+// Arabic — 3160 (ar) vs 3236 (en) for the very same fixture. CI runs English,
+// so the ceiling measured in the shorter language alone was a false green. The
+// ceiling now sits just above the English bounded maximum and the test renders
+// both languages explicitly, so it no longer depends on the developer's env.
+// This is a corrected measurement, not a raised ratchet: every section is
+// still capped, and the same fixture must stay under it in either language.
+const MAX_BLOCK = 3300;
+const LANGS = ["en", "ar"] as const;
+/** Render with DEVLOG_LANG pinned and restored (env-lang-leak-guard). */
+function inLang<T>(lang: string, fn: () => T): T {
+  const prev = process.env.DEVLOG_LANG;
+  process.env.DEVLOG_LANG = lang;
+  try { return fn(); }
+  finally { if (prev === undefined) delete process.env.DEVLOG_LANG; else process.env.DEVLOG_LANG = prev; }
+}
 const MAX_STANDALONE = 800;
 
 let _id = 0;
@@ -83,12 +101,14 @@ function inflatedData(): DevLogData {
 }
 
 describe("SessionStart injection stays within budget", () => {
-  test(`an absurdly inflated project still renders under ${MAX_BLOCK} chars`, () => {
-    const ctx = buildContext(inflatedData(), PROJ, "SessionStart", {
-      catalogNames: "app-types: desktop-gui | cross-cutting: data-integrity, dependencies, design, security, verification | languages: cpp, rust, typescript",
-    });
-    expect(ctx.length).toBeGreaterThan(0);
-    expect(ctx.length).toBeLessThanOrEqual(MAX_BLOCK);
+  test(`an absurdly inflated project still renders under ${MAX_BLOCK} chars — in both languages`, () => {
+    for (const lang of LANGS) {
+      const ctx = inLang(lang, () => buildContext(inflatedData(), PROJ, "SessionStart", {
+        catalogNames: "app-types: desktop-gui | cross-cutting: data-integrity, dependencies, design, security, verification | languages: cpp, rust, typescript",
+      }));
+      expect(ctx.length).toBeGreaterThan(0);
+      expect(ctx.length).toBeLessThanOrEqual(MAX_BLOCK);
+    }
   });
 
   test("no single rendered line runs away, whatever the stored tag holds", () => {
@@ -104,11 +124,13 @@ describe("SessionStart injection stays within budget", () => {
     expect(stored?.content.length).toBe(900);
   });
 
-  test("the standalone (summary-off) block is bounded too", () => {
-    const data = inflatedData();
-    data.projectInjectionConfigs = { [PROJ]: { sessionStart: false } };
-    const ctx = buildContext(data, PROJ, "SessionStart", {});
-    expect(ctx.length).toBeLessThanOrEqual(MAX_STANDALONE);
+  test("the standalone (summary-off) block is bounded too — in both languages", () => {
+    for (const lang of LANGS) {
+      const data = inflatedData();
+      data.projectInjectionConfigs = { [PROJ]: { sessionStart: false } };
+      const ctx = inLang(lang, () => buildContext(data, PROJ, "SessionStart", {}));
+      expect(ctx.length).toBeLessThanOrEqual(MAX_STANDALONE);
+    }
   });
 
   test("the outdated list is capped but still reports the true total", () => {

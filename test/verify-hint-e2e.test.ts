@@ -9,7 +9,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import type { Subprocess } from "bun";
-import { asJson, startServer, stopServer, waitForServer, runHook as runHookRaw } from "./_helpers";
+import { asJson, startServer, stopServer, waitForServer, runHook as runHookRaw, HOOK_STATE_DIR } from "./_helpers";
 import { mkdtempSync, rmSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,12 +17,11 @@ import { join } from "node:path";
 
 const TEST_PORT = 17814;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
-const PROJECT_ROOT = join(import.meta.dir, "..");
 // Where the hook records "already nudged this session" — the session section of
 // the turn ledger (src/turn-ledger.ts, `session.hintedVerify`). We use a unique
 // session id per test and scrub its ledger file so a prior run can never leak
 // state into a fresh assertion.
-const TURN_STATE_DIR = join(PROJECT_ROOT, ".devlog", "turn-state");
+const TURN_STATE_DIR = join(HOOK_STATE_DIR, "turn-state");
 
 async function register(cwd: string, sid: string): Promise<void> {
   await fetch(`${BASE}/api/inject?cwd=${encodeURIComponent(cwd)}&session_id=${sid}&type=SessionStart`, { signal: AbortSignal.timeout(4000) });

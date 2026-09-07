@@ -12,7 +12,8 @@
 // default deps touch the network, both via existing cached machinery.
 
 import { versionHistory, type VersionEntry } from "./registry";
-import { ageDays, RULE_MIN_AGE_DAYS } from "./dep-check";
+import { ageDays, RULE_MIN_AGE_DAYS, installCmd } from "./dep-check";
+export { installCmd };
 import { osvEcosystem, scanPackages, type PkgVuln } from "./osv";
 
 /** How many matured candidates get an OSV check before giving up — bounds both
@@ -91,6 +92,17 @@ export interface LibAdviceItem {
   steppedBack?: boolean;
   /** OSV headline for the vulnerable candidate(s) skipped (or hit, for no-clean). */
   vulnNote?: string;
+  /** ok only (#1110): the suggested version carries OSV maintenance notices
+   *  (RustSec "unmaintained"/"unsound") — zero CVEs, but NOT a clean bill for a
+   *  library you are about to ADD. The advisor cannot step past these (every
+   *  version of an archived crate is unmaintained), so it says so instead. */
+  notices?: number;
+  noticeNote?: string;
+  /** The registry marks the library itself as deprecated/abandoned (#1111):
+   *  crates.io publishes `X.Y.Z+deprecated` as the newest release (serde_yaml
+   *  0.9.34+deprecated), npm sets `deprecated` on the version. Adding it today
+   *  is a conscious call, never a "clean" pick. */
+  deprecated?: boolean;
   /** Present when the request pinned a version AND OSV answered for it (#630):
    *  the verdict for THAT exact version, so the install gate can say "the
    *  version you pinned is itself vulnerable" instead of only "it differs". */
@@ -159,6 +171,7 @@ export async function adviseLibraries(
     if (!hist.length) { out.push(base); continue; }
     base.latest = hist[0].version;
     base.latestAgeDays = ageDays(hist[0].date, now);
+    if (hist[0].deprecated) base.deprecated = true;
 
     // Pinned request: OSV-check the pinned version itself, so the caller can
     // report ITS vulnerabilities explicitly. Attached to `base` so every
@@ -200,6 +213,8 @@ export async function adviseLibraries(
         out.push({
           ...base, verdict: "ok", suggest: cand.version, suggestAgeDays: ageDays(cand.date, now),
           ...(i > 0 ? { steppedBack: true, vulnNote } : {}),
+          ...(verdict && verdict.notices > 0 ? { notices: verdict.notices, noticeNote: verdict.message } : {}),
+          ...(cand.deprecated ? { deprecated: true } : {}),
         });
         done = true;
       } else {
@@ -232,11 +247,3 @@ export function defaultEcoFor(profile: { language?: string; libraries?: Array<{ 
   return best || langToEco[profile?.language || ""] || "";
 }
 
-/** The install command for a suggested version, in the ecosystem's own tool. */
-export function installCmd(eco: string, name: string, version: string): string {
-  if (eco === "npm") return `bun add ${name}@${version}`;
-  if (eco === "pypi") return `pip install ${name}==${version}`;
-  if (eco === "crates.io") return `cargo add ${name}@${version}`;
-  if (eco === "go") return `go get ${name}@v${version}`; // history stores versions v-stripped; go tooling wants the v back
-  return `${name}@${version}`;
-}

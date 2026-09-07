@@ -42,6 +42,12 @@ export interface RecentSession {
   files: RecentFile[];
   filesMore: number;
   commands: { total: number; failed: number; failedSamples: string[] };
+  /** #1138: false when this session's edit/command events are OUTSIDE the
+   *  retention window (older than the oldest hot event and absent from the
+   *  cold archive the caller supplied) — "no files" then means UNKNOWN, not
+   *  "touched nothing". True when events were found, or when the session is
+   *  recent enough that the hot store would still hold them. */
+  eventsKnown: boolean;
 }
 
 export interface RecentDigest {
@@ -65,10 +71,14 @@ function commandFace(e: EventEntry): string {
 const MAX_PROMPTS_PER_SESSION = 3;
 
 function buildSession(sessionId: string, tags: TagEntry[], events: EventEntry[], prompts: string[],
-  rel: (p: string) => string): RecentSession {
+  rel: (p: string) => string, oldestHotEventMs: number): RecentSession {
   const stamps = [...tags.map(t => ms(t.timestamp)), ...events.map(e => ms(e.timestamp))].filter(Boolean);
-  const start = new Date(Math.min(...stamps)).toISOString();
-  const end = new Date(Math.max(...stamps)).toISOString();
+  // F-6.44: `Math.min(...[])` is Infinity and `toISOString()` on it throws a
+  // RangeError — one session whose every timestamp is corrupt used to sink the
+  // WHOLE ask:recent request, not just its own row. Such a session is still
+  // real activity; give it an honest empty span instead of a crash.
+  const start = stamps.length ? new Date(Math.min(...stamps)).toISOString() : "";
+  const end = stamps.length ? new Date(Math.max(...stamps)).toISOString() : "";
 
   const models: string[] = [];
   for (const t of tags) if (t.model && !models.includes(t.model)) models.push(t.model);
@@ -114,6 +124,11 @@ function buildSession(sessionId: string, tags: TagEntry[], events: EventEntry[],
   }
   const files = [...byFile.values()].sort((a, b) => b.edits - a.edits);
 
+  // #1138: events found → known. None found → known only if the session ended
+  // after the oldest hot event still held for this project (the store would
+  // have kept them); an older session's silence is retention, not idleness.
+  const eventsKnown = events.length > 0 || (oldestHotEventMs > 0 && ms(end) >= oldestHotEventMs) || oldestHotEventMs === 0;
+
   return {
     sessionId,
     start,
@@ -125,6 +140,7 @@ function buildSession(sessionId: string, tags: TagEntry[], events: EventEntry[],
     files: files.slice(0, MAX_FILES_PER_SESSION),
     filesMore: Math.max(0, files.length - MAX_FILES_PER_SESSION),
     commands: { total: cmdTotal, failed: cmdFailed, failedSamples },
+    eventsKnown,
   };
 }
 
@@ -133,10 +149,57 @@ function buildSession(sessionId: string, tags: TagEntry[], events: EventEntry[],
  * already in Claude's context, and letting it count as "the last session"
  * makes a mid-session ask answer with the asker's own work.
  */
+export interface RecentOptions {
+  sessions?: number;
+  days?: number;
+  excludeSession?: string;
+  /** #1138: cold-archive events (event-archive.ts) the caller loaded for the
+   *  window — the hot store holds only the last ~200 events per project, so
+   *  every session older than a handful read "no files, no commands". Merged
+   *  with the hot events by id; the caller decides which months to open
+   *  (`archiveMonthsFor` names them). */
+  archivedEvents?: EventEntry[];
+}
+
+/** Oldest hot event timestamp for the project (0 when it has none) — the line
+ *  below which a session's missing events mean retention, not idleness. */
+function oldestHotEvent(data: DevLogData, project: string): number {
+  let oldest = 0;
+  for (const e of data.events) {
+    if (e.project !== project) continue;
+    const t = ms(e.timestamp);
+    if (t && (!oldest || t < oldest)) oldest = t;
+  }
+  return oldest;
+}
+
+/** The archive months (`YYYY-MM`) a window reaching back to `fromMs` needs,
+ *  oldest first — a pure helper so the route and the tests agree on it. */
+export function archiveMonthsFor(fromMs: number, now = Date.now()): string[] {
+  const out: string[] = [];
+  const d = new Date(fromMs);
+  d.setUTCDate(1); d.setUTCHours(0, 0, 0, 0);
+  const end = new Date(now);
+  while (d.getTime() <= end.getTime()) {
+    out.push(d.toISOString().slice(0, 7));
+    d.setUTCMonth(d.getUTCMonth() + 1);
+  }
+  return out;
+}
+
+/** The earliest instant a window could reach: `days` back for a day window;
+ *  for a session-count window, the start of the oldest picked session, which the
+ *  route learns from a first (hot-only) pass. */
+export function recentWindowStart(digest: RecentDigest, now = Date.now()): number {
+  if (digest.window.days) return now - digest.window.days * 24 * 60 * 60 * 1000;
+  const starts = digest.sessions.map(s => ms(s.start)).filter(Boolean);
+  return starts.length ? Math.min(...starts) : now;
+}
+
 export function buildRecent(
   data: DevLogData,
   project: string,
-  opts: { sessions?: number; days?: number; excludeSession?: string } = {},
+  opts: RecentOptions = {},
 ): RecentDigest {
   const tagsBySession = new Map<string, TagEntry[]>();
   for (const t of data.tags) {
@@ -146,12 +209,15 @@ export function buildRecent(
     arr.push(t);
   }
   const eventsBySession = new Map<string, EventEntry[]>();
-  for (const e of data.events) {
+  const seenEvent = new Set<string>();
+  for (const e of [...data.events, ...(opts.archivedEvents || [])]) {
     if (e.project !== project || !e.session_id || e.session_id === opts.excludeSession) continue;
+    if (e.id) { if (seenEvent.has(e.id)) continue; seenEvent.add(e.id); }   // hot ∩ archive overlap
     const arr = eventsBySession.get(e.session_id) || [];
     if (!arr.length) eventsBySession.set(e.session_id, arr);
     arr.push(e);
   }
+  const oldestHotMs = oldestHotEvent(data, project);
 
   // A session's place in "recent" is its LAST activity, from either store.
   const lastActivity = new Map<string, number>();
@@ -183,7 +249,7 @@ export function buildRecent(
     project,
     window: days ? { days } : { sessions: wanted },
     sessions: picked.map(sid => buildSession(sid, tagsBySession.get(sid) || [], eventsBySession.get(sid) || [],
-      promptsBySession.get(sid) || [], p => relToProject(data, project, p))),
+      promptsBySession.get(sid) || [], p => relToProject(data, project, p), oldestHotMs)),
     olderSessions: ordered.length - picked.length,
   };
 }

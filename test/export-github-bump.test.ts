@@ -128,3 +128,22 @@ describe("DEVLOG_GITHUB.md i18n (#892)", () => {
     }
   });
 });
+
+// #1098: DEVLOG_GITHUB.md is committed and pushed — the absolute local path
+// (and under C:\Users\<name>, the account name) must never appear in it.
+describe("DEVLOG_GITHUB.md never embeds the absolute local path (#1098)", () => {
+  test("project line carries the folder name only", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "devlog-ghmd-"));
+    try {
+      const projectPath = join(tmp, PROJ);
+      await exportGithubMd(projectPath, data([RELEASE]));
+      const md = readFileSync(join(projectPath, ".devlog", "DEVLOG_GITHUB.md"), "utf8");
+      expect(md).not.toContain(tmp);
+      expect(md).not.toContain(projectPath);
+      expect(md).not.toContain("Local path");
+      expect(md).toMatch(/\*\*(Folder|المجلد):\*\* `fixture-proj`/);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});

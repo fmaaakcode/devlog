@@ -13,7 +13,7 @@
 //      filtered `tag === "security"` only and dropped them entirely.
 
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -187,6 +187,7 @@ describe("consumers agree with the resolver", () => {
     const tmp = mkdtempSync(join(tmpdir(), "devlog-oi-"));
     try {
       const projectPath = join(tmp, PROJ); // export keys off basename(projectPath)
+      mkdirSync(projectPath);              // #1058: the export writes INTO an existing folder, never creates it
       await exportStatusMd(projectPath, baseData(fixtureTags(), []));
       const md = readFileSync(join(projectPath, ".devlog", "DEVLOG_STATUS.md"), "utf8");
 

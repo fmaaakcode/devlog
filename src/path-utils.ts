@@ -13,7 +13,22 @@
 // resolution, rename, file-story) can import it without pulling in the store.
 
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { existsSync } from "node:fs";
+
+/**
+ * A cwd that may become a PROJECT: non-empty, absolute, and present on disk. A
+ * hook can send a cwd that was never shell-expanded (`$NAME`, `%CD%`) or one
+ * whose folder is gone; resolving it still yields a plausible basename, so every
+ * ingest path that can mint a project must gate on this or it writes a phantom
+ * project + `.devlog/` files under a bogus path (the stray `$NAME/` folder).
+ * Lived privately in server.ts and covered /api/hook + /api/inject only; /api/tags
+ * registered phantoms from a `/virtual/…` cwd for months (#1199). One definition.
+ * Empty cwd stays legal (callers already gate on it).
+ */
+export function isRealCwd(cwd: string): boolean {
+  return !!cwd && isAbsolute(cwd) && existsSync(cwd);
+}
 
 // Claude's config root. Honors CLAUDE_CONFIG_DIR (set when ~/.claude is
 // relocated) and falls back to ~/.claude. Use this instead of hardcoding

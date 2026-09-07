@@ -8,7 +8,7 @@
 // exits the process), fetch is stubbed per test, and the ledger is a plain
 // object. That is the whole point of passing the context in.
 
-import { describe, test, expect, afterEach } from "bun:test";
+import { describe, test, expect, afterEach, afterAll } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -57,7 +57,9 @@ async function expectBlock(fn: () => Promise<void>, ctx: { blocks: string[] }): 
 
 const realFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = realFetch; });
-process.on("exit", () => rmSync(LEDGER_DIR, { recursive: true, force: true }));
+// afterAll, not process.on("exit"): bun never runs exit handlers under `bun test`
+// (probed live), so the ledger dirs piled up in TEMP — 66 of them (#1181).
+afterAll(() => rmSync(LEDGER_DIR, { recursive: true, force: true }));
 
 /** Stub fetch: map from URL substring → JSON body. */
 function stubFetch(routes: Record<string, unknown>, ok = true): void {

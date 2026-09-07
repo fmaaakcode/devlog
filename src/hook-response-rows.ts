@@ -27,20 +27,24 @@ export interface TagsResponse {
   rollback?: { version: string; restoredTo?: string; htmlDeleted?: boolean; indexRebuilt?: boolean };
   closed?: Array<{ num: number; text: string }>;
   repairedClosures?: Array<{ from: number | null; num: number }>;
-  reopenHints?: Array<{ reportNum: number; num: number; closedAt?: string; text: string }>;
+  reopenHints?: Array<{ reportNum: number; num: number; closedAt?: string; text: string; via?: "marker" | "identical" }>;
   upcomingChanges?: Array<{ kind: string; num?: number | null; text?: string }>;
   verifyHint?: { closers: Array<{ tag: string }>; reason?: string } | null;
   regressionHint?: { closers: Array<{ tag: string }> } | null;
   sweepHint?: { num: number; similar: Array<{ num?: number | null; text: string; closerFiles?: string[] }> } | null;
   closureTextWarnings?: Array<{ num: number; openerText: string }>;
-  closureHints?: Array<{ kind: string; num: number; openerTag?: string; usedCloser?: string; suggested?: string }>;
+  closureHints?: Array<{ kind: string; num: number; openerTag?: string; usedCloser?: string; suggested?: string; batchOpenerNum?: number }>;
   classHints?: Array<{ num: number; word: string }>;
+  /** Rejections pushed DURING this batch (#1198/#1206/F-2.46) — things the model
+   *  asked for that did NOT happen, delivered in the same turn. */
+  rejections?: Array<{ reason: string; detail: string }>;
   openSnapshot?: OpenItemRef[];
-  featureHints?: Array<{ kind: string; tag?: string; num?: number }>;
+  featureHints?: Array<{ kind: string; tag?: string; num?: number; version?: string }>;
+  libHints?: Array<{ kind: string; name: string }>;
   release?: {
     version: string;
     bumped?: Array<{ file: string; from: string; to: string }>;
-    rejected?: Array<{ file: string; current?: string; attempted?: string; reason?: string }>;
+    rejected?: Array<{ file: string; current?: string; attempted?: string; reason?: string; error?: string }>;
     htmlGenerated?: boolean;
   };
   releaseIntent?: { auto?: boolean; bump: string; from: string; version: string; warning?: { suggested: string } };
@@ -56,6 +60,11 @@ export interface ResponseRowCtx {
    *  persist through persistLedger. */
   session: { hintedVerify?: boolean; hintedRegression?: boolean; hintedSweep?: boolean };
   persistLedger: () => Promise<void>;
+  /** #1226: a row marked `deferFlush` hands its block key here instead of
+   *  exiting now, so the parts that follow the response rows (the standards
+   *  commands of Part 1.5, the -(ask:*) family) still run in this turn; the
+   *  hook flushes the deferred key at its tail. Absent = flush immediately. */
+  deferFlush?: (key: BlockKey) => void;
 }
 
 export interface ResponseRow {
@@ -68,6 +77,9 @@ export interface ResponseRow {
   blockKey?: BlockKey;
   after?(resp: TagsResponse, ctx: ResponseRowCtx): Promise<void>;
   flushKey?(resp: TagsResponse): BlockKey | null;
+  /** #1226: the flush is delivery, not enforcement — let the rest of the hook
+   *  run first and flush at the tail (via ctx.deferFlush when provided). */
+  deferFlush?: true;
   suppressedLog?(resp: TagsResponse, ctx: ResponseRowCtx): string | null;
 }
 
@@ -203,6 +215,77 @@ export const RESPONSE_ROWS: ResponseRow[] = [
     logLine: resp => `closure-confirm: ${sure(resp.closed).map((c) => c.num).join(", ")}`,
     deliver: "info",
   },
+  // Release response: feed the outcome back so Claude knows DevLog
+  // processed the release (version bumped, HTML/changelog written) and
+  // can continue post-release steps (e.g. build) WITHOUT stopping to ask
+  // the user. The server only returns a result for a newly-stored release
+  // tag — a re-emit dedups to null, so this fires once (no loop).
+  // Delivery: it hands back the version the -(release) tag asked for.
+  // Composed HERE, before every blocking row (#1035): the confirmation is
+  // returned exactly once, and as the LAST row it was swallowed whenever a
+  // feature/closure/upcoming block exited first — the release was recorded,
+  // the model was told to "fix and re-release", and the re-emit dedup'd to
+  // silence. As an info row it rides along inside whichever block fires; the
+  // terminal `release-serve` row still turns it into its own block otherwise.
+  {
+    key: "release",
+    applies: resp => !!resp.release,
+    text(resp, { L }) {
+      const rel = sure(resp.release);
+      const intent = resp.releaseIntent;   // present when the version was computed from -(release:type)
+      const sep = L(", ", "، ");
+      const bumps = (rel.bumped || []).map((u) => `${u.file} ${u.from}→${u.to}`).join(sep) || L("no manifest to bump", "لا مانيفست لرفعه");
+      // Entries without a reason predate the field → they are downgrades.
+      const downgrades = (rel.rejected || []).filter((u) => u.reason !== "unsupported-layout" && u.reason !== "io-error")
+        .map((u) => `${u.file} ${u.current}→${u.attempted}`).join(sep);
+      const unsupported = (rel.rejected || []).filter((u) => u.reason === "unsupported-layout")
+        .map((u) => u.file).join(sep);
+      // #1126: a failed write is NOT "no manifest to bump" — name the file and
+      // the OS error so the user fixes the cause instead of trusting the tag.
+      const ioErrors = (rel.rejected || []).filter((u) => u.reason === "io-error")
+        .map((u) => `${u.file} (${u.error || "?"})`).join(sep);
+      const out = [
+        "════════ DevLog Release ════════",
+        L(`✓ Release ${rel.version} recorded in DevLog.`, `✓ الإصدار ${rel.version} سُجِّل في DevLog.`),
+        ...(intent ? [L(`Computed: ${intent.auto ? "auto-detected " : ""}${intent.bump} bump (${intent.from} → ${intent.version})`,
+                        `محسوب: ${intent.auto ? "نوع تلقائي، " : ""}ترقية ${intent.bump} (${intent.from} → ${intent.version})`)] : []),
+        L(`Version bump: ${bumps}`, `رفع النسخة: ${bumps}`),
+        ...(downgrades ? [L(`⚠ Downgrade refused (manifest is newer): ${downgrades}`, `⚠ رُفض تنزيل النسخة (المانيفست أحدث): ${downgrades}`)] : []),
+        ...(unsupported ? [L(
+          `⚠ Manifest NOT bumped — unsupported layout (no literal version field: [package]/[workspace.package] in Cargo.toml, a string "version" in package.json/plugin.json): ${unsupported}. Update it manually if needed.`,
+          `⚠ لم يُرفع المانيفست — تخطيط غير مدعوم (لا حقل version صريح: [package]/[workspace.package] في Cargo.toml، أو "version" نصي في package.json/plugin.json): ${unsupported}. حدّثه يدويًا إن لزم.`)] : []),
+        ...(ioErrors ? [L(
+          `🛑 Manifest write FAILED — the release is recorded but the file still carries the old version: ${ioErrors}. Fix the cause and bump it manually.`,
+          `🛑 فشلت كتابة المانيفست — الإصدار مسجَّل لكن الملف ما زال على النسخة القديمة: ${ioErrors}. عالج السبب وارفعه يدويًا.`)] : []),
+        `HTML/changelog: ${rel.htmlGenerated ? L("generated ✓", "أُنشئ ✓") : L("not generated", "لم يُنشأ")}`,
+        ...(intent?.warning ? ["", L(
+          `⚠ Your accrued changes look ${intent.warning.suggested}-level but you declared ${intent.bump}. Consider -(release:${intent.warning.suggested}) next time.`,
+          `⚠ تغييراتك المتراكمة تبدو بمستوى ${intent.warning.suggested} لكنك أعلنت ${intent.bump}. فكّر بـ-(release:${intent.warning.suggested}) في المرة القادمة.`)] : []),
+        "",
+        L("Continue post-release steps (e.g. building the output) without waiting for the user.",
+          "تابع خطوات ما بعد الإصدار (مثل بناء الناتج) بدون انتظار المستخدم."),
+        "════════════════════════════════",
+      ].join("\n");
+      return `\n${out}\n`;
+    },
+    logLine: resp => `release-response: served ${sure(resp.release).version}`,
+    deliver: "info",
+  },
+  // Rejections pushed during THIS batch (#1198 release-jump, #1206 undo that
+  // removed nothing, F-2.46 doc that failed to write). They already reach the
+  // next SessionStart; here they reach the model while it still believes the
+  // thing happened. Informational — the wording of each rejection already says
+  // what to do; a block would turn every refusal into a forced extra turn.
+  {
+    key: "rejections",
+    applies: resp => nonEmpty(resp.rejections),
+    text(resp, { L }) {
+      const lines = sure(resp.rejections).map((r) => `· [${r.reason}] ${r.detail}`);
+      return `\n[devlog rejected]\n${L("Not applied in this response:", "لم يُطبَّق في هذا الرد:")}\n${lines.join("\n")}\n`;
+    },
+    logLine: resp => `rejections: ${sure(resp.rejections).map((r) => r.reason).join(", ")}`,
+    deliver: "info",
+  },
   // Failure class not in the vocabulary (#998): the closure applied and the
   // cause is stored; only the bracket word was dropped. Soft — one line with
   // the accepted words, never a block: a second gate on the closing line
@@ -218,6 +301,25 @@ export const RESPONSE_ROWS: ResponseRow[] = [
       return `\n[devlog failure-class]\n${lines.join("\n")}\n`;
     },
     logLine: resp => `class-hint: ${sure(resp.classHints).map((h) => h.num).join(", ")}`,
+    deliver: "info",
+  },
+  // Library-purpose echo (#1115): a `-(lib)` whose name is not in the
+  // manifest was STORED but is invisible on every library surface; a bare
+  // name was skipped. Informational — the model decides (fix the typo, or
+  // keep a CDN entry as is).
+  {
+    key: "libHints",
+    applies: resp => nonEmpty(resp.libHints),
+    text(resp, { L }) {
+      const lines = sure(resp.libHints).map((h) =>
+        h.kind === "no-purpose"
+          ? L(`· -(lib) ${h.name}: no purpose text — nothing recorded. Form: -(lib) <name> — <one-line purpose>.`,
+              `· -(lib) ${h.name}: بلا نص غرض — لم يُسجَّل شيء. الشكل: -(lib) <الاسم> — <غرض من سطر>.`)
+          : L(`· -(lib) ${h.name}: recorded, but no manifest library has this name — typo? re-emit under the right name (latest wins); CDN/vendored? it stays, listed under "not in manifest" by -(ask:deps).`,
+              `· -(lib) ${h.name}: سُجِّل، لكن لا مكتبة في المانيفست بهذا الاسم — خطأ إملائي؟ أعد الإصدار بالاسم الصحيح (الأحدث يفوز)؛ CDN/مضمَّنة؟ يبقى ويظهر تحت «ليست في المانيفست» في -(ask:deps).`));
+      return `\n[devlog lib]\n${lines.join("\n")}\n`;
+    },
+    logLine: resp => `lib-hint: ${sure(resp.libHints).map((h) => `${h.kind}:${h.name}`).join(", ")}`,
     deliver: "info",
   },
   // Same-response pairing echo (#633): a closer that resolved to nothing
@@ -251,9 +353,15 @@ export const RESPONSE_ROWS: ResponseRow[] = [
         const when = h.closedAt
           ? L(` (closed ${day(h.closedAt)})`, ` (أُغلق ${day(h.closedAt)})`)
           : "";
-        return L(
-          `⟲ #${h.reportNum} likely REOPENS #${h.num}${when} — ${String(h.text).slice(0, 80)}. Check whether the old fix regressed before treating it as new.`,
-          `⟲ ‏#${h.reportNum} يبدو إعادة فتح لـ#${h.num}${when} — ${String(h.text).slice(0, 80)}. افحص هل انتكس الإصلاح القديم قبل معالجته كجديد.`);
+        // A `⟲ #N` marker is the author's own assertion; an identical text
+        // is DevLog's inference (#1118) — the wording says which.
+        return h.via === "marker"
+          ? L(
+            `⟲ #${h.reportNum} REOPENS #${h.num}${when} — ${String(h.text).slice(0, 80)}. Linked as you marked; the old fix is now recorded as not held.`,
+            `⟲ ‏#${h.reportNum} يعيد فتح #${h.num}${when} — ${String(h.text).slice(0, 80)}. رُبط كما علّمت، وسُجّل الإصلاح القديم كإصلاح لم يصمد.`)
+          : L(
+            `⟲ #${h.reportNum} is word-for-word the CLOSED #${h.num}${when} — ${String(h.text).slice(0, 80)}. Check whether the old fix regressed before treating it as new.`,
+            `⟲ ‏#${h.reportNum} نصّه هو نصّ #${h.num} المغلق حرفيًا${when} — ${String(h.text).slice(0, 80)}. افحص هل انتكس الإصلاح القديم قبل معالجته كجديد.`);
       });
       return `\n[devlog reopen]\n${lines.join("\n")}\n`;
     },
@@ -431,6 +539,11 @@ export const RESPONSE_ROWS: ResponseRow[] = [
         h.kind === "no-match"
           ? L(`· #${h.num} matches no open item — check the number (closure not applied).`,
               `· #${h.num} لا يطابق أي عنصر مفتوح — تحقّق من الرقم (الإغلاق لم يُطبَّق).`)
+        : h.kind === "already-closed"
+          // T-152: a real, already-closed number next to an opener born in this
+          // very response — the same-response slip with yesterday's number.
+          ? L(`· #${h.num} was already closed before this response — nothing re-closed. This response also opened #${h.batchOpenerNum} and nothing closes it; if that was the target, -(${h.usedCloser}) #${h.batchOpenerNum}.`,
+              `· #${h.num} كان مغلقًا قبل هذا الرد — لم يُغلَق شيء من جديد. وهذا الرد فتح #${h.batchOpenerNum} ولا شيء يغلقه؛ إن كان هو المقصود فـ-(${h.usedCloser}) #${h.batchOpenerNum}.`)
         : h.kind === "already-closed-wrong-verb"
           ? L(`· #${h.num} is already closed (a «${h.openerTag}») and -(${h.usedCloser}) can't close that type anyway — you likely meant a different OPEN item; check the number.`,
               `· #${h.num} مغلق سابقاً (نوعه «${h.openerTag}») و-(${h.usedCloser}) لا يُغلِق هذا النوع أصلاً — على الأرجح قصدت عنصراً مفتوحاً آخر؛ تحقّق من الرقم.`)
@@ -486,15 +599,24 @@ export const RESPONSE_ROWS: ResponseRow[] = [
         : h.kind === "already-removed"
           ? L(`· feature #${h.num} is already removed — check the number.`,
               `· القدرة #${h.num} أُزيلت سابقًا — تحقّق من الرقم.`)
+        : h.kind === "unknown-version"
+          ? L(`· -(feature) [${h.version}] names no recorded release — STORED, but attributed by its date, not the marker. A typo? -(feature removed) #N it and re-declare; the recorded versions are in -(ask:features).`,
+              `· -(feature) [${h.version}] يسمّي إصدارًا غير مسجَّل — خُزِّنت لكن نُسبت بتاريخها لا بالعلامة. خطأ إملائي؟ أزلها بـ-(feature removed) #N وأعد إعلانها؛ الإصدارات المسجَّلة في -(ask:features).`)
           : L(`· #${h.num} matches no recorded feature — check the number (nothing stored). Pull the list with -(ask:features).`,
               `· #${h.num} لا يطابق أي قدرة مسجّلة — تحقّق من الرقم (لم يُخزَّن شيء). اسحب القائمة بـ-(ask:features).`));
+      // #1188: the unknown-version hint is advisory (the tag WAS stored), so the
+      // header counts only the tags the server actually skipped.
+      const skipped = sure(resp.featureHints).filter(h => h.kind !== "unknown-version").length;
       const out = [
         "════════ DevLog Feature Reference ════════",
-        L(`⚠ ${sure(resp.featureHints).length} feature tag(s) not recorded:`,
-          `⚠ ${sure(resp.featureHints).length} وسم قدرات لم يُسجَّل:`),
+        skipped
+          ? L(`⚠ ${skipped} feature tag(s) not recorded:`, `⚠ ${skipped} وسم قدرات لم يُسجَّل:`)
+          : L("⚠ feature version marker check:", "⚠ فحص علامة الإصدار في وسم القدرات:"),
         ...lines,
         "",
-        L("Fix the reference above, then re-emit.", "صحّح المرجع أعلاه ثم أعد الإصدار."),
+        skipped
+          ? L("Fix the reference above, then re-emit.", "صحّح المرجع أعلاه ثم أعد الإصدار.")
+          : L("Check the version above — nothing to re-emit unless it is wrong.", "تحقّق من الإصدار أعلاه — لا شيء يُعاد إصداره ما لم يكن خطأ."),
         "══════════════════════════════════════════",
       ].join("\n");
       return `\n${out}\n`;
@@ -503,49 +625,24 @@ export const RESPONSE_ROWS: ResponseRow[] = [
     deliver: "block",
     blockKey: "feature-hints",
   },
-  // Release response: feed the outcome back so Claude knows DevLog
-  // processed the release (version bumped, HTML/changelog written) and
-  // can continue post-release steps (e.g. build) WITHOUT stopping to ask
-  // the user. The server only returns a result for a newly-stored release
-  // tag — a re-emit dedups to null, so this row fires once (no loop).
-  // Delivery: it hands back the version the -(release) tag asked for.
+  // The release confirmation's own block (#1035): reached only when no earlier
+  // row blocked — then the text the `release` row pushed above goes out as a
+  // continuation of its own, exactly as the old terminal block did. When an
+  // earlier row DID block, that block already carried the text.
+  // DEFERRED (#1226): flushing here exited the hook before Part 1.5, so every
+  // standards command typed in the same response as -(release) — live: three
+  // `-(rule:ack) doctor:<CODE>` lines — was swallowed with no trace, no ack
+  // file, and doctor still red. The key is handed to the hook, which flushes
+  // it at its tail after the standards/ask parts have run (they block on their
+  // own and carry this text along when they do).
   {
-    key: "release",
+    key: "release-serve",
     applies: resp => !!resp.release,
-    text(resp, { L }) {
-      const rel = sure(resp.release);
-      const intent = resp.releaseIntent;   // present when the version was computed from -(release:type)
-      const sep = L(", ", "، ");
-      const bumps = (rel.bumped || []).map((u) => `${u.file} ${u.from}→${u.to}`).join(sep) || L("no manifest to bump", "لا مانيفست لرفعه");
-      // Entries without a reason predate the field → they are downgrades.
-      const downgrades = (rel.rejected || []).filter((u) => u.reason !== "unsupported-layout")
-        .map((u) => `${u.file} ${u.current}→${u.attempted}`).join(sep);
-      const unsupported = (rel.rejected || []).filter((u) => u.reason === "unsupported-layout")
-        .map((u) => u.file).join(sep);
-      const out = [
-        "════════ DevLog Release ════════",
-        L(`✓ Release ${rel.version} recorded in DevLog.`, `✓ الإصدار ${rel.version} سُجِّل في DevLog.`),
-        ...(intent ? [L(`Computed: ${intent.auto ? "auto-detected " : ""}${intent.bump} bump (${intent.from} → ${intent.version})`,
-                        `محسوب: ${intent.auto ? "نوع تلقائي، " : ""}ترقية ${intent.bump} (${intent.from} → ${intent.version})`)] : []),
-        L(`Version bump: ${bumps}`, `رفع النسخة: ${bumps}`),
-        ...(downgrades ? [L(`⚠ Downgrade refused (manifest is newer): ${downgrades}`, `⚠ رُفض تنزيل النسخة (المانيفست أحدث): ${downgrades}`)] : []),
-        ...(unsupported ? [L(
-          `⚠ Manifest NOT bumped — unsupported layout (no literal version in [package]/[workspace.package]): ${unsupported}. Update it manually if needed.`,
-          `⚠ لم يُرفع المانيفست — تخطيط غير مدعوم (لا version صريح في [package]/[workspace.package]): ${unsupported}. حدّثه يدويًا إن لزم.`)] : []),
-        `HTML/changelog: ${rel.htmlGenerated ? L("generated ✓", "أُنشئ ✓") : L("not generated", "لم يُنشأ")}`,
-        ...(intent?.warning ? ["", L(
-          `⚠ Your accrued changes look ${intent.warning.suggested}-level but you declared ${intent.bump}. Consider -(release:${intent.warning.suggested}) next time.`,
-          `⚠ تغييراتك المتراكمة تبدو بمستوى ${intent.warning.suggested} لكنك أعلنت ${intent.bump}. فكّر بـ-(release:${intent.warning.suggested}) في المرة القادمة.`)] : []),
-        "",
-        L("Continue post-release steps (e.g. building the output) without waiting for the user.",
-          "تابع خطوات ما بعد الإصدار (مثل بناء الناتج) بدون انتظار المستخدم."),
-        "════════════════════════════════",
-      ].join("\n");
-      return `\n${out}\n`;
-    },
-    logLine: resp => `release-response: served ${sure(resp.release).version}`,
-    deliver: "block",
-    blockKey: "serve",
+    text: () => "",
+    logLine: resp => `release-serve: ${sure(resp.release).version}`,
+    deliver: "info",
+    flushKey: () => "serve",
+    deferFlush: true,
   },
 ];
 
@@ -564,11 +661,14 @@ export async function runResponseRows(resp: TagsResponse, ctx: ResponseRowCtx): 
       await ctx.log(row.logLine(resp));
       await ctx.blockContinue(text, row.blockKey as BlockKey);
     } else {
-      ctx.feedback.push(text);
+      // A flush-only row (release-serve) composes nothing of its own.
+      if (text) ctx.feedback.push(text);
       await ctx.log(row.logLine(resp));
       await row.after?.(resp, ctx);
       const fk = row.flushKey?.(resp);
-      if (fk) await ctx.flushBlock(fk);
+      if (!fk) continue;
+      if (row.deferFlush && ctx.deferFlush) { ctx.deferFlush(fk); continue; }
+      await ctx.flushBlock(fk);
     }
   }
 }

@@ -45,6 +45,25 @@ describe("untaggedSessionCounts (unit)", () => {
     expect([...counts.values()].reduce((a, b) => a + b, 0)).toBe(1);
   });
 
+  test("«wrote» means code or a tracking file — the same trigger as the in-session guard (#1208)", () => {
+    const docEvent = (sid: string, file: string) => ({
+      id: crypto.randomUUID(), project: "real", event: "PostToolUse", type: "change",
+      session_id: sid, file_path: file, timestamp: ago(2 * HOURS),
+    });
+    const data = {
+      projects: {}, plans: [], worklog: [],
+      events: [
+        docEvent("d1", "D:/x/README.md"),           // ordinary docs → the guard is silent, so is the counter
+        docEvent("d2", "D:/x/docs/guide.md"),
+        docEvent("d3", "D:/x/package.json"),        // manifest, not code
+        docEvent("t1", "D:/x/tasks.md"),            // manual tracking file (#676) → counts
+        docEvent("c1", "D:/x/src/app.ts"),          // code → counts
+      ],
+      tags: [],
+    } as unknown as DevLogData;
+    expect(untaggedSessionCounts(data).get("real")).toBe(2);
+  });
+
   test("a later tag from the same session clears it", () => {
     const data = {
       projects: {}, plans: [], worklog: [],

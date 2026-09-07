@@ -30,6 +30,7 @@ import domSafeJs from "../assets/dom-safe.js" with { type: "text" };
 // popup documents (audit C1).
 import themeJs from "../assets/theme.js" with { type: "text" };
 import stackMapJs from "../assets/stack-map.js" with { type: "text" };
+import stackMapGraphUtilJs from "../assets/stack-map-graph-util.js" with { type: "text" };
 import depsJs from "../assets/deps.js" with { type: "text" };
 // i18n dictionary + the static-page applier (#700/#708): every dashboard page
 // imports its UI strings from dashboard-i18n.js.
@@ -62,6 +63,7 @@ export const STATIC_ASSETS: Record<string, Asset> = {
   "dom-safe.js": { text: domSafeJs, mime: "application/javascript; charset=utf-8" },
   "theme.js": { text: themeJs, mime: "application/javascript; charset=utf-8" },
   "stack-map.js": { text: stackMapJs, mime: "application/javascript; charset=utf-8" },
+  "stack-map-graph-util.js": { text: stackMapGraphUtilJs, mime: "application/javascript; charset=utf-8" },
   "deps.js": { text: depsJs, mime: "application/javascript; charset=utf-8" },
   "dashboard-i18n.js": { text: dashboardI18nJs, mime: "application/javascript; charset=utf-8" },
   "page-i18n.js": { text: pageI18nJs, mime: "application/javascript; charset=utf-8" },

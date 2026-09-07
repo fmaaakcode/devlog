@@ -37,9 +37,24 @@ describe("scanDirectory (extension counts across a tree)", () => {
       await writeFile(join(dir, "b.ts"), "const b = 2;");
       await writeFile(join(dir, "c.js"), "var c = 3;");
       await writeFile(join(dir, "readme.md"), "# hi");
+      // #1205 (F-9.169 family): the title promised "skipping dotfiles/build dirs"
+      // over a fixture with neither — a scanner that counted node_modules or
+      // .git would have passed. Plant every skip class the scanner names:
+      // a dot-directory, a dotfile, and the build/vendor dirs from SKIP_DIRS.
+      await mkdir(join(dir, ".git"), { recursive: true });
+      await writeFile(join(dir, ".git", "config.ts"), "// never counted");
+      await writeFile(join(dir, ".eslintrc.js"), "module.exports = {};");
+      for (const skip of ["node_modules", "dist", "build", "target", "__pycache__"]) {
+        await mkdir(join(dir, skip, "deep"), { recursive: true });
+        await writeFile(join(dir, skip, "deep", "x.ts"), "export const x = 1;");
+        await writeFile(join(dir, skip, "y.js"), "var y = 1;");
+      }
+      // A NESTED ordinary directory still counts — depth is not the skip rule.
+      await mkdir(join(dir, "src", "lib"), { recursive: true });
+      await writeFile(join(dir, "src", "lib", "d.ts"), "export const d = 4;");
       const counts = await scanDirectory(dir);
-      expect(counts.ts).toBe(2);
-      expect(counts.js).toBe(1);
+      expect(counts.ts).toBe(3);        // a, b, src/lib/d — none from .git / node_modules / dist / build / target
+      expect(counts.js).toBe(1);        // c — not .eslintrc.js, not the skip dirs' y.js
       expect(counts.md).toBe(1);
     });
   });
@@ -149,13 +164,38 @@ describe("detectPackages (manifest → framework + libraries)", () => {
 });
 
 describe("detectRuntime (project → how it runs)", () => {
-  test("JS/TS project resolves a JS runtime", async () => {
+  // #1090: the runtime is what the PROJECT declares (engines, lockfile,
+  // .nvmrc…), never the tool installed on the developer machine — `bun
+  // --version` used to label every undeclared JS project "Bun <local version>".
+  test("JS/TS project with a bun lockfile resolves to Bun (family only, no machine version)", async () => {
     await withTmp(async dir => {
       await writeFile(join(dir, "package.json"), JSON.stringify({
         name: "x", scripts: { dev: "vite" }, dependencies: { vite: "^5" },
       }));
+      await writeFile(join(dir, "bun.lock"), "{}");
       const rt = await detectRuntime(dir, "TypeScript");
-      expect(rt?.name).toBeTruthy(); // Bun/Node — a concrete runtime, not undefined
+      expect(rt?.name).toBe("Bun");
+      expect(rt?.version).toBe("");
+    });
+  });
+  test("a Node project (package-lock.json + .nvmrc) is Node, not the machine's Bun", async () => {
+    await withTmp(async dir => {
+      await writeFile(join(dir, "package.json"), JSON.stringify({ name: "x" }));
+      await writeFile(join(dir, "package-lock.json"), "{}");
+      await writeFile(join(dir, ".nvmrc"), "v20.11.0\n");
+      const rt = await detectRuntime(dir, "TypeScript");
+      expect(rt?.name).toBe("Node");
+      expect(rt?.version).toBe("20.11.0");
+    });
+  });
+  test("an undeclared runtime is undefined — never the developer machine's toolchain", async () => {
+    await withTmp(async dir => {
+      await writeFile(join(dir, "package.json"), JSON.stringify({ name: "x" }));
+      expect(await detectRuntime(dir, "TypeScript")).toBeUndefined();
+      await writeFile(join(dir, "main.py"), "print(1)\n");
+      expect(await detectRuntime(dir, "Python")).toBeUndefined();
+      await writeFile(join(dir, "Cargo.toml"), '[package]\nname = "x"\nversion = "0.1.0"\n');
+      expect(await detectRuntime(dir, "Rust")).toBeUndefined();
     });
   });
 });

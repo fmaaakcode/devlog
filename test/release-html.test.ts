@@ -260,7 +260,46 @@ describe("generateReleaseHtml", () => {
     expect(html).toContain('<span class="dl-count">1</span>');
   });
 
-  test("a tailed `#N cure` fix pairs the bug's text (problem) with the closer tail (cure)", () => {
+  // #1123 / #1169: the shape the store has written since #998 — the closer's
+  // content IS the opener's text and the tail lives in `cause`. Every modern
+  // release page rendered zero cure lines because only the legacy `#N tail`
+  // shape below was read.
+  test("a stored (post-#998) fix — content = opener text, tail in `cause` — still pairs and shows the cure", () => {
+    const target = { tag: "release", project: "p", content: "v1.0.0", timestamp: "2026-04-02T00:00:00Z" };
+    const data: any = {
+      projects: { p: baseProject },
+      tags: [
+        target,
+        { tag: "bug found", project: "p", num: 9, content: "race in the scanner corrupts the cache", files: ["/x/src/scanner.ts"], timestamp: "2026-03-30T00:00:00Z" },
+        { tag: "bug fix", project: "p", content: "race in the scanner corrupts the cache", cause: "serialized writes behind the existing lock", failureClass: "timing", files: ["/x/src/lock.ts"], timestamp: "2026-04-01T00:00:00Z" },
+      ],
+      events: [],
+    };
+    const html = generateReleaseHtml(data, "p", target as any);
+    expect(html.split("race in the scanner corrupts the cache").length - 1).toBe(1); // problem once, not twice
+    expect(html).toContain("dl-cure");
+    expect(html).toContain("serialized writes behind the existing lock");
+    // files = closer's ∪ opener's
+    expect(html).toContain("src/lock.ts");
+    expect(html).toContain("src/scanner.ts");
+  });
+
+  test("a stored fix whose opener is gone still shows its cause as the cure", () => {
+    const target = { tag: "release", project: "p", content: "v1.0.0", timestamp: "2026-04-02T00:00:00Z" };
+    const data: any = {
+      projects: { p: baseProject },
+      tags: [
+        target,
+        { tag: "bug fix", project: "p", content: "orphaned fix text", cause: "the cause survives", timestamp: "2026-04-01T00:00:00Z" },
+      ],
+      events: [],
+    };
+    const html = generateReleaseHtml(data, "p", target as any);
+    expect(html).toContain("orphaned fix text");
+    expect(html).toContain("the cause survives");
+  });
+
+  test("LEGACY (pre-#998) `#N cure` fix pairs the bug's text (problem) with the closer tail (cure)", () => {
     const target = { tag: "release", project: "p", content: "v1.0.0", timestamp: "2026-04-02T00:00:00Z" };
     const data: any = {
       projects: { p: baseProject },
@@ -339,7 +378,8 @@ describe("collectRelease (the machine-readable facts)", () => {
         { tag: "release", project: "p", content: "v1.0.0", timestamp: "2026-04-01T00:00:00Z" },
         { tag: "built", project: "p", content: "the feature", session_id: "s1", timestamp: "2026-04-03T00:00:00Z" },
         { tag: "bug found", project: "p", num: 4, content: "the problem", timestamp: "2026-04-03T01:00:00Z" },
-        { tag: "bug fix", project: "p", content: "#4 the cure", timestamp: "2026-04-04T00:00:00Z" },
+        // Stored shape since #998 (#1169): opener text in content, tail in cause.
+        { tag: "bug fix", project: "p", content: "the problem", cause: "the cure", timestamp: "2026-04-04T00:00:00Z" },
       ],
       events: [{ project: "p", type: "change", file_path: "/x/src/a.ts", lines_added: 3, lines_removed: 1, session_id: "s1", timestamp: "2026-04-03T02:00:00Z" }],
     };

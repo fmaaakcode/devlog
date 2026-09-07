@@ -6,12 +6,18 @@
 import { loadData, withData } from "./data";
 import { resolveProjectFor } from "./project-resolve";
 import { scanFreshProfile, applyPreservedScan } from "./scanner";
+import type { ProjectProfile } from "./types";
 import { broadcast } from "./broadcast";
 import { isPathInside, normalizeSlashes, pathsEqual } from "./path-utils";
 import { obj, str } from "./validators";
+import { clipUnits } from "./text-clip";
 import { join, resolve, relative, sep } from "node:path";
 
 type ApiReq = Bun.BunRequest;
+
+// One note is a sentence or a paragraph; a thousand of them is years of use.
+export const WORKLOG_TEXT_CAP = 2000;
+export const MAX_WORKLOG = 1000;
 
 /** Build the workspace-mutation route group. Spread into server.ts's routeDefs. */
 export function makeWorkspaceRoutes(): Record<string, unknown> {
@@ -20,9 +26,19 @@ export function makeWorkspaceRoutes(): Record<string, unknown> {
       async POST(req: ApiReq) {
         try {
           const body = obj(await req.json());
+          const text = str(body.text).trim();
+          if (!text) return Response.json({ error: "text required" }, { status: 400 });
           return await withData(async (data) => {
-            const { name: project } = resolveProjectFor(data, str(body.cwd));
-            data.worklog.push({ id: crypto.randomUUID(), project, text: str(body.text), timestamp: new Date().toISOString() });
+            // F-4.87: the note had no cap on its length, the store no cap on its
+            // rows (retention never touched worklog, and meta.json is read on
+            // every load), and an unregistered cwd minted a phantom project
+            // name that orphanCounts then reported. Registered projects only
+            // (plan §5.1: attribution consumers never stamp an unknown name),
+            // text clipped, rows FIFO-capped like prompts.
+            const resolved = resolveProjectFor(data, str(body.cwd));
+            if (!resolved.registered) return Response.json({ error: "project not registered" }, { status: 404 });
+            data.worklog.push({ id: crypto.randomUUID(), project: resolved.name, text: clipUnits(text, WORKLOG_TEXT_CAP), timestamp: new Date().toISOString() });
+            if (data.worklog.length > MAX_WORKLOG) data.worklog = data.worklog.slice(-MAX_WORKLOG);
             return Response.json({ ok: true });
           });
         } catch {
@@ -107,8 +123,11 @@ export function makeWorkspaceRoutes(): Record<string, unknown> {
             !!p.path && (pathsEqual(targetPath, p.path) || isPathInside(p.path, targetPath)));
           if (hit) {
             const [name, proj] = hit;
-            const fresh = await scanFreshProfile(proj.path);
-            await withData(async (data) => {
+            // A missing folder now THROWS (#1063) — no fresh profile, keep the
+            // stored one, still answer the ignore request itself.
+            let fresh: ProjectProfile | null = null;
+            try { fresh = await scanFreshProfile(proj.path); } catch { fresh = null; }
+            if (fresh) await withData(async (data) => {
               // Skip the merge if the project changed path between the phases.
               if (data.projects[name] && normalizeSlashes(data.projects[name].path) === normalizeSlashes(proj.path)) {
                 applyPreservedScan(data, name, fresh);

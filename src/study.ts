@@ -243,12 +243,15 @@ export function monthlyTrend(data: DevLogData, project: string): MonthRow[] {
     return r;
   };
   for (const t of tags) if (openerTags.has(t.tag)) row(t.timestamp.slice(0, 7)).opened++;
-  for (const c of closedItems(data, project)) if (c.closedAt) row(c.closedAt.slice(0, 7)).closed++;
+  // Plan steps are not tags, so they never count as "opened" here; counting
+  // their closure would make closed exceed opened by construction (#1137).
+  // They have their own totals in `plans.steps/closedSteps`.
+  for (const c of closedItems(data, project)) if (c.closedAt && c.kind !== "plan-step") row(c.closedAt.slice(0, 7)).closed++;
   for (const t of tags) if (t.tag === "release" && isRealVersion(t.content)) row(t.timestamp.slice(0, 7)).released++;
   return [...monthMap.values()].sort((a, b) => a.month.localeCompare(b.month));
 }
 
-function buildAggregates(data: DevLogData, project: string, now: number, telemetry: RuleTelemetryRecord[]): StudyAggregates {
+function buildAggregates(data: DevLogData, project: string, now: number, telemetry: RuleTelemetryRecord[], isGone?: AbsenceJudge): StudyAggregates {
   const tags = data.tags.filter(t => t.project === project);
   const closed = closedItems(data, project);
   const openerTags = new Set(Object.keys(CLOSER_FOR));
@@ -339,7 +342,9 @@ function buildAggregates(data: DevLogData, project: string, now: number, telemet
   const problems = {
     reports: retro.length,
     reopens: retro.filter(i => typeof i.reopenOf === "number").length,
-    fragile: fragileFiles(data, project),
+    // #1180: the same absence judge retro and the standards page pass — a
+    // deleted file topping «الأكثر كسرًا» in a STUDY read as alive (#858 class).
+    fragile: fragileFiles(data, project, 5, isGone),
     // #585: the regression-test gap belongs with the reopen count — a fix with no
     // test and a fix that came back are the two halves of the same discipline
     // question, and the study is where a whole history is read at once.
@@ -358,10 +363,10 @@ function buildAggregates(data: DevLogData, project: string, now: number, telemet
   };
 
   // #787: counters are project-scoped (a fire happened HERE); adoption rows are
-  // global-catalog events, each measured against THIS project's reports.
+  // measured against the reports of the project they were typed in (#1131).
   const rules = {
-    stats: ruleStats(telemetry.filter(r => !r.project || r.project === project)),
-    effects: ruleEffect(telemetry, retro, now),
+    stats: ruleStats(telemetry.filter(r => r.project === project)),   // exact only (#1066)
+    effects: ruleEffect(telemetry, retro, now, { project }),
   };
 
   return {
@@ -423,7 +428,11 @@ function buildDelta(data: DevLogData, project: string, fromMs: number): StudyDel
 /** The full study corpus for `project`. Pure; `now` injectable for tests.
  *  `telemetry` (#787) is loaded by the route — kept a parameter so this stays
  *  filesystem-free. */
-export function studyCorpus(data: DevLogData, project: string, now = Date.now(), prevDoc: PrevStudyDoc | null = null, telemetry: RuleTelemetryRecord[] = []): StudyCorpus {
+/** `isGone` (#1180): the absence judge for the fragile-files list — the route
+ *  builds it from the project root + the disk probe, exactly as ask:retro does. */
+export type AbsenceJudge = (abs: string) => true | undefined;
+
+export function studyCorpus(data: DevLogData, project: string, now = Date.now(), prevDoc: PrevStudyDoc | null = null, telemetry: RuleTelemetryRecord[] = [], isGone?: AbsenceJudge): StudyCorpus {
   const tags = data.tags.filter(t => t.project === project);
   // Watermark: newest of the two sources. Tag rows cover the pre-change era
   // (studies that WERE stored as doc:report tags); the doc-store entry covers
@@ -447,7 +456,7 @@ export function studyCorpus(data: DevLogData, project: string, now = Date.now(),
   };
   return {
     window,
-    aggregates: buildAggregates(data, project, now, telemetry),
+    aggregates: buildAggregates(data, project, now, telemetry, isGone),
     delta: buildDelta(data, project, prev ? +new Date(prev.at) : 0),
   };
 }

@@ -70,6 +70,23 @@ describe("injectSystemMessages", () => {
     expect(msg).not.toContain("يعيد تشغيل نفسه");     // stale text (ar) absent
   });
 
+  test("UserPromptSubmit with NO transcript_path names the missing lifeline once (#1209)", async () => {
+    const root = track(staleRoot());
+    const first = await injectSystemMessages("UserPromptSubmit", {
+      root, bootMs: 0, transcriptPath: "", sessionId: "s-nopath", project: "",
+    });
+    expect(first).toContain("transcript_path");
+    // Once per session — the drift is a property of the build, not of the prompt.
+    expect(await injectSystemMessages("UserPromptSubmit", {
+      root, bootMs: 0, transcriptPath: "", sessionId: "s-nopath", project: "",
+    })).toBeNull();
+    // SessionStart is exempt: its own transcript is legitimately empty/unknown there.
+    const start = await injectSystemMessages("SessionStart", {
+      root, bootMs: 0, transcriptPath: "", sessionId: "s-nopath-2", project: "",
+    });
+    expect(start ?? "").not.toContain("transcript_path");
+  });
+
   test("PreToolUse never warns — a file-read probe is not a session event", async () => {
     const root = track(staleRoot());
     const tx = driftedTranscript();

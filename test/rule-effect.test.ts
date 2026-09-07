@@ -18,7 +18,11 @@ const rec = (p: Partial<RuleTelemetryRecord>): RuleTelemetryRecord =>
 
 const report = (daysAgo: number, files?: string[], kind = "bug found"): RetroItem =>
   ({ kind, text: "x", openedAt: iso(daysAgo), ageDays: daysAgo, ...(files ? { files } : {}) });
-const classed = (daysAgo: number, failureClass: string): RetroItem => ({ ...report(daysAgo), failureClass });
+// A class is written by the CLOSER, so a classified report is a closed one;
+// `closedNoClass` is the honest "unclassified history" (#1133) — an OPEN
+// report is not unclassified, it is simply not closed yet.
+const closedNoClass = (daysAgo: number): RetroItem => ({ ...report(daysAgo), closedAt: iso(Math.max(0, daysAgo - 1)) });
+const classed = (daysAgo: number, failureClass: string): RetroItem => ({ ...closedNoClass(daysAgo), failureClass });
 const backfilled = (daysAgo: number, failureClass: string): RetroItem => ({ ...classed(daysAgo, failureClass), failureClassBackfilled: true });
 
 describe("ruleStats", () => {
@@ -144,8 +148,8 @@ describe("ruleEffect", () => {
     });
 
     test("unclassified history → insufficient with the coverage exposed, never a rate", () => {
-      // 12 reports, none classified: the exact live situation before backfill.
-      const retro = Array.from({ length: 12 }, (_, i) => report(80 - i * 6));
+      // 12 closed reports, none classified: the exact live situation before backfill.
+      const retro = Array.from({ length: 12 }, (_, i) => closedNoClass(80 - i * 6));
       const r = ruleEffect([adopt("verification")], retro, NOW)[0];
       expect(r.scope).toBe("class");
       expect(r.coverageBefore).toBe(0);
@@ -172,8 +176,8 @@ describe("ruleEffect", () => {
     test("coverage under the threshold in either window → insufficient even with long windows", () => {
       // Before: 4 of 5 classified (0.8 ≥ threshold). After: 1 of 4 (0.25).
       const retro = [
-        classed(70, "matcher"), classed(60, "matcher"), classed(50, "condition"), classed(45, "stale"), report(48),
-        classed(30, "matcher"), report(20), report(15), report(10),
+        classed(70, "matcher"), classed(60, "matcher"), classed(50, "condition"), classed(45, "stale"), closedNoClass(48),
+        classed(30, "matcher"), closedNoClass(20), closedNoClass(15), closedNoClass(10),
       ];
       const r = ruleEffect([adopt("verification")], retro, NOW)[0];
       expect(r.coverageBefore).toBe(0.8);
@@ -186,7 +190,7 @@ describe("ruleEffect", () => {
       // Before: 5 reports — 2 by closer, 2 backfilled, 1 unclassified → coverage 0.8, backfilled 0.4.
       // After: 4 reports — all backfilled → coverage 1, backfilled 1.
       const retro = [
-        classed(70, "matcher"), classed(60, "stale"), backfilled(50, "matcher"), backfilled(45, "silent"), report(48),
+        classed(70, "matcher"), classed(60, "stale"), backfilled(50, "matcher"), backfilled(45, "silent"), closedNoClass(48),
         backfilled(30, "matcher"), backfilled(20, "stale"), backfilled(15, "condition"), backfilled(10, "drift"),
       ];
       const r = ruleEffect([adopt("verification")], retro, NOW)[0];
@@ -219,7 +223,8 @@ describe("ruleEffect", () => {
     });
   });
 
-  test("zero reports in both valid windows → flat, newest adoption first", () => {
+  // #1132: 0/0 used to read "flat" — a verdict with no event behind it.
+  test("zero reports in both valid windows → insufficient (nothing to measure), newest adoption first", () => {
     const rows = ruleEffect(
       [
         rec({ gate: "lifecycle", action: "adopt", rule: "rust", ts: iso(60) }),
@@ -229,7 +234,65 @@ describe("ruleEffect", () => {
       NOW,
     );
     expect(rows.map(r => r.rule)).toEqual(["typescript", "rust"]);
-    expect(rows.every(r => r.verdict === "flat")).toBe(true);
+    expect(rows.every(r => r.verdict === "insufficient")).toBe(true);
+  });
+
+  describe("wave 6 (#1131–#1133)", () => {
+    const adoptIn = (project: string, rule: string, daysAgo: number, detail?: string) =>
+      rec({ gate: "lifecycle", action: "adopt", rule, ts: iso(daysAgo), project, ...(detail ? { detail } : {}) });
+
+    test("#1131: only the adoptions stamped with THIS project are measured; an unstamped record is kept", () => {
+      const records = [
+        adoptIn("helper", "rust", 60, "no unwrap in prod"),
+        adoptIn("afThL", "data-integrity", 50, "every price from the maker's page"),
+        rec({ gate: "lifecycle", action: "adopt", rule: "typescript", ts: iso(40) }), // pre-stamp history
+      ];
+      const rows = ruleEffect(records, [report(100, ["a.rs"])], NOW, { project: "helper" });
+      expect(rows.map(r => r.rule).sort()).toEqual(["rust", "typescript"]);
+      // Without a project every adoption is measured (pure single-project callers).
+      expect(ruleEffect(records, [], NOW).length).toBe(3);
+    });
+
+    test("#1131: a later rule:rm of the same rule ends the after-window; an unpaired remove does not", () => {
+      const records = [
+        adoptIn("p", "rust", 90, "no unwrap in prod"),
+        rec({ gate: "lifecycle", action: "remove", rule: "rust #2", ts: iso(30), project: "p", detail: "No `unwrap` in prod" }),
+        adoptIn("p", "typescript", 90, "no any"),
+        rec({ gate: "lifecycle", action: "remove", rule: "typescript #1", ts: iso(30), project: "p" }), // legacy: no detail
+      ];
+      const retro = [report(120, ["a.rs"]), report(110, ["b.rs"]), report(100, ["c.rs"]), report(10, ["d.rs"])];
+      const rows = ruleEffect(records, retro, NOW, { project: "p" });
+      const rust = rows.find(r => r.rule === "rust")!;
+      expect(rust.removedAt).toBe(iso(30));
+      expect(rust.afterDays).toBe(60);          // 90 → 30 days ago, not 90 → today
+      expect(rust.reportsAfter).toBe(0);        // the report 10 days ago is AFTER the removal
+      const ts = rows.find(r => r.rule === "typescript")!;
+      expect(ts.removedAt).toBeUndefined();
+      expect(ts.afterDays).toBe(90);
+    });
+
+    test("#1132: one report before and none after is not «improved» — below the minimum it is insufficient", () => {
+      const rows = ruleEffect([adoptIn("p", "security", 30)], [report(60, undefined, "security")], NOW, { project: "p" });
+      expect(rows[0].reportsBefore).toBe(1);
+      expect(rows[0].verdict).toBe("insufficient");
+      // Three matching reports clear the bar.
+      const enough = ruleEffect([adoptIn("p", "security", 30)],
+        [report(60, undefined, "security"), report(50, undefined, "security"), report(40, undefined, "security")], NOW, { project: "p" });
+      expect(enough[0].verdict).toBe("improved");
+    });
+
+    test("#1133: coverage counts CLOSED reports only — a burst of open reports cannot sink it", () => {
+      const closedClassed = (d: number, c: string): RetroItem => ({ ...classed(d, c), closedAt: iso(d - 1) });
+      const open = (d: number): RetroItem => report(d);   // no closedAt, no class
+      const retro = [
+        closedClassed(60, "matcher"), closedClassed(50, "silent"), closedClassed(40, "condition"),
+        closedClassed(20, "matcher"),
+        open(5), open(4), open(3), open(2), open(1),     // the audit batch: filed, not closed
+      ];
+      const r = ruleEffect([adoptIn("p", "verification", 30)], retro, NOW, { project: "p" })[0];
+      expect(r.coverageAfter).toBe(1);
+      expect(r.verdict).not.toBe("insufficient");
+    });
   });
 });
 
@@ -253,13 +316,14 @@ describe("studyCorpus carries the rules section (#787)", () => {
       rec({ project: "p" }),
       rec({ project: "other" }), // foreign fire — excluded from stats
       rec({ gate: "lifecycle", action: "adopt", rule: "verification", ts: iso(30), project: "other" }),
+      rec({ gate: "lifecycle", action: "adopt", rule: "design", ts: iso(30), project: "p" }),
     ];
     const { rules } = studyCorpus(makeData(tags), "p", NOW, null, telemetry).aggregates;
     expect(rules.stats.length).toBe(1);
     expect(rules.stats[0].fires).toBe(1);
-    // Adoption is a global-catalog event: measured against THIS project even
-    // when typed elsewhere.
+    // #1131: an adoption typed in another project is that project's rule —
+    // only the one stamped with THIS project is measured here.
     expect(rules.effects.length).toBe(1);
-    expect(rules.effects[0].rule).toBe("verification");
+    expect(rules.effects[0].rule).toBe("design");
   });
 });

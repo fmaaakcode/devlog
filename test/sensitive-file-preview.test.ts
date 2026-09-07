@@ -21,6 +21,8 @@ describe("isSensitivePath", () => {
   for (const p of [
     "D:/proj/.env",
     "D:/proj/.env.local",
+    "D:/proj/.env.production",
+    "D:/proj/.env.example.local",   // a real override that merely mentions the template
     "D:/proj/config/.npmrc",
     "D:/proj/keys/id_rsa",
     "D:/proj/keys/id_ed25519.pub",
@@ -40,6 +42,12 @@ describe("isSensitivePath", () => {
     "D:/proj/envelope.md",
     "D:/proj/src/keyboard.ts",
     "D:/proj/README.md",
+    // #1204: committed .env TEMPLATES carry placeholder keys, not secrets.
+    "D:/proj/.env.example",
+    "D:/proj/.env.sample",
+    "D:/proj/api/.env.template",
+    "D:/proj/.env.dist",
+    "D:/proj/.env.defaults",
   ]) {
     test(`allows ${p}`, () => { expect(isSensitivePath(p)).toBe(false); });
   }

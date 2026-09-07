@@ -12,11 +12,15 @@ import { isPathInside, makeAbsenceJudge, normalizeSlashes } from "./path-utils";
 import { diskExists } from "./disk-probe";
 import { buildFileStory, fileMatches } from "./file-story";
 import { buildFileWhy } from "./file-why";
-import { buildRecent } from "./recent";
+import { archiveMonthsFor, buildRecent, recentWindowStart } from "./recent";
 import { resolveProjectFor } from "./project-resolve";
 import { filePurposeFromHeader } from "./file-purpose";
 import { listArchiveMonths, readArchiveMonth } from "./event-archive";
+import { shellWriteTargets } from "./shell-write";
 import type { EventEntry } from "./types";
+
+/** Newest archived rows a file story carries (deep=1) before it is cut. */
+export const MAX_ARCHIVED_STORY = 500;
 
 type ApiReq = Bun.BunRequest;
 
@@ -27,13 +31,17 @@ function countLines(s: string | undefined): number {
 
 // Compact a raw edit event into the dashboard/recall shape: line +/- counts, a
 // 3-line snippet, and a has_full_content flag (so the UI knows a diff is fetchable).
-function summarizeChange(e: EventEntry) {
+// Warm events (#1056) carry their counts in lines_added/lines_removed — the
+// retention pass stripped the texts and stored the numbers precisely so this
+// view could keep them; recounting from the missing texts read 0/0 for every
+// edit older than the hot window. Exported for the unit test.
+export function summarizeChange(e: EventEntry) {
   const oldStr = e.old_string || "";
   const newStr = e.new_string || "";
   const content = e.content || "";
   const isCreate = e.type === "create" || e.tool === "Create";
-  const linesAdded = isCreate ? countLines(content) : countLines(newStr);
-  const linesRemoved = isCreate ? 0 : countLines(oldStr);
+  const linesAdded = e.lines_added ?? (isCreate ? countLines(content) : countLines(newStr));
+  const linesRemoved = e.lines_removed ?? (isCreate ? 0 : countLines(oldStr));
   const snippet = (newStr || content || oldStr).split("\n").slice(0, 3).join("\n").slice(0, 240);
   return {
     id: e.id,
@@ -51,6 +59,17 @@ function summarizeChange(e: EventEntry) {
     bytes_new: (e.new_string || e.content || "").length,
     snippet,
     has_full_content: Boolean(oldStr || newStr || content),
+  };
+}
+
+// A shell write in the session-changes shape: the path the command wrote,
+// `action: "shell-write"`, no line counts (the command carries no diff).
+function shellWriteItem(e: EventEntry, target: string): ReturnType<typeof summarizeChange> {
+  return {
+    id: e.id, project: e.project, event: e.event, type: e.type, file_path: target, tool: e.tool,
+    action: "shell-write", timestamp: e.timestamp, session_id: e.session_id,
+    lines_added: 0, lines_removed: 0, bytes_old: 0, bytes_new: 0,
+    snippet: (e.command || "").split("\n")[0].slice(0, 240), has_full_content: false,
   };
 }
 
@@ -101,6 +120,11 @@ export function makeChangesRoutes(): Record<string, unknown> {
           }
           archived.reverse();
         }
+        // Newest MAX_ARCHIVED_STORY rows only (F-4.47): the response carried
+        // every archived edit of the file with no bound, and the flag tells the
+        // story modal the timeline is cut rather than complete.
+        const archivedTruncated = archived.length > MAX_ARCHIVED_STORY;
+        if (archivedTruncated) archived.length = MAX_ARCHIVED_STORY;
         // Narrative layer P1: each tag row carries the user prompt of the batch
         // that stored it, when one was captured — the story modal's "why".
         const promptByTagId = new Map<string, string>();
@@ -116,6 +140,7 @@ export function makeChangesRoutes(): Record<string, unknown> {
           }),
           events: story.events.map(summarizeChange),
           archived: archived.map(summarizeChange),
+          ...(archivedTruncated && { archivedTruncated: true }),
         });
       },
     },
@@ -183,7 +208,21 @@ export function makeChangesRoutes(): Record<string, unknown> {
         const sessions = Number(url.searchParams.get("sessions")) || undefined;
         const days = Number(url.searchParams.get("days")) || undefined;
         const excludeSession = url.searchParams.get("exclude") || undefined;
-        return Response.json(buildRecent(data, project, { sessions, days, excludeSession }));
+        // #1138: the hot store keeps ~200 events per project; a session older
+        // than that read "no files, no commands" as if it had touched nothing.
+        // First pass (hot only) fixes the window; the cold archive months it
+        // spans are then merged in and the digest rebuilt. Archive reads are
+        // best-effort — a failed month leaves that session marked as unknown,
+        // never as idle.
+        const hot = buildRecent(data, project, { sessions, days, excludeSession });
+        const needsArchive = hot.sessions.some(s => !s.eventsKnown);
+        if (!needsArchive) return Response.json(hot);
+        const months = archiveMonthsFor(recentWindowStart(hot));
+        const archivedEvents: EventEntry[] = [];
+        for (const m of months) {
+          try { archivedEvents.push(...await readArchiveMonth(m)); } catch { /* unreadable month — stays unknown */ }
+        }
+        return Response.json(buildRecent(data, project, { sessions, days, excludeSession, archivedEvents }));
       },
     },
 
@@ -231,9 +270,21 @@ export function makeChangesRoutes(): Record<string, unknown> {
         const sessionId = url.searchParams.get("session_id");
         if (!sessionId) return Response.json({ error: "session_id required" }, { status: 400 });
         const data = await loadData();
-        const items = (data.events || [])
-          .filter(e => (e.type === "change" || e.type === "create") && e.session_id === sessionId && e.file_path)
-          .map(summarizeChange);
+        const items: ReturnType<typeof summarizeChange>[] = [];
+        for (const e of data.events || []) {
+          if (e.session_id !== sessionId) continue;
+          if ((e.type === "change" || e.type === "create") && e.file_path) { items.push(summarizeChange(e)); continue; }
+          // Shell writes (#1055 / F-4.45): a heredoc, `sed -i`, `>` or an
+          // inline-script write API is stored as a COMMAND event with no
+          // file_path, so a session that wrote everything through Bash used to
+          // answer "nothing was written" — and the untagged guard, the
+          // dependency-freshness guard and the demolition gate all read this
+          // list. One item per written path, derived at read time so the
+          // stored event stays what the harness sent.
+          if (e.type === "command" && e.command) {
+            for (const target of shellWriteTargets(e.command).targets) items.push(shellWriteItem(e, target));
+          }
+        }
         // Session tag count rides along for the Stop hook's untagged-session
         // guard — one call answers both "what was written" and "was any of it
         // ever declared", instead of a second session-state endpoint.

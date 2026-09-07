@@ -1,5 +1,5 @@
         import { data, setData, activeProject, setActiveProject, setHeaderBuilt, setCachedTree, logFilter, fullRenderNeeded, setFullRenderNeeded, lastDataHash, setLastDataHash } from "./dashboard-state.js";
-        import { API, esc, timeStr, tagClass, tagLabel, tagSummary, filterGroups, filterLabel, resolveTagDisplay, refreshActiveSessions } from "./dashboard-core.js";
+        import { API, esc, timeStr, tagClass, tagLabel, tagSummary, filterGroups, filterLabel, resolveTagDisplay, refreshActiveSessions, uiAlert, httpErrorText } from "./dashboard-core.js";
         import { t as tr } from "./dashboard-i18n.js";
         import { renderSidebar, getProjectTags, patchHeader, patchLibraries, vulnCache } from "./dashboard-project.js";
         import { renderChangesCard, renderActivePlanCard, updateSidebarStats, renderProject, buildTodosHtml } from "./dashboard-panels.js";
@@ -115,7 +115,7 @@
                 lang: proj?.language, framework: proj?.framework, runtime: proj?.runtime,
                 files: proj?.totalFiles, fileExts: proj?.files, desc: proj?.description,
                 plans: projectPlans.length,
-                planSteps: projectPlans.map(p => { const vs = p.steps.filter(s => !s.dropped); return `${p.title}|${vs.filter(s => s.completed).length}/${vs.length}`; }).join(";"),
+                planSteps: projectPlans.map(p => { const vs = (p.steps || []).filter(s => !s.dropped); return `${p.title}|${vs.filter(s => s.completed).length}/${vs.length}`; }).join(";"),
             });
         }
 
@@ -124,14 +124,17 @@
         // already hidden by selectProject, and the catch kept "the last
         // rendered view" — which didn't exist). Surface the failure instead,
         // with a retry that doesn't depend on a WS pulse coming back.
-        function showViewError(name) {
+        // `renderMsg` set ⇒ the server DID answer and a render step threw: say
+        // that instead of blaming the network (#1146) — the two failures have
+        // different remedies (reload vs. a data bug worth reporting).
+        function showViewError(name, renderMsg) {
             const host = document.getElementById("projectView");
             if (!host || document.getElementById("viewErrorBar")) return;
             const bar = document.createElement("div");
             bar.id = "viewErrorBar";
             bar.style.cssText = "margin:8px 12px;padding:9px 14px;border:1px solid var(--pink);border-radius:8px;color:var(--pink);font-size:0.85em;display:flex;gap:12px;align-items:center;flex:0 0 auto";
             const msg = document.createElement("span");
-            msg.textContent = tr("err.fetchProject", { name });
+            msg.textContent = renderMsg ? tr("err.renderProject", { name, msg: renderMsg }) : tr("err.fetchProject", { name });
             const btn = document.createElement("button");
             btn.textContent = tr("err.retry");
             btn.className = "confirm-btn";
@@ -158,6 +161,9 @@
         // project's history — every card already filters by activeProject, so
         // the renders are byte-identical to full mode.
         export async function fetchProjectView(name, forceRender) {
+            // Flipped once the server has answered — anything thrown after it
+            // is a render bug, not a network failure (#1146).
+            let answered = false;
             try {
                 // R7 perf: the switch render is gated ONLY on the two fast,
                 // project-sized calls it actually consumes — project-view (~6ms)
@@ -174,6 +180,7 @@
                     fetch(`${API}/api/project-view/${encodeURIComponent(name)}?limit=${limit}`),
                     refreshVerdicts(),
                 ]);
+                answered = true;
                 // The user may have clicked another project while this was in
                 // flight — applying a stale view would render the wrong project.
                 if (activeProject !== name) return;
@@ -220,10 +227,12 @@
                 // Off the critical path: refresh the other-project sidebar counts
                 // + active-session indicators without making the switch wait.
                 refreshSidebarAsync();
-            } catch {
-                // Server unreachable. Keep whatever is rendered, but SAY so —
-                // on a first selection there is nothing rendered to keep.
-                if (activeProject === name) showViewError(name);
+            } catch (e) {
+                // Server unreachable — or (answered) a render step threw. Keep
+                // whatever is rendered, but SAY which one it was — on a first
+                // selection there is nothing rendered to keep.
+                if (answered) console.error("project view render failed", e);
+                if (activeProject === name) showViewError(name, answered ? String(e?.message || e) : null);
             }
         }
 
@@ -316,10 +325,15 @@
             for (const t of filtered) {
                 const tc = tagClass(t.tag);
                 const display = resolveTagDisplay(t, tags, projectPlans);
-                const sec = t.tag === 'security'
+                // Dependency vulnerabilities open the per-library modal whether
+                // the scanner wrote them (`security`) or the agent did
+                // (`security:dep`, same «name@ver — …» headline) (#1147);
+                // `security:own` is about the project's own code — no library.
+                const depSec = t.tag === 'security' || t.tag === 'security:dep';
+                const sec = depSec
                     ? ` data-action="show-vulns-tag" data-project="${esc(activeProject)}" data-content="${esc(t.content)}" style="cursor:pointer;text-decoration:underline dotted"`
                     : '';
-                const ttl = t.tag === 'security' ? tr("vuln.clickDetails", { text: display }) : display;
+                const ttl = depSec ? tr("vuln.clickDetails", { text: display }) : display;
                 // نسب النموذج (#695): شارة صغيرة بمن كتب التاق — تغيب عن التاريخ القديم بلا حقل.
                 const who = t.model ? `<span class="log-model" title="${esc(t.model)}">${esc(String(t.model).replace(/^claude-/, ''))}</span>` : '';
                 h += `<div class="log-item item-new${t.breaking ? ' is-breaking' : ''}">
@@ -373,12 +387,16 @@
             btn.classList.add("loading");
             btn.textContent = tr("scan.scanning");
             try {
-                await fetch(`${API}/api/scan/${encodeURIComponent(name)}`, { method: "POST" });
+                const res = await fetch(`${API}/api/scan/${encodeURIComponent(name)}`, { method: "POST" });
+                // fetch resolves on 4xx/5xx (scan lock, unknown project, disk
+                // failure): re-fetching the OLD view and re-arming the button
+                // read as «the scan ran» (#1148). Say what the server said.
+                if (!res.ok) uiAlert(tr("scan.failed", { msg: await httpErrorText(res) }));
                 setHeaderBuilt(false);
                 setCachedTree(null);
                 await fetchProjectView(name, true);
-            } catch {
-                // Scan failed or timed out — the button reset below re-arms it.
+            } catch (e) {
+                uiAlert(tr("scan.failed", { msg: String(e?.message || e) }));
             }
             btn.classList.remove("loading");
             btn.textContent = tr("scan.rescan");

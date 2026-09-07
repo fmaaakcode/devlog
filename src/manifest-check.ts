@@ -1,7 +1,12 @@
 // Manifest toolchain check (P2) — verifies a language manifest pins the NEWEST
-// toolchain edition + version. This is the LANGUAGE half of the freshness model:
-// a language/toolchain takes the absolute latest with NO cooldown (newest = best),
+// toolchain EDITION. This is the LANGUAGE half of the freshness model: a
+// language edition takes the absolute latest with NO cooldown (newest = best),
 // unlike third-party libraries which get the 7-day maturity window (dep-check.ts).
+//
+// `rust-version` is deliberately NOT judged (#1112): it declares the MINIMUM
+// rustc the crate supports (MSRV), not the toolchain the project builds with —
+// that lives in rust-toolchain.toml. Pushing it to the newest stable turns the
+// crate hostile to every older compiler, including the project's own pinned one.
 //
 // Pure decision logic (no FS/network) so it's unit-testable; the write-time gate
 // (pre-standards.js) supplies the written manifest text + the live target
@@ -12,7 +17,6 @@
 // rule governs lives EXACTLY there. This closes that gap with a targeted check,
 // not a blanket gate.
 
-import { isVersionBehind } from "./registry";
 import { normalizeSlashes } from "./path-utils";
 
 /** Which manifest a path is, or null if it isn't one we check. Extensible:
@@ -27,7 +31,7 @@ export function manifestKind(filePath: string): "cargo" | "cmake" | "makefile" |
 
 export interface ManifestState {
   edition: string | null; // edition pinned in the manifest (e.g. "2021"), null if absent
-  version: string | null; // toolchain version pinned (rust-version), null if absent
+  version: string | null; // `rust-version` = MSRV (minimum supported rustc), null if absent — informational, never enforced
 }
 
 /** Extract the edition + rust-version a Cargo.toml pins. Mirrors scanner.ts's
@@ -69,29 +73,24 @@ export function editionBehind(found: string, target: string): boolean {
 }
 
 export interface ToolchainTarget {
-  latestVersion: string | null; // from latestToolchain (network); null = unknown → skip version
   latestEdition: string | null; // from latestKnownEdition (network-free); null = no edition concept
 }
 
 export interface ToolchainViolation {
-  field: "edition" | "version";
+  field: "edition";
   found: string;
   target: string;
 }
 
 /**
- * Violations of the language-freshness rule for a manifest. Edition: blocks when
- * the pinned edition is older than the latest (network-free target). Version:
- * blocks when the pinned version is behind the latest — but FAILS OPEN when the
- * target is unknown (network down), so a transient outage never wrongly blocks.
+ * Violations of the language-freshness rule for a manifest: the pinned edition
+ * is older than the latest (network-free target). The MSRV field is never a
+ * violation (see the header) — the gate needs no network and never fails open.
  */
 export function checkToolchain(state: ManifestState, target: ToolchainTarget): ToolchainViolation[] {
   const out: ToolchainViolation[] = [];
   if (state.edition && target.latestEdition && editionBehind(state.edition, target.latestEdition)) {
     out.push({ field: "edition", found: state.edition, target: target.latestEdition });
-  }
-  if (state.version && target.latestVersion && isVersionBehind(state.version, target.latestVersion)) {
-    out.push({ field: "version", found: state.version, target: target.latestVersion });
   }
   return out;
 }

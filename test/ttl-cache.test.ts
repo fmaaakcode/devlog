@@ -38,6 +38,42 @@ describe("ttlCached", () => {
     expect(runs).toBe(2);
   });
 
+  // #1064 / F-4.74: the demolition gate's 4s probe against a cold analysis walk.
+  // With stale-while-revalidate the expired value answers immediately and ONE
+  // refresh runs behind it; the next caller gets the fresh value.
+  test("staleWhileRevalidate serves the expired value at once and refreshes in the background", async () => {
+    let runs = 0;
+    let release!: (v: number) => void;
+    const get = ttlCached(20, async () => {
+      runs++;
+      if (runs === 1) return 1;
+      return new Promise<number>(r => { release = r; });   // the slow cold walk
+    }, () => true, { staleWhileRevalidate: true });
+    expect(await get()).toBe(1);
+    await Bun.sleep(40);                                     // window expired
+    const t0 = Date.now();
+    expect(await get()).toBe(1);                             // stale, immediate
+    expect(await get()).toBe(1);                             // still stale, no second refresh
+    expect(Date.now() - t0).toBeLessThan(15);
+    expect(runs).toBe(2);
+    release(2);
+    await Bun.sleep(5);
+    expect(await get()).toBe(2);                             // refreshed value now served
+    expect(runs).toBe(2);
+  });
+
+  test("staleWhileRevalidate: a failed background refresh keeps the stale value, and a first call still awaits", async () => {
+    let runs = 0;
+    const get = ttlCached(20, async () => { runs++; if (runs === 2) throw new Error("walk failed"); return runs; }, () => true, { staleWhileRevalidate: true });
+    expect(await get()).toBe(1);                             // no cache yet → awaited
+    await Bun.sleep(40);
+    expect(await get()).toBe(1);                             // stale served; refresh #2 fails silently
+    await Bun.sleep(5);
+    expect(await get()).toBe(1);                             // still the stale value, refresh #3 kicked
+    await Bun.sleep(5);
+    expect(await get()).toBe(3);
+  });
+
   test("shouldCache=false values are returned but never cached", async () => {
     let runs = 0;
     // Mirrors the snapshot rule: an empty result is served to ITS caller but

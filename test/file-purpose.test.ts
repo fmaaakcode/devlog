@@ -179,9 +179,11 @@ describe("filePurposeFromHeader — output is table-cell safe", () => {
   });
 });
 
+// The fallback is bilingual since #1189 (DEVLOG_LANG) — the suite runs under
+// either language on the dev machine vs CI, so assert both spellings.
 describe("describeFile — the fallback still works unchanged", () => {
   test("filename hint wins for known names", () => {
-    expect(describeFile(fa({ path: "src/server.ts" }))).toBe("الراوتر الرئيسي");
+    expect(describeFile(fa({ path: "src/server.ts" }))).toMatch(/^(الراوتر الرئيسي|main router)$/);
   });
 
   test("hint gains endpoint/function counts", () => {
@@ -190,7 +192,7 @@ describe("describeFile — the fallback still works unchanged", () => {
   });
 
   test("client context falls back to a UI label", () => {
-    expect(describeFile(fa({ path: "assets/panel.js", context: "client" }))).toBe("واجهة مستخدم");
+    expect(describeFile(fa({ path: "assets/panel.js", context: "client" }))).toMatch(/^(واجهة مستخدم|user interface)$/);
   });
 
   test("last resort is the export list, then a dash", () => {

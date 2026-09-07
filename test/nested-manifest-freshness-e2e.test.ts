@@ -8,15 +8,14 @@
 // new library must appear.
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
-import { spawn, type Subprocess } from "bun";
+import type { Subprocess } from "bun";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { asJson } from "./_helpers";
+import { asJson, startServer } from "./_helpers";
 
 const TEST_PORT = 17964;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
-const PROJECT_ROOT = join(import.meta.dir, "..");
 
 let server: Subprocess;
 let dataDir: string;
@@ -54,12 +53,12 @@ beforeAll(async () => {
   // Tauri shape: the manifest lives ONLY in src-tauri/.
   mkdirSync(join(projDir, "src-tauri"), { recursive: true });
   writeFileSync(join(projDir, "src-tauri", "Cargo.toml"), cargoToml(`serde = "1.0.200"\n`));
-  server = spawn({
-    cmd: ["bun", join("src", "server.ts")],
-    cwd: PROJECT_ROOT,
-    env: { ...process.env, DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(TEST_PORT), DEVLOG_VERSION_CHECK_DISABLED: "1" },
-    stdout: "pipe", stderr: "pipe",
-  });
+  // #1194 (F-9.196): the private spawn left the OSV + registry lookups ON for a
+  // real Cargo manifest — every run of the suite queried crates.io and OSV live
+  // (8s stalls offline), the one file breaking the e2e network isolation
+  // (8fb82f9). The shared boot disables all three outbound checks; the
+  // assertions here read `libraries` from the manifest, which needs none of them.
+  server = startServer(dataDir, TEST_PORT);
   await waitForServer();
   await fetch(`${BASE}/api/inject?cwd=${encodeURIComponent(projDir)}&session_id=nested-861&type=SessionStart`,
     { signal: AbortSignal.timeout(15000) });

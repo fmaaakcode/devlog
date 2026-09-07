@@ -79,6 +79,33 @@ describe("modelScorecard (unit)", () => {
     expect(models.find(m => m.model === "claude-fable-5")?.reportsOpened).toBe(0);
   });
 
+  test("#1121: a -(dropped) report is a closure, never a fix, and is never judged for a test", () => {
+    const data = makeData([
+      t("bug found", "looked like a cache race", { num: 1, model: "claude-opus-4-8", ts: "2026-07-01T00:00:00.000Z" }),
+      // Withdrawn from a session that touched one non-test file — the old code
+      // scored this as a fix WITHOUT a test.
+      t("dropped", "#1 not a defect — the cache is single-writer", { model: "claude-fable-5", files: ["notes/why.md"], ts: "2026-07-02T00:00:00.000Z" }),
+    ]);
+    const fable = modelScorecard(data, P).models.find(m => m.model === "claude-fable-5");
+    expect(fable?.closures).toBe(1);
+    expect(fable?.fixes).toBe(0);
+    expect(fable?.fixesJudged).toBe(0);
+    expect(fable?.fixesWithoutTest).toBe(0);
+  });
+
+  test("#1200: a Rust-only fix footprint is not judged — in-source tests are invisible by path", () => {
+    const data = makeData([
+      t("bug found", "parser panics", { num: 1, model: "claude-opus-4-8" }),
+      t("bug fix", "#1 no unwrap", { model: "claude-fable-5", files: ["src/parser.rs"] }),
+      t("bug found", "flag ignored", { num: 2, model: "claude-opus-4-8" }),
+      t("bug fix", "#2 wired", { model: "claude-fable-5", files: ["src/cli.ts"] }),
+    ]);
+    const fable = modelScorecard(data, P).models.find(m => m.model === "claude-fable-5");
+    expect(fable?.fixes).toBe(2);
+    expect(fable?.fixesJudged).toBe(1);
+    expect(fable?.fixesWithoutTest).toBe(1);
+  });
+
   test("no attributed tags at all → empty board, everything unattributed", () => {
     const { models, unattributed } = modelScorecard(makeData([
       t("bug found", "old-world bug", { num: 1 }),

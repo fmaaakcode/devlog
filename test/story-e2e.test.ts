@@ -9,12 +9,12 @@ import type { Subprocess } from "bun";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startServer, stopServer, waitForServer, runHook, PROJECT_ROOT } from "./_helpers";
+import { startServer, stopServer, waitForServer, runHook, HOOK_STATE_DIR } from "./_helpers";
 import type { TagEntry } from "../src/types";
 
 const TEST_PORT = 17975;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
-const TURN_STATE_DIR = join(PROJECT_ROOT, ".devlog", "turn-state");
+const TURN_STATE_DIR = join(HOOK_STATE_DIR, "turn-state");
 
 let dataDir: string, projDir: string, server: Subprocess;
 const rnd = Math.random().toString(36).slice(2, 8);

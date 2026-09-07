@@ -15,11 +15,11 @@ import type { Subprocess } from "bun";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startServer, stopServer, waitForServer, runHook as runHookRaw, PROJECT_ROOT } from "./_helpers";
+import { startServer, stopServer, waitForServer, runHook as runHookRaw, HOOK_STATE_DIR } from "./_helpers";
 
 const TEST_PORT = 17877;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
-const TURN_STATE_DIR = join(PROJECT_ROOT, ".devlog", "turn-state");
+const TURN_STATE_DIR = join(HOOK_STATE_DIR, "turn-state");
 
 async function register(cwd: string, sid: string): Promise<void> {
   await fetch(`${BASE}/api/inject?cwd=${encodeURIComponent(cwd)}&session_id=${sid}&type=SessionStart`, { signal: AbortSignal.timeout(4000) });
@@ -67,6 +67,35 @@ describe("turnId fallback ladder (E2E canary)", () => {
     // Only a non-empty, content-stable turnId suppresses this repeat.
     const second = await runHookRaw(TEST_PORT, { cwd: projDir, session_id: sid, transcript_path: tx, stop_hook_active: false });
     expect(second.out).not.toContain("[devlog open]");
+  });
+
+  // #1210 (F-9.292): the MIDDLE rung — uuid absent, timestamp present — had no
+  // witness anywhere (unit or e2e). The distinguisher against the content-hash
+  // rung below it: the SAME user text under two different timestamps must be
+  // two turns (hash alone would key them identically), while the same
+  // transcript twice stays one turn. A rung that stringified a numeric
+  // timestamp or fell through to the hash would pass the first half and fail
+  // the second.
+  test("a user line with a timestamp but no uuid is keyed by the timestamp (middle rung)", async () => {
+    const write = (name: string, ts: string) => {
+      const lines: unknown[] = [
+        { type: "user", timestamp: ts, message: { role: "user", content: "same words" } },
+        { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "look\n\n-(ask:open)" }] } },
+      ];
+      const p = join(projDir, `transcript-${name}.jsonl`);
+      writeFileSync(p, lines.map(l => JSON.stringify(l)).join("\n"));
+      return p;
+    };
+    const txA = write("T1", "2026-09-06T10:00:00.000Z");
+    const first = await runHookRaw(TEST_PORT, { cwd: projDir, session_id: sid, transcript_path: txA, stop_hook_active: false });
+    expect(JSON.parse(first.out.trim()).reason).toContain("[devlog open]");
+    // Same transcript again → same turn → served once only.
+    const again = await runHookRaw(TEST_PORT, { cwd: projDir, session_id: sid, transcript_path: txA, stop_hook_active: false });
+    expect(again.out).not.toContain("[devlog open]");
+    // Same user TEXT, later timestamp → a new turn → the pull serves again.
+    const txB = write("T2", "2026-09-06T10:05:00.000Z");
+    const second = await runHookRaw(TEST_PORT, { cwd: projDir, session_id: sid, transcript_path: txB, stop_hook_active: false });
+    expect(JSON.parse(second.out.trim()).reason).toContain("[devlog open]");
   });
 
   test("a different id-less user text is a different turn — the pull serves again", async () => {

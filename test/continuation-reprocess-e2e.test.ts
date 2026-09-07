@@ -17,14 +17,13 @@ import type { Subprocess } from "bun";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { asJson, startServer, stopServer, waitForServer, runHook as runHookRaw } from "./_helpers";
+import { asJson, startServer, stopServer, waitForServer, runHook as runHookRaw, HOOK_STATE_DIR } from "./_helpers";
 
 const TEST_PORT = 17823;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
-const PROJECT_ROOT = join(import.meta.dir, "..");
 // The per-session turn-ledger file (src/turn-ledger.ts) the hook writes its
 // per-turn dedup state into — scrubbed per test so runs never leak state.
-const TURN_STATE_DIR = join(PROJECT_ROOT, ".devlog", "turn-state");
+const TURN_STATE_DIR = join(HOOK_STATE_DIR, "turn-state");
 
 async function register(cwd: string, sid: string): Promise<void> {
   await fetch(`${BASE}/api/inject?cwd=${encodeURIComponent(cwd)}&session_id=${sid}&type=SessionStart`, { signal: AbortSignal.timeout(4000) });
@@ -174,7 +173,10 @@ describe("continuation trap E2E (linked P1/P2 fix)", () => {
       const second = await runHookRaw(TEST_PORT, { cwd: projDir, session_id: sid, transcript_path: tx2, stop_hook_active: true }, env);
       expect(second.code).toBe(0);
 
-      const file = readFileSync(catFile, "utf8");
+      // The hook runs inside projDir (a tracked project), so the rule lands in
+      // the project layer (issue #1) — the global seed file stays as written.
+      const file = readFileSync(join(projDir, ".devlog", "standards", "cross-cutting", "data-integrity.md"), "utf8");
+      expect(readFileSync(catFile, "utf8")).not.toContain("كل حذف يسبقه أرشفة إلزامية");
       expect(file.match(/كل حذف يسبقه أرشفة إلزامية/g)).toHaveLength(1);  // once, not twice
       expect(file).not.toContain("أشرح الخطوة");                            // no leaked tail
     } finally {

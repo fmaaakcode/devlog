@@ -18,7 +18,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { backtickedCommandLines } from "../src/tag-parser";
-import { startServer, stopServer, waitForServer, runHook, PROJECT_ROOT } from "./_helpers";
+import { startServer, stopServer, waitForServer, runHook, HOOK_STATE_DIR } from "./_helpers";
 
 describe("backtickedCommandLines (unit)", () => {
   test("whole-line backticked commands with known heads are detected — ask, stored tag, breaking marker", () => {
@@ -59,7 +59,7 @@ describe("backtickedCommandLines (unit)", () => {
 
 const TEST_PORT = 17947;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
-const TURN_STATE_DIR = join(PROJECT_ROOT, ".devlog", "turn-state");
+const TURN_STATE_DIR = join(HOOK_STATE_DIR, "turn-state");
 
 function writeTranscript(dir: string, userUuid: string, assistantTexts: string[]): string {
   const lines: unknown[] = [

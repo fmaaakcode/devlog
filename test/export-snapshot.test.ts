@@ -5,7 +5,7 @@
 // rather than a byte-for-byte snapshot.
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportStatusMd } from "../src/export";
@@ -68,6 +68,7 @@ describe("DEVLOG_STATUS.md export — structural snapshot", () => {
   test("writes the file and renders the expected section skeleton", async () => {
     tmp = mkdtempSync(join(tmpdir(), "devlog-snap-"));
     const projectPath = join(tmp, PROJ);   // export keys off basename(projectPath)
+    mkdirSync(projectPath);                // #1058: mirrors go INTO an existing folder — the export never creates it
     try {
       await exportStatusMd(projectPath, data());
       md = readFileSync(join(projectPath, ".devlog", "DEVLOG_STATUS.md"), "utf8");
@@ -99,6 +100,7 @@ describe("DEVLOG_STATUS.md export — structural snapshot", () => {
     process.env.DEVLOG_LANG = "en";
     const tmpEn = mkdtempSync(join(tmpdir(), "devlog-snap-en-"));
     const projectPath = join(tmpEn, PROJ);
+    mkdirSync(projectPath);
     try {
       await exportStatusMd(projectPath, data());
       const mdEn = readFileSync(join(projectPath, ".devlog", "DEVLOG_STATUS.md"), "utf8");
@@ -116,6 +118,8 @@ describe("DEVLOG_STATUS.md export — structural snapshot", () => {
   });
 
   // Regression: an unwritable project dir must NOT bubble out of exportStatusMd.
+  // Since #1058 the export also REFUSES a folder that does not exist (it used to
+  // mkdir -p it), so the outcome object says why instead of a silent undefined.
   // The handler at /api/tags calls this inside withData; before the fix, a write
   // failure (e.g. the "/virtual/…" cwd the integration tests POST from, which
   // can't be created at the FS root on Linux CI) threw EPERM/EACCES and turned
@@ -124,7 +128,7 @@ describe("DEVLOG_STATUS.md export — structural snapshot", () => {
   // on every platform, so it forces the same failure deterministically here.
   test("does not throw when the project dir is unwritable", async () => {
     const badPath = ["", "virtual", `${String.fromCharCode(0)}nope`, PROJ].join("/");
-    // Should resolve (best-effort skip), not reject.
-    await expect(exportStatusMd(badPath, data())).resolves.toBeUndefined();
+    // Should resolve (best-effort skip), not reject — and say that nothing was written.
+    await expect(exportStatusMd(badPath, data())).resolves.toMatchObject({ written: false, reason: "folder-missing" });
   });
 });

@@ -62,6 +62,25 @@ describe("isTestCommand", () => {
     "",
   ])("does not match %p", (cmd) => expect(isTestCommand(cmd)).toBe(false));
 
+  // #1033 / F-3.1, F-2.73: the classifier ran over the RAW command, so a test
+  // command mentioned inside a commit message, a grep pattern or a heredoc body
+  // was a "test run" — and commandOutcome then judged that command's output as
+  // a runner's (a heredoc printing "FAIL:" made the last run ok:false; one
+  // printing "5 pass" silenced the verify hint). Live: 2 of the store's 3
+  // ok:false events were such heredocs.
+  test.each([
+    'git commit -m "fix bun test flake"',
+    'grep -rn "bun test" docs/',
+    "cat pytest.ini",
+    "python3 - <<'EOF'\nimport subprocess\nprint('npm test')\nprint(open('tests/game.test.ts').read())\nEOF",
+    "cat > x.ts <<EOF\nconst cmd = \"npm test\";\nEOF",
+    'echo "cargo test" # not run',
+  ])("quoted / heredoc / commented mentions are NOT test runs: %p", (cmd) => expect(isTestCommand(cmd)).toBe(false));
+
+  test("a real run beside a quoted mention still counts", () => {
+    expect(isTestCommand('bun test && git commit -m "tests: bun test green"')).toBe(true);
+  });
+
   test("make clause stops at a statement separator", () => {
     // `make lint; run test` must NOT be read as `make ... test` — the `;` breaks
     // the make clause so a non-test make followed by an unrelated word is silent.
@@ -253,6 +272,35 @@ describe("lastCodeMutationMs", () => {
   test("a write-shaped command naming only a non-code file is not a code mutation", () => {
     expect(lastCodeMutationMs([ev("s1", "echo x >> notes.md", { ts: "2026-06-01T10:00:00Z" })], "s1")).toBe(0);
   });
+
+  // #1029 / F-2.71: root files carry no slash. This repo keeps 8 hook scripts in
+  // the root and edits them through the shell — a green run was accepted as
+  // fresh after a real edit to one of them (the false silence #1003 exists to
+  // prevent).
+  test.each([
+    "cat > parse-tags.ts <<EOF\nx\nEOF",
+    "echo x > parse-tags.ts",
+    "bun -e 'Bun.write(\"parse-tags.ts\", s)'",
+  ])("a root code file written through the shell IS a mutation: %p", (cmd) => {
+    expect(lastCodeMutationMs([ev("s1", cmd, { ts: "2026-06-01T10:00:00Z" })], "s1")).toBe(+new Date("2026-06-01T10:00:00Z"));
+  });
+
+  // #1030 / F-2.72: a slash is not a path. `s/a/b/`, `/dev/null` and a URL made
+  // doc-only or read-only commands "code mutations", so stale-tests fired after
+  // every curl probe in this project's own audit sessions.
+  test.each([
+    "sed -i 's/a/b/' README.md",
+    "grep foo README.md > /dev/null",
+    "curl -s http://localhost:7777/api/x > out.json",
+  ])("a slash-bearing token in a non-code write is NOT a code mutation: %p", (cmd) => {
+    expect(lastCodeMutationMs([ev("s1", cmd, { ts: "2026-06-01T10:00:00Z" })], "s1")).toBe(0);
+  });
+
+  // F-2.74: auto-fixers are writes.
+  test.each(["bunx biome check --write src/x.ts", "npx eslint --fix src/x.ts", "prettier --write src/x.ts"])(
+    "a formatter in write mode IS a mutation: %p", (cmd) => {
+      expect(lastCodeMutationMs([ev("s1", cmd, { ts: "2026-06-01T10:00:00Z" })], "s1")).toBe(+new Date("2026-06-01T10:00:00Z"));
+    });
 
   test("reading a source file after a green run does not stale it (end-to-end)", () => {
     const events = [

@@ -9,14 +9,14 @@ import { openSessionsPanel, openModelStatsPanel, killPid, killServer, refreshPro
 import { setLogFilter, clearInjectionOverride, toggleInjection, showInjectionContent, switchInjScope, openInjectionPanel, openStandardsPanel, closeInjectionPanel, closeStandardsPanel, openUpdatesPopup, openTargetFile, ignoreTarget } from "./dashboard-tree-ws.js";
 // i18n (#700): UI strings come from the shared dictionary. Imported as
 // `tr` because `t` is the conventional loop/param name for tags here.
-import { t as tr, toggleLang, applyI18n } from "./dashboard-i18n.js";
+import { t as tr, toggleLang, applyI18n, locale } from "./dashboard-i18n.js";
 // Token resolution for the spots var() can't reach (audit C1).
 import { cssVar } from "./theme.js";
 // esc()/safeHref() live in dom-safe.js since audit C2 — one barrier,
 // one file, shared with the standalone pages. Imported for local use
 // and re-exported so the other dashboard modules keep their existing
 // dashboard-core import.
-import { esc, safeHref } from "./dom-safe.js";
+import { esc, safeHref, httpErrorDetail } from "./dom-safe.js";
 export { esc, safeHref };
 
 // Derive from where the dashboard is served, so it follows DEVLOG_PORT
@@ -33,15 +33,30 @@ export const TOOL_FG_COLORS = { Create: 'var(--emerald)', Edit: 'var(--gold)', R
 // gate while the dashboard's own buttons never attached the header, so
 // enabling the feature silently broke them (401). One cached /api/token
 // fetch serves the session; with the feature off it adds nothing.
+// A transient failure (server restarting at the first destructive click)
+// must NOT pin the cache to {} for the rest of the session — that made every
+// later mutation 401 «فشل الحذف» until a page reload (#1142). Only a real
+// answer is cached; a failed probe is retried on the next call.
 let tokenHeaderCache = null;
 export async function destructiveHeaders(extra) {
     if (tokenHeaderCache === null) {
         try {
-            const t = await (await fetch(`${API}/api/token`)).json();
-            tokenHeaderCache = (t.required && t.token) ? { 'X-DevLog-Token': t.token } : {};
-        } catch { tokenHeaderCache = {}; }
+            const res = await fetch(`${API}/api/token`);
+            if (res.ok) {
+                const t = await res.json();
+                tokenHeaderCache = (t.required && t.token) ? { 'X-DevLog-Token': t.token } : {};
+            }
+        } catch {
+            // Probe failed — leave the cache unset so the next call retries.
+        }
     }
-    return { ...(extra || {}), ...tokenHeaderCache };
+    return { ...(extra || {}), ...(tokenHeaderCache || {}) };
+}
+// One failure message for every mutating button (#1142/#1148/#1151/#1154):
+// the server's JSON {error} when it sent one, else the HTTP status — never a
+// bare «فشل» that hides a 401 (token) behind a 500 (disk).
+export async function httpErrorText(res) {
+    return tr("err.http", await httpErrorDetail(res));
 }
 // R3 #7: native alert/confirm/prompt block the event loop — WebSocket
 // updates freeze behind them — and can't be styled. Same .inj-modal
@@ -80,7 +95,16 @@ function uiDialog(message, { title = tr("core.alertTitle"), okText = tr("core.ok
         const done = (v) => { closeActiveDialog = null; document.removeEventListener("keydown", onKey); wrap.remove(); resolve(v); };
         const onKey = (e) => {
             if (e.key === "Escape") done(cancelValue);
-            else if (e.key === "Enter") done(okValue());
+            else if (e.key === "Enter") {
+                // The document listener sees Enter BEFORE the focused button's
+                // activation click, so Enter on a focused «إلغاء» used to confirm
+                // the destructive dialog (#1141). A focused button inside the
+                // dialog decides for itself through its own onclick; Enter is
+                // the OK shortcut only when focus sits elsewhere (the input).
+                const a = document.activeElement;
+                if (a && a.tagName === "BUTTON" && box.contains(a)) return;
+                done(okValue());
+            }
         };
         const actions = box.querySelector(".confirm-actions");
         const mk = (label, val, cls) => {
@@ -224,7 +248,7 @@ async function deleteTag(tagId, kind) {
             data.tags = (data.tags || []).filter(t => t.id !== tagId);
             renderProject();
         } else {
-            uiAlert(tr("core.deleteFailed"));
+            uiAlert(`${tr("core.deleteFailed")} — ${await httpErrorText(res)}`);
         }
     } catch (e) {
         uiAlert(tr("core.errorMsg", { msg: e.message }));
@@ -366,7 +390,7 @@ function showVulnsModal(project, lib, fallbackText) {
             .filter(t => t.project === activeProject && t.tag === "release")
             .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
         if (!rel) return;
-        const when = new Date(rel.timestamp).toLocaleDateString("en-GB", { year: "numeric", month: "2-digit", day: "2-digit" });
+        const when = new Date(rel.timestamp).toLocaleDateString(locale() === "ar" ? "ar" : "en-GB", { year: "numeric", month: "2-digit", day: "2-digit" });
         show(el, {
             name: rel.content.match(/v[\d.]+/)?.[0] || tr("pop.lastRelease"),
             description: tr("pop.releasedAt", { when }),
@@ -427,14 +451,18 @@ export function tagLabel(tag) {
 }
 
 // Filter groups for log tab
+// Every STORED tag type belongs to a group (#1145): story/about/desc/doc:*
+// used to surface only under «الكل» and render with their raw English name.
+// Stored names only — release:minor / bug fix:interim / upcoming are
+// normalized to release / bug fix / todo(+flag) before storage.
 export const filterGroups = {
     all: null,
     build: ["built", "refactor", "update"],
     bugs: ["bug found", "bug fix"],
     security: ["security", "security fix", "security:dep", "security:own", "outdated"],
     tasks: ["plan", "todo", "done", "dropped"],
-    knowledge: ["decision", "insight", "note"],
-    other: ["release", "feature", "feature update", "feature removed", "lib"]
+    knowledge: ["decision", "insight", "note", "story", "doc:report", "doc:analysis", "doc:plan", "doc:comparison", "doc:readme"],
+    other: ["release", "feature", "feature update", "feature removed", "lib", "about", "desc"]
 };
 // Filter labels resolve from the dictionary per render (filter.<key>)
 // so a language toggle re-labels the row without a reload.
@@ -463,7 +491,16 @@ export function timeStr(ts) {
 }
 // Opened-at line for hover tooltips (security card's open lists; mirrors
 // the tasks card's addedTitle and ?open/ask:closed's «فُتح» line).
-export const openedTitle = (ts) => ts ? tr("core.openedAt", { ts: String(ts).slice(0, 16).replace('T', ' ') }) : '';
+// Local wall-clock stamp `YYYY-MM-DD HH:MM`. Slicing the ISO string showed
+// UTC while timeStr on the same row showed local time — one tag, two clocks
+// (#1144). Falls back to the raw text for an unparsable stamp.
+export function localStamp(ts) {
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return String(ts ?? '');
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+export const openedTitle = (ts) => ts ? tr("core.openedAt", { ts: localStamp(ts) }) : '';
 export function tagClass(tag) { return tag.replace(/[\s:]+/g, ""); }
 // For closure tags whose content is `#N` or `Pn(.m)`, show a richer
 // label by looking up the original item. Falls back to raw content.
@@ -499,7 +536,13 @@ export async function refreshActiveSessions() {
         const j = await r.json();
         const map = {};
         for (const s of (j.items || [])) {
-            const name = (s.cwd || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'unknown';
+            // The server resolves each session's cwd against the registry
+            // (s.project — exact path or a folded subfolder); the old client
+            // basename mapping lit the same green dot on two projects sharing
+            // a folder name and never lit a project whose registry name differs
+            // from its folder (#1143). An unregistered cwd carries no project.
+            const name = s.project;
+            if (!name) continue;
             if (!map[name]) map[name] = [];
             map[name].push(s.pid);
         }

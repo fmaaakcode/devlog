@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, copyFile } from "node:fs/promises";
+import { mkdir, copyFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DATA_DIR, PLUGIN_MODE } from "./data";
@@ -11,6 +11,30 @@ import { DATA_DIR, PLUGIN_MODE } from "./data";
 // half-migrated store unretryable forever (#761 class: a single-file gate
 // speaking for sibling stores).
 const DATA_FILES = ["tags.json", "events.json", "plans.json", "meta.json", "projects.json"] as const;
+// The cold history beside the JSON stores: archive/events-YYYY-MM.jsonl(.gz)
+// and archive/undone-YYYY-MM.jsonl(.gz) (event-archive.ts). It moves with the
+// stores (#1196) — the header's "history is never abandoned" covered five
+// files and left the compressed months and the undo trail behind.
+const ARCHIVE_FILE_RE = /^(events|undone)-\d{4}-\d{2}\.jsonl(\.gz)?$/;
+
+/** Copy the archive months that `destDir/archive` lacks. Returns the copied
+ *  names as `archive/<file>` so the caller's log names them. Best-effort per
+ *  file order; a missing source dir is simply "nothing to copy". */
+async function copyArchive(srcDir: string, destDir: string): Promise<string[]> {
+  let names: string[];
+  try { names = await readdir(join(srcDir, "archive")); } catch { return []; }
+  const files = names.filter(f => ARCHIVE_FILE_RE.test(f)).sort();
+  if (!files.length) return [];
+  await mkdir(join(destDir, "archive"), { recursive: true });
+  const copied: string[] = [];
+  for (const f of files) {
+    const dest = join(destDir, "archive", f);
+    if (existsSync(dest)) continue;
+    await copyFile(join(srcDir, "archive", f), dest);
+    copied.push(`archive/${f}`);
+  }
+  return copied;
+}
 
 /**
  * Copy DevLog's JSON data files from `srcDir` into `destDir`, but only when the
@@ -31,6 +55,9 @@ export async function migrateDataFiles(srcDir: string, destDir: string): Promise
   await mkdir(destDir, { recursive: true });
   const copied: string[] = [];
   for (const f of DATA_FILES) {
+    // The archive rides BEFORE the completion marker for the same reason the
+    // history stores do: a crash after projects.json landed is unretryable.
+    if (f === "projects.json") copied.push(...await copyArchive(srcDir, destDir));
     const s = join(srcDir, f);
     if (existsSync(s) && !existsSync(join(destDir, f))) { await copyFile(s, join(destDir, f)); copied.push(f); }
   }

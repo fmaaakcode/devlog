@@ -34,8 +34,10 @@ const GRANDFATHERED: Record<string, number> = {
   // header was unaddable without this. data.ts took the other route in the same
   // pass — it was split (tag semantics → open-items.ts) and needed no raise,
   // which is the preferred move whenever the file has a real seam.
-  "analyze.ts": 940,   // 934 → 940 for #906: L(en, ar) pairs on describeFn/threads — zero new logic (same disclosed exception as export.ts/release-html.ts below)
-  "export.ts": 880,    // raised 858 → 880 for #892: every DEVLOG_STATUS/GITHUB label now carries an en+ar pair via L() — second-language strings, zero new logic
+  "analyze.ts": 940,   // 934 → 940 for #906: L(en, ar) pairs on describeFn/threads — zero new logic (same disclosed exception as release-html.ts below). Wave 3 split threads/security into analyze-signals.ts (1018 → 888); the cap stays until the next seam.
+  // export.ts graduated 2026-09-06 (audit round 10, wave 3): generateStackMd
+  // moved to export-stack.ts and the file dropped 950 → 595 — its #892 raise
+  // (858 → 880) is retired.
   // release-html.ts graduated 2026-08-14: the C5 dl-theme extraction dropped it
   // to 724, back under DEFAULT_MAX — its #891 raise (800 → 820) is retired.
 };

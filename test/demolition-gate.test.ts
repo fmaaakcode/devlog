@@ -94,8 +94,13 @@ describe("the trigger matches how demolition actually happens", () => {
     expect(GATED_TOOLS.has("MultiEdit")).toBe(true);
   });
 
-  test("reads and shell commands are not gated", () => {
+  test("reads are not gated; shell commands are (#1038 — heredoc/sed rewrites are demolition too)", () => {
     expect(GATED_TOOLS.has("Read")).toBe(false);
-    expect(GATED_TOOLS.has("Bash")).toBe(false);
+    // Audit round 10 F-3.46: bypass-permissions mode steers the model to
+    // `cat > src/types.ts <<EOF` — the gate that ignored Bash never fired in
+    // the very mode it was most needed. The hook derives the written paths
+    // with shellWriteTargets; this set only says the tool is worth asking about.
+    expect(GATED_TOOLS.has("Bash")).toBe(true);
+    expect(GATED_TOOLS.has("PowerShell")).toBe(true);
   });
 });

@@ -18,6 +18,7 @@ import { exportStatusMd } from "./export";
 import { verifyHintFor, regressionHintFor } from "./verify-hint";
 import { closedItems } from "./closed-items";
 import { CLOSURE_TAGS } from "./open-items";
+import { isRealCwd } from "./path-utils";
 import { runEntryBatch, type EntryBatchCtx, type TagInput } from "./tags-entry-stages";
 import { sessionTouchedFiles, sessionCommandCount } from "./file-story";
 import { searchTags, patternSiblings, type SimilarBug } from "./recall";
@@ -31,6 +32,38 @@ const L = <T>(en: T, ar: T): T => (currentLang() === "ar" ? ar : en);
 // the stage table). Loose (hooks send varied payloads); the pipeline
 // validates/normalizes each field — typing them keeps the module `any`-free.
 interface TagsBody { entries?: TagInput[]; cwd?: string; session_id?: string; batch_id?: string; user_prompt?: string }
+
+/** The client-fault half of the 400/500 split (#1054): a body whose SHAPE is
+ *  wrong is the hook's mistake and stays a definitive 400 (quarantined as
+ *  poison, #768). Returns the reason, or null for a well-shaped body. */
+export function tagsBodyError(body: unknown): string | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return "body must be a JSON object";
+  const b = body as Record<string, unknown>;
+  for (const k of ["cwd", "session_id", "batch_id", "user_prompt"]) {
+    if (b[k] !== undefined && typeof b[k] !== "string") return `${k} must be a string`;
+  }
+  if (b.entries !== undefined) {
+    if (!Array.isArray(b.entries)) return "entries must be an array";
+    for (const e of b.entries) {
+      if (!e || typeof e !== "object") return "each entry must be an object";
+      const t = e as Record<string, unknown>;
+      if (typeof t.tag !== "string") return "entry.tag must be a string";
+      if (t.content !== undefined && typeof t.content !== "string") return "entry.content must be a string";
+    }
+  }
+  return null;
+}
+
+/** The server-fault half: anything thrown past validation is OURS — a stage
+ *  bug, EPERM from the version writer mid-release, a full disk — and answers
+ *  5xx so the hook keeps the batch queued and retries once we recover. A 4xx
+ *  here would make the hook park the batch as poison forever, losing the
+ *  turn's tags (withData already dropped the half-applied cache: nothing of
+ *  the batch was saved). */
+export function tagsInternalError(e: unknown): Response {
+  const err = e as { message?: string };
+  return Response.json({ error: "Internal error", detail: err?.message || String(e) }, { status: 500 });
+}
 
 // Narrative layer P1: the prompt store's FIFO cap. Rows are small (≤700 chars)
 // and one per capture batch, so this is years of history; eviction drops the
@@ -107,12 +140,27 @@ export function makeTagsRoutes(): Record<string, unknown> {
 
     "/api/tags": {
       async POST(req: ApiReq) {
+        // Only a body that cannot be read is the CLIENT's fault (400 → the hook
+        // quarantines it as poison, #768). Everything past this point is ours.
+        let body: TagsBody;
+        try { body = await req.json() as TagsBody; }
+        catch (e) { return Response.json({ error: "Invalid", detail: (e as Error)?.message || String(e) }, { status: 400 }); }
+        const shape = tagsBodyError(body);
+        if (shape) return Response.json({ error: "Invalid", detail: shape }, { status: 400 });
         try {
-          const body = await req.json() as TagsBody;
           // Fail-closed cap BEFORE taking the write lock: an unbounded entries
           // array would grow data.tags + freeze every other writer (R4 bt D4).
           if (Array.isArray(body.entries) && body.entries.length > 500) {
             return Response.json({ error: "too many entries (max 500)" }, { status: 413 });
+          }
+          // Same phantom-project gate as /api/hook and /api/inject (#1199): a
+          // non-empty cwd that is relative or absent from disk must not resolve
+          // to a basename and mint a project with tags under it. A definitive
+          // 4xx — the hook parks the batch as poison where the tags stay
+          // recoverable, and Claude is told the claim never landed.
+          if (body.cwd && !isRealCwd(body.cwd)) {
+            console.warn(`[/api/tags] refusing cwd that is not an existing absolute path: '${body.cwd}'`);
+            return Response.json({ error: "Invalid", detail: "cwd must be an existing absolute path" }, { status: 400 });
           }
 
           return await withData(async (data) => {
@@ -129,7 +177,7 @@ export function makeTagsRoutes(): Record<string, unknown> {
             const batchId = typeof body.batch_id === "string" ? body.batch_id : "";
             if (batchId && (data.processedBatches || []).includes(batchId)) {
               console.log(`[/api/tags] batch replay dropped: ${batchId} (${(body.entries || []).length} entries)`);
-              return Response.json({ ok: true, count: 0, batchReplay: true, release: null, releaseIntent: null, releaseIntentConflict: null, releaseDowngrade: null, releaseBlocked: null, rollback: null, closureHints: [], closureTextWarnings: [], featureHints: [], closed: [], upcomingChanges: [], reopenHints: [], verifyHint: null, regressionHint: null, sweepHint: null, openSnapshot: [], repairedClosures: [], classHints: [] });
+              return Response.json({ ok: true, count: 0, batchReplay: true, release: null, releaseIntent: null, releaseIntentConflict: null, releaseDowngrade: null, releaseBlocked: null, rollback: null, closureHints: [], closureTextWarnings: [], featureHints: [], closed: [], upcomingChanges: [], reopenHints: [], verifyHint: null, regressionHint: null, sweepHint: null, openSnapshot: [], repairedClosures: [], classHints: [], libHints: [], rejections: [] });
             }
             // A batch carrying a release stores the release LAST: continuations
             // append tags AFTER the already-written release line (the feature-
@@ -186,13 +234,23 @@ export function makeTagsRoutes(): Record<string, unknown> {
               touchedFiles: sessionTouchedFiles(data, body.session_id, project),
               batchCommands: sessionCommandCount(data, body.session_id, project),
               sessionEdits, sessionCommands,
-              storedEntries: [], closureHints: [], closureTextWarnings: [], featureHints: [], classHints: [],
+              storedEntries: [], closureHints: [], closureTextWarnings: [], featureHints: [], classHints: [], libHints: [],
               closed: [], fixedConfirms: [], upcomingChanges: [], reopenHints: [],
               batchOpeners: [], closedInBatch: new Set(), repairedClosures: [],
               releaseResult: null, releaseIntent: null, releaseIntentConflict: null,
               releaseDowngrade: null, releaseBlocked: null, rollback: null,
             };
+            // Rejections pushed DURING this batch ride the response (#1198/#1206/
+            // F-2.46): a refused release leap, an `-(undo)` that removed nothing,
+            // a doc that failed to write — all used to wait for the next
+            // SessionStart, so within the turn the model believed they happened.
+            // By id, not by length: pushRejection caps the list at 20 with a
+            // slice, so a length delta under-counts on a full list.
+            const seenRejections = new Set((data.rejections || []).map(r => r.id));
             await runEntryBatch(batch, ctx);
+            const rejections = (data.rejections || [])
+              .filter(r => !seenRejections.has(r.id) && r.project === project)
+              .map(r => ({ reason: r.reason, detail: r.detail }));
             // Closure confirmation reached Claude? A LIVE Stop-hook POST echoes
             // every `closed` row back the same turn («✓ أُغلق #N»), so stamp the
             // stored closers `confirmed` — the UserPromptSubmit sibling reminder
@@ -277,12 +335,20 @@ export function makeTagsRoutes(): Record<string, unknown> {
               verifyHint, regressionHint, sweepHint, openSnapshot,
               repairedClosures: ctx.repairedClosures,
               classHints: ctx.classHints,
+              libHints: ctx.libHints,
+              rejections,
             });
           });
         } catch (e) {
+          // An internal throw (a stage bug, EPERM from the version writer mid-
+          // release, a full disk) is a 5xx, never a 4xx (#1054): the hook treats
+          // a definitive 4xx as poison and parks the batch in `.rejected` for
+          // good, while 5xx stays in the queue and is retried once we recover —
+          // and withData already dropped the half-applied cache, so nothing of
+          // this batch was saved.
           const err = e as { message?: string; stack?: string };
           console.error("[/api/tags] error:", err?.message, err?.stack);
-          return Response.json({ error: "Invalid", detail: err?.message || String(e) }, { status: 400 });
+          return tagsInternalError(e);
         }
       },
     },

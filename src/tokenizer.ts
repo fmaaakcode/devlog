@@ -31,6 +31,16 @@ export interface Token {
   line: number;
   children?: Token[]; // for Group tokens (condensed brackets)
   groupType?: "paren" | "bracket" | "brace" | "angle"; // what kind of group
+  // Group tokens: line of the CLOSING bracket. The closer is consumed by
+  // condensation, and reconstructing it from the deepest child line was off by
+  // one whenever the opener sat below the header or `}` shared the last
+  // child's line (#1087) — so the exact line is recorded here instead.
+  endLine?: number;
+  // Comment tokens: source offsets [start, end) so consumers can blank the
+  // comment out of the text while keeping every other character in place
+  // (stripCodeComments in code-comments.ts).
+  start?: number;
+  end?: number;
 }
 
 // Keywords per language family
@@ -90,13 +100,13 @@ export function tokenize(source: string, ext: string): Token[] {
     if (ch === "/" && i + 1 < len && source[i + 1] === "/") {
       const start = i;
       while (i < len && source[i] !== "\n") i++;
-      tokens.push({ type: TokenType.Comment, value: source.slice(start, i), line });
+      tokens.push({ type: TokenType.Comment, value: source.slice(start, i), line, start, end: i });
       continue;
     }
     if (ch === "#" && ["py", "rb", "sh"].includes(ext)) {
       const start = i;
       while (i < len && source[i] !== "\n") i++;
-      tokens.push({ type: TokenType.Comment, value: source.slice(start, i), line });
+      tokens.push({ type: TokenType.Comment, value: source.slice(start, i), line, start, end: i });
       continue;
     }
 
@@ -110,7 +120,7 @@ export function tokenize(source: string, ext: string): Token[] {
         i++;
       }
       if (i < len) i += 2; // skip */
-      tokens.push({ type: TokenType.Comment, value: source.slice(start, i), line: startLine });
+      tokens.push({ type: TokenType.Comment, value: source.slice(start, i), line: startLine, start, end: i });
       continue;
     }
 
@@ -155,6 +165,19 @@ export function tokenize(source: string, ext: string): Token[] {
         i++;
       }
       tokens.push({ type: TokenType.String, value: source.slice(start, i), line: startLine });
+      continue;
+    }
+
+    // Rust lifetimes: `'a` / `'static` / `'_` are NOT strings. A `'` opens a
+    // char literal only when the quote closes after one (possibly escaped)
+    // character; otherwise it is a lifetime label and consumes the identifier.
+    // Treating every `'` as a string start made one lifetime swallow the file
+    // up to the next `'` — every fn after it vanished from the symbol list (#1021).
+    if (ch === "'" && ext === "rs" && i + 1 < len && /[a-zA-Z_]/.test(source[i + 1]) && source[i + 2] !== "'") {
+      const start = i;
+      i++;
+      while (i < len && /[a-zA-Z0-9_]/.test(source[i])) i++;
+      tokens.push({ type: TokenType.Identifier, value: source.slice(start, i), line });
       continue;
     }
 
@@ -243,8 +266,13 @@ export function tokenize(source: string, ext: string): Token[] {
           if (["ts", "tsx", "js", "jsx"].includes(ext)) {
             isGeneric = /^[A-Z]/.test(prev.value);
           } else {
-            // C++/Rust/Go: allow lowercase type names too (vector<int>, unique_ptr<T>)
-            isGeneric = true;
+            // C++/Rust/Go: lowercase type names are legal (vector<int>,
+            // unique_ptr<T>), so the identifier alone cannot decide. Look ahead
+            // for a matching `>` reachable through type-argument characters only:
+            // a comparison `a < b {` hits `{`/`;`/`&&` first and stays an
+            // operator. "Any identifier before `<` is generic" made `if a < b`
+            // open an angle depth that swallowed every fn up to the next `>` (#1022).
+            isGeneric = looksLikeTypeArgs(source, i + 1);
           }
         }
       }
@@ -300,6 +328,32 @@ export function tokenize(source: string, ext: string): Token[] {
   return tokens;
 }
 
+// Scan from just after a `<` for the `>` that would close a type-argument list.
+// Accepts what type arguments are made of (identifiers, `::`, `,`, nested
+// `<>`, refs/pointers, lifetimes, tuples/arrays, `dyn Fn() -> T`, `+ Send`)
+// and rejects on anything that only an expression contains: statement/block
+// punctuation, assignment, string quotes, boolean operators. Capped so an
+// unclosed `<` deep in a large file cannot turn the scan quadratic.
+const TYPE_ARG_SCAN_CAP = 400;
+function looksLikeTypeArgs(source: string, from: number): boolean {
+  const end = Math.min(source.length, from + TYPE_ARG_SCAN_CAP);
+  let depth = 1;
+  let j = from;
+  while (j < end && (source[j] === " " || source[j] === "\t")) j++;
+  const first = source[j];
+  if (first === undefined) return false;
+  if (!/[A-Za-z_'(\[&*>!0-9:]/.test(first)) return false;
+  for (; j < end; j++) {
+    const c = source[j];
+    if (c === "<") { depth++; continue; }
+    if (c === ">") { depth--; if (depth === 0) return true; continue; }
+    if (c === "-" && source[j + 1] === ">") { j++; continue; }
+    if (c === "&" && source[j + 1] === "&") return false;
+    if (c === "|" || c === "{" || c === "}" || c === ";" || c === "=" || c === '"' || c === "`" || c === "-" || c === "/" || c === "%" || c === "^" || c === "?" || c === "@" || c === "#" || c === "~") return false;
+  }
+  return false;
+}
+
 function findPrevSignificant(tokens: Token[]): Token | null {
   for (let i = tokens.length - 1; i >= 0; i--) {
     if (tokens[i].type !== TokenType.Newline && tokens[i].type !== TokenType.Comment) {
@@ -345,6 +399,7 @@ function condenseType(tokens: Token[], open: TokenType, close: TokenType, groupT
         line,
         children,
         groupType,
+        endLine: t.line,
       };
     } else {
       result.push(t);

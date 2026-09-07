@@ -23,7 +23,7 @@
 // Dart/Flutter and Ruby it holds all the source.
 
 import { readdir } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { pageRankFiles, pageRankFunctions } from "./pagerank";
 import { join, extname, relative } from "node:path";
 import { extractSymbols, type Symbol as CodeSymbol } from "./symbols";
@@ -36,13 +36,29 @@ const L = <T>(en: T, ar: T): T => (currentLang() === "ar" ? ar : en);
 import { CONTENT_PATTERNS, corroboratedPatterns } from "./analyze-patterns";
 import { describeFile, filePurposeFromHeader } from "./file-purpose";
 import { softFail } from "./soft-fail";
+import { stripCodeComments } from "./code-comments";
+import { buildFileIndex, resolveImports } from "./import-resolve";
+import { extractThreads, extractSecurity } from "./analyze-signals";
+import { ANALYZE_SKIP_DIRS, isTestFile, readDevignore } from "./skip-dirs";
 
-// "test"/"tests" are skipped DELIBERATELY: the stack map charts production
-// code. "lib" is NOT in this set — it is build output only by JS convention,
-// while for Dart/Flutter and Ruby gems it is where ALL the source lives;
-// skipping it unconditionally analyzed those projects to zero files with no
-// signal (R9 F2). collectSourceFiles skips it only under a JS/TS root.
-const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "__pycache__", "target", "vendor", ".venv", "venv", "cache", "tmp", "temp", ".cache", ".tmp", "release", "debug", ".devlog", ".claude", "backup", "old", "doc", "docs", "documentation", "examples", "example", "samples", "fixtures", "test", "tests", "__tests__", "external", "third_party", "thirdparty", "3rdparty", "deps"]);
+// Walk depth. Maven/Gradle (`src/main/java/com/company/project/*.java`) and
+// Android (`app/src/main/java/com/x/y/`) put sources at depth 6; the old cap
+// of 5 returned [] for them with no signal (#1078). Directories beyond the cap
+// are now COUNTED into `skippedDirs` so the truncation is visible.
+const MAX_WALK_DEPTH = 8;
+
+// Tests, docs and samples are skipped DELIBERATELY: the stack map charts
+// production code. The set lives in skip-dirs.ts (F-5.6/F-5.39) so the file
+// count, the tree and this walker agree on the noise layer, and the
+// non-production layer covers spec/e2e/__mocks__/testdata plus the sibling
+// `*.test.ts`-style files the folder rule never saw. "lib" is NOT in the set —
+// it is build output only by JS convention, while for Dart/Flutter and Ruby
+// gems it is where ALL the source lives; skipping it unconditionally analyzed
+// those projects to zero files with no signal (R9 F2). collectSourceFiles
+// skips it only under a JS/TS root. A project's own `.devignore` is honored
+// here like in the other two walkers, so repo-specific noise (audit reports,
+// scratch folders) has one switch instead of a hardcoded name.
+const SKIP_DIRS = ANALYZE_SKIP_DIRS;
 const SOURCE_EXT = new Set(["ts", "tsx", "js", "jsx", "py", "rs", "go", "java", "kt", "cs", "cpp", "c", "cc", "cxx", "h", "hpp", "hxx", "rb", "php", "swift", "dart", "vue", "svelte", "css", "html", "htm", "cu", "cuh"]);
 
 export interface FunctionInfo {
@@ -108,24 +124,45 @@ export interface ProjectAnalysis {
   ipcMessages: IPCMessage[];
   dataTypes: DataType[];
   security: SecurityPattern[];
+  /** Directories (project-relative) not walked because they sit below MAX_WALK_DEPTH. */
+  skippedDirs: string[];
 }
 
-async function collectSourceFiles(dir: string, base: string, skipLib: boolean, depth = 0): Promise<string[]> {
-  if (depth > 5) return [];
+interface WalkStats { skippedDirs: string[] }
+
+async function collectSourceFiles(dir: string, base: string, skipLib: boolean, stats: WalkStats, depth = 0): Promise<string[]> {
+  if (depth > MAX_WALK_DEPTH) {
+    stats.skippedDirs.push(normalizeSlashes(relative(base, dir)));
+    return [];
+  }
   const files: string[] = [];
   try {
+    // .devignore (F-5.6): an empty file hides this dir from the map (below the
+    // root — an empty root file would blank the whole project), listed names
+    // hide those entries. Same rule the tree and the file count already apply.
+    const ignore = await readDevignore(dir);
+    if (ignore.skipDir && depth > 0) return [];
     const entries = await readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.name.startsWith(".")) continue;
       if (SKIP_DIRS.has(entry.name)) continue;
-      // lib/ = build output under a JS/TS root, source everywhere else (R9 F2).
-      if (skipLib && entry.name === "lib") continue;
+      if (ignore.names.has(entry.name)) continue;
+      // ROOT lib/ = compiled output of a JS/TS package that keeps its sources in
+      // src/ (R9 F2). Anywhere else — `src/lib/` (SvelteKit's mandatory home
+      // for shared code), a Next.js `lib/` beside `app/` with no src/ — it is
+      // source. Skipping any `lib` at any depth analyzed those projects to a
+      // fraction of their files with no signal (#1074, #1182).
+      if (skipLib && depth === 0 && entry.name === "lib") continue;
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
-        files.push(...await collectSourceFiles(full, base, skipLib, depth + 1));
+        files.push(...await collectSourceFiles(full, base, skipLib, stats, depth + 1));
       } else {
-        // Skip minified, bundled, and map files
+        // Skip minified, bundled, and map files — and colocated test files
+        // (`x.test.ts`, `x_test.go`, `test_x.py`), which the folder rule
+        // never saw and which charted a suite as the most-depended-on
+        // production code (F-5.6).
         if (/\.min\.\w+$|\.bundle\.\w+$|\.map$|\.d\.ts$/i.test(entry.name)) continue;
+        if (isTestFile(entry.name)) continue;
         const ext = extname(entry.name).toLowerCase().replace(".", "");
         if (SOURCE_EXT.has(ext)) files.push(full);
       }
@@ -137,10 +174,23 @@ async function collectSourceFiles(dir: string, base: string, skipLib: boolean, d
 function extractImports(content: string, ext: string): string[] {
   const imports: string[] = [];
   if (["ts", "tsx", "js", "jsx", "vue", "svelte"].includes(ext)) {
-    for (const m of content.matchAll(/(?:import|export)\s+.*?\s+from\s+['"](\.[^'"]+)['"]/g)) {
+    // The import clause is identifiers / `{…}` / `*` / `as` / commas and
+    // whitespace — including NEWLINES: `.*?` without a multiline flag never
+    // crossed a line, so every formatter-wrapped import lost its edge (#1075).
+    // Bounding the clause to those shapes (instead of `[\s\S]*?`) keeps a stray
+    // `export` far above from spanning down to an unrelated `from`. Each
+    // alternative is anchored with a lookahead so a word or a whitespace run can
+    // be consumed exactly one way — without that the clause backtracked
+    // exponentially on `export const …` blocks that never reach a `from`.
+    const LOCAL = String.raw`((?:\.|\$lib\/|@\/|~\/)[^'"\n]+)`;
+    const CLAUSE = String.raw`(?:[\w$*]+(?![\w$*])|\{[^}]*\}|,|\s+(?!\s))*?`;
+    for (const m of content.matchAll(new RegExp(String.raw`(?:^|[;}\s])(?:import|export)\s+(?:type\s+)?${CLAUSE}\s*from\s+['"]${LOCAL}['"]`, "g"))) {
       imports.push(m[1]);
     }
-    for (const m of content.matchAll(/require\s*\(\s*['"](\.[^'"]+)['"]\s*\)/g)) {
+    // Side-effect imports and dynamic import()
+    for (const m of content.matchAll(new RegExp(String.raw`(?:^|[;}\s])import\s+['"]${LOCAL}['"]`, "g"))) imports.push(m[1]);
+    for (const m of content.matchAll(new RegExp(String.raw`\bimport\s*\(\s*['"]${LOCAL}['"]\s*\)`, "g"))) imports.push(m[1]);
+    for (const m of content.matchAll(new RegExp(String.raw`require\s*\(\s*['"]${LOCAL}['"]\s*\)`, "g"))) {
       imports.push(m[1]);
     }
   } else if (ext === "py") {
@@ -148,7 +198,9 @@ function extractImports(content: string, ext: string): string[] {
       if (!m[1].startsWith("__")) imports.push(m[1]);
     }
   } else if (ext === "rs") {
-    for (const m of content.matchAll(/^(?:mod|use)\s+(?:crate::)?(\w+)/gm)) {
+    // Keep the FULL path (`crate::app::state`): the old `(\w+)` kept only the
+    // first segment, so every `use` resolved to `app` (#1080).
+    for (const m of content.matchAll(/^\s*(?:pub(?:\([^)]*\))?\s+)?(?:mod|use)\s+((?:\w+::)*\w+)/gm)) {
       imports.push(m[1]);
     }
   } else if (ext === "go") {
@@ -161,7 +213,7 @@ function extractImports(content: string, ext: string): string[] {
       imports.push(m[1]);
     }
   }
-  return imports;
+  return [...new Set(imports)];
 }
 
 function extractExports(content: string, ext: string): string[] {
@@ -244,7 +296,8 @@ function detectContext(content: string, filePath: string): "server" | "client" |
 // Ruby) it is the project's own source — this was the second filter silently
 // emptying those analyses after the SKIP_DIRS entry was fixed.
 function isLibraryFile(content: string, filePath: string, skipLib: boolean): boolean {
-  if (skipLib && /lib\//i.test(filePath)) return true;
+  // Root lib/ only — `/lib\//` anywhere also hit src/lib/, zlib/, tslib/ (#1074, #1182).
+  if (skipLib && /^lib\//.test(filePath)) return true;
   if (/vendor\/|third.?party/i.test(filePath)) return true;
   const lines = content.split("\n");
   // Very long average line = probably minified/bundled
@@ -276,12 +329,17 @@ function extractCalls(body: string, knownFunctions: Set<string>): string[] {
     "send", "close", "add", "delete", "has", "get", "set", "clear",
     "encode", "decode", "abort", "emit", "on", "off", "once", "removeListener",
   ]);
-  for (const m of body.matchAll(/\b([a-zA-Z_]\w*)\s*\(/g)) {
-    const name = m[1];
+  // `Qual::name(` / `Qual.name(` keep the qualifier when the project declares
+  // that exact symbol (`ACTIONS.selectProject`, `Type::method`); otherwise a
+  // method call still contributes its base name, which pagerank resolves
+  // against declared methods by base (`iter.next()` → `Wrap::next`). The old
+  // scan dropped every `.name(` outright, so method edges never existed (#1081).
+  for (const m of body.matchAll(/(?:\b([A-Za-z_$][\w$]*)\s*(::|\.)\s*)?\b([a-zA-Z_]\w*)\s*\(/g)) {
+    const name = m[3];
     if (skipNames.has(name)) continue;
-    // Skip if preceded by . (it's a method call, not a function call)
-    const idx = m.index || 0;
-    if (idx > 0 && body[idx - 1] === ".") continue;
+    const qual = m[1];
+    const sep = m[2];
+    if (qual && sep && knownFunctions.has(`${qual}${sep}${name}`)) { calls.add(`${qual}${sep}${name}`); continue; }
     if (knownFunctions.has(name)) calls.add(name);
   }
   return [...calls];
@@ -369,10 +427,12 @@ function describeFn(name: string, body: string, reads: string[], writes: string[
 // Table-driven (4.4): the rules live in ./analyze-patterns; this is just the
 // engine that runs them with the context filter. Add a capability = add a row
 // there, not code here.
-function detectPatterns(content: string, ctx: "server" | "client" | "shared" | "unknown"): string[] {
+function detectPatterns(content: string, ctx: "server" | "client" | "shared" | "unknown", markup = false): string[] {
   const patterns: string[] = [];
   for (const { label, re, ctx: rctx } of CONTENT_PATTERNS) {
-    if (rctx === "server-only" && ctx === "client") continue;
+    // Markup carries prose: a report page that DESCRIBES Bun.serve is not an
+    // HTTP server (it became an entry point that way, #1077).
+    if (rctx === "server-only" && (ctx === "client" || markup)) continue;
     if (rctx === "client-only" && ctx === "server") continue;
     if (re.test(content)) patterns.push(label);
   }
@@ -393,53 +453,6 @@ function extractRoutes(content: string): { method: string; path: string }[] {
     routes.push({ method: m[1].toUpperCase(), path: m[2] });
   }
   return routes;
-}
-
-// Detect threads/workers from code
-function extractThreads(content: string, filePath: string): ThreadInfo[] {
-  const threads: ThreadInfo[] = [];
-  const file = filePath.split("/").pop() || filePath;
-  const seen = new Set<string>();
-
-  // Rust: thread::spawn / tokio::spawn
-  for (const m of content.matchAll(/(?:thread::spawn|tokio::spawn|std::thread::spawn)\s*\(\s*(?:move\s*)?\|?\|?\s*\{?\s*(?:\/\/\s*(.+))?/g)) {
-    const comment = m[1]?.trim() || "";
-    const ctx = content.slice((m.index ?? 0), Math.min((m.index ?? 0) + 500, content.length));
-
-    // Detect purpose
-    let purpose = comment;
-    if (!purpose) {
-      if (/watch|notify|file.*change|debounce/i.test(ctx)) purpose = "file watcher";
-      else if (/server|listen|bind|accept|TcpListener/i.test(ctx)) purpose = "server listener";
-      else if (/refresh|interval|sleep.*loop|loop\s*\{.*sleep/is.test(ctx)) purpose = "periodic task";
-      else if (/tray|menu|system_tray/i.test(ctx)) purpose = "system tray";
-      else if (/hook|event/i.test(ctx)) purpose = "event handler";
-      else purpose = "per-request task";
-    }
-
-    // Detect if persistent (has loop/listen) or temporary
-    const isPersistent = /\bloop\s*\{|\.for_each|\.listen|\.recv|while\s|\.accept/s.test(ctx);
-    const kind = isPersistent ? L("persistent", "دائم") : L("temporary", "مؤقت");
-
-    // Deduplicate by purpose
-    const key = `${purpose}|${kind}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    threads.push({ name: `${purpose} (${kind})`, file, purpose });
-  }
-
-  // JS: new Worker
-  for (const m of content.matchAll(/new\s+Worker\s*\(\s*['"]([^'"]+)['"]/g)) {
-    threads.push({ name: m[1], file, purpose: `Web Worker (${L("persistent", "دائم")})` });
-  }
-
-  // Python: threading.Thread
-  for (const m of content.matchAll(/threading\.Thread\s*\(.*target\s*=\s*(\w+)/g)) {
-    threads.push({ name: m[1], file, purpose: "thread" });
-  }
-
-  return threads;
 }
 
 // Detect IPC messages between JS and native code.
@@ -631,88 +644,33 @@ function extractDataTypes(content: string, ext: string, filePath: string): DataT
   return types;
 }
 
-// Detect security patterns (actual usage, not string mentions)
-function extractSecurity(content: string, filePath: string): SecurityPattern[] {
-  const patterns: SecurityPattern[] = [];
-  const file = filePath.split("/").pop() || filePath;
-  const ext = file.split(".").pop()?.toLowerCase() || "";
-
-  // XSS: only in web code (JS/TS/HTML), not desktop C++
-  if (["js", "jsx", "ts", "tsx", "html", "htm", "py", "rb", "php"].includes(ext)) {
-    if (/(?:function|fn|def)\s+(?:sanitize|sanitize_?html|escape_?html|esc)\b/i.test(content) || /(?:sanitize|sanitizeHtml|escapeHtml|esc)\s*\(/i.test(content)) {
-      patterns.push({ type: "XSS Protection", location: file });
-    }
-  }
-  // Input validation via sanitize functions
-  if (/(?:function|fn|def)\s+(?:sanitize|validate|sanitize_?html)\b/i.test(content)) {
-    patterns.push({ type: "Input Validation", location: file });
-  }
-  // SSRF: URL validation functions
-  if (/(?:function|fn|def)\s+is_?safe_?url\b|allowed_?(?:hosts|origins|urls)/i.test(content)) {
-    patterns.push({ type: "SSRF Protection", location: file });
-  }
-  // CSP: only in HTML files (meta tag) or server headers
-  if (ext === "html" && /content-security-policy/i.test(content)) {
-    patterns.push({ type: "CSP", location: file });
-  }
-  if (ext !== "html" && /["']Content-Security-Policy["']/i.test(content)) {
-    patterns.push({ type: "CSP", location: file });
-  }
-  // CORS: actual header setting
-  if (/Access-Control-Allow-Origin/i.test(content) && /header|set|response/i.test(content)) {
-    patterns.push({ type: "CORS", location: file });
-  }
-  // Rate limiting: actual implementation
-  if (/(?:function|fn|class)\s+\w*(?:rate_?limit|throttle)/i.test(content) || /new\s+(?:RateLimit|Throttle)/i.test(content)) {
-    patterns.push({ type: "Rate Limiting", location: file });
-  }
-  // Input validation: actual schema/validate usage
-  if (/(?:import|require).*(?:zod|joi|yup|ajv)/i.test(content) || /\.safeParse|\.validate\s*\(/i.test(content)) {
-    patterns.push({ type: "Input Validation", location: file });
-  }
-  // Confirmation headers
-  if (/X-Confirm|x-confirm/i.test(content) && /header|get|req/i.test(content)) {
-    patterns.push({ type: "Confirmation Header", location: file });
-  }
-
-  // === Cryptography & Encryption ===
-  // E2E Encryption (AES-GCM, ChaCha20)
-  if (/AES.?256.?GCM|aes_gcm|AES_GCM|chacha20|ChaCha20Poly1305|crypto_aead/i.test(content)) {
-    patterns.push({ type: "E2E Encryption (AES-256-GCM / ChaCha20)", location: file });
-  }
-  // Key Exchange (X25519, DH, ECDH)
-  if (/X25519|x25519|crypto_box_keypair|crypto_scalarmult|ECDH|DiffieHellman/i.test(content)) {
-    patterns.push({ type: "Key Exchange (X25519)", location: file });
-  }
-  // CSPRNG
-  if (/randombytes_buf|crypto_secretbox_keygen|CSPRNG|SecureRandom|crypto_randomBytes|getrandom/i.test(content)) {
-    patterns.push({ type: "CSPRNG", location: file });
-  }
-  // Key protection (overwrite/zeroize)
-  if (/sodium_memzero|SecureZeroMemory|explicit_bzero|zeroize|key.*overwrite|overwrite.*key/i.test(content)) {
-    patterns.push({ type: "Key Overwrite Protection", location: file });
-  }
-  // AEAD Authentication
-  if (/AEAD|aead|crypto_aead_|authenticated.*encrypt|GCM|Poly1305/i.test(content)) {
-    patterns.push({ type: "AEAD Authentication", location: file });
-  }
-  // TLS/SSL
-  if (/SSL_CTX|SSL_new|openssl|rustls|TlsStream|tls::/i.test(content)) {
-    patterns.push({ type: "TLS/SSL", location: file });
-  }
-
-  return patterns;
+// Root lib/ is compiled output only when the package says so: sources live in
+// src/, or package.json points main/types/exports into lib/. A Next.js/T3 app
+// with `lib/` beside `app/` and no src/ keeps its utilities analyzed (#1074).
+function rootLibIsBuildOutput(projectPath: string): boolean {
+  const pkgPath = join(projectPath, "package.json");
+  if (!existsSync(pkgPath)) return false;
+  if (existsSync(join(projectPath, "src"))) return true;
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as Record<string, unknown>;
+    const fields = [pkg.main, pkg.types, pkg.typings, pkg.module, JSON.stringify(pkg.exports ?? ""), JSON.stringify(pkg.bin ?? "")];
+    return fields.some(v => typeof v === "string" && /(?:^|["'.\/])lib\//.test(v));
+  } catch { return false; }
 }
 
 export async function analyzeProject(projectPath: string): Promise<ProjectAnalysis> {
-  const skipLib = existsSync(join(projectPath, "package.json"));
+  const skipLib = rootLibIsBuildOutput(projectPath);
   // The detector-file exclusion below exists so DevLog's OWN pattern-detection
   // code doesn't pollute its own stack map. Anchor it to a DevLog fingerprint:
   // matched by bare substring it also hit USER files named export/analyze/…
   // (src/export.ts is a common name), silently dropping their patterns, routes
   // and security detection in every scanned project (R9 F5).
   const isSelfScan = existsSync(join(projectPath, "src", "tag-parser.ts"));
-  const sourceFiles = await collectSourceFiles(projectPath, projectPath, skipLib);
+  const walkStats: WalkStats = { skippedDirs: [] };
+  const sourceFiles = await collectSourceFiles(projectPath, projectPath, skipLib, walkStats);
+  if (walkStats.skippedDirs.length > 0) {
+    console.warn(`[analyze] ${walkStats.skippedDirs.length} director${walkStats.skippedDirs.length === 1 ? "y" : "ies"} below depth ${MAX_WALK_DEPTH} not walked in ${projectPath}: ${walkStats.skippedDirs.slice(0, 3).join(", ")}${walkStats.skippedDirs.length > 3 ? ", …" : ""}`);
+  }
   const files: FileAnalysis[] = [];
   const allRoutes: { method: string; path: string; file: string }[] = [];
   const graph: Record<string, string[]> = {};
@@ -748,14 +706,19 @@ export async function analyzeProject(projectPath: string): Promise<ProjectAnalys
     }
   }
 
-  // Second pass: deep analysis using tokenizer symbols
-  for (const { rel, ext, content, symbols, includes } of fileContents) {
-    // Skip library/vendor files
-    if (isLibraryFile(content, rel, skipLib)) continue;
+  // Import edges resolve to exact project paths (import-resolve.ts); the index
+  // covers every analyzed file so cross-directory imports find their target.
+  const analyzed = fileContents.filter(f => !isLibraryFile(f.content, f.rel, skipLib));
+  const fileIndex = buildFileIndex(analyzed.map(f => f.rel));
 
+  // Second pass: deep analysis using tokenizer symbols
+  for (const { rel, ext, content, symbols, includes } of analyzed) {
     const lines = content.split("\n");
     const lineCount = lines.length;
     totalLines += lineCount;
+    // Text signatures run over code only — comments and prose are where the
+    // false positives lived (#1076, #1077, #1079).
+    const code = stripCodeComments(content, ext);
 
     const ctx = detectContext(content, rel);
     // Drop only the literal self-import "./file". The old substring filter
@@ -778,8 +741,8 @@ export async function analyzeProject(projectPath: string): Promise<ProjectAnalys
     // Skip pattern detection for files that contain detection code (false
     // positives) — self-scan only (R9 F5, see isSelfScan above).
     const isDetector = isSelfScan && /analyze|tokenizer|symbols|export|scanner|manifest/.test(rel);   // + scanner/manifest: they name CMakeLists to DETECT it (#794)
-    const patterns = isDetector ? [] : detectPatterns(content, ctx);
-    const routes = isDetector ? [] : extractRoutes(content);
+    const patterns = isDetector ? [] : detectPatterns(code, ctx, ext === "html" || ext === "htm");
+    const routes = isDetector ? [] : extractRoutes(code);
 
     // Convert tokenizer symbols → FunctionInfo (skip type-only symbols)
     const functions: FunctionInfo[] = [];
@@ -819,9 +782,9 @@ export async function analyzeProject(projectPath: string): Promise<ProjectAnalys
 
     // Extract threads, IPC, data types, security (skip detector files)
     if (!isDetector) {
-      allThreads.push(...extractThreads(content, rel));
+      allThreads.push(...extractThreads(code, rel));
       allIPC.push(...extractIPC(content, rel));
-      allSecurity.push(...extractSecurity(content, rel));
+      allSecurity.push(...extractSecurity(code, rel));
     }
     allDataTypes.push(...extractDataTypes(content, ext, rel));
 
@@ -846,7 +809,9 @@ export async function analyzeProject(projectPath: string): Promise<ProjectAnalys
     // What the file says about itself wins; the heuristic only fills silence.
     fa.description = filePurposeFromHeader(content) || describeFile(fa);
     files.push(fa);
-    graph[rel] = imports;
+    // graph = RESOLVED edges (file → project files it imports), one identity
+    // for pagerank, importedBy and the stack file's relations (#1080, #1092, #1179).
+    graph[rel] = resolveImports(rel, imports, ext, fileIndex);
     for (const r of routes) allRoutes.push({ ...r, file: rel });
   }
 
@@ -856,16 +821,26 @@ export async function analyzeProject(projectPath: string): Promise<ProjectAnalys
   const entryPoints = files
     .filter(f => {
       const fname = f.path.split("/").pop() || "";
+      const depth = f.path.split("/").length - 1;
       // main.rs / main.py / main.go / main.c with main function
       if (/^main\.\w+$/.test(fname)) return true;
       // JS/TS: imports others but no one imports it (true entry)
       if (["ts", "tsx", "js", "jsx"].includes(fname.split(".").pop() || "")) {
         if (f.imports.length > 2 && (importedBy[f.path] || 0) === 0) return true;
       }
-      // Has Bun.serve / app.listen (server entry)
+      // Has Bun.serve / app.listen (server entry) — patterns come from the
+      // comment-stripped source, so a comment naming Bun.serve no longer counts (#1077)
       if (f.patterns.includes("HTTP Server") && f.context !== "client") return true;
-      // index.html is an entry
-      if (fname === "index.html") return true;
+      // index.html at the root is an entry. One directory down (public/, app/,
+      // assets/) it is an entry only when that directory also holds code —
+      // a folder of self-contained report pages (fable/index.html) is not (#1077)
+      if (fname === "index.html") {
+        if (depth === 0) return true;
+        if (depth === 1) {
+          const dir = f.path.slice(0, f.path.lastIndexOf("/"));
+          return fileIndex.inDir(dir).some(p => !/\.html?$/i.test(p));
+        }
+      }
       return false;
     })
     .map(f => f.path)
@@ -904,32 +879,26 @@ export async function analyzeProject(projectPath: string): Promise<ProjectAnalys
     ipcMessages: allIPC,
     dataTypes: allDataTypes,
     security: allSecurity,
+    skippedDirs: walkStats.skippedDirs,
   };
 }
 
-// Count how many files import each file, used by entry-point detection. Matches
-// on the import's BASENAME (no extension) against file basenames, and only for
-// RELATIVE imports — the old `f.path.includes(normalized)` substring match let
-// the builtin `path` mark `path-utils.ts` as imported, and `./data` collide with
-// `metadata.ts`/`update-data.ts`, corrupting the count (R4 code-quality F2).
+// Count how many files import each file, used by entry-point detection. `graph`
+// holds RESOLVED edges (importer → exact project paths, see import-resolve.ts),
+// so this is a plain in-degree. The previous basename matching credited
+// `./util/helper` to every `helper.*` in the tree and to files outside the
+// project (#1179); before that, substring matching let `path` hit
+// `path-utils.ts` (R4 code-quality F2). Targets outside `filePaths` are ignored.
 export function computeImportedBy(
   filePaths: string[],
   graph: Record<string, string[]>,
 ): Record<string, number> {
-  const baseName = (p: string) => (p.split("/").pop() ?? "").replace(/\.\w+$/, "");
-  const byBase = new Map<string, string[]>();
-  for (const p of filePaths) {
-    const b = baseName(p);
-    const arr = byBase.get(b);
-    if (arr) arr.push(p);
-    else byBase.set(b, [p]);
-  }
+  const known = new Set(filePaths);
   const importedBy: Record<string, number> = {};
-  for (const imports of Object.values(graph)) {
-    for (const imp of imports) {
-      if (!imp.startsWith(".")) continue; // skip npm packages / builtins
-      const b = baseName(imp.replace(/^\.+\//, ""));
-      for (const p of byBase.get(b) ?? []) importedBy[p] = (importedBy[p] || 0) + 1;
+  for (const [from, targets] of Object.entries(graph)) {
+    for (const p of new Set(targets)) {
+      if (p === from || !known.has(p)) continue;
+      importedBy[p] = (importedBy[p] || 0) + 1;
     }
   }
   return importedBy;

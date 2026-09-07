@@ -14,8 +14,14 @@
 // twenty edits. So the trigger is the FIRST touch of a load-bearing file in a
 // session, by either tool. To return to the plan's version, drop "Edit" from
 // GATED_TOOLS below.
+//
+// Bash/PowerShell joined the set in audit round 10 (#1038 / F-3.46): a heredoc,
+// `sed -i` or `>` rewrites the same wall, and bypass-permissions mode steers
+// the model to exactly those channels — so the gate never fired in the mode it
+// was most needed. The hook derives the written paths with shellWriteTargets
+// (src/shell-write.ts); this set only says which tools are worth asking about.
 
-export const GATED_TOOLS = new Set(["Write", "Edit", "MultiEdit"]);
+export const GATED_TOOLS = new Set(["Write", "Edit", "MultiEdit", "Bash", "PowerShell"]);
 
 /** Files this many others import are treated as load-bearing. Measured on this
  *  project: ≥5 selects 21 of 115 source files (18%) — rare enough to mean

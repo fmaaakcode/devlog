@@ -25,6 +25,7 @@ import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { appendFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { shellSegments } from "./src/shell-write.ts";
 
 const PORT = parseInt(process.env.DEVLOG_PORT || "7777", 10);
 // #893: guard messages follow DEVLOG_LANG (same inline resolution as
@@ -57,16 +58,34 @@ const tool = body.tool_name || body.tool || "";
 if (tool !== "Bash" && tool !== "PowerShell") process.exit(0);
 
 const cmd = body.tool_input?.command || "";
-// Release-ish commands. Conservative — we want to catch the moments a user-
-// visible release artifact is created, NOT every git push.
+// Release-ish commands: the moments a user-visible release artifact is created
+// — NOT every git push. Judged per SIMPLE COMMAND on its literal-stripped words
+// (#1044 / F-3.93): the verb must be the command's own first word, so `git
+// commit -m "docs: mention npm publish"`, a grep for these very patterns, an
+// audit note appended through a heredoc, or `echo cargo publish` — all of which
+// fired the guard live and were REFUSED as releases — are text, not releases.
+// Coverage (#1045 / F-3.95) now includes the commonest real shapes: pushing one
+// tag (`git push origin v3.54.0`), `--follow-tags`, a lightweight `git tag
+// v3.54.0`, flags in any order, `bun publish`, `gh release upload`.
 const RELEASE_PATTERNS = [
-  /\bgh\s+release\s+create\b/,
-  /\bgit\s+tag\s+-a\s+v\d/,
-  /\bgit\s+push\s+(?:--tags\b|.*\s--tags\b)/,
-  /\bnpm\s+publish\b/,
-  /\bcargo\s+publish\b/,
+  /^gh release (?:create|upload)\b/,
+  // git tag <…> <version> — but never list/delete/verify forms.
+  /^git tag\b(?!.*\s-(?:l|d|v|n|-list|--delete|--verify|--contains)\b)(?=.*\sv?\d+\.\d+\.\d+)/,
+  // git push … with a tags flag, a refs/tags/ ref, or a bare version token.
+  /^git push\b(?=.*(?:--tags\b|--follow-tags\b|refs\/tags\/|\sv?\d+\.\d+\.\d+(?:[-+][\w.]+)*(?:\s|$)))/,
+  /^(?:npm|bun|pnpm|yarn) publish\b/,
+  /^cargo publish\b/,
 ];
-const isRelease = RELEASE_PATTERNS.some(re => re.test(cmd));
+const WRAPPERS = new Set(["sudo", "env", "time", "nohup", "command", "exec"]);
+const isRelease = shellSegments(cmd).some(seg => {
+  const words = seg.map(t => t.stripped);
+  let i = 0;
+  while (i < words.length && (/^[A-Za-z_]\w*=/.test(words[i]) || WRAPPERS.has(words[i].toLowerCase()))) i++;
+  if (i >= words.length) return false;
+  const verb = words[i].replace(/^.*[\\/]/, "").replace(/\.exe$/i, "").toLowerCase();   // /usr/bin/git, git.exe
+  const line = [verb, ...words.slice(i + 1)].join(" ");
+  return RELEASE_PATTERNS.some(re => re.test(line));
+});
 if (!isRelease) process.exit(0);
 
 // Attribution anchor (see attributionCwd in src/hooks.ts): the session's
@@ -94,6 +113,13 @@ if (existsSync(ackFile)) {
 // daemon meant the harness killed this guard and the release command passed
 // completely UNGUARDED.
 let openItems = [];
+// Whether the open list was actually SEEN (#1046 / F-3.94, #1065 / F-4.80). A
+// daemon that is down, a non-ok reply, or a `cwd-mismatch` answer (this folder
+// is not the registered project's path) used to read as "0 open items": the
+// ack was written, a false "no tags since the last release" printed, and the
+// re-issue shipped past 27 open reports. Strict policy means unknown = refuse.
+let openKnown = false;
+let openReason = "";
 let changelogMd = "";
 let changelogCount = 0;
 {
@@ -105,8 +131,17 @@ let changelogCount = 0;
     grab(`${base}/api/changelog/since-last-release?cwd=${q}&format=md`).then(r => (r.ok ? r.text() : "")),
     grab(`${base}/api/changelog/since-last-release?cwd=${q}`).then(r => (r.ok ? r.json() : null)),
   ]);
-  if (oi.status === "fulfilled") openItems = oi.value?.items || [];
-  else log(`open-items fetch error: ${oi.reason?.message}`);
+  if (oi.status === "fulfilled" && oi.value && Array.isArray(oi.value.items)) {
+    if (oi.value.reason) { openReason = String(oi.value.reason); log(`open-items: ${openReason}`); }
+    else {
+      openKnown = true;
+      // «قادمة» never blocks a release (#1043 / F-3.92): the deferred tier is
+      // exactly the recorded ambition that must not gate shipping — the Stop
+      // hook's guard and closure-check already skip it; this one counted it.
+      openItems = oi.value.items.filter(it => !it.upcoming);
+    }
+  } else if (oi.status === "fulfilled") { openReason = oi.value === null ? "daemon replied non-ok" : "malformed reply"; log(`open-items: ${openReason}`); }
+  else { openReason = oi.reason?.name === "TimeoutError" ? "timeout" : (oi.reason?.message || "fetch failed"); log(`open-items fetch error: ${openReason}`); }
   if (md.status === "fulfilled") changelogMd = md.value || "";
   else log(`changelog fetch error: ${md.reason?.message}`);
   if (cnt.status === "fulfilled") changelogCount = cnt.value?.count || 0;
@@ -129,6 +164,24 @@ out.push("════════ DevLog Release Guard ════════
 out.push(`${L("Command", "الأمر")}: ${cmd.slice(0, 200)}`);
 out.push(`${L("Project", "المشروع")}: ${cwd}`);
 out.push("");
+
+// Unknown open list: refuse, and write NO ack — the re-issue must meet the
+// same question, not a pass. (Strict = "any open item blocks"; a list nobody
+// could read has no known count, and "0" is the one answer it cannot be.)
+if (!openKnown) {
+  const why = openReason === "cwd-mismatch"
+    ? L(`this folder is not the registered path of project '${cwd.split(/[\\/]/).pop()}' — DevLog cannot see its open items from here.`,
+        `هذا المجلد ليس المسار المسجَّل للمشروع '${cwd.split(/[\\/]/).pop()}' — لا يستطيع DevLog رؤية مفتوحاته من هنا.`)
+    : L(`the open-items list could not be read (${openReason || "no reply"}) — the daemon did not answer.`,
+        `تعذّرت قراءة قائمة المفتوح (${openReason || "لا ردّ"}) — الخادم لم يُجب.`);
+  out.push(`🛑 ${L("Refused: ", "مرفوض: ")}${why}`);
+  out.push(L("Strict policy: a release ships only against a KNOWN list of zero open items. Fix the daemon / run from the project root, then re-issue. (bypass once: DEVLOG_RELEASE_GUARD=0)",
+             "السياسة الصارمة: لا يخرج إصدار إلا بقائمة مفتوح معلومة وصفرية. أصلح الخادم / نفّذ من جذر المشروع ثم أعد الأمر. (تجاوز لمرة واحدة: DEVLOG_RELEASE_GUARD=0)"));
+  out.push("══════════════════════════════════════");
+  log(`refused: open list unknown (${openReason || "no reply"})`);
+  process.stderr.write(`${out.join("\n")}\n`);
+  process.exit(2);
+}
 
 // Strict block: ANY open item refuses the release.
 if (openItems.length > 0) {
@@ -158,12 +211,30 @@ if (openItems.length > 0) {
 }
 
 if (doctorReport?.findings?.length) {
+  const high = doctorReport.findings.filter(f => f.severity === "high");
   const med = doctorReport.findings.filter(f => f.severity === "medium");
+  if (high.length) {
+    // Each high names its own way through (#1069 / F-4.97): fix it, or record
+    // the judgement with -(rule:ack) doctor:<CODE> — never DEVLOG_RELEASE_GUARD=0.
+    out.push(L(`🛑 ${high.length} critical doctor findings:`, `🛑 ${high.length} نتائج حرجة من doctor:`));
+    for (const f of high) {
+      out.push(`  • [${f.code}] ${f.title}`);
+      for (const it of (f.items || []).slice(0, 5)) out.push(`      · ${it}`);
+      out.push(L(`      → fix it, or if deliberate record: -(rule:ack) doctor:${f.code}`, `      → أصلحها، أو إن كانت مقصودة سجّل: -(rule:ack) doctor:${f.code}`));
+    }
+    out.push("");
+  }
   if (med.length) {
     out.push(L(`⚠ ${med.length} medium doctor warnings:`, `⚠ ${med.length} تحذيرات متوسطة من doctor:`));
     for (const f of med) out.push(`  • [${f.code}] ${f.title}`);
     out.push("");
   }
+} else if (!doctorReport) {
+  // Doctor did not answer (timeout, torn JSON, spawn failure): say so instead
+  // of silently reading it as "nothing critical" (#1046 / F-3.94).
+  out.push(L("⚠ doctor did not answer within its budget — release health NOT verified this pass.",
+             "⚠ لم يُجب doctor ضمن ميزانيته — صحة الإصدار غير مفحوصة في هذا المرور."));
+  out.push("");
 }
 
 if (changelogCount > 0) {

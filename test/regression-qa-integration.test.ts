@@ -21,11 +21,11 @@
 //     port via that env var — no need to own 7777 or stop the local server.
 
 import { test, expect, describe, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
-import { asJson } from "./_helpers";
+import { asJson, scrubbedEnv } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 
 const TEST_PORT = 17777;          // isolated server — used by Bugs #2 and #4
 // Bug #1 spawns parse-tags.ts, which now follows DEVLOG_PORT (R3 P5-6) instead
@@ -74,7 +74,7 @@ function startRealServer(dataDir: string): Subprocess {
     cmd: ["bun", join("src", "server.ts")],
     cwd: PROJECT_ROOT,
     env: {
-      ...process.env,
+      ...scrubbedEnv(),
       DEVLOG_DATA_DIR: dataDir,
       DEVLOG_PORT: String(TEST_PORT),
       DEVLOG_VERSION_CHECK_DISABLED: "1",
@@ -131,7 +131,7 @@ describe("regression — Bug #2: 60-char dedup must not eat different tags", () 
   test(
     "two -(built) tags with identical 60-char prefix but different tails are both stored",
     async () => {
-      const cwd = "/virtual/sdet-test-project";
+      const cwd = mkdtempSync(join(dataDir, "sdet-test-project-"));   // real folder: /api/tags refuses a cwd absent from disk (#1199)
       // Two tags with an identical 60-char prefix but different tails.
       // The shared prefix matches the original 60-char dedup window from Bug #2.
       const PREFIX = "Added pagination to /api/users with cursor-based offsets and";
@@ -158,7 +158,7 @@ describe("regression — Bug #2: 60-char dedup must not eat different tags", () 
 
       const data: any = await asJson(await fetch(`${BASE}/api/data`));
       const builtTags = data.tags.filter(
-        (t: any) => t.project === "sdet-test-project" && t.tag === "built",
+        (t: any) => t.project === basename(cwd) && t.tag === "built",
       );
 
       // Today: only t1 survives. Expected: both.
@@ -169,7 +169,7 @@ describe("regression — Bug #2: 60-char dedup must not eat different tags", () 
   test(
     "exact duplicate -(built) tag IS rejected (real dedup must keep working)",
     async () => {
-      const cwd = "/virtual/sdet-test-project-exact";
+      const cwd = mkdtempSync(join(dataDir, "sdet-test-project-exact-"));
       const text = "feature implemented";
 
       await fetch(`${BASE}/api/tags`, {
@@ -187,7 +187,7 @@ describe("regression — Bug #2: 60-char dedup must not eat different tags", () 
 
       const data: any = await asJson(await fetch(`${BASE}/api/data`));
       const builtTags = data.tags.filter(
-        (t: any) => t.project === "sdet-test-project-exact" && t.tag === "built",
+        (t: any) => t.project === basename(cwd) && t.tag === "built",
       );
 
       // Exact dup must collapse to 1 — this is the legitimate dedup behavior
@@ -427,7 +427,7 @@ describe("regression — Bug #1: Stop-hook plan sync must not be serial", () => 
         cmd: ["bun", join("parse-tags.ts")],
         cwd: PROJECT_ROOT,
         env: {
-          ...process.env,
+          ...scrubbedEnv(),
           HOME: fakeHome,
           USERPROFILE: fakeHome,
           DEVLOG_PORT: String(HOOK_PORT),  // point the hook at our mock server

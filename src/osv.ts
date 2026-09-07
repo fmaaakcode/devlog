@@ -24,6 +24,10 @@ interface OsvBatchResponse { results?: Array<{ vulns?: Array<{ id?: string }> }>
 // All fields optional — the payload is external/untrusted, so every access is guarded.
 export interface OsvVuln {
   id?: string;
+  /** Set when the advisory was retracted. /v1/query does not return withdrawn
+   *  entries (verified live 2026-09-06 on three fresh GHSA withdrawals — T-157),
+   *  so this is defense in depth for other feeds/mirrors, not a live path. */
+  withdrawn?: string;
   summary?: string;
   aliases?: string[];
   database_specific?: { severity?: string };
@@ -109,11 +113,13 @@ export function cvssBaseScore(vector: string): number | null {
   return Math.ceil((raw - 1e-9) * 10) / 10; // CVSS roundup to one decimal
 }
 
-// One advisory's severity. GitHub-sourced OSV entries (npm/PyPI/etc.) expose
-// database_specific.severity = LOW|MODERATE|HIGH|CRITICAL — the reliable signal.
-// RustSec entries lack that label but carry a CVSS vector, so we compute the base
-// score and bucket it. Last resort "moderate" (never silently drop to "none").
-export function normalizeSeverity(vuln: OsvVuln): string {
+// One advisory's severity, when the advisory actually STATES one. GitHub-sourced
+// OSV entries (npm/PyPI/etc.) expose database_specific.severity =
+// LOW|MODERATE|HIGH|CRITICAL — the reliable signal. RustSec entries lack that
+// label but usually carry a CVSS vector, so we compute the base score and
+// bucket it. null = the advisory says nothing usable (no label, no v3 vector —
+// RUSTSEC-2026-0098/0099/0104, 2023-0005, 2025-0023 are all like that).
+export function explicitSeverity(vuln: OsvVuln): string | null {
   const ds = vuln?.database_specific?.severity;
   if (typeof ds === "string") {
     const l = ds.toLowerCase();
@@ -132,7 +138,17 @@ export function normalizeSeverity(vuln: OsvVuln): string {
   if (best >= 7) return "high";
   if (best >= 4) return "moderate";
   if (best > 0) return "low";
-  return "moderate";
+  return null;
+}
+
+// Display severity: the stated one, else "moderate" as a last resort (never
+// silently drop to "none"). The FALLBACK is a guess, so it must never win a
+// contest against a stated label — dedupByAlias uses explicitSeverity for that
+// (#1097: an unlabeled RustSec mirror's guessed "moderate" was overriding the
+// GHSA's real LOW, painting tokio@1.20.0 moderate when GitHub says every one of
+// its advisories is low).
+export function normalizeSeverity(vuln: OsvVuln): string {
+  return explicitSeverity(vuln) ?? "moderate";
 }
 
 // Advisory kind: a RustSec "unmaintained"/"unsound" notice is NOT a
@@ -157,14 +173,20 @@ export function advisoryKind(vuln: OsvVuln): "vuln" | "unmaintained" | "unsound"
 export function dedupByAlias(vulns: OsvVuln[]): OsvVuln[] {
   const groups: OsvVuln[] = [];
   const groupInfo: (string | null)[] = [];  // informational marker seen anywhere in the group
+  const groupSev: (string | null)[] = [];   // best STATED severity seen anywhere in the group
   const idToGroup = new Map<string, number>();
   for (const v of vulns) {
     const ids = [v.id, ...(Array.isArray(v.aliases) ? v.aliases : [])].filter((x): x is string => !!x);
     let gi = -1;
     for (const id of ids) { const g = idToGroup.get(id); if (g !== undefined) { gi = g; break; } }
-    if (gi === -1) { gi = groups.length; groups.push(v); groupInfo.push(null); }
-    else if (severityRank(normalizeSeverity(v)) > severityRank(normalizeSeverity(groups[gi]))) {
-      groups[gi] = v; // prefer the higher-severity representative
+    const sev = explicitSeverity(v);
+    if (gi === -1) { gi = groups.length; groups.push(v); groupInfo.push(null); groupSev.push(sev); }
+    else {
+      // Representative contest on STATED severity only: a labeled mirror always
+      // beats an unlabeled one (whose "moderate" would be a guess), and among
+      // labeled ones the higher wins. Two unlabeled: first stays.
+      const cur = groupSev[gi];
+      if (sev && (!cur || severityRank(sev) > severityRank(cur))) { groups[gi] = v; groupSev[gi] = sev; }
     }
     // The informational marker is GROUP-level truth: RustSec stamps it on ITS
     // object only, and the GHSA mirror of the same issue arrives without it
@@ -182,6 +204,12 @@ export function dedupByAlias(vulns: OsvVuln[]): OsvVuln[] {
     // (no package name → nearestFix ignores it) so advisoryKind sees the group truth.
     return { ...rep, affected: [...(Array.isArray(rep.affected) ? rep.affected : []), { database_specific: { informational: info } }] };
   });
+}
+
+/** Retracted advisories are not findings. Guarded: the field is optional and
+ *  external — only a non-empty string counts as withdrawn. */
+export function dropWithdrawn(vulns: OsvVuln[]): OsvVuln[] {
+  return vulns.filter(v => !(typeof v?.withdrawn === "string" && v.withdrawn.length > 0));
 }
 
 // Lowest "fixed" version at or above the installed one, across all ranges that
@@ -267,8 +295,10 @@ function advisorySummary(vuln: OsvVuln): string {
 //   safe   — no advisories.
 export function summarizeVulns(rawVulns: OsvVuln[], name: string, installed: string, ignoreIds?: Set<string>): PkgVuln {
   if (!Array.isArray(rawVulns) || rawVulns.length === 0) return { ...SAFE, version: installed };
-  // Collapse RustSec/GHSA mirrors of the same issue before counting (P2).
-  let vulns = dedupByAlias(rawVulns);
+  // Collapse RustSec/GHSA mirrors of the same issue before counting (P2);
+  // a withdrawn entry never joins a group (it could otherwise lend its label).
+  let vulns = dedupByAlias(dropWithdrawn(rawVulns));
+  if (vulns.length === 0) return { ...SAFE, version: installed };
   // Drop advisories the project explicitly ignores (audit.toml / .devlog/vuln-ignore),
   // matching on the id OR any alias. If nothing real is left, the package is safe.
   if (ignoreIds?.size) {

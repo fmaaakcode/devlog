@@ -28,6 +28,7 @@ function baseData(): DevLogData {
     plans: [{ id: "p1", project: "old", title: "P", steps: [] } as any],
     worklog: [{ id: "w1", project: "old" } as any],
     injections: [{ id: "i1", project: "old" } as any],
+    prompts: [{ id: "pr1", project: "old", text: "كلمات", tagIds: ["t1"], timestamp: "2026-06-01T00:00:00Z" }],
     descendants: [{ pid: 1, project: "old" } as any],
     injectionConfig: { sessionStart: true, userPromptSubmit: true, preToolUseRead: false, outdatedLibs: true, describeNudge: true, upcomingItems: true, claudeMd: false, contextMd: false },
     projectInjectionConfigs: { old: { sessionStart: false } },
@@ -77,6 +78,7 @@ describe("renameProjectData", () => {
     expect(d.plans[0].project).toBe("new");
     expect(d.worklog[0].project).toBe("new");
     expect(d.injections[0].project).toBe("new");
+    expect(d.prompts![0].project).toBe("new");   // #1017: the narrative layer used to stay behind
     expect(d.descendants[0].project).toBe("new");
     expect(d.rejections![0].project).toBe("new");
   });

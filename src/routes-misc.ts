@@ -9,6 +9,8 @@
 import { loadData, withData, cleanupMissingProjects, DATA_DIR, PORT, PLUGIN_MODE } from "./data";
 import { buildExportBundle, validateBundle, applyImportBundle, mergeArchiveBundle, type TransferBundle } from "./project-transfer";
 import { backupStores } from "./maintenance";
+import { clearArchive } from "./event-archive";
+import { clearRuleTelemetry } from "./rule-telemetry";
 import { broadcast } from "./broadcast";
 import { appendAudit } from "./audit";
 import { exportStatusMd } from "./export";
@@ -98,11 +100,19 @@ export function makeMiscRoutes(): Record<string, unknown> {
           data.projectInjectionConfigs = {};
           data.injectionConfig = {};   // no deltas = every setting on its default (#810)
           data.rejections = []; data.migrations = {};
+          data.prompts = [];   // the user's own words — the one meta.json field the wipe skipped (#1060)
           // Without this, a re-sent old tag batch after a full wipe is dropped
           // as "already-processed replay" — clear must actually mean zero.
           data.processedBatches = [];
         });
-        return Response.json({ ok: true });
+        // The stores outside meta/tags/events/plans/projects (#1060): every cold
+        // archive month + the undo trail, and the rule-telemetry JSONL. Left
+        // behind, a project re-registered under the same name inherited
+        // pre-wipe history through file-story deep=1, /api/undone and retro.
+        const archiveRows = await clearArchive();
+        const telemetryCleared = await clearRuleTelemetry();
+        broadcast("hook", {});   // the dashboard re-reads; a wiped store looked unchanged until reload
+        return Response.json({ ok: true, archiveRows, telemetryCleared });
       },
     },
 
@@ -163,24 +173,32 @@ export function makeMiscRoutes(): Record<string, unknown> {
           const name = req.params.project;
           const project = data.projects[name];
           if (!project?.path) return Response.json({ error: "Not found" }, { status: 404 });
-          await exportStatusMd(project.path, data, name); // pass the key (#F3 tail)
+          const out = await exportStatusMd(project.path, data, name); // pass the key (#F3 tail)
+          // #1058: a missing folder is refused, not conjured; say so instead of
+          // reading back a file that was never written.
+          if (!out.written) return Response.json({ error: out.reason, detail: out.detail }, { status: out.reason === "folder-missing" ? 409 : out.reason === "nothing-to-export" ? 404 : 500 });
           const md = await Bun.file(join(project.path, ".devlog", "DEVLOG_STATUS.md")).text();
           return Response.json({ ok: true, path: join(project.path, ".devlog", "DEVLOG_STATUS.md"), content: md });
         } catch { return Response.json({ error: "Failed" }, { status: 500 }); }
       },
     },
 
-    // Export all
+    // Export all. `exported` lists only projects whose mirror files were
+    // actually written; `skipped` names the rest with the reason (#1058 — the
+    // old list counted a project as exported even when the write was swallowed).
     "/api/export-all": {
       async POST() {
         const data = await loadData();
         const results: string[] = [];
+        const skipped: Array<{ name: string; reason: string }> = [];
         for (const [name, project] of Object.entries(data.projects)) {
-          if (project.path) {
-            try { await exportStatusMd(project.path, data, name); results.push(name); } catch (e) { softFail("exportStatusMd", e); }
-          }
+          if (!project.path) continue;
+          try {
+            const out = await exportStatusMd(project.path, data, name);
+            if (out.written) results.push(name); else skipped.push({ name, reason: out.reason || "unknown" });
+          } catch (e) { softFail("exportStatusMd", e); skipped.push({ name, reason: "write-failed" }); }
         }
-        return Response.json({ ok: true, exported: results });
+        return Response.json({ ok: true, exported: results, skipped });
       },
     },
   };

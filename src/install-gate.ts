@@ -7,6 +7,15 @@
 // is deliberate, possibly the USER's explicit order, and must stay possible).
 // Split like dep-check/osv: parsing + verdict here (unit-tested, no I/O); the
 // hook script owns stdin/ack-files/fetch and stays a thin shell.
+//
+// Parsing runs over shellSegments (src/shell-write.ts — import-free, so the
+// hook's load stays light): verbs and flags are judged on the literal-stripped
+// words, names are read from the words as typed. That is what makes `bun add \`
+// + newline + `react` one command (#1036), `echo "bun add x"` / a heredoc that
+// mentions `npm install` no command at all (#1172), and `bun add "react"` still
+// name react.
+
+import { isBlankTok, shellSegments, type ShellTok } from "./shell-write";
 
 export interface InstallPkg {
   name: string;
@@ -78,16 +87,30 @@ function mapCreateName(name: string): string | null {
   return name.startsWith("create-") ? name : `create-${name}`;
 }
 
-function parseScaffoldSegment(segment: string): InstallPkg | null {
+// The words a regex group (anchored at `$`) covered, paired stripped/raw: the
+// group was matched on the stripped sentence, so its word count selects the
+// same trailing words of the segment.
+function tailWords(seg: ShellTok[], group: string): ShellTok[] {
+  const n = group.trim() ? group.trim().split(/\s+/).length : 0;
+  return n ? seg.slice(seg.length - n) : [];
+}
+const sentence = (seg: ShellTok[]) => seg.map(t => t.stripped).join(" ");
+const flagOf = (t: ShellTok) => t.stripped;                                   // flags are never quoted
+const nameOf = (t: ShellTok) => t.raw.replace(/^["']+|["']+$/g, "");           // shell quoting is not part of the name
+
+function parseScaffoldSegment(seg: ShellTok[]): InstallPkg | null {
+  const text = sentence(seg);
   for (const { re, literal } of SCAFFOLDERS) {
-    const m = segment.match(re);
+    const m = text.match(re);
     if (!m) continue;
     let skipNext = false;
-    for (const rawTok of m[2].trim().split(/\s+/)) {
-      if (rawTok === "--") break; // forwarded template args, never the package
+    for (const w of tailWords(seg, m[2])) {
+      if (isBlankTok(w)) continue;          // comment / heredoc content
+      const flag = flagOf(w);
+      if (flag === "--") break; // forwarded template args, never the package
       if (skipNext) { skipNext = false; continue; }
-      if (rawTok.startsWith("-")) { skipNext = VALUE_FLAGS.has(rawTok); continue; }
-      const tok = rawTok.replace(/^["']+|["']+$/g, "");
+      if (flag.startsWith("-")) { skipNext = VALUE_FLAGS.has(flag); continue; }
+      const tok = nameOf(w);
       if (!tok || isNonRegistryToken(tok)) return null; // path/URL template — not a registry scaffold
       const parsed = parseAtToken(tok, "npm");
       if (!parsed) return null;
@@ -113,24 +136,30 @@ function isNonRegistryToken(tok: string): boolean {
 
 /** Registry packages a shell command would install, across compound commands
  *  (`cd x && bun add y`). Empty array = not an install command / nothing named
- *  (a bare `bun install` reinstall never gates). Capped at 8 like the advisor. */
+ *  (a bare `bun install` reinstall never gates).
+ *
+ *  Every named package is returned — no cap. The old `>= 8` cut (#1037 /
+ *  F-3.36) silently dropped the ninth package from the gate, the advisor call
+ *  and every message; the hook now asks the advisor in batches instead. */
 export function parseInstallCommands(cmd: string): InstallPkg[] {
   const out: InstallPkg[] = [];
   const seen = new Set<string>();
-  // Newlines are segment separators too (#762): MANAGERS anchors on `$` with no
-  // `m` flag, so a `bun add x` line that isn't the LAST line of a multi-line
-  // command was never captured — a strict-gate bypass via a plain heredoc-style
-  // compound. `\r?` keeps CRLF payloads from leaking a `\r` into the last token.
-  for (const segment of String(cmd || "").split(/&&|\|\||;|\||\r?\n/)) {
+  // Segments come from the shell tokenizer: `&&`/`||`/`;`/`|`/newline split
+  // (#762 — a `bun add x` line that isn't the LAST line used to escape the `$`
+  // anchor), `\`+newline joined into one command (#1036), quoted strings,
+  // comments and heredoc bodies blanked (#1172).
+  for (const seg of shellSegments(cmd)) {
+    const text = sentence(seg);
     for (const { re, eco } of MANAGERS) {
-      const m = segment.match(re);
+      const m = text.match(re);
       if (!m) continue;
       let skipNext = false;
-      for (const rawTok of m[1].trim().split(/\s+/)) {
-        if (out.length >= 8) return out;
+      for (const w of tailWords(seg, m[1])) {
+        if (isBlankTok(w)) continue;        // comment / heredoc content
         if (skipNext) { skipNext = false; continue; }
-        const tok = rawTok.replace(/^["']+|["']+$/g, ""); // shell quoting is not part of the name
-        if (rawTok.startsWith("-")) { skipNext = VALUE_FLAGS.has(rawTok); continue; }
+        const flag = flagOf(w);
+        if (flag.startsWith("-")) { skipNext = VALUE_FLAGS.has(flag); continue; }
+        const tok = nameOf(w);
         if (!tok || isNonRegistryToken(tok)) continue;
         const pkg = eco === "pypi" ? parsePipToken(tok) : parseAtToken(tok, eco);
         if (pkg && !seen.has(`${pkg.eco}:${pkg.name}`)) {
@@ -139,8 +168,8 @@ export function parseInstallCommands(cmd: string): InstallPkg[] {
         }
       }
     }
-    const scaffold = parseScaffoldSegment(segment);
-    if (scaffold && out.length < 8 && !seen.has(`${scaffold.eco}:${scaffold.name}`)) {
+    const scaffold = parseScaffoldSegment(seg);
+    if (scaffold && !seen.has(`${scaffold.eco}:${scaffold.name}`)) {
       seen.add(`${scaffold.eco}:${scaffold.name}`);
       out.push(scaffold);
     }
@@ -182,6 +211,9 @@ export interface GateAdvice {
   latestAgeDays?: number | null;
   installCmd?: string;
   vulnNote?: string;
+  notices?: number;
+  noticeNote?: string;
+  deprecated?: boolean;
   /** OSV verdict for the exact pinned version, when the advisor checked it (#630). */
   pin?: { version: string; vulns: number; severity?: string; message?: string; fixVersion?: string };
   /** Registry age of the pinned version, when listed (#631). */
@@ -209,6 +241,12 @@ export interface GateDecision {
    *  waiting for the next scan sweep. `text` is in the scanner's tag format so
    *  the sweep's own claim dedupes against it. */
   vulnPins: Array<{ eco: string; name: string; version: string; text: string }>;
+  /** How many of `blocks` are HARD — blind / no-clean / no-mature installs.
+   *  A hard block is never passed on re-issue (#1047 / F-3.82): the way
+   *  through is a pinned version, which is a different command. The hook
+   *  writes an override ack only when this is 0 (pins that disagree, known-
+   *  vulnerable pins, strict-mode unresolved names — all deliberate choices). */
+  hardBlocks: number;
 }
 
 const eq = (a: string, b: string) => a.replace(/^[\^~>=<\s]+/, "") === b.replace(/^[\^~>=<\s]+/, "");
@@ -219,6 +257,7 @@ export function decideGate(pkgs: InstallPkg[], advice: GateAdvice[], lang: "ar" 
   const blocks: string[] = [];
   const warns: string[] = [];
   const vulnPins: GateDecision["vulnPins"] = [];
+  let hardBlocks = 0;
   for (const pkg of pkgs) {
     const a = byName.get(pkg.name);
     if (!a) {
@@ -239,20 +278,32 @@ export function decideGate(pkgs: InstallPkg[], advice: GateAdvice[], lang: "ar" 
       continue;
     }
     const age = typeof a.suggestAgeDays === "number" ? a.suggestAgeDays : null;
+    const before = blocks.length;
+    // F-3.43: an `ok` verdict with no `suggest` (or `no-mature` with no `latest`)
+    // printed «picks undefined … x@undefined» verbatim. The advisor is expected
+    // to fill them; when it does not, say so instead of leaking the hole.
+    const suggest = a.suggest || L("(no version given)", "(بلا نسخة محددة)");
+    const latest = a.latest || "?";
+    const latestAge = typeof a.latestAgeDays === "number" ? a.latestAgeDays : "?";
     if (!pkg.version) {
       // Blind install: block whenever the advisor has something to say. A name
       // it can't resolve (not-found / unsupported-eco / invalid) passes — the
       // gate must never hold private-registry or workspace names hostage.
       if (a.verdict === "ok" || a.verdict === "ok-unverified") {
-        const cert = a.verdict === "ok"
-          ? L("OSV clean", "نظيفة OSV")
-          : L("⚠ OSV did not answer — maturity only", "⚠ لم يُجب OSV — نضج فقط");
-        blocks.push(`⛔ ${pkg.name}: ${L(`blind install (no version) — the advisor picks ${a.suggest}${age != null ? ` (${age}d old, ` : " ("}${cert}):`, `تركيب أعمى بلا نسخة — المستشار يختار ${a.suggest}${age != null ? ` (عمرها ${age} يوم، ` : " ("}${cert}):`)} ${pkg.scaffoldCmd ? `${pkg.scaffoldCmd}@${a.suggest}` : (a.installCmd || `${pkg.name}@${a.suggest}`)}`);
+        const cert = a.verdict !== "ok"
+          ? L("⚠ OSV did not answer — maturity only", "⚠ لم يُجب OSV — نضج فقط")
+          : a.deprecated
+            ? L("⛔ deprecated by its registry — no CVE, but not a clean pick", "⛔ مهجورة في سجلّها — بلا CVE لكنها ليست اختيارًا نظيفًا")
+            : a.notices
+              ? L(`⚠ no CVE, OSV notice: ${a.noticeNote || "maintenance"}`, `⚠ بلا CVE، إشعار OSV: ${a.noticeNote || "صيانة"}`)
+              : L("OSV clean", "نظيفة OSV");
+        blocks.push(`⛔ ${pkg.name}: ${L(`blind install (no version) — the advisor picks ${suggest}${age != null ? ` (${age}d old, ` : " ("}${cert}):`, `تركيب أعمى بلا نسخة — المستشار يختار ${suggest}${age != null ? ` (عمرها ${age} يوم، ` : " ("}${cert}):`)} ${pkg.scaffoldCmd ? `${pkg.scaffoldCmd}@${suggest}` : (a.installCmd || `${pkg.name}@${suggest}`)}`);
       } else if (a.verdict === "no-clean") {
         blocks.push(`⛔ ${pkg.name}: ${L(`no OSV-clean version among the matured releases (${a.vulnNote || ""}) — do not install blind; report to the user.`, `لا نسخة نظيفة ضمن الناضجات (${a.vulnNote || ""}) — لا تركيب أعمى؛ أبلغ المستخدم.`)}`);
       } else if (a.verdict === "no-mature") {
-        blocks.push(`⛔ ${pkg.name}: ${L(`nothing matured yet (newest ${a.latest} is ${a.latestAgeDays}d old) — pin a version explicitly if this is a conscious call.`, `لا نسخة ناضجة بعد (الأحدث ${a.latest} عمرها ${a.latestAgeDays} يوم) — ثبّت نسخة صراحةً إن كان قراراً واعياً.`)}`);
+        blocks.push(`⛔ ${pkg.name}: ${L(`nothing matured yet (newest ${latest} is ${latestAge}d old) — pin a version explicitly if this is a conscious call.`, `لا نسخة ناضجة بعد (الأحدث ${latest} عمرها ${latestAge} يوم) — ثبّت نسخة صراحةً إن كان قراراً واعياً.`)}`);
       }
+      hardBlocks += blocks.length - before;   // blind-install blocks are never overridable by re-issue
     } else if (a.pin && a.pin.vulns > 0) {
       // The pinned version ITSELF is known-vulnerable (#630) — say so
       // explicitly instead of only hinting that the advisor prefers another.
@@ -282,5 +333,5 @@ export function decideGate(pkgs: InstallPkg[], advice: GateAdvice[], lang: "ar" 
         "الوضع الصارم — لم يُجب OSV، هذه النسخة بلا حكم أمني؛ أعد المحاولة أو أعد الأمر نفسه حرفياً للتجاوز.")}`);
     }
   }
-  return { blocks, warns, vulnPins };
+  return { blocks, warns, vulnPins, hardBlocks };
 }

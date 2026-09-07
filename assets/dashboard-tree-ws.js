@@ -1,5 +1,5 @@
         import { data, activeProject, cachedTree, setCachedTree, setLogFilterValue, fullRenderNeeded, setFullRenderNeeded, ctxTargetPath, ctxTargetFile, setCtxTarget } from "./dashboard-state.js";
-        import { API, esc, timeStr, openedTitle, SEC_OPEN_TAGS, TOOL_FG_COLORS, uiAlert } from "./dashboard-core.js";
+        import { API, esc, timeStr, openedTitle, SEC_OPEN_TAGS, TOOL_FG_COLORS, uiAlert, httpErrorText } from "./dashboard-core.js";
         import { fetchSummary, refreshActiveView, currentVerdicts, buildTagsHtml } from "./dashboard-data.js";
         import { getProjectTags, projectFromHash, selectProject, registryUrl } from "./dashboard-project.js";
         import { extIcons, renderActivePlanCard, renderChangesCard, buildTodosHtml, fragileFilesHtml } from "./dashboard-panels.js";
@@ -75,16 +75,20 @@
 
         export async function ignoreTarget() {
             document.getElementById('ctxMenu').style.display = 'none';
-            const winPath = ctxTargetPath.replace(/\//g, '\\');
+            // Send the path as the tree holds it (forward slashes): the server's
+            // containment check resolves either separator on Windows, while the
+            // old backslash conversion arrived on a POSIX host as one opaque
+            // segment `\home\u\proj` and failed containment silently (#1153).
             const body = ctxTargetFile
-                ? { path: winPath, file: ctxTargetFile }
-                : { path: winPath };
+                ? { path: ctxTargetPath, file: ctxTargetFile }
+                : { path: ctxTargetPath };
             try {
                 const res = await fetch(`${API}/api/ignore`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body)
                 });
+                if (!res.ok) { uiAlert(await httpErrorText(res)); return; }
                 const result = await res.json();
                 if (result.ignored) {
                     // Remove element from DOM directly for instant feedback
@@ -113,8 +117,8 @@
                 setFullRenderNeeded(true);
                 setCachedTree(null);
                 refreshActiveView(true);
-            } catch {
-                // Best-effort: the tree stays stale until the next WS pulse.
+            } catch (e) {
+                uiAlert(tr("core.errorMsg", { msg: String(e?.message || e) }));
             }
         }
 
@@ -270,6 +274,9 @@
             try {
                 if (!cachedTree || fullRenderNeeded) {
                     const res = await fetch(`${API}/api/tree/${encodeURIComponent(activeProject)}`);
+                    // A JSON error body has no `tree` → rendered as «لا توجد ملفات»
+                    // instead of the failure message (#1154).
+                    if (!res.ok) throw new Error(await httpErrorText(res));
                     const { tree } = await res.json();
                     setCachedTree(tree);
                 }
@@ -357,7 +364,11 @@
                 const days = v ? (kind === 'fix' ? v.daysSinceFix : v.daysSinceLatest) : null;
                 const isFresh = kind === 'latest' && typeof days === 'number' && days < 7;
                 const dateLabel = kind === 'fix' ? tr("sec.fixReleased") : tr("sec.latestReleased");
-                const datePart = dateStr ? new Date(dateStr).toISOString().slice(0, 10) : '';
+                // toISOString THROWS on an unparsable date — one «unknown» from a
+                // registry took down the whole security card and project view
+                // (#1155). An invalid stamp simply shows no date.
+                const parsedDate = dateStr ? new Date(dateStr) : null;
+                const datePart = parsedDate && !Number.isNaN(parsedDate.getTime()) ? parsedDate.toISOString().slice(0, 10) : '';
                 const caption = (typeof days === 'number' || datePart)
                     ? `<div dir="${uiDir()}" style="margin-inline-start:22px;color:${isFresh ? 'var(--gold)' : 'var(--text2)'};font-size:0.85em;padding-top:1px">
                           ${isFresh ? '⏳ ' : ''}${esc(dateLabel)}${typeof days === 'number' ? tr("sec.daysAgoPart", { d: days }) : ''}${datePart ? ` · ${esc(datePart)}` : ''}
@@ -434,7 +445,9 @@
                 for (const s of openSec) {
                     // The content is clickable → opens the per-CVE modal for this
                     // library (parses the lib name out of the "name@ver — …" headline).
-                    const clickable = s.tag === 'security';
+                    // Agent-written dependency findings (`security:dep`) share the
+                    // «name@ver — …» headline and open the same modal (#1147).
+                    const clickable = s.tag === 'security' || s.tag === 'security:dep';
                     const sattr = clickable
                         ? ` data-action="show-vulns-tag" data-project="${esc(activeProject)}" data-content="${esc(s.content)}" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--pink);cursor:pointer;text-decoration:underline dotted"`
                         : ` style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--pink)"`;
@@ -553,9 +566,11 @@
             const cwd = (data.projects?.[project]?.path) || '';
             try {
                 const res = await fetch(`${API}/api/standards?cwd=${encodeURIComponent(cwd)}`);
+                // An error body has no categories → «الكتالوج فارغ» lied (#1154).
+                if (!res.ok) throw new Error(await httpErrorText(res));
                 body.innerHTML = renderStandards(await res.json());
-            } catch {
-                body.innerHTML = `<div class="inj-empty">${tr("std.loadFail")}</div>`;
+            } catch (e) {
+                body.innerHTML = `<div class="inj-empty">${tr("std.loadFail")} — ${esc(String(e?.message || e))}</div>`;
             }
         }
 
@@ -740,17 +755,29 @@
             const body = injState.scope === "project"
                 ? { project: injState.project, config: patch }
                 : { config: patch };
-            await fetch(`${API}/api/injection/config`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(body),
-            });
+            // A refused save re-rendered the OLD state: the switch snapped back
+            // without a word (#1154). Report the refusal, then re-render.
+            try {
+                const res = await fetch(`${API}/api/injection/config`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(body),
+                });
+                if (!res.ok) uiAlert(tr("inj.saveFail", { msg: await httpErrorText(res) }));
+            } catch (e) {
+                uiAlert(tr("inj.saveFail", { msg: String(e?.message || e) }));
+            }
             await loadInjectionConfig();
             renderInjectionPanel();
         }
 
         export async function clearInjectionOverride() {
-            await fetch(`${API}/api/injection/config?project=${encodeURIComponent(injState.project)}`, { method: "DELETE" });
+            try {
+                const res = await fetch(`${API}/api/injection/config?project=${encodeURIComponent(injState.project)}`, { method: "DELETE" });
+                if (!res.ok) uiAlert(tr("inj.saveFail", { msg: await httpErrorText(res) }));
+            } catch (e) {
+                uiAlert(tr("inj.saveFail", { msg: String(e?.message || e) }));
+            }
             await loadInjectionConfig();
             renderInjectionPanel();
         }

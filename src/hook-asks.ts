@@ -66,6 +66,9 @@ export interface AskCtx {
   markAskServed: (cmd: string) => Promise<void>;
   /** Feeds Claude and exits the hook — never returns. */
   blockContinue: (text: string) => Promise<never>;
+  /** Per-call cap under the hook's remaining wall-clock budget (#1042);
+   *  absent = the row's own cap. */
+  budget?: (wantMs: number) => number;
   /** Non-blocking notes channel (surfaces on the no-block exit path). */
   feedback: string[];
 }
@@ -173,7 +176,8 @@ export function noteAskFailure(label: string, reason: string, ctx: AskCtx): void
 async function serveHit(row: AskRow, hit: AskHit, ctx: AskCtx): Promise<"empty" | "failed"> {
   const extra = row.qs ? row.qs(hit.m, ctx) : "";
   const url = `${ctx.server}${row.path}?cwd=${encodeURIComponent(ctx.cwd)}${extra}`;
-  const r = await fetch(url, { signal: AbortSignal.timeout(row.timeoutMs ?? 10000) });
+  const want = row.timeoutMs ?? 10000;
+  const r = await fetch(url, { signal: AbortSignal.timeout(ctx.budget?.(want) ?? want) });
   if (!r.ok) {
     await ctx.log(`${row.key}: server replied ${r.status}`);
     noteAskFailure(row.label, `HTTP ${r.status}`, ctx);

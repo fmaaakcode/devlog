@@ -16,7 +16,8 @@ import { diskExists } from "./disk-probe";
 import { scanCatalog, parseRules, readAcks } from "./standards";
 import { sanitizeRuleRecord, appendRuleTelemetry } from "./rule-telemetry";
 import { ENFORCED_CATEGORIES } from "./write-checks";
-import { findDepVerdicts } from "./dep-check";
+import { findDepVerdicts, pickLocked } from "./dep-check";
+import { enumerateDepTree } from "./lockfile-tree";
 import { versionHistories, type VersionEntry } from "./registry";
 import { runProjectAudit, formatAuditReport } from "./vuln-audit";
 import { ecoMap } from "./eco-map";
@@ -250,13 +251,27 @@ export function makeStandardsRoutes(): Record<string, unknown> {
       async POST(req: ApiReq) {
         let body: Record<string, unknown> = {};
         try { body = await req.json() as Record<string, unknown>; } catch { /* malformed → stored: 0 */ }
-        const raw = Array.isArray(body.records) ? body.records.slice(0, 50) : [];
+        // #1202 (F-9.263): the surplus over the 50-record cap used to be sliced
+        // off BEFORE the count, so a 60-record burst answered `stored: 50,
+        // rejected: 0` — ten records neither stored nor accounted for, against
+        // the "per-record accounting" this route promises. The cap still holds
+        // (the client chunks, telemetry-client.ts); what falls past it is now
+        // counted under `rejected`, so stored + rejected === records.length.
+        const all = Array.isArray(body.records) ? body.records : [];
+        const raw = all.slice(0, 50);
         const clean = raw.map(sanitizeRuleRecord).filter(r => r !== null);
-        if (!clean.length) return Response.json({ ok: true, stored: 0, rejected: raw.length });
+        if (!clean.length) return Response.json({ ok: true, stored: 0, rejected: all.length });
         const cwd = typeof body.cwd === "string" ? body.cwd : "";
-        const project = cwd ? resolveProjectFor(await loadData(), cwd).name : "";
+        // #1066: stamp only a REGISTERED project. The basename fallback names
+        // whatever folder the hook ran in, and a registered project elsewhere
+        // with the same folder name inherited this folder's counters. An
+        // unregistered cwd leaves `project` off: the record stays in the trail
+        // but belongs to no project's reflection surface (ruleStats /
+        // turnGateSummary filter by exact name).
+        const resolved = cwd ? resolveProjectFor(await loadData(), cwd) : null;
+        const project = resolved?.registered ? resolved.name : "";
         await appendRuleTelemetry(clean.map(r => (project ? { ...r, project } : r)));
-        return Response.json({ ok: true, stored: clean.length, rejected: raw.length - clean.length });
+        return Response.json({ ok: true, stored: clean.length, rejected: all.length - clean.length });
       },
     },
 
@@ -283,7 +298,8 @@ export function makeStandardsRoutes(): Record<string, unknown> {
         if (!libs.length) return Response.json({ violations: [] });
         // Full version history → the matured target ("newest >7 days") so the
         // verdict can SUGGEST an exact version, both for too-fresh and behind.
-        // One history batch per ecosystem group, merged by name.
+        // One history batch per ecosystem group, keyed `eco:name` (#1109: a Tauri
+        // project's npm `uuid` and crate `uuid` are two libraries, two histories).
         const histories = new Map<string, VersionEntry[]>();
         const byEco = new Map<string, typeof libs>();
         for (const l of libs) {
@@ -292,9 +308,23 @@ export function makeStandardsRoutes(): Record<string, unknown> {
         }
         for (const [eco, group] of byEco) {
           const m = await versionHistories(eco, group.map(l => l.name));
-          for (const [n, h] of m) if (!histories.has(n)) histories.set(n, h);
+          for (const [n, h] of m) histories.set(`${eco}:${n}`, h);
         }
-        return Response.json({ violations: findDepVerdicts(libs, histories, new Date()) });
+        // What each floating spec actually resolved to (#1108): a caret locked
+        // on the matured release did not adopt the fresh one.
+        const treeVersions = new Map<string, string[]>();
+        for (const node of await enumerateDepTree(proj.path)) {
+          const k = `${node.eco}:${node.name}`;
+          const arr = treeVersions.get(k);
+          if (arr) arr.push(node.version); else treeVersions.set(k, [node.version]);
+        }
+        const locked = new Map<string, string>();
+        for (const l of libs) {
+          const k = `${l.eco}:${l.name}`;
+          const v = pickLocked(l.version, treeVersions.get(k) || []);
+          if (v) locked.set(k, v);
+        }
+        return Response.json({ violations: findDepVerdicts(libs, histories, new Date(), locked) });
       },
     },
 
