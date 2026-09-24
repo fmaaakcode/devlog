@@ -34,7 +34,7 @@ function ctxFor(data: DevLogData, entries: TagInput[]): EntryBatchCtx {
     closed: [], fixedConfirms: [], upcomingChanges: [], reopenHints: [],
     batchOpeners: [], closedInBatch: new Set(), repairedClosures: [],
     releaseResult: null, releaseIntent: null, releaseIntentConflict: null,
-    releaseDowngrade: null, releaseBlocked: null, rollback: null,
+    releaseDowngrade: null, releaseBlocked: null, releaseUnverified: null, rollback: null,
   };
 }
 

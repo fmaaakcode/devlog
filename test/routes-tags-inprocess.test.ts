@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { loadData, withData } from "../src/data";
+import { loadData, openTodos, withData } from "../src/data";
 import { makeTagsRoutes } from "../src/routes-tags";
 import { makeProjectRoutes } from "../src/routes-projects";
 import { buildRecent } from "../src/recent";
@@ -150,6 +150,40 @@ describe("the read/delete/classify siblings", () => {
     const months = await (await routes["/api/undone"].GET(req("/api/undone"))).json() as { months: string[] };
     expect(Array.isArray(months.months)).toBe(true);
     expect((await routes["/api/undone"].GET(req("/api/undone?month=bad"))).status).toBe(400);
+  });
+
+  // The × on the tasks card: a withdrawal that leaves the same record
+  // `-(dropped) #N` would, never a raw removal.
+  test("POST /api/tag/:id/drop closes an open todo as `dropped` and refuses the rest", async () => {
+    await postTags([{ tag: "todo", content: "dashboard drop candidate" }]);
+    const before = await loadData();
+    const todo = before.tags.find(t => t.project === project && t.tag === "todo" && t.content === "dashboard drop candidate");
+    expect(todo).toBeDefined();
+    expect(typeof todo?.num).toBe("number");
+    expect(openTodos(before.tags.filter(t => t.project === project)).some(t => t.id === todo?.id)).toBe(true);
+
+    const drop = (id: string) => routes["/api/tag/:id/drop"].POST(req(`/api/tag/${id}/drop`, { method: "POST" }, { id }));
+    const r = await drop(todo?.id as string);
+    expect(r.status).toBe(200);
+    const j = await r.json() as { ok: boolean; num: number | null; closerId: string };
+    expect(j.num).toBe(todo?.num as number);
+
+    const after = await loadData();
+    const projectTags = after.tags.filter(t => t.project === project);
+    // The opener row survives (history), the open set no longer lists it.
+    expect(projectTags.some(t => t.id === todo?.id)).toBe(true);
+    expect(openTodos(projectTags).some(t => t.id === todo?.id)).toBe(false);
+    const closer = projectTags.find(t => t.id === j.closerId);
+    expect(closer?.tag).toBe("dropped");
+    expect(closer?.content.startsWith(`#${todo?.num} `)).toBe(true);
+    expect(typeof closer?.cause).toBe("string");
+
+    // Second drop of the same item: it is already closed.
+    expect((await drop(todo?.id as string)).status).toBe(409);
+    // A note is not a closable item; an unknown id is 404.
+    const note = after.tags.find(t => t.project === project && t.tag === "note");
+    if (note) expect((await drop(note.id)).status).toBe(400);
+    expect((await drop("nope")).status).toBe(404);
   });
 
   test("POST /api/classify refuses an unknown type and annotates recent changes", async () => {

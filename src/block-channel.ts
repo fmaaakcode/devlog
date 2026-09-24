@@ -36,6 +36,7 @@ export const BLOCK_RULES = {
   "release-downgrade": "release-downgrade",   // the computed version would go backwards
   "release-intent": "release-intent",         // a type tag carrying an explicit version
   "release-blocked": "release-blocked",       // the server's own open-items refusal
+  "release-unverified": "release-unverified", // the server.s release-check stamp refusal (typecheck/lint/test not green for this tree)
   upcoming: "upcoming",                       // a deferral that matched nothing, or security
   "closure-divergence": "closure-divergence", // #N applied, but its text is about something else
   "closure-mismatch": "closure-mismatch",     // #N closed nothing at all

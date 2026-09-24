@@ -13,8 +13,9 @@ import type { DevLogData, PlanStep, TagEntry } from "./types";
 import {
   normalizeTagContent, assignNum, openTodos, openBugs, openSecurity, openPlanSteps,
   CLOSER_KINDS, CLOSER_FOR, OPENER_TO_CLOSER, NUMBERED_OPENABLE, singleHashNum, leadingNums, isStepClosed, inflightClosures,
-  latestCloserTs,
+  latestCloserTs, withData,
 } from "./data";
+import { discoverPostRelease, runPostRelease, describePostReleaseFailure, postReleaseDisabled } from "./post-release";
 import { applyTaskCompletion, applyTaskDrop, extractCheckboxes } from "./doc-store";
 import { writeReleaseHtml, parseVersion, parseVersionMarker, isRealVersion } from "./release-html";
 import { compareSemver, computeNextVersion, readManifestVersion, type VersionReject, type BumpType } from "./version-writer";
@@ -389,6 +390,11 @@ export interface ReleaseResult {
   // the manifest lagged instead of reading "no manifest to bump".
   rejected: { file: string; current: string; attempted: string; reason?: "downgrade" | "unsupported-layout" | "io-error"; error?: string }[];
   htmlGenerated: boolean;
+  /** Post-release steps the daemon started in the background (post-release.ts):
+   *  "snapshot" (mirror to the recorded public checkout), "build". Empty when
+   *  the project declares none or the chain is disabled — the row then keeps
+   *  the manual instruction. */
+  postRelease?: string[];
 }
 
 export interface ReleaseDowngrade { version: string; latest: string; }
@@ -656,7 +662,26 @@ export async function applyRelease(tagEntry: TagEntry, data: DevLogData, project
       console.error("[/api/tags release version-bump] error:", (e as Error)?.message);
     }
   }
-  return { version, bumped, rejected, htmlGenerated };
+  // Post-release chain (post-release.ts): mirror + build, started here under
+  // the same cwd guard as the bump and NOT awaited — a build can run for
+  // minutes and the release response must not wait for it. A failure is
+  // pushed as a rejection so it reaches the model on its next turn (the
+  // console-only path is the silence #1213 fixed), and doctor keeps raising it.
+  let postRelease: string[] = [];
+  if (projPath && effectiveCwd && pathsEqual(projPath, effectiveCwd) && !postReleaseDisabled()) {
+    const steps = discoverPostRelease(projPath);
+    postRelease = steps.map(s => s.name);
+    if (steps.length) {
+      runPostRelease(projPath, version, { steps, log: line => console.log(`[post-release ${project}] ${line}`) })
+        .then(async rec => {
+          if (rec.ok) return;
+          const detail = describePostReleaseFailure(rec);
+          await withData(async d => { pushRejection(d, project, "post-release", `v${version}: ${detail}`); }, { touches: ["meta"] });
+        })
+        .catch(e => console.error(`[post-release ${project}] chain error:`, (e as Error)?.message));
+    }
+  }
+  return { version, bumped, rejected, htmlGenerated, postRelease };
 }
 
 // ── Plan-step sync for -(done) / -(dropped) ───────────────────────────────--

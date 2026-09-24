@@ -7,6 +7,7 @@
 
 import { isNoisePath, relToProject } from "./file-story";
 import { normalizeSlashes } from "./path-utils";
+import { withShellWrites } from "./shell-write-events";
 import type { DevLogData, EventEntry, TagEntry } from "./types";
 
 // Caps: the answer is an injection into a live turn, so it competes inside the
@@ -95,7 +96,11 @@ function buildSession(sessionId: string, tags: TagEntry[], events: EventEntry[],
   const byFile = new Map<string, RecentFile>();
   let cmdTotal = 0, cmdFailed = 0;
   const failedSamples: string[] = [];
-  for (const e of events) {
+  // Shell writes ride as change rows (shell-write-events): a session that
+  // edited through sed/heredoc used to read "0 files" here. Relative targets
+  // are resolved by `rel` exactly like an absolute Edit path, so both key the
+  // same file.
+  for (const e of withShellWrites(events)) {
     if (e.type === "command") {
       cmdTotal++;
       // `ok === false` only: absent means UNKNOWN and unknown is never failure.

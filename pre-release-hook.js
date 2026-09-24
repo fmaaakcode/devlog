@@ -26,6 +26,7 @@ import { appendFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { shellSegments } from "./src/shell-write.ts";
+import { verifyStamp, releaseCheckDisabled, describeVerdict } from "./src/release-check.ts";
 
 const PORT = parseInt(process.env.DEVLOG_PORT || "7777", 10);
 // #893: guard messages follow DEVLOG_LANG (same inline resolution as
@@ -104,6 +105,28 @@ if (existsSync(ackFile)) {
       process.exit(0);
     }
   } catch { /* unreadable ack file — treat as no ack */ }
+}
+
+// Verification stamp first (release-check.ts): the project's own checks must
+// have passed against THIS tree. Cheap (a stat walk), no daemon needed, and
+// no ack is written on refusal — the re-issue meets the same question.
+if (!releaseCheckDisabled()) {
+  const verdict = await verifyStamp(cwd);
+  if (verdict.status !== "ok" && verdict.status !== "no-checks") {
+    const lines = describeVerdict(verdict, cwd, LANG === "ar");
+    const block = [
+      "════════ DevLog Release Guard ════════",
+      `${L("Command", "الأمر")}: ${cmd.slice(0, 200)}`,
+      `🛑 ${L("Refused: ", "مرفوض: ")}${lines[0]}.`,
+      lines[1],
+      L("Run it, then re-issue the command. Bypass (not recommended): DEVLOG_RELEASE_CHECK=0.",
+        "شغّله ثم أعد الأمر. تجاوز (غير مستحسن): DEVLOG_RELEASE_CHECK=0."),
+      "══════════════════════════════════════",
+    ];
+    process.stderr.write(`${block.join("\n")}\n`);
+    log(`refused: release check ${verdict.status}`);
+    process.exit(2);
+  }
 }
 
 // Strict policy: any open item blocks.

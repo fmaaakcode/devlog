@@ -31,13 +31,15 @@
 - `/api/tags/:project` — one project's tags, newest-first, `?limit=` (GET)
 - `/api/recall` — recall search behind `-(ask:search)` (GET, `?q=..&cwd=..&all=1&limit=8`): BM25 with Arabic/English normalization over the stored tags (`recall.ts`), scoped to the cwd's project unless `all=1` widens it to every project. Read-only
 - `/api/tag/:id` — delete a tag (DELETE, token-gated when enabled)
+- `/api/tag/:id/drop` — withdraw an OPEN todo / bug report from the dashboard (POST, token-gated with the same prefix): stores a `dropped` closer exactly as `-(dropped) #N` would (`#N text`, `cause` = dropped from the dashboard), so the item leaves the open set but stays in the history. 404 unknown id, 400 not a todo/bug, 409 already closed
 - `/api/undone` — tags/plan-steps removed by `-(undo)`, read on demand: no params → available months; `?month=YYYY-MM` → that month's undone rows newest-first, `?project=` filters. `-(undo)` archives the row to `archive/undone-YYYY-MM.jsonl` before removing it (and refuses to remove it if that write fails), so each record carries the original entry verbatim — restoring is a re-POST to `/api/tags` (GET)
 - `/api/classify` — classify recent change events (POST)
 
 ## Event / session capture (`routes-events.ts`)
 - `/api/hook` — hook write hot-path: record an event (POST)
-- `/api/session-summary` — roll a session's events into a summary (POST)
-- `/api/events/archive` — cold event archive, read on demand only: no params → available months; `?month=YYYY-MM` → that month's archived events, `?project=` filters. Events leaving the hot store (per-project cap eviction, retention cold-prune) are appended to monthly `archive/events-YYYY-MM.jsonl` files (closed months gzipped) instead of being deleted (GET)
+- `/api/session-summary` — roll a session's events into a summary (POST); shell writes (`sed -i`, heredoc, `>`) count as files
+- `/api/command-outcomes` — backfill `ok`/`exit_code` on a session's verdict-less command events from the transcript's `Exit code N` / `is_error` tool results, which the Stop hook collects (the PostToolUse payload carries no exit code for Bash/PowerShell). Body `{ session_id, outcomes: [{ tool_use_id, command, ok, exit_code? }] }`; matches by `tool_use_id`, then by stored command text in order; never overwrites a capture-time verdict (POST)
+- `/api/events/archive` — cold event archive, read on demand only: no params → available months; `?month=YYYY-MM` → that month's archived events, `?project=` filters. Events leaving the hot store (per-project cap eviction, retention cold-prune) are appended to monthly `archive/events-YYYY-MM.jsonl` files (closed months gzipped) instead of being deleted; a change row's full diff is also appended when the warm tier strips it (7 days), so the archive keeps what the hot store drops — the stripped copy is stamped `archived` and skipped at cold-prune (GET)
 
 ## Recall / history (`routes-changes.ts`)
 - `/api/file-story` — position memory (#486): one file's timeline — tags whose capture window touched it (`TagEntry.files`, stamped at Stop time) + its change events; `?project=&path=` required (path may be project-relative), `&deep=1` also sweeps the cold event archive (GET)

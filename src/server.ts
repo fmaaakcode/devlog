@@ -38,7 +38,7 @@ import { rename as fsRename } from "node:fs/promises";
 import { migrateMemoryDir } from "./project-rename";
 import { resolveProjectFor } from "./project-resolve";
 import { startVersionCheckLoop } from "./version-check";
-import { pruneEvents, pushEvent } from "./retention";
+import { markWarmArchived, pruneEvents, pushEvent, restorePrune, rowsToArchive } from "./retention";
 import { archiveEvents, archiveUndone } from "./event-archive";
 import { pathsEqual, isPathInside, normalizeSlashes, isRealCwd } from "./path-utils";
 import { withLockRetry } from "./fs-retry";
@@ -290,7 +290,10 @@ async function doInject(body: Record<string, unknown>) {
     // project wrote `.devlog/` INSIDE the subfolder — a phantom folder git saw
     // — while routes-events and routes-tags already wrote at the project root.
     if (effectiveCwd && type !== "PreToolUse") await exportStatusMd(effectiveCwd, data, name);
-  });
+  // Narrowed save (audited under bun test): an inject logs an event, may apply
+  // a scan to the project, and writes the injection log + shown rejections
+  // (meta). Tags and plans are read here, never written.
+  }, { touches: ["events", "projects", "meta"] });
   if (stackJob) {
     const { cwd: stackCwd, profile } = stackJob;
     generateStackMd(stackCwd, profile).catch(e => softFail("generateStackMd", e));
@@ -657,15 +660,17 @@ async function runRetention(reason: string) {
     const r = await withData(async (data) => {
       before = (data.events || []).length;
       const res = pruneEvents(data);
-      // Archive-before-delete: the store must not persist the removal until the
-      // cold archive holds the rows. On a failed archive write, put them back —
-      // they age right past the cutoff again, so the next cycle (6h) retries.
-      if (res.removedEvents.length && !(await archiveEvents(res.removedEvents))) {
-        // concat, NOT unshift(...spread): spreading tens of thousands of rows
-        // as call arguments overflows the stack (audit 2026-08-14 E4). Same
-        // order — restored rows in front, in their original relative order.
-        data.events = res.removedEvents.concat(data.events);
+      // Archive-before-delete, now archive-before-strip too: the store must not
+      // persist a removal OR a content strip until the archive holds the full
+      // rows. On a failed archive write, put everything back — it ages right
+      // past the cutoffs again, so the next cycle (6h) retries.
+      const toArchive = rowsToArchive(res);
+      if (toArchive.length && !(await archiveEvents(toArchive))) {
+        restorePrune(data, res);
         res.removed = 0;
+        res.warmed = 0;
+      } else {
+        markWarmArchived(data, res.warmedEvents);
       }
       after = data.events.length;
       return res;

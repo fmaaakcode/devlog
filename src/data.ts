@@ -118,6 +118,17 @@ const F = {
   plans:    `${DATA_DIR}/plans.json`,
   meta:     `${DATA_DIR}/meta.json`,
 } as const;
+export type StoreKey = keyof typeof F;
+const STORE_KEYS: ReadonlyArray<StoreKey> = ["projects", "tags", "events", "plans", "meta"];
+
+// Per-store content version: bumped every time a store's bytes actually change
+// on disk (a write whose hash differs from the last one) and every time the
+// cache is (re)loaded from disk. Derived from the hash guard that already runs,
+// so it is exact without any mutation-site discipline — a caller that wants to
+// memoize something over a store (the recall index over `tags`) keys on it and
+// never sees a stale view. Monotonic within the process; meaningless across.
+const storeVersions: Record<StoreKey, number> = { projects: 0, tags: 0, events: 0, plans: 0, meta: 0 };
+export function storeVersion(k: StoreKey): number { return storeVersions[k]; }
 // R3 #6: a garbled DEVLOG_PORT used to flow NaN into Bun.serve (opaque boot
 // failure) and into every list derived from PORT (e.g. allowed hosts). Fall
 // back to the default with a loud line instead — a wrong-but-running port is
@@ -282,16 +293,15 @@ const lastWritten = new Map<string, string>();
 export const WRITE_PHASES: ReadonlyArray<ReadonlyArray<keyof typeof F>> =
   [["tags", "events", "plans"], ["projects", "meta"]];
 
-async function writeAllSplit(data: DevLogData) {
-  await mkdir(DATA_DIR, { recursive: true });
-  // Compact (no `null, 2`): these are machine-read data files, not human-edited;
-  // pretty-printing inflated every write ~30-40% for no benefit (R4 devops F2).
-  const bodies: Record<keyof typeof F, string> = {
-    projects: JSON.stringify(data.projects),
-    tags:     JSON.stringify(data.tags),
-    events:   JSON.stringify(data.events),
-    plans:    JSON.stringify(data.plans),
-    meta:     JSON.stringify({
+// Compact (no `null, 2`): these are machine-read data files, not human-edited;
+// pretty-printing inflated every write ~30-40% for no benefit (R4 devops F2).
+function serializeStore(data: DevLogData, k: StoreKey): string {
+  switch (k) {
+    case "projects": return JSON.stringify(data.projects);
+    case "tags":     return JSON.stringify(data.tags);
+    case "events":   return JSON.stringify(data.events);
+    case "plans":    return JSON.stringify(data.plans);
+    case "meta":     return JSON.stringify({
       worklog: data.worklog,
       prompts: data.prompts || [],
       injections: data.injections,
@@ -301,17 +311,42 @@ async function writeAllSplit(data: DevLogData) {
       rejections: data.rejections || [], // was dropped on every write → lost on reload (#32)
       migrations: data.migrations || {},
       processedBatches: data.processedBatches || [],
-    }),
-  };
+    });
+  }
+}
+
+// Under `bun test` every narrowed save is AUDITED: the stores the caller left
+// out are serialized anyway and compared with the last write, and a drift
+// throws — so a `touches` declaration that lies fails the suite loudly instead
+// of losing a row silently in production. Costs the full stringify, which is
+// exactly what production skips; tests pay it, users don't.
+const AUDIT_TOUCHES = process.env.NODE_ENV === "test" || process.env.DEVLOG_AUDIT_TOUCHES === "1";
+
+async function writeAllSplit(data: DevLogData, touches: ReadonlySet<StoreKey> | null = null) {
+  await mkdir(DATA_DIR, { recursive: true });
   for (const phase of WRITE_PHASES) {
     await Promise.all(phase.map(async (k) => {
       const p = F[k];
-      const h = String(Bun.hash(bodies[k]));
+      if (touches && !touches.has(k)) {
+        // The caller declared it did not change this store: the whole
+        // serialize → hash → compare cost is skipped. On the hook hot path
+        // (one event per tool call) that is the 8MB tags stringify, ~85% of
+        // all saves, thrown away every time before this narrowing existed.
+        if (!AUDIT_TOUCHES) return;
+        const prev = lastWritten.get(p);
+        if (prev !== undefined && prev !== String(Bun.hash(serializeStore(data, k)))) {
+          throw new Error(`[store] undeclared write: '${k}' changed in a withData() whose touches were [${[...touches].join(", ")}] — add it to the declaration`);
+        }
+        return;
+      }
+      const body = serializeStore(data, k);
+      const h = String(Bun.hash(body));
       // Skip the I/O only when this section is byte-identical to our last write
       // AND the file is actually on disk (guards against external deletion / a
       // test that wiped DATA_DIR but kept this in-process cache).
       if (lastWritten.get(p) === h && existsSync(p)) return;
-      await atomicWrite(p, bodies[k]);
+      await atomicWrite(p, body);
+      if (lastWritten.get(p) !== h) storeVersions[k]++;
       lastWritten.set(p, h);
     }));
   }
@@ -321,7 +356,13 @@ export async function loadData(): Promise<DevLogData> {
   if (cache) return cache;
   if (!loadPromise) {
     loadPromise = readFromDisk().then(
-      d => { cache = d; loadPromise = null; return d; },
+      d => {
+        cache = d; loadPromise = null;
+        // A fresh object from disk: whatever anyone memoized over the previous
+        // cache is stale by definition, even if the bytes happen to match.
+        for (const k of STORE_KEYS) storeVersions[k]++;
+        return d;
+      },
       // readJsonOr now propagates unreadable-file errors (transient locks)
       // instead of quarantining. Clear the in-flight slot so the NEXT call
       // retries from disk — caching the rejection would wedge every future
@@ -371,6 +412,11 @@ export async function cleanupMissingProjects(data: DevLogData, exists: ExistsPro
 // Write lock to prevent concurrent writes corrupting data.json
 let writing = false;
 let pendingWrite: DevLogData | null = null;
+// Touches of the coalesced pending write: the UNION of every declaration that
+// folded into it, and `null` (= every store) as soon as one of them was
+// undeclared — a narrowed save must never shadow a wider one it absorbed.
+let pendingTouches: Set<StoreKey> | null = null;
+let pendingTouchesKnown = false;
 
 // NOT exported (audit 2026-08-13, هـ‑2): when a write is in flight this
 // coalesces into pendingWrite and returns BEFORE anything hits the disk — an
@@ -378,24 +424,36 @@ let pendingWrite: DevLogData | null = null;
 // through withData, whose FIFO lock is what actually upholds the
 // "awaited means persisted" contract; exporting this left the trap open to the
 // first new caller.
-async function saveData(data: DevLogData) {
+async function saveData(data: DevLogData, touches: ReadonlySet<StoreKey> | null = null) {
   cache = data;
   if (writing) {
+    if (!pendingWrite || !pendingTouchesKnown) { pendingTouches = touches ? new Set(touches) : null; pendingTouchesKnown = true; }
+    else if (pendingTouches && touches) for (const k of touches) pendingTouches.add(k);
+    else pendingTouches = null;
     pendingWrite = data;
     return;
   }
   writing = true;
   try {
-    await writeAllSplit(data);
+    await writeAllSplit(data, touches);
   } finally {
     writing = false;
     if (pendingWrite) {
       const next = pendingWrite;
+      const nextTouches = pendingTouches;
       pendingWrite = null;
-      await saveData(next);
+      pendingTouches = null;
+      pendingTouchesKnown = false;
+      await saveData(next, nextTouches);
     }
   }
 }
+
+/** Options for withData. `touches` narrows the save to the stores the mutator
+ *  changed; every store it leaves out is neither serialized nor hashed. Omit
+ *  it (the default) when in doubt — that is today's behavior, every store
+ *  checked. Declarations are audited under `bun test` (see writeAllSplit). */
+export interface WithDataOpts { touches?: ReadonlyArray<StoreKey> }
 
 /**
  * Serialize a load → mutate → save cycle. Use this for any handler that
@@ -408,16 +466,17 @@ async function saveData(data: DevLogData) {
  */
 let mutationLock: Promise<unknown> = Promise.resolve();
 
-export async function withData<T>(fn: (data: DevLogData) => Promise<T> | T): Promise<T> {
+export async function withData<T>(fn: (data: DevLogData) => Promise<T> | T, opts: WithDataOpts = {}): Promise<T> {
   const prev = mutationLock;
   let release: () => void = () => { /* replaced with the real resolver on the next line */ };
   mutationLock = new Promise<void>(r => { release = r; });
+  const touches = opts.touches ? new Set<StoreKey>(opts.touches) : null;
   try {
     await prev.catch(() => { /* wait for previous holder; its error is not ours */ });
     const data = await loadData();
     try {
       const result = await fn(data);
-      await saveData(data);
+      await saveData(data, touches);
       return result;
     } catch (err) {
       // #449: fn mutates the SHARED cache object in place. If it throws after

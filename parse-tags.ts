@@ -14,6 +14,8 @@ import { runResponseRows } from "./src/hook-response-rows.ts";
 import { runClosureCheck } from "./src/hook-closure-check.ts";
 import { makeBudget } from "./src/hook-budget.ts";
 import { runDemolitionWhy } from "./src/hook-demolition-why.ts";
+import { makeOutcomeCollector, type ShellOutcome } from "./src/command-outcomes.ts";
+import { postCommandOutcomes } from "./src/hook-command-outcomes.ts";
 
 // One wall-clock budget for every server call in this hook (#1042 / F-3.71):
 // each fetch gets min(its own cap, what is left), so a live-but-slow daemon
@@ -59,7 +61,12 @@ if (DEBUG) {
     if (st.size > 1_000_000) await rename(LOG_PATH, `${LOG_PATH}.1`);
   } catch { /* no log yet, or rotate failed — keep going */ }
 }
-const log = DEBUG ? (line: string) => appendFile(LOG_PATH, `${line}\n`, "utf-8") : () => { /* debug logging disabled */ };
+// Annotated, not inferred: the branches returned Promise<void> (DEBUG) vs void
+// (off), widening `log` to a union no `(line: string) => Promise<void>` param
+// accepts — invisible to `await log(...)`, red only when PASSED to a callee.
+const log: (line: string) => Promise<void> = DEBUG
+  ? (line: string) => appendFile(LOG_PATH, `${line}\n`, "utf-8")
+  : async () => { /* debug logging disabled */ };
 
 // How this hook speaks to Claude (JSON block on stdout) and which blocks count
 // as enforcement — both live in src/block-channel.ts with the key table.
@@ -120,8 +127,8 @@ function isLocalCommandEcho(userText: string): boolean {
   return /^\s*<(?:command-name|local-command-caveat|local-command-stdout)>/.test(userText);
 }
 
-async function readTurnFromTranscript(transcriptPath: string): Promise<{ text: string; turnId: string; segments: { text: string; model: string }[]; userPrompt: string }> {
-  if (!transcriptPath) return { text: "", turnId: "", segments: [], userPrompt: "" };
+async function readTurnFromTranscript(transcriptPath: string): Promise<{ text: string; turnId: string; segments: { text: string; model: string }[]; userPrompt: string; shellOutcomes: ShellOutcome[] }> {
+  if (!transcriptPath) return { text: "", turnId: "", segments: [], userPrompt: "", shellOutcomes: [] };
   try {
     const content = await readFile(transcriptPath, "utf-8");
     const lines = content.split("\n").filter(Boolean);
@@ -131,9 +138,14 @@ async function readTurnFromTranscript(transcriptPath: string): Promise<{ text: s
     // stored "why" the work tags never carry. Only type:"text" blocks are read
     // (the same filter as below), so tool results and attachments can't ride in.
     let userPrompt = "";
+    // Shell outcomes (command-outcomes.ts): the harness gives the PostToolUse
+    // hook no exit code, but the transcript's tool_result text says `Exit code
+    // N` — collected over the whole session and backfilled at finalizeTurn.
+    const outcomes = makeOutcomeCollector();
     for (const line of lines) {
       let obj: any;
       try { obj = JSON.parse(line); } catch { continue; }
+      outcomes.see(obj);
       const role = obj.message?.role || obj.role;
       const c = obj.message?.content ?? obj.content;
       if (role === "user") {
@@ -186,14 +198,14 @@ async function readTurnFromTranscript(transcriptPath: string): Promise<{ text: s
       if (seg.trim()) segments.push({ text: seg.trim(), model: String(obj.message?.model || "") });
     }
     // #760: BLANK-line join — command bodies capture until a blank line, so a \n join glued continuation prose onto a prior segment's trailing body (grown ledger key → duplicate rule:add).
-    return { text: segments.map(s => s.text).join("\n\n").trim(), turnId, segments, userPrompt };
+    return { text: segments.map(s => s.text).join("\n\n").trim(), turnId, segments, userPrompt, shellOutcomes: outcomes.outcomes() };
   } catch (e) {
     await log(`transcript read error: ${(e as Error).message}`);
-    return { text: "", turnId: "", segments: [], userPrompt: "" };
+    return { text: "", turnId: "", segments: [], userPrompt: "", shellOutcomes: [] };
   }
 }
 
-const { text: transcriptMsg, turnId, segments, userPrompt } = await readTurnFromTranscript(data.transcript_path);
+const { text: transcriptMsg, turnId, segments, userPrompt, shellOutcomes } = await readTurnFromTranscript(data.transcript_path);
 const msg = transcriptMsg || data.last_assistant_message || "";
 // Tag extraction runs per assistant message (fallback: the whole msg when the
 // transcript wasn't readable) — see readTurnFromTranscript on why a tag body
@@ -747,6 +759,9 @@ if (feedback.length) {
 async function finalizeTurn(): Promise<void> {
   if (finalized) return;
   finalized = true;
+  // Part 1.9: command verdicts from the transcript — before the summary so the
+  // digest sees them (hook-command-outcomes.ts).
+  await postCommandOutcomes(SERVER, sessionId, shellOutcomes, budget(2000), log);
   // Part 2: session summary — "3 files, +120/-30, 4 tags, 25 min".
   if (sessionId && cwd) {
     try {

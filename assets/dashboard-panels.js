@@ -56,7 +56,7 @@
             const push = (t, isOpen, isDone, isBug) => {
                 const item = (t.content || "").trim();
                 if (!item) return;
-                const entry = { text: item, num: typeof t.num === "number" ? t.num : null, ts: t.timestamp, bug: isBug };
+                const entry = { id: t.id, text: item, num: typeof t.num === "number" ? t.num : null, ts: t.timestamp, bug: isBug };
                 if (isOpen && t.upcoming) upcoming.push(entry);
                 else if (isDone) closedTodos.push(entry);
                 else if (isOpen) openTodos.push(entry);
@@ -74,6 +74,14 @@
                 ? `<span style="font-size:0.85em;color:var(--text2);font-family:'Cascadia Code',Consolas,monospace;flex-shrink:0">#${n}</span>`
                 : '';
             const notes = tags.filter(t => t.tag === "note").slice(0, 5);
+            // × on every OPEN row (current + upcoming): records `-(dropped) #N`
+            // through POST /api/tag/:id/drop — a withdrawal that keeps the number
+            // and text in the history, unlike the security card's permanent delete.
+            // Rendered only when the row has a verdict id (the no-verdict fallback
+            // lists raw tags, which carry an id too); closed rows never get one.
+            const dropBtn = (t) => t.id
+                ? `<button data-action="drop-item" data-tag-id="${esc(t.id)}" data-num="${t.num ?? ''}" data-text="${esc(t.text)}" title="${tr("todos.dropTitle")}" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:1em;padding:0 4px;flex-shrink:0;line-height:1">×</button>`
+                : '';
             let inner = '';
             if (todosTab === 'upcoming') {
                 for (const t of upcoming) {
@@ -82,6 +90,7 @@
                         ${numBadge(t.num)}
                         <span dir="auto" style="flex:1">${t.bug ? '🐛 ' : ''}${esc(t.text)}</span>
                         <span style="color:var(--text2);font-size:0.85em;flex-shrink:0">${t.ts ? daysAgoStr(t.ts) : ''}</span>
+                        ${dropBtn(t)}
                     </div>`;
                 }
                 if (!inner) inner = `<div style="font-size:0.7em;color:var(--text2)">${tr("todos.emptyUpcoming")}</div>`;
@@ -91,6 +100,7 @@
                         <span style="width:10px;height:10px;border:1.5px solid var(--border);border-radius:2px;flex-shrink:0"></span>
                         ${numBadge(t.num)}
                         <span dir="auto" style="flex:1">${esc(t.text)}</span>
+                        ${dropBtn(t)}
                     </div>`;
                 }
                 for (const t of closedTodos) {

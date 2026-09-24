@@ -10,7 +10,7 @@
 // makeTagsRoutes() takes no injected server state. Spread into server.ts's
 // routeDefs.
 
-import { loadData, withData, normalizeTagContent, openBugs, openSecurity, openTodos, openPlanSteps } from "./data";
+import { loadData, withData, storeVersion, normalizeTagContent, openBugs, openSecurity, openTodos, openPlanSteps } from "./data";
 import { tsToMs } from "./maintenance";
 import { broadcast } from "./broadcast";
 import { resolveProjectFor } from "./project-resolve";
@@ -21,7 +21,7 @@ import { CLOSURE_TAGS } from "./open-items";
 import { isRealCwd } from "./path-utils";
 import { runEntryBatch, type EntryBatchCtx, type TagInput } from "./tags-entry-stages";
 import { sessionTouchedFiles, sessionCommandCount } from "./file-story";
-import { searchTags, patternSiblings, type SimilarBug } from "./recall";
+import { searchTagsIndexed, patternSiblings, type SimilarBug } from "./recall";
 import { archiveUndone, listArchiveMonths, readUndoneMonth } from "./event-archive";
 import { currentLang } from "./i18n";
 
@@ -112,7 +112,11 @@ export function makeTagsRoutes(): Record<string, unknown> {
           const data = await loadData();
           const { name: project } = resolveProjectFor(data, url.searchParams.get("cwd") || "");
           const tags = all ? data.tags : data.tags.filter(t => t.project === project);
-          const results = searchTags(tags, q, limit);
+          // Per-scope incremental index keyed on the tags store version: the
+          // filter runs before the search, so a global index would score with
+          // cross-project df and change the ranking — one index per scope
+          // keeps the results identical to the stateless search.
+          const results = searchTagsIndexed(all ? "*" : project, storeVersion("tags"), tags, q, limit);
           return Response.json({ project, scope: all ? "all" : "project", results });
         } catch { return Response.json({ error: "Failed" }, { status: 500 }); }
       },
@@ -177,7 +181,7 @@ export function makeTagsRoutes(): Record<string, unknown> {
             const batchId = typeof body.batch_id === "string" ? body.batch_id : "";
             if (batchId && (data.processedBatches || []).includes(batchId)) {
               console.log(`[/api/tags] batch replay dropped: ${batchId} (${(body.entries || []).length} entries)`);
-              return Response.json({ ok: true, count: 0, batchReplay: true, release: null, releaseIntent: null, releaseIntentConflict: null, releaseDowngrade: null, releaseBlocked: null, rollback: null, closureHints: [], closureTextWarnings: [], featureHints: [], closed: [], upcomingChanges: [], reopenHints: [], verifyHint: null, regressionHint: null, sweepHint: null, openSnapshot: [], repairedClosures: [], classHints: [], libHints: [], rejections: [] });
+              return Response.json({ ok: true, count: 0, batchReplay: true, release: null, releaseIntent: null, releaseIntentConflict: null, releaseDowngrade: null, releaseBlocked: null, releaseUnverified: null, rollback: null, closureHints: [], closureTextWarnings: [], featureHints: [], closed: [], upcomingChanges: [], reopenHints: [], verifyHint: null, regressionHint: null, sweepHint: null, openSnapshot: [], repairedClosures: [], classHints: [], libHints: [], rejections: [] });
             }
             // A batch carrying a release stores the release LAST: continuations
             // append tags AFTER the already-written release line (the feature-
@@ -238,7 +242,7 @@ export function makeTagsRoutes(): Record<string, unknown> {
               closed: [], fixedConfirms: [], upcomingChanges: [], reopenHints: [],
               batchOpeners: [], closedInBatch: new Set(), repairedClosures: [],
               releaseResult: null, releaseIntent: null, releaseIntentConflict: null,
-              releaseDowngrade: null, releaseBlocked: null, rollback: null,
+              releaseDowngrade: null, releaseBlocked: null, releaseUnverified: null, rollback: null,
             };
             // Rejections pushed DURING this batch ride the response (#1198/#1206/
             // F-2.46): a refused release leap, an `-(undo)` that removed nothing,
@@ -328,7 +332,7 @@ export function makeTagsRoutes(): Record<string, unknown> {
               ok: true, count: (body.entries || []).length,
               release: ctx.releaseResult, releaseIntent: ctx.releaseIntent,
               releaseIntentConflict: ctx.releaseIntentConflict, releaseDowngrade: ctx.releaseDowngrade,
-              releaseBlocked: ctx.releaseBlocked, rollback: ctx.rollback,
+              releaseBlocked: ctx.releaseBlocked, releaseUnverified: ctx.releaseUnverified, releaseChecking: ctx.releaseChecking ?? null, rollback: ctx.rollback,
               closureHints: ctx.closureHints, closureTextWarnings: ctx.closureTextWarnings,
               featureHints: ctx.featureHints, closed: ctx.closed,
               upcomingChanges: ctx.upcomingChanges, reopenHints: ctx.reopenHints,
@@ -374,6 +378,42 @@ export function makeTagsRoutes(): Record<string, unknown> {
           broadcast("tags", {});
           return Response.json({ ok: true });
         });
+      },
+    },
+
+    // Drop an OPEN task from the dashboard (the × on the tasks card). Records a
+    // `dropped` closer exactly as `-(dropped) #N` would — the item leaves the
+    // open set, but its number, text and closure stay queryable (`ask:closed
+    // #N`, retro). Distinct from the DELETE above, which erases the row and is
+    // meant for a mistaken entry. Todos and bug reports only: both accept
+    // `dropped` as a closer (CLOSER_FOR); nothing else is a closable item.
+    "/api/tag/:id/drop": {
+      async POST(req: ApiReq) {
+        return await withData(async (data) => {
+          const target = data.tags.find(t => t.id === req.params.id);
+          if (!target) return Response.json({ error: "Not found" }, { status: 404 });
+          if (target.tag !== "todo" && target.tag !== "bug found") {
+            return Response.json({ error: L("Only a task or a bug report can be dropped", "الإسقاط لمهمة أو بلاغ خطأ فقط") }, { status: 400 });
+          }
+          // Numbers are per project — resolve openness inside the project's own tags.
+          const projectTags = data.tags.filter(t => t.project === target.project);
+          const open = target.tag === "todo" ? openTodos(projectTags) : openBugs(projectTags);
+          if (!open.some(t => t.id === target.id)) {
+            return Response.json({ error: L("Already closed", "مُغلق أصلًا") }, { status: 409 });
+          }
+          // `#N text` is the stored shape of a numbered closer (leadingNums picks
+          // the number, the text keeps the row readable in the log); an unnumbered
+          // opener closes by text, like a bare `-(dropped) <text>`.
+          const closer = {
+            id: crypto.randomUUID(), project: target.project, tag: "dropped",
+            content: typeof target.num === "number" ? `#${target.num} ${target.content}` : target.content,
+            timestamp: new Date().toISOString(),
+            cause: L("Dropped from the dashboard", "أُسقطت من لوحة التحكم"),
+          };
+          data.tags.push(closer);
+          broadcast("tags", {});
+          return Response.json({ ok: true, num: target.num ?? null, closerId: closer.id });
+        }, { touches: ["tags"] });
       },
     },
 

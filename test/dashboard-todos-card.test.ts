@@ -38,3 +38,32 @@ describe("dashboard todos card (#227)", () => {
     expect(assigns[0]).toContain("todosCardHtml");
   });
 });
+
+// The × on an open task row withdraws it (`-(dropped) #N`) — it must never
+// reach the permanent-delete route the security card uses, and closed rows
+// must not offer it. Source-level, like the rest of this file; dictionary
+// keys are pinned, never the rendered text (i18n insight, 2026-07-27).
+describe("dashboard todos card — drop ×", () => {
+  const body = SRC.slice(SRC.indexOf("function buildTodosHtml"), SRC.indexOf("function patchSessions"));
+
+  test("open rows (current + upcoming) render the drop button, closed rows do not", () => {
+    const rows = body.split("for (const t of ");
+    const rowFor = (list: string) => rows.find(r => r.startsWith(list)) || "";
+    expect(rowFor("openTodos)")).toContain("dropBtn(t)");
+    expect(rowFor("upcoming)")).toContain("dropBtn(t)");
+    expect(rowFor("closedTodos)")).not.toContain("dropBtn(t)");
+    expect(body).toContain('data-action="drop-item"');
+    expect(body).toContain('tr("todos.dropTitle")');
+  });
+
+  test("the drop action posts to /api/tag/:id/drop with the destructive headers, never DELETE", () => {
+    expect(SRC).toContain('"drop-item": (el, e)');
+    const fn = SRC.slice(SRC.indexOf("async function dropItem"), SRC.indexOf("function libFromSecurityTag"));
+    expect(fn).toContain("/drop`");
+    expect(fn).toContain('method: "POST"');
+    expect(fn).toContain("destructiveHeaders()");
+    expect(fn).not.toContain("DELETE");
+    expect(fn).toContain('tr("todos.dropConfirm"');
+    expect(fn).toContain("refreshActiveView(true)");
+  });
+});

@@ -109,9 +109,17 @@ wrapped in backticks or a code fence is treated as an example and ignored.
 
 **Releasing is yours; git is not.** Only when the user asks to ship: close every open
 `#N`, then just emit `-(release) <reason>` — DevLog auto-detects the bump type and
-computes the version + changelog. (Force a type with `-(release:patch|minor|major)`, a
+computes the version + changelog. The release needs a green check stamp (typecheck +
+lint + test, bound to the tree): when the stamp is missing, stale or expired the
+daemon runs `scripts/release-check.ts` itself in the background and records the
+release on its own once green (you are told in your next turn — never re-emit the
+tag or run the check by hand, and don't edit the tree meanwhile). Only a stamp that
+FAILED on this exact tree bounces back to you: fix the code, then emit again. (Force a type with `-(release:patch|minor|major)`, a
 number with `-(release) vX.Y.Z` — never both; a type tag starting with a version is
-rejected.) Never run git/GitHub; the specialist pushes and tags
+rejected.) The daemon then runs the declared post-release steps itself (mirror to
+the public checkout from `.devlog/publish.json`, then `bun run build`) in the
+background — never repeat them by hand; a failure comes back as a rejection and a
+doctor finding. Never run git/GitHub; the specialist pushes and tags
 from the DevLog release. No `-(release)` unless asked.
 
 ## Full protocol reference

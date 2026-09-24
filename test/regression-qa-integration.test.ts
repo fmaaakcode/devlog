@@ -21,7 +21,7 @@
 //     port via that env var — no need to own 7777 or stop the local server.
 
 import { test, expect, describe, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
-import { asJson, scrubbedEnv } from "./_helpers";
+import { asJson, scrubbedEnv, hookEnv } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -426,12 +426,10 @@ describe("regression — Bug #1: Stop-hook plan sync must not be serial", () => 
       const proc = spawn({
         cmd: ["bun", join("parse-tags.ts")],
         cwd: PROJECT_ROOT,
-        env: {
-          ...scrubbedEnv(),
-          HOME: fakeHome,
-          USERPROFILE: fakeHome,
-          DEVLOG_PORT: String(HOOK_PORT),  // point the hook at our mock server
-        },
+        // Shared hook pins (#1269 sweep): CLAUDE_PROJECT_DIR empty, so a daemon-
+        // inherited value can never re-route the hook; HOME/USERPROFILE redirect
+        // the plan lookup, DEVLOG_PORT points the hook at the mock server.
+        env: hookEnv(HOOK_PORT, { HOME: fakeHome, USERPROFILE: fakeHome }),
         stdin: "pipe",
         stdout: "pipe",
         stderr: "pipe",

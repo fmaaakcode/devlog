@@ -189,6 +189,17 @@ export const DICT = {
     ar: "لا توجد عناصر قادمة — أنشئ واحدًا بـ<code style=\"color:var(--gold)\">-(upcoming)</code> أو حوّل مهمة بـ<code style=\"color:var(--gold)\">-(upcoming) #N</code>",
   },
   "todos.empty": { en: "No tasks", ar: "لا توجد مهام" },
+  // × on an open row — a withdrawal (`-(dropped) #N`), never a delete.
+  "todos.dropTitle": {
+    en: "Drop this task (recorded as -(dropped) #N — the number and text stay in the history)",
+    ar: "إسقاط المهمة (تُسجَّل كـ-(dropped) #N — الرقم والنص يبقيان في السجل)",
+  },
+  "todos.dropConfirm": {
+    en: "Drop {label}?\nIt leaves the open list and is recorded as dropped; the number and text stay in the history (-(ask:closed) #N).",
+    ar: "إسقاط {label}؟\nتخرج من قائمة المفتوح وتُسجَّل كمُسقَطة؛ الرقم والنص يبقيان في السجل (-(ask:closed) #N).",
+  },
+  "todos.dropOk": { en: "Drop", ar: "أسقِط" },
+  "todos.dropFailed": { en: "Drop failed", ar: "فشل الإسقاط" },
 
   // ===== sessions / processes =====
   "sess.bgCount": { en: "{n} background processes", ar: "{n} عملية خلفية" },

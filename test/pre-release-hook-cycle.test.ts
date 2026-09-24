@@ -46,7 +46,7 @@ afterEach(() => {
 });
 
 let n = 0;
-async function runHook(command: string, opts: { sid?: string; port?: number } = {}): Promise<{ code: number; err: string; sid: string }> {
+async function runHook(command: string, opts: { sid?: string; port?: number; env?: Record<string, string> } = {}): Promise<{ code: number; err: string; sid: string }> {
   const sid = opts.sid ?? `${SID_PREFIX}${++n}`;
   const payload = JSON.stringify({
     hook_event_name: "PreToolUse", tool_name: "Bash", session_id: sid, cwd: ROOT,
@@ -55,7 +55,10 @@ async function runHook(command: string, opts: { sid?: string; port?: number } = 
   const { DEVLOG_RELEASE_GUARD: _drop, CLAUDE_PROJECT_DIR: _drop2, ...clean } = process.env as Record<string, string>;
   const proc = Bun.spawn(["bun", HOOK], {
     cwd: ROOT,
-    env: { ...clean, DEVLOG_PORT: String(opts.port ?? port), DEVLOG_LANG: "en" },
+    // The verification stamp gate (release-check.ts) is exercised by its own
+    // describe below; every other case runs with it off so the open-items
+    // briefing — what these tests pin — is what the hook reaches.
+    env: { ...clean, DEVLOG_PORT: String(opts.port ?? port), DEVLOG_LANG: "en", DEVLOG_RELEASE_CHECK: "0", ...(opts.env || {}) },
     stdin: new Response(payload),
     stdout: "pipe", stderr: "pipe",
   });
@@ -102,6 +105,35 @@ describe("release guard — what is a release command", () => {
     expect(r.code).toBe(2);
     expect(r.err).toContain("1 open items");
     expect(r.err).toContain("#1 still open");
+  });
+});
+
+describe("release guard — the verification stamp (release-check.ts)", () => {
+  // A project that declares checks and was never stamped: refused BEFORE the
+  // open-items briefing, no ack written, the runner named; a green stamp for
+  // the same tree lets the hook proceed to the ordinary briefing.
+  test("missing stamp → refused, no ack, names the runner; green stamp → briefing", async () => {
+    const { mkdtempSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { fingerprintTree, writeStamp } = await import("../src/release-check");
+    const proj = mkdtempSync(join(tmpdir(), "devlog-prh-stamp-"));
+    writeFileSync(join(proj, "package.json"), JSON.stringify({ name: "p", version: "1.0.0", scripts: { test: "bun test" } }));
+    openReply = { project: "p", items: [] };
+    const env = { CLAUDE_PROJECT_DIR: proj, DEVLOG_RELEASE_CHECK: "1" };
+    const r = await runHook("git tag v1.0.0", { env });
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("no release check has run");
+    expect(r.err).toContain("release-check.ts");
+    expect(r.err).not.toContain("changelog");
+    expect(ackFor(r.sid)).toBe(false);
+
+    await writeStamp(proj, { fingerprint: fingerprintTree(proj), at: new Date().toISOString(), ok: true, steps: [] });
+    const r2 = await runHook("git tag v1.0.0", { env, sid: r.sid });
+    expect(r2.code).toBe(2);                         // the ordinary briefing (changelog + ack)
+    expect(r2.err).not.toContain("release check");
+    expect(r2.err).toContain("changelog");
+    expect(ackFor(r2.sid)).toBe(true);
+    rmSync(proj, { recursive: true, force: true });
   });
 });
 

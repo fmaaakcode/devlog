@@ -73,6 +73,8 @@ export function serverEnv(dataDir: string, port: number, extraEnv: Record<string
     ...scrubbedEnv(),
     DEVLOG_DATA_DIR: dataDir, DEVLOG_PORT: String(port), DEVLOG_LANG: "en",
     DEVLOG_VERSION_CHECK_DISABLED: "1", DEVLOG_VULN_CHECK_DISABLED: "1", DEVLOG_REGISTRY_CHECK_DISABLED: "1",
+    // A spawned daemon must never start a real build/mirror from a temp project.
+    DEVLOG_POST_RELEASE_DISABLED: "1",
     ...extraEnv,
   };
 }

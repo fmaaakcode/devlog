@@ -9,7 +9,7 @@
 // project, then spawns the hook itself with a `-(release)` response on stdin.
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { asJson, stopServer, scrubbedEnv } from "./_helpers";
+import { asJson, stopServer, scrubbedEnv, hookEnv } from "./_helpers";
 import { spawn, type Subprocess } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -44,7 +44,12 @@ async function runHook(cwd: string, message: string): Promise<{ code: number; ou
   const proc = spawn({
     cmd: ["bun", "parse-tags.ts"],
     cwd: PROJECT_ROOT,
-    env: { ...scrubbedEnv(), DEVLOG_PORT: String(TEST_PORT), DEVLOG_LANG: "en", DEVLOG_DEBUG: "0" },
+    // The shared pins (hookEnv): CLAUDE_PROJECT_DIR empty above all — a
+    // daemon started from a Claude session inherits the real repo's value,
+    // and this local copy without the pin attributed the test's release to
+    // D:\helper itself, where the stamp verdict decided the outcome (found by
+    // the daemon-run release check, 2026-09-21).
+    env: hookEnv(TEST_PORT),
     stdin: "pipe", stdout: "pipe", stderr: "pipe",
   });
   proc.stdin.write(JSON.stringify({ cwd, session_id: "hook-json-e2e", last_assistant_message: message }));

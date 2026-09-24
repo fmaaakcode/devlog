@@ -16,6 +16,7 @@
 // applies the once-per-session/once-per-file gating, and logs the injection.
 
 import type { DevLogData, InjectionConfig, ProjectProfile, TagEntry, InjectionEntry } from "./types";
+import { takeReleaseAnnouncement } from "./release-autocheck";
 import {
   DEFAULT_INJECTION_CONFIG, CLOSURE_TAGS,
   openTodos, openBugs, openSecurity, openPlanSteps, openOutdatedLibs, type OpenPlanStep,
@@ -505,6 +506,10 @@ export function buildContext(
         parts.push(...summary);
       }
     }
+    // A release the daemon finished on the model's behalf (release-autocheck.ts):
+    // said once, first, then never again — the model is otherwise waiting for it.
+    const released = takeReleaseAnnouncement(profile.path, currentLang() === "ar");
+    if (released) parts.unshift(released);
     if (!parts.length) return "";
     return ["<devlog-context>", ...parts, "</devlog-context>"].join("\n");
   }

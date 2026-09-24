@@ -38,6 +38,11 @@ function capContent(s: unknown): string | undefined {
 // the marker keeps the truncation visible to every reader.
 const capField = (s: unknown): string => capContent(s) ?? "";
 
+/** The exact text a shell command is stored with (secrets blanked, capped) —
+ *  exported so the transcript outcome backfill can match an event by text
+ *  when the hook payload carried no tool_use_id. */
+export const storedCommandText = (command: string): string => capField(redactSecrets(command || ""));
+
 /**
  * Attribution cwd for a hook request: prefer the session's PROJECT DIR (the
  * X-DevLog-Project-Dir header, filled from CLAUDE_PROJECT_DIR by the sending
@@ -61,6 +66,9 @@ export function attributionCwd(
 interface HookBody {
   hook_event_name?: string;
   tool_name?: string;
+  /** PostToolUse: the transcript's tool_use block id — lets the Stop-time
+   *  outcome backfill (command-outcomes.ts) pair a command with its result. */
+  tool_use_id?: string;
   cwd?: string;
   session_id?: string;
   source?: string;
@@ -130,8 +138,9 @@ const shellCommand: EventPatch = body => {
   // The verdict is derived from the RAW command (it classifies the shape);
   // only the stored text has its secret values blanked (F-3.5).
   return {
-    tool: body.tool_name || "", type: "command", command: capField(redactSecrets(command)),
+    tool: body.tool_name || "", type: "command", command: storedCommandText(command),
     description: capField(body.tool_input?.description),
+    ...(typeof body.tool_use_id === "string" && body.tool_use_id && { tool_use_id: body.tool_use_id }),
     ...(outcome.exit_code !== undefined && { exit_code: outcome.exit_code }),
     ...(outcome.ok !== undefined && { ok: outcome.ok }),
   };

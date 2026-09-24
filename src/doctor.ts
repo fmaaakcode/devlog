@@ -5,13 +5,15 @@
  *         bun src/doctor.ts --json [path]    machine-readable
  */
 import { existsSync, realpathSync } from "node:fs";
-import { readdir } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { resolve, basename } from "node:path";
 import { normalizeSlashes } from "./path-utils";
 import { spawnSync } from "./spawn";
 import { openTodos, openBugs, openSecurity, isStepClosed } from "./data";
 import { checkInvariants, type Finding } from "./doctor-invariants";
 import { isAcked } from "./standards-ack";
+import { snapshotLag, type PublishRecord } from "./publish-snapshot";
+import { readPostReleaseRecord, describePostReleaseFailure, POST_RELEASE_REL } from "./post-release";
 import { currentLang } from "./i18n";
 import type { DevLogData, TagEntry, PlanEntry } from "./types";
 
@@ -392,6 +394,51 @@ async function diagnose(projectPath: string): Promise<DoctorReport> {
   // AUTOMATE this (integrityWarning): a doctor nobody remembers to type is a
   // doctor that never sees the patient.
   findings.push(...checkInvariants(tags, plans));
+
+  // ─── Check 14: public snapshot lag ─────────────────────────────
+  // Only for a project that publishes a mirror (scripts/publish-snapshot.ts
+  // records the target in .devlog/publish.json). The late alarm behind the
+  // release gate: the mirror's manifest version fell behind this tree's.
+  let publishRecord: PublishRecord | null = null;
+  const publishFile = resolve(absPath, ".devlog", "publish.json");
+  if (existsSync(publishFile)) {
+    try {
+      const parsed = JSON.parse(await readFile(publishFile, "utf8"));
+      if (parsed && typeof parsed.target === "string") publishRecord = parsed as PublishRecord;
+    } catch { /* torn record — treated as no record */ }
+  }
+  const lag = snapshotLag(absPath, publishRecord);
+  if (lag) {
+    findings.push({
+      severity: "medium",
+      code: "SNAPSHOT_LAG",
+      title: L(`Public snapshot behind: ${lag.target} vs ${lag.source} here`, `اللقطة العامة متأخرة: ${lag.target} مقابل ${lag.source} هنا`),
+      detail: L(`${lag.targetDir} was last mirrored at another version. Re-run: bun scripts/publish-snapshot.ts --to ${lag.targetDir}`,
+                `${lag.targetDir} آخر مرآة له كانت عند نسخة أخرى. أعد التشغيل: bun scripts/publish-snapshot.ts --to ${lag.targetDir}`),
+    });
+  }
+
+  // The daemon's own post-release chain (post-release.ts) failed or never
+  // finished: the release is recorded but the mirror/build it promised is not
+  // there. The rejection reaches the model once; this keeps it visible.
+  const post = await readPostReleaseRecord(absPath);
+  if (post && post.ok === false) {
+    findings.push({
+      severity: "high",
+      code: "POST_RELEASE_FAILED",
+      title: L(`Post-release chain failed for v${post.version}`, `فشلت خطوات ما بعد الإصدار v${post.version}`),
+      detail: L(`${describePostReleaseFailure(post)}\nFix the cause and re-run the step by hand, then delete ${POST_RELEASE_REL} or ship the next release.`,
+                `${describePostReleaseFailure(post)}\nعالج السبب وأعد الخطوة يدويًا، ثم احذف ${POST_RELEASE_REL} أو اشحن الإصدار التالي.`),
+    });
+  } else if (post && post.ok === undefined && Date.now() - Date.parse(post.startedAt) > 30 * 60 * 1000) {
+    findings.push({
+      severity: "medium",
+      code: "POST_RELEASE_STUCK",
+      title: L(`Post-release chain for v${post.version} never finished`, `خطوات ما بعد الإصدار v${post.version} لم تكتمل`),
+      detail: L(`Started ${post.startedAt}, ${post.steps.length} step(s) recorded, no final verdict — the daemon probably restarted mid-chain. Re-run the missing steps by hand.`,
+                `بدأت ${post.startedAt}، سُجّلت ${post.steps.length} خطوة بلا حكم نهائي — الأرجح أن الـdaemon أُعيد إقلاعه أثناءها. أعد الخطوات الناقصة يدويًا.`),
+    });
+  }
 
   // Acknowledged highs (#1069 / F-4.97): `-(rule:ack) doctor:<CODE>` in the
   // project records a deliberate judgement on a finding the protocol cannot

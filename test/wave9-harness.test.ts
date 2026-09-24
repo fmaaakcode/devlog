@@ -47,7 +47,7 @@ describe("spawned-process environment is scrubbed of the shell's DEVLOG_* (#1165
       const env = serverEnv("D:/data", 17999, { DEVLOG_LANG: "ar" });
       const devlogKeys = Object.keys(env).filter(k => k.startsWith("DEVLOG_")).sort();
       expect(devlogKeys).toEqual([
-        "DEVLOG_DATA_DIR", "DEVLOG_LANG", "DEVLOG_PORT",
+        "DEVLOG_DATA_DIR", "DEVLOG_LANG", "DEVLOG_PORT", "DEVLOG_POST_RELEASE_DISABLED",
         "DEVLOG_REGISTRY_CHECK_DISABLED", "DEVLOG_VERSION_CHECK_DISABLED", "DEVLOG_VULN_CHECK_DISABLED",
       ]);
       expect(env.DEVLOG_LANG).toBe("ar");                   // extraEnv wins over the pin
@@ -76,7 +76,7 @@ describe("spawned-process environment is scrubbed of the shell's DEVLOG_* (#1165
         env: serverEnv("D:/data", 17999),
       });
       expect(JSON.parse(child.stdout.toString())).toEqual([
-        "DEVLOG_DATA_DIR", "DEVLOG_LANG", "DEVLOG_PORT",
+        "DEVLOG_DATA_DIR", "DEVLOG_LANG", "DEVLOG_PORT", "DEVLOG_POST_RELEASE_DISABLED",
         "DEVLOG_REGISTRY_CHECK_DISABLED", "DEVLOG_VERSION_CHECK_DISABLED", "DEVLOG_VULN_CHECK_DISABLED",
       ]);
     });

@@ -27,6 +27,9 @@ import {
   type ReleaseDowngrade, type ReleaseBlocked, type ReleaseIntent, type ReleaseIntentConflict,
 } from "./tags-service";
 import { detectReleaseJump, releaseJumpWasRefused } from "./release-leap";
+import { verifyStamp, releaseCheckDisabled, type StampVerdict, type StampStatus } from "./release-check";
+import { readPending, autoCheckDisabled, autoCheckAllowed, runAutoCheck } from "./release-autocheck";
+import { withData } from "./data";
 import { applyUpcoming, applyTodoPromotion, type UpcomingChange } from "./upcoming";
 import { judgeClaim } from "./claim-evidence";
 import { diagnoseFeatureMarker, diagnoseFeatureRef, type FeatureRefProblem } from "./features";
@@ -103,6 +106,13 @@ export interface EntryCtx {
   releaseIntentConflict: ReleaseIntentConflict | null;
   releaseDowngrade: ReleaseDowngrade | null;
   releaseBlocked: ReleaseBlocked | null;
+  /** The release stamp verdict that refused this release (release-check.ts):
+   *  the project's own checks have not passed against THIS tree. */
+  releaseUnverified: { verdict: StampVerdict; root: string } | null;
+  /** The stamp was missing/stale/expired and the daemon took the check over
+   *  (release-autocheck.ts): the release completes itself when green. Optional
+   *  so hand-built test contexts need not declare it. */
+  releaseChecking?: { root: string; status: StampStatus; checks: string[]; attempt: number } | null;
   rollback: RollbackResult | null;
 
   // ── Per-entry cursor, re-initialized by runEntryBatch before each entry ──
@@ -486,7 +496,7 @@ export const ENTRY_STAGES: EntryStage[] = [
   {
     key: "release-guards",
     applies: ({ tag }) => tag === "release",
-    run(ctx) {
+    async run(ctx) {
       const { content, data, project } = ctx;
       const dg = detectReleaseDowngrade(content, data, project);
       if (dg) {
@@ -516,6 +526,44 @@ export const ENTRY_STAGES: EntryStage[] = [
           ctx.releaseBlocked = blocked;
           console.warn(`[/api/tags release] blocked: ${blocked.openItems.length} open item(s) (project=${project})`);
           return "stop";
+        }
+      }
+      // Verification gate: the project's own typecheck / lint / test must
+      // have passed against this exact tree (release-check.ts stamp). The
+      // missing layer behind v3.63.0 — every guard before this one asked
+      // about the LOG (open items, changelog, doctor), none about the CODE.
+      if (!releaseCheckDisabled()) {
+        const root = data.projects[project]?.path || ctx.effectiveCwd;
+        if (root) {
+          const verdict = await verifyStamp(root);
+          if (verdict.status !== "ok" && verdict.status !== "no-checks") {
+            // A missing / stale / expired stamp is the daemon's to resolve
+            // (release-autocheck.ts): run the checks in the background and
+            // re-post this very tag when green. Not awaited — minutes. A
+            // FAILED stamp, a round already running, or a tree that stayed
+            // stale through MAX_ATTEMPTS rounds falls back to the refusal.
+            const pending = readPending(root);
+            // The RAW tag and text: re-posting must replay what the model wrote
+            // (`release:minor`, the untouched reason), not a normalized form.
+            const reTag = String(ctx.entry.tag || ctx.tag);
+            const reContent = String(ctx.rawContent || ctx.content);
+            if (!autoCheckDisabled() && autoCheckAllowed(verdict.status, pending, reContent)) {
+              const attempt = pending && pending.content === reContent && pending.status !== "released" ? pending.attempt + 1 : 1;
+              ctx.releaseChecking = { root, status: verdict.status, checks: verdict.checks, attempt };
+              console.log(`[/api/tags release] auto-check started: stamp '${verdict.status}', attempt ${attempt} (project=${project})`);
+              runAutoCheck(
+                { root, project, tag: reTag, content: reContent, cwd: ctx.effectiveCwd, sessionId: ctx.sessionId },
+                {
+                  log: line => console.log(`[release auto-check ${project}] ${line}`),
+                  onFail: async (reason, detail) => { await withData(async d => { pushRejection(d, project, reason, detail); }, { touches: ["meta"] }); },
+                },
+              ).catch(e => console.error(`[release auto-check ${project}] error:`, (e as Error)?.message));
+              return "stop";
+            }
+            ctx.releaseUnverified = { verdict, root };
+            console.warn(`[/api/tags release] refused: release check '${verdict.status}' (project=${project})`);
+            return "stop";
+          }
         }
       }
     },

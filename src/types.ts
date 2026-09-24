@@ -114,6 +114,9 @@ export interface EventEntry {
    *  or a test-runner summary line. Absent = unknown; consumers fail OPEN on it
    *  (unknown must never be treated as failure). */
   ok?: boolean;
+  /** Command events only: the transcript tool_use id the hook payload carried
+   *  (absent on older hooks). The Stop-time outcome backfill matches on it. */
+  tool_use_id?: string;
   description?: string;
   agent_type?: string;
   agent_id?: string;
@@ -127,6 +130,10 @@ export interface EventEntry {
   lines_added?: number;
   lines_removed?: number;
   retention?: "hot" | "warm";
+  /** Warm change/create rows only: the FULL row (with its diff) was appended
+   *  to the monthly archive when it left the hot tier, so the cold eviction
+   *  later must not archive this stripped copy a second time. */
+  archived?: true;
 }
 
 export interface WorklogEntry {

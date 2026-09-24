@@ -181,6 +181,11 @@ const ACTIONS = {
         e.stopPropagation();
         deleteTag(el.dataset.tagId, el.dataset.tagKind);
     },
+    // × on an open task (tasks card): withdraw it as `-(dropped) #N`, not erase it.
+    "drop-item": (el, e) => {
+        e.stopPropagation();
+        dropItem(el.dataset.tagId, el.dataset.num, el.dataset.text);
+    },
     // Converted from inline onclick (R3 P7) — keeps CSP free of the
     // remaining unsafe-inline handlers.
     "set-log-filter": (el) => setLogFilter(el.dataset.key),
@@ -249,6 +254,26 @@ async function deleteTag(tagId, kind) {
             renderProject();
         } else {
             uiAlert(`${tr("core.deleteFailed")} — ${await httpErrorText(res)}`);
+        }
+    } catch (e) {
+        uiAlert(tr("core.errorMsg", { msg: e.message }));
+    }
+}
+
+// Withdraw an open task from the tasks card. The server stores a `dropped`
+// closer (same record `-(dropped) #N` leaves), so the item vanishes from the
+// open list while its number and text stay in the history — the permanent
+// DELETE above is for mistaken entries only. After success the whole view is
+// refetched: verdicts decide the card, and the new closer belongs in the log.
+async function dropItem(tagId, num, text) {
+    const label = num ? `#${num}` : `«${String(text || "").slice(0, 60)}»`;
+    if (!(await uiConfirm(tr("todos.dropConfirm", { label }), { okText: tr("todos.dropOk") }))) return;
+    try {
+        const res = await fetch(`${API}/api/tag/${encodeURIComponent(tagId)}/drop`, { method: "POST", headers: await destructiveHeaders() });
+        if (res.ok) {
+            await refreshActiveView(true);
+        } else {
+            uiAlert(`${tr("todos.dropFailed")} — ${await httpErrorText(res)}`);
         }
     } catch (e) {
         uiAlert(tr("core.errorMsg", { msg: e.message }));

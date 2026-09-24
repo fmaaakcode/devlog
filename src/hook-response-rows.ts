@@ -16,6 +16,7 @@
 
 import type { BlockKey } from "./block-channel";
 import { FAILURE_CLASSES } from "./failure-class";
+import { describeVerdict, type StampVerdict } from "./release-check";
 
 // The wire shapes this table consumes — the /api/tags response fields as the
 // server sends them. All optional: an ordinary store returns none of them.
@@ -24,6 +25,9 @@ export interface TagsResponse {
   releaseDowngrade?: { version: string; latest: string };
   releaseIntentConflict?: { declared: string; version: string };
   releaseBlocked?: { openItems?: OpenItemRef[] };
+  releaseUnverified?: { verdict: StampVerdict; root: string };
+  /** The daemon took the release check over (release-autocheck.ts). */
+  releaseChecking?: { root: string; status: string; checks: string[]; attempt: number } | null;
   rollback?: { version: string; restoredTo?: string; htmlDeleted?: boolean; indexRebuilt?: boolean };
   closed?: Array<{ num: number; text: string }>;
   repairedClosures?: Array<{ from: number | null; num: number }>;
@@ -46,6 +50,8 @@ export interface TagsResponse {
     bumped?: Array<{ file: string; from: string; to: string }>;
     rejected?: Array<{ file: string; current?: string; attempted?: string; reason?: string; error?: string }>;
     htmlGenerated?: boolean;
+    /** Steps the daemon's post-release chain started (post-release.ts). */
+    postRelease?: string[];
   };
   releaseIntent?: { auto?: boolean; bump: string; from: string; version: string; warning?: { suggested: string } };
 }
@@ -181,6 +187,46 @@ export const RESPONSE_ROWS: ResponseRow[] = [
     deliver: "block",
     blockKey: "release-blocked",
   },
+  // The stamp was missing/stale/expired and the daemon is running the checks
+  // itself (release-autocheck.ts); the release re-posts itself when green.
+  // Informational: the model's only job is to NOT repeat the tag or the check.
+  {
+    key: "releaseChecking",
+    applies: resp => !!resp.releaseChecking,
+    text(resp, { L }) {
+      const c = sure(resp.releaseChecking);
+      const checks = c.checks.join(" / ");
+      const out = ["════════ DevLog Release Check ════════",
+        L(`⏳ The stamp is '${c.status}', so the daemon started the release check itself (${checks}; attempt ${c.attempt}). The release records ITSELF when the check is green, and its post-release steps follow.`,
+          `⏳ الختم '${c.status}'، فشغّل الـdaemon فحص الإصدار بنفسه (${checks}؛ المحاولة ${c.attempt}). الإصدار يُسجَّل تلقائيًّا حين يخضرّ الفحص، وتتبعه خطوات ما بعده.`),
+        L("The outcome reaches you on your next turn. Do NOT re-emit -(release) and do NOT run the check by hand; do not change the tree until then (a changed tree stales the stamp again).",
+          "النتيجة تصلك في دورك التالي. لا تعد إصدار -(release) ولا تشغّل الفحص يدويًّا، ولا تعدّل الشجرة حتى ذلك الحين (تعديلها يُبطل الختم من جديد)."),
+        "══════════════════════════════════════"];
+      return `\n${out.join("\n")}\n`;
+    },
+    logLine: resp => `release-checking (daemon): stamp ${sure(resp.releaseChecking).status}, attempt ${sure(resp.releaseChecking).attempt}`,
+    deliver: "info",
+  },
+  // Release refused by the verification stamp (release-check.ts): the
+  // project's checks have not passed against this tree. Names the runner.
+  {
+    key: "releaseUnverified",
+    applies: resp => !!resp.releaseUnverified,
+    text(resp, { L }) {
+      const { verdict, root } = sure(resp.releaseUnverified);
+      const lines = describeVerdict(verdict, root, L("en", "ar") === "ar");
+      const out = ["════════ DevLog Release Unverified ════════",
+        `🛑 ${L("The release was NOT recorded: ", "لم يُسجَّل الإصدار: ")}${lines[0]}.`,
+        lines[1],
+        L("Run it, then re-emit -(release). Bypass (not recommended): DEVLOG_RELEASE_CHECK=0.",
+          "شغّله ثم أعد إصدار -(release). تجاوز (غير مستحسن): DEVLOG_RELEASE_CHECK=0."),
+        "═══════════════════════════════════════════"];
+      return `\n${out.join("\n")}\n`;
+    },
+    logLine: resp => `release-unverified (server): ${sure(resp.releaseUnverified).verdict.status}`,
+    deliver: "block",
+    blockKey: "release-unverified",
+  },
   // Release rollback outcome (QA #2): undoing a release reverses its
   // effects; report them so the manifest state is never silently out of
   // sync. Informational — no block.
@@ -262,8 +308,13 @@ export const RESPONSE_ROWS: ResponseRow[] = [
           `⚠ Your accrued changes look ${intent.warning.suggested}-level but you declared ${intent.bump}. Consider -(release:${intent.warning.suggested}) next time.`,
           `⚠ تغييراتك المتراكمة تبدو بمستوى ${intent.warning.suggested} لكنك أعلنت ${intent.bump}. فكّر بـ-(release:${intent.warning.suggested}) في المرة القادمة.`)] : []),
         "",
-        L("Continue post-release steps (e.g. building the output) without waiting for the user.",
-          "تابع خطوات ما بعد الإصدار (مثل بناء الناتج) بدون انتظار المستخدم."),
+        // The daemon runs the declared post-release steps itself (post-release.ts);
+        // the manual instruction stays only for a project that declares none.
+        ...(rel.postRelease?.length
+          ? [L(`⚙ Post-release started in the daemon: ${rel.postRelease.join(" → ")}. Outcome in .devlog/post-release.json; a failure reaches you as a rejection on your next turn. Do not run these steps by hand.`,
+               `⚙ خطوات ما بعد الإصدار بدأت في الـdaemon: ${rel.postRelease.join(" → ")}. النتيجة في .devlog/post-release.json، والفشل يصلك رفضًا في دورك التالي. لا تشغّلها يدويًا.`)]
+          : [L("Continue post-release steps (e.g. building the output) without waiting for the user.",
+               "تابع خطوات ما بعد الإصدار (مثل بناء الناتج) بدون انتظار المستخدم.")]),
         "════════════════════════════════",
       ].join("\n");
       return `\n${out}\n`;

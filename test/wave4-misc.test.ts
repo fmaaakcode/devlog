@@ -106,7 +106,7 @@ describe("capture-time `-(lib)` hint (the silent-store half of #1115)", () => {
       closed: [], fixedConfirms: [], upcomingChanges: [], reopenHints: [],
       batchOpeners: [], closedInBatch: new Set(), repairedClosures: [],
       releaseResult: null, releaseIntent: null, releaseIntentConflict: null,
-      releaseDowngrade: null, releaseBlocked: null, rollback: null,
+      releaseDowngrade: null, releaseBlocked: null, releaseUnverified: null, rollback: null,
     };
   }
   test("orphan name → stored AND hinted; manifest name → stored silently; bare name → skipped with a hint", async () => {

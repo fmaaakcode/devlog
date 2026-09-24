@@ -121,8 +121,15 @@ export function inspectTranscript(raw: string): CanaryReport {
 
     if (typeof content === "string") {
       userStrings++;
-      const isFeedback = FEEDBACK_MARKERS.some(m => content.includes(m));
       const isMeta = (obj as { isMeta?: unknown }).isMeta === true;
+      // A prompt the human typed (or queued) is stamped `promptSource` by Claude
+      // Code; a hook echo never is. Without this exemption a user who PASTES a
+      // guard banner into a bug report ("════════ DevLog Release Guard …",
+      // 2026-09-10) reads as our own feedback stripped of its flag — a false
+      // "break" on the next SessionStart. Content alone cannot tell the two
+      // apart; the stamp can. An entry without the stamp keeps the marker test.
+      const humanTyped = typeof (obj as { promptSource?: unknown }).promptSource === "string";
+      const isFeedback = !humanTyped && FEEDBACK_MARKERS.some(m => content.includes(m));
       if (isFeedback && !isMeta) metaFeedbackUnflagged++;
       // A genuine (non-meta) user entry is a turn boundary: it must carry a key.
       if (!isMeta && !(obj as { uuid?: unknown }).uuid && !(obj as { timestamp?: unknown }).timestamp) {

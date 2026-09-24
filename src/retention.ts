@@ -94,9 +94,16 @@ const WARM_DAYS = 30;
  *
  * Returns counts plus `removedEvents` — the cold-deleted rows themselves, so
  * the caller can archive them before the store persists the deletion (cold
- * archive: pruning archives, never deletes).
+ * archive: pruning archives, never deletes) — and `warmedEvents`, the FULL
+ * rows (diff intact) that were stripped this pass, so the caller can archive
+ * the content before the strip persists. Warm stripping used to be the one
+ * lossy step by policy: after a week only "which file, how many lines"
+ * survived, and "what was the previous fix, exactly?" had no answer. The hot
+ * store stays as lean as before; the archive now holds what it dropped.
+ * A stripped row the caller archived is marked `archived` so the cold pass
+ * skips re-archiving the content-less copy (the caller filters on it).
  */
-export function pruneEvents(data: DevLogData): { warmed: number; removed: number; protected: number; removedEvents: EventEntry[] } {
+export function pruneEvents(data: DevLogData): { warmed: number; removed: number; protected: number; removedEvents: EventEntry[]; warmedEvents: EventEntry[] } {
   const now = Date.now();
   const hotCutoff = now - HOT_DAYS * DAY;
   const warmCutoff = now - WARM_DAYS * DAY;
@@ -108,6 +115,7 @@ export function pruneEvents(data: DevLogData): { warmed: number; removed: number
   let protectedCount = 0;
   const kept: EventEntry[] = [];
   const removedEvents: EventEntry[] = [];
+  const warmedEvents: EventEntry[] = [];
 
   for (const e of data.events || []) {
     const ts = +new Date(e.timestamp) || 0;
@@ -143,6 +151,7 @@ export function pruneEvents(data: DevLogData): { warmed: number; removed: number
       delete next.new_string;
       delete next.content;
       kept.push(next);
+      warmedEvents.push(e);
       warmed++;
       continue;
     }
@@ -153,7 +162,39 @@ export function pruneEvents(data: DevLogData): { warmed: number; removed: number
   }
 
   data.events = kept;
-  return { warmed, removed: removedEvents.length, protected: protectedCount, removedEvents };
+  return { warmed, removed: removedEvents.length, protected: protectedCount, removedEvents, warmedEvents };
+}
+
+/**
+ * The rows a prune pass must archive before its result may persist: every
+ * cold row that was not already archived in full at warm time, plus the full
+ * copies of the rows stripped this pass.
+ */
+export function rowsToArchive(res: { removedEvents: EventEntry[]; warmedEvents: EventEntry[] }): EventEntry[] {
+  return res.removedEvents.filter(e => !e.archived).concat(res.warmedEvents);
+}
+
+/**
+ * Undo a prune pass whose archive write failed: cold rows go back in front
+ * (their original relative order), stripped rows are swapped back for their
+ * full copies. The next cycle ages them past the cutoffs again and retries.
+ */
+export function restorePrune(data: DevLogData, res: { removedEvents: EventEntry[]; warmedEvents: EventEntry[] }): void {
+  if (res.warmedEvents.length) {
+    const full = new Map(res.warmedEvents.map(e => [e.id, e]));
+    data.events = data.events.map(e => full.get(e.id) || e);
+  }
+  // concat, NOT unshift(...spread): spreading tens of thousands of rows as
+  // call arguments overflows the stack (audit 2026-08-14 E4).
+  if (res.removedEvents.length) data.events = res.removedEvents.concat(data.events);
+}
+
+/** After a successful archive: stamp the stripped copies so the cold pass
+ *  does not archive them a second time. */
+export function markWarmArchived(data: DevLogData, warmedEvents: EventEntry[]): void {
+  if (!warmedEvents.length) return;
+  const ids = new Set(warmedEvents.map(e => e.id));
+  for (const e of data.events) if (ids.has(e.id) && e.retention === "warm") e.archived = true;
 }
 
 /**

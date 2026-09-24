@@ -8,6 +8,7 @@
 
 import { normalizeSlashes } from "./path-utils";
 import { currentLang } from "./i18n";
+import { withShellWrites } from "./shell-write-events";
 import type { DevLogData, EventEntry, TagEntry } from "./types";
 
 const L = (en: string, ar: string): string => (currentLang() === "ar" ? ar : en);
@@ -114,7 +115,9 @@ export function sessionTouchedFiles(data: DevLogData, sessionId: string | undefi
   }
   const seen = new Set<string>();
   const files: string[] = [];
-  for (const e of data.events) {
+  // Shell writes count too (shell-write-events): resolved against the project
+  // root so a `sed -i src/x.ts` links the same file an Edit would.
+  for (const e of withShellWrites(data.events, data.projects[project]?.path)) {
     if (e.session_id !== sessionId || e.project !== project) continue;
     if (e.type !== "change" && e.type !== "create") continue;
     if (!e.file_path || (+new Date(e.timestamp) || 0) <= since) continue;
@@ -140,7 +143,7 @@ export function buildFileStory(data: DevLogData, project: string, filePath: stri
   const tags = data.tags
     .filter(t => t.project === project && t.files?.some(f => fileMatches(f, filePath)))
     .reverse();
-  const events = data.events
+  const events = withShellWrites(data.events, data.projects[project]?.path)
     .filter(e => e.project === project
       && (e.type === "change" || e.type === "create")
       && !!e.file_path && fileMatches(e.file_path, filePath))

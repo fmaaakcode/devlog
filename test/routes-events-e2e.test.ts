@@ -88,3 +88,56 @@ describe("routes-events (extracted group) still mounts + behaves", () => {
     expect(r.status).toBe(415);
   });
 });
+
+// Capture gaps closed 2026-09-19: shell writes count as files in the session
+// summary, and the Stop hook can backfill command verdicts from the transcript.
+describe("routes-events — shell writes + command outcomes", () => {
+  const SID = "shell-session-1";
+
+  test("a heredoc-only session rolls up with the written file counted", async () => {
+    const r = await fetch(`${BASE}/api/hook`, {
+      method: "POST", headers: JSON_HEADERS,
+      body: JSON.stringify({
+        cwd: "", hook_event_name: "PostToolUse", tool_name: "Bash", session_id: SID, tool_use_id: "toolu_1",
+        tool_input: { command: "cat > src/new-file.ts <<'EOF'\nexport const x = 1;\nEOF", description: "write file" },
+        tool_response: { stdout: "", stderr: "", interrupted: false },
+      }),
+    });
+    expect((await asJson(r)).ok).toBe(true);
+    const s = await asJson(await fetch(`${BASE}/api/session-summary`, {
+      method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ cwd: "", session_id: SID }),
+    }));
+    expect(s.ok).toBe(true);
+    expect(JSON.parse(s.summary.note).filesChanged).toBe(1);
+  });
+
+  test("POST /api/command-outcomes fills ok/exit_code on the verdict-less command (by tool_use_id)", async () => {
+    let data = await asJson(await fetch(`${BASE}/api/data`));
+    const before = data.events.find((e: any) => e.session_id === SID && e.type === "command");
+    expect(before.tool_use_id).toBe("toolu_1");
+    expect(before.ok).toBeUndefined();
+
+    const r = await fetch(`${BASE}/api/command-outcomes`, {
+      method: "POST", headers: JSON_HEADERS,
+      body: JSON.stringify({ session_id: SID, outcomes: [
+        { tool_use_id: "toolu_1", command: "cat > src/new-file.ts <<'EOF'\nexport const x = 1;\nEOF", ok: false, exit_code: 1 },
+        { tool_use_id: "nope", command: "never ran", ok: true },
+        "garbage", { command: 1 },
+      ] }),
+    });
+    expect(r.status).toBe(200);
+    expect((await asJson(r)).updated).toBe(1);
+
+    data = await asJson(await fetch(`${BASE}/api/data`));
+    const after = data.events.find((e: any) => e.session_id === SID && e.type === "command");
+    expect(after.ok).toBe(false);
+    expect(after.exit_code).toBe(1);
+  });
+
+  test("POST /api/command-outcomes without session_id → 400; empty outcomes → updated 0", async () => {
+    const r1 = await fetch(`${BASE}/api/command-outcomes`, { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ outcomes: [] }) });
+    expect(r1.status).toBe(400);
+    const r2 = await fetch(`${BASE}/api/command-outcomes`, { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ session_id: SID, outcomes: [] }) });
+    expect((await asJson(r2)).updated).toBe(0);
+  });
+});

@@ -12,13 +12,15 @@ import { resolveProjectFor } from "./project-resolve";
 import { scanFreshProfile, applyPreservedScan } from "./scanner";
 import { generateStackMd, exportStatusMd } from "./export";
 import { runVulnScan } from "./vuln-scan";
-import { parseHookEvent, attributionCwd } from "./hooks";
+import { parseHookEvent, attributionCwd, storedCommandText } from "./hooks";
 import { warmAnalysis } from "./routes-stack";
 import { listArchiveMonths, readArchiveMonth } from "./event-archive";
 import { softFail } from "./soft-fail";
 import { broadcast } from "./broadcast";
 import { normalizeSlashes, pathsEqual } from "./path-utils";
 import { currentLang } from "./i18n";
+import { withShellWrites } from "./shell-write-events";
+import { applyShellOutcomes, type ShellOutcome } from "./command-outcomes";
 import type { ProjectProfile, EventEntry } from "./types";
 
 type ApiReq = Bun.BunRequest;
@@ -138,7 +140,11 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
             if (effectiveCwd) await exportStatusMd(effectiveCwd, data, name);
             broadcast("hook", { project: name, event: entry.event, tool: entry.tool, file_path: entry.file_path, type: entry.type, description: entry.description, command: entry.command });
             return Response.json({ ok: true });
-          });
+          // Narrowed save: this handler appends an event and may refresh the
+          // project profile or tick a plan step — it never touches tags or
+          // meta, so the 8MB tags stringify is skipped on every tool call.
+          // Audited under bun test (data.ts writeAllSplit).
+          }, { touches: ["events", "projects", "plans"] });
           if (stackJob) {
             const { cwd: stackCwd, profile } = stackJob;
             generateStackMd(stackCwd, profile).catch(e => softFail("generateStackMd", e));
@@ -152,6 +158,41 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
           return res;
         } catch (e) {
           softFail("api.hook", e);
+          return Response.json({ error: "Invalid" }, { status: 400 });
+        }
+      },
+    },
+
+    // Command outcomes recovered from the transcript at Stop (command-outcomes.ts):
+    // Claude Code's PostToolUse payload carries no exit code for Bash/PowerShell,
+    // so the Stop hook reads each shell tool_result's `Exit code N` / is_error
+    // from the session JSONL and backfills `ok`/`exit_code` on this session's
+    // command events that have no verdict yet. Never overwrites a capture-time
+    // verdict. Body: { session_id, outcomes: [{ tool_use_id, command, ok, exit_code? }] }.
+    "/api/command-outcomes": {
+      async POST(req: ApiReq) {
+        try {
+          const body = await req.json() as { session_id?: unknown; outcomes?: unknown };
+          const sessionId = typeof body.session_id === "string" ? body.session_id : "";
+          if (!sessionId) return Response.json({ error: "session_id required" }, { status: 400 });
+          const raw = Array.isArray(body.outcomes) ? body.outcomes : [];
+          const outcomes: ShellOutcome[] = [];
+          for (const o of raw) {
+            if (!o || typeof o !== "object") continue;
+            const r = o as Record<string, unknown>;
+            if (typeof r.command !== "string" || typeof r.ok !== "boolean") continue;
+            outcomes.push({
+              tool_use_id: typeof r.tool_use_id === "string" ? r.tool_use_id : "",
+              command: r.command,
+              ok: r.ok,
+              ...(typeof r.exit_code === "number" && Number.isFinite(r.exit_code) && { exit_code: r.exit_code }),
+            });
+          }
+          if (!outcomes.length) return Response.json({ ok: true, updated: 0 });
+          const updated = await withData(data => applyShellOutcomes(data.events, sessionId, outcomes, storedCommandText), { touches: ["events"] });
+          return Response.json({ ok: true, updated });
+        } catch (e) {
+          softFail("api.command-outcomes", e);
           return Response.json({ error: "Invalid" }, { status: 400 });
         }
       },
@@ -192,7 +233,9 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
 
             const files = new Set<string>();
             let added = 0, removed = 0;
-            for (const e of events) {
+            // Shell writes count as files (shell-write-events): a sed/heredoc
+            // session used to roll up as "0 files".
+            for (const e of withShellWrites(events, data.projects[project]?.path)) {
               if ((e.type === "change" || e.type === "create") && e.file_path) {
                 files.add(normalizeSlashes(e.file_path));
                 const a = (typeof e.lines_added === "number") ? e.lines_added

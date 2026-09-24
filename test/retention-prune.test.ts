@@ -5,7 +5,7 @@
 // log grew without bound. These tests pin the corrected behavior.
 
 import { describe, test, expect } from "bun:test";
-import { pruneEvents } from "../src/retention";
+import { markWarmArchived, pruneEvents, restorePrune, rowsToArchive } from "../src/retention";
 import type { DevLogData, EventEntry, TagEntry } from "../src/types";
 
 const DAY = 86_400_000;
@@ -61,5 +61,57 @@ describe("pruneEvents — protected window = between the two most recent release
     expect(data.events.map(e => e.id)).toEqual([]);
     expect(r.protected).toBe(0);
     expect(r.removed).toBe(1);
+  });
+});
+
+// Archive-before-strip: the warm tier used to be the one lossy step by policy
+// (diff dropped after 7 days, only path + line counts left). pruneEvents now
+// hands the full rows back as `warmedEvents`; the caller archives them with
+// the cold rows, stamps the stripped copies `archived`, and the cold pass
+// later skips those copies so the archive never holds a content-less twin.
+describe("pruneEvents — warm strip hands the full rows to the archive", () => {
+  test("a warm-aged event is stripped in the store and returned whole in warmedEvents", () => {
+    const data = makeData([], [changeEvent("w", "p", 10), changeEvent("h", "p", 1)]);
+    const r = pruneEvents(data);
+    expect(r.warmed).toBe(1);
+    expect(r.warmedEvents.map(e => e.id)).toEqual(["w"]);
+    expect(r.warmedEvents[0].new_string).toBe("new");          // full copy
+    const stored = data.events.find(e => e.id === "w");
+    expect(stored?.retention).toBe("warm");
+    expect(stored?.new_string).toBeUndefined();                // stripped copy
+    expect(stored?.archived).toBeUndefined();                  // not until the archive succeeded
+    expect(rowsToArchive(r).map(e => e.id)).toEqual(["w"]);
+  });
+
+  test("markWarmArchived stamps the stripped copy; the later cold pass leaves it out of rowsToArchive", () => {
+    const data = makeData([], [changeEvent("w", "p", 10)]);
+    const r1 = pruneEvents(data);
+    markWarmArchived(data, r1.warmedEvents);
+    expect(data.events[0].archived).toBe(true);
+    // Age it past the cold cutoff and prune again.
+    data.events[0].timestamp = daysAgo(40);
+    const r2 = pruneEvents(data);
+    expect(r2.removed).toBe(1);
+    expect(rowsToArchive(r2)).toEqual([]);                     // archived in full already
+    expect(data.events).toEqual([]);
+  });
+
+  test("restorePrune puts cold rows back in front and swaps stripped rows for their full copies", () => {
+    const data = makeData([], [changeEvent("cold", "p", 40), changeEvent("w", "p", 10), changeEvent("h", "p", 1)]);
+    const r = pruneEvents(data);
+    expect(data.events.map(e => e.id)).toEqual(["w", "h"]);
+    restorePrune(data, r);
+    expect(data.events.map(e => e.id)).toEqual(["cold", "w", "h"]);
+    expect(data.events[1].new_string).toBe("new");
+    expect(data.events[1].retention).not.toBe("warm");
+  });
+
+  test("an already-warm row is not stripped or returned again", () => {
+    const warm = { ...changeEvent("w", "p", 10), retention: "warm" as const, lines_added: 1, lines_removed: 1 };
+    delete (warm as Partial<EventEntry>).new_string;
+    const data = makeData([], [warm]);
+    const r = pruneEvents(data);
+    expect(r.warmed).toBe(0);
+    expect(r.warmedEvents).toEqual([]);
   });
 });

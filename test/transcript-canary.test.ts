@@ -144,6 +144,24 @@ describe("inspectTranscript — each broken assumption is named", () => {
     expect(f?.severity).toBe("break");
   });
 
+  test("(4b) a HUMAN prompt quoting a DevLog banner is not a dropped flag", () => {
+    // 2026-09-10: the user pasted a bug report that quoted the release guard's
+    // banner verbatim. Claude Code stamps such prompts `promptSource: "typed"`
+    // (or "queued"); a hook echo never carries the stamp.
+    const pasted = "Bug report\n\n$ git tag -a v2.20.0\n\n════════ DevLog Release Guard ════════\n🛑 3 open items\n\n[devlog open] quoted too";
+    for (const promptSource of ["typed", "queued"]) {
+      const r = inspectTranscript(jsonl(
+        { ...userPrompt(pasted), promptSource },
+        assistantText("ok"),
+        hookFeedback(),
+      ));
+      expect(r.findings.map(f => f.code)).not.toContain("meta-flag-missing");
+    }
+    // The same text WITHOUT the stamp still counts — the regression stays caught.
+    const r = inspectTranscript(jsonl(userPrompt(pasted), assistantText("ok")));
+    expect(r.findings.map(f => f.code)).toContain("meta-flag-missing");
+  });
+
   test("(5) a turn with neither uuid nor timestamp degrades the turn id", () => {
     const r = inspectTranscript(jsonl(
       { type: "user", message: { role: "user", content: "hi" } },
