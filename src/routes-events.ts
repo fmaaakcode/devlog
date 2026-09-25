@@ -9,6 +9,7 @@
 
 import { loadData, withData, isStepClosed } from "./data";
 import { resolveProjectFor } from "./project-resolve";
+import { applyRelocation, ensureProjectIdentity } from "./project-identity";
 import { scanFreshProfile, applyPreservedScan } from "./scanner";
 import { generateStackMd, exportStatusMd } from "./export";
 import { runVulnScan } from "./vuln-scan";
@@ -69,12 +70,15 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
           // overwrite the registered project's profile (path included) and see-saw
           // `path` between the two folders on alternating hooks.
           const stored0 = snapshot.projects[name0];
-          const collision = !!(stored0?.path && effectiveCwd0 && !pathsEqual(stored0.path, effectiveCwd0));
+          // A recognised move (identity marker / legacy index, #project-identity)
+          // is not a collision: the path is rewritten under the lock below.
+          const moved0 = resolved0.relocatedFrom !== undefined;
+          const collision = !moved0 && !!(stored0?.path && effectiveCwd0 && !pathsEqual(stored0.path, effectiveCwd0));
           if (collision) {
             console.warn(`[/api/hook] folder-name collision: cwd=${effectiveCwd0} differs from stored '${name0}' at ${stored0.path}. Skipping scan.`);
           }
           let fresh: ProjectProfile | null = null;
-          if (!collision && effectiveCwd0 && (!stored0 || Date.now() - new Date(stored0.lastScan).getTime() > 3600000)) {
+          if (!collision && effectiveCwd0 && (!stored0 || moved0 || Date.now() - new Date(stored0.lastScan).getTime() > 3600000)) {
             try { fresh = await scanFreshProfile(effectiveCwd0); } catch (e) { softFail("hook.scanFreshProfile", e); }
           }
 
@@ -90,6 +94,7 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
             const resolved = resolveProjectFor(data, cwd);
             const name = resolved.name;
             const effectiveCwd = resolved.cwd;
+            await applyRelocation(data, resolved);
             // Apply the phase-1 scan if resolution still points at the same
             // project (guards the rare case where a concurrent writer changed
             // what `cwd` resolves to between the two phases).
@@ -103,6 +108,7 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
               if (isNew) stackJob = { cwd: effectiveCwd, profile: data.projects[name] };
               runVulnScan(name).catch(e => softFail("runVulnScan", e));
             }
+            ensureProjectIdentity(data, name);
 
             const entry = parseHookEvent(body);
             entry.project = name;   // resolved parent name, not raw basename — fixes subfolder misattribution (code-quality R2 #2)

@@ -22,7 +22,7 @@ import { readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { ClaudeSession, DevLogData } from "./types";
-import { projectName } from "./data";
+import { resolveProjectFor } from "./project-resolve";
 import { claudeConfigDir, normalizeSlashes } from "./path-utils";
 import { bunSpawn } from "./spawn";
 import { ttlCached } from "./ttl-cache";
@@ -240,7 +240,9 @@ export async function refreshDescendants(data: DevLogData): Promise<void> {
   // Track newly-seen descendants from alive sessions
   const seenNow = new Set<number>();
   for (const session of aliveSessions) {
-    const projectName_ = projectName(session.cwd);
+    // Registry resolution, not the basename (#1143's sibling): two folders with
+    // one name gave both sessions' processes to whichever project owned it.
+    const projectName_ = resolveProjectFor(data, session.cwd || "").name;
     const descPids = trees.get(session.pid) || [];
     for (const pid of descPids) {
       const proc = procMap.get(pid);

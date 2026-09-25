@@ -64,6 +64,10 @@ export interface ProjectProfile {
   // external drives / WSL mounts don't lose all tags + plans on a stat
   // failure. Cleared when the path becomes accessible again.
   disconnectedSince?: string;
+  /** Random identity mirrored in `<path>/.devlog/project.json` (project-identity.ts):
+   *  how a moved, copied or same-named folder is told apart from this project
+   *  without trusting its name or path. Absent until the project's first hook. */
+  id?: string;
 }
 
 export interface VulnResult {

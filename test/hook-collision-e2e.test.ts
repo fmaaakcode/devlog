@@ -8,10 +8,11 @@
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import type { Subprocess } from "bun";
 import { asJson, startServer, stopServer, waitForServer } from "./_helpers";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathsEqual } from "../src/path-utils";
+import { readMarkerId } from "../src/project-identity";
 
 const TEST_PORT = 17957;
 const BASE = `http://127.0.0.1:${TEST_PORT}`;
@@ -58,6 +59,10 @@ describe("/api/hook folder-name collision guard (#763)", () => {
     const data = await asJson(await fetch(`${BASE}/api/data`));
     expect(data.projects.app.path).toBe(dirA);           // path untouched — no see-saw
     expect(data.projects.app.lastScan).toBe(STALE_SCAN); // and no scan was applied for the collider
+    // …and the namesake is no longer swallowed: it is its own project now
+    // (project-identity.ts), with its events and its own marker.
+    expect(pathsEqual(data.projects["app-2"].path, dirB)).toBe(true);
+    expect(readMarkerId(dirB)).toBe(data.projects["app-2"].id);
   });
 
   test("control: a hook from the registered path itself still rescans", async () => {
@@ -67,5 +72,20 @@ describe("/api/hook folder-name collision guard (#763)", () => {
     // The stale profile was legitimately refreshed — the guard blocks colliders,
     // not the project's own hooks.
     expect(new Date(data.projects.app.lastScan).getTime()).toBeGreaterThan(Date.now() - 3600000);
+  });
+});
+
+describe("a moved folder keeps its project through the identity marker (no git needed)", () => {
+  test("hook from the new location after a move rewrites the path, history intact", async () => {
+    const before = await asJson(await fetch(`${BASE}/api/data`));
+    const id = before.projects.app.id;
+    expect(readMarkerId(dirA)).toBe(id);                 // written by the control hook above
+    const movedTo = join(parentB, "moved-app");           // a different name, too
+    renameSync(dirA, movedTo);
+    expect((await postHook(movedTo)).status).toBe(200);
+    const data = await asJson(await fetch(`${BASE}/api/data`));
+    expect(pathsEqual(data.projects.app.path, movedTo)).toBe(true);
+    expect(data.projects.app.id).toBe(id);
+    expect(data.projects["moved-app"]).toBeUndefined();   // no second project minted
   });
 });

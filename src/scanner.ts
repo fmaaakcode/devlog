@@ -706,6 +706,7 @@ export function applyPreservedScan(data: DevLogData, name: string, fresh: Projec
   // dropping the stamp reset the missing-project age tracking on every rescan.
   if (old?.nextItemNum !== undefined) merged.nextItemNum = old.nextItemNum;
   if (old?.disconnectedSince !== undefined) merged.disconnectedSince = old.disconnectedSince;
+  if (old?.id) merged.id = old.id;   // identity marker (project-identity.ts) — a scan never mints one
   data.projects[name] = merged;
   return merged;
 }

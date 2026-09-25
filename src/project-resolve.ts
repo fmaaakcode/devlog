@@ -40,9 +40,11 @@ import { bunSpawnSync } from "./spawn";
 // the module dependency-light. If the SCANNER treats a subfolder as part of the
 // parent project, the RESOLVER folding its events there is the symmetric call.
 import { NESTED_MANIFEST_DIRS } from "./lockfile-tree";
+import { readMarkerId, sameFolder, ownsLegacyIndex } from "./project-identity";
 import type { ProjectProfile } from "./types";
 
 type ProjectsMap = Record<string, ProjectProfile>;
+type TagRefs = ReadonlyArray<{ id: string; project: string }>;
 export type GitRootFn = (dir: string) => string | null;
 
 // Last path segment, mirroring data.ts:projectName. Inlined to keep this module
@@ -210,13 +212,64 @@ export function shouldFoldIntoParent(
 // may collide with a registered project living somewhere else (§5.1, #1066).
 // Registration paths ignore it (the fallback IS how a new project is born);
 // attribution-only readers (telemetry stamp) must not stamp a fallback name.
-export interface ResolvedProject { name: string; cwd: string; registered: boolean }
+//
+// Identity (project-identity.ts) runs before the fold layers: a folder carrying
+// `.devlog/project.json` names its project by id, so a MOVE resolves to the
+// old project with `relocatedFrom` set (the writers persist the new path) and
+// a COPY of a live project gets a fresh name. A same-named folder with no
+// marker, while the registered one still lives elsewhere, gets `<name>-2`…
+// instead of being silently merged into it.
+export interface ResolvedProject { name: string; cwd: string; registered: boolean; relocatedFrom?: string }
+
+/** The disk probes identity resolution needs — injectable for tests. */
+export interface IdentityProbe {
+  readId: (dir: string) => string | null;
+  exists: (path: string) => boolean;
+  sameFolder: (a: string, b: string) => boolean;
+  ownsLegacy: (name: string, dir: string, tags: TagRefs | undefined) => boolean;
+}
+export const diskIdentity: IdentityProbe = {
+  readId: readMarkerId, exists: existsSync, sameFolder, ownsLegacy: ownsLegacyIndex,
+};
+
+// First free `<base>`, `<base>-2`, `<base>-3`… — deterministic, so every reader
+// agrees on the name before the first hook registers it.
+function freeName(projects: ProjectsMap, base: string): string {
+  if (!projects[base]) return base;
+  let n = 2;
+  while (projects[`${base}-${n}`]) n++;
+  return `${base}-${n}`;
+}
+
+// A basename fallback whose name is already registered at ANOTHER path.
+function claimFallback(
+  data: { projects: ProjectsMap; tags?: TagRefs }, fallback: ResolvedProject, probe: IdentityProbe,
+): ResolvedProject {
+  const stored = data.projects[fallback.name];
+  if (!stored?.path || pathsEqual(stored.path, fallback.cwd)) return fallback;
+  // A subfolder named like its own project (`D:/app/app`) stays the project's —
+  // minting `app-2` there is the phantom-subfolder class of #529/#691.
+  if (isPathInside(stored.path, fallback.cwd)) return { name: fallback.name, cwd: stored.path, registered: true };
+  if (probe.exists(stored.path)) {
+    // Both folders live: the same directory under two spellings, or a real
+    // namesake that must not borrow the registered project's history.
+    if (probe.sameFolder(stored.path, fallback.cwd)) return { name: fallback.name, cwd: stored.path, registered: true };
+    return { name: freeName(data.projects, fallback.name), cwd: fallback.cwd, registered: false };
+  }
+  // Registered folder gone, no marker here: a move only on DevLog's own
+  // evidence; otherwise unchanged (scanner's git-slug relocation may claim it).
+  if (probe.ownsLegacy(fallback.name, fallback.cwd, data.tags)) {
+    return { name: fallback.name, cwd: fallback.cwd, registered: true, relocatedFrom: stored.path };
+  }
+  return fallback;
+}
 
 export function resolveProjectFor(
-  data: { projects: ProjectsMap },
+  data: { projects: ProjectsMap; tags?: TagRefs },
   cwd: string,
   gitRootOf: GitRootFn = gitToplevel,
   hasMarkers: MarkerFn = hasOwnProjectMarkers,
+  probe: IdentityProbe = diskIdentity,
 ): ResolvedProject {
   const fallback: ResolvedProject = { name: baseName(cwd), cwd, registered: false };
   if (!cwd) return fallback;
@@ -231,6 +284,16 @@ export function resolveProjectFor(
       const len = normalizePath(ppath).length;
       if (len > bestLen) { bestLen = len; candidate = { name: n, cwd: ppath, registered: true }; }
     }
+  }
+
+  // Identity marker: positive proof cwd is a project root, so it outranks folding.
+  const id = probe.readId(cwd);
+  const owner = id ? Object.entries(data.projects).find(([, p]) => p?.id === id) : undefined;
+  if (owner) {
+    const [n, p] = owner;
+    if (!p.path || !probe.exists(p.path)) return { name: n, cwd, registered: true, relocatedFrom: p.path || "" };
+    if (probe.sameFolder(p.path, cwd)) return { name: n, cwd: p.path, registered: true };
+    return { name: freeName(data.projects, baseName(cwd)), cwd, registered: false };   // a copy
   }
 
   // A dot-folder anywhere below the encloser (.devlog, .github/workflows, …) is
@@ -260,5 +323,5 @@ export function resolveProjectFor(
   if (candidate && shouldFoldIntoParent(data.projects, candidate.name, candidate.cwd, cwd, gitRootOf, hasMarkers)) {
     return candidate;
   }
-  return fallback;
+  return claimFallback(data, fallback, probe);
 }

@@ -37,6 +37,7 @@ import { refreshDescendants } from "./sessions";
 import { rename as fsRename } from "node:fs/promises";
 import { migrateMemoryDir } from "./project-rename";
 import { resolveProjectFor } from "./project-resolve";
+import { applyRelocation, ensureProjectIdentity } from "./project-identity";
 import { startVersionCheckLoop } from "./version-check";
 import { markWarmArchived, pruneEvents, pushEvent, restorePrune, rowsToArchive } from "./retention";
 import { archiveEvents, archiveUndone } from "./event-archive";
@@ -172,7 +173,8 @@ async function doInject(body: Record<string, unknown>) {
   const effectiveCwd = resolved.cwd;
   // Fresh scan or relocation candidate — moved verbatim to scanner.ts
   // (freshOrRelocatedProfile) under the R9 size ratchet.
-  const { fresh, relocateFromPath } = await freshOrRelocatedProfile(snapshot.projects[name], cwd, effectiveCwd, name);
+  // A marker/index-recognised move is persisted under the lock (identity.ts); its rescan rides the next /api/hook.
+  const { fresh, relocateFromPath } = resolved.relocatedFrom !== undefined ? { fresh: null, relocateFromPath: null } : await freshOrRelocatedProfile(snapshot.projects[name], cwd, effectiveCwd, name);
 
   // Phase 2 (locked): apply the scan result, log the event, build the
   // injection, and persist — all inside `withData` so nothing half-applied
@@ -181,6 +183,7 @@ async function doInject(body: Record<string, unknown>) {
   // R9 F1: deep analysis runs OFF the lock, same as /api/hook (see routes-events).
   let stackJob: { cwd: string; profile: ProjectProfile } | null = null;
   await withData(async (data) => {
+    await applyRelocation(data, resolved);
     if (fresh) {
       const isNew = !data.projects[name];
       if (relocateFromPath) {
@@ -191,6 +194,7 @@ async function doInject(body: Record<string, unknown>) {
       if (isNew) stackJob = { cwd: effectiveCwd, profile: data.projects[name] };
       runVulnScan(name).catch(e => softFail("runVulnScan", e));
     }
+    ensureProjectIdentity(data, name);
 
     // PreToolUse is a read probe, not a work event — recording it would seed a
     // junk "change"-typed entry per file open (parseHookEvent has no branch
