@@ -48,6 +48,13 @@ describe("primerFor", () => {
     expect(primerFor("SessionStart", { plugin: false })).toBe(PRIMERS.en);
   });
 
+  test("both primers stay compact — they are paid in full on every session", () => {
+    // 2026-09-26 phase 1: rare ask:* commands folded into one index line
+    // (AR 5,183 → 3,987, EN 6,307 → 4,820). Detail lives in the skill's topic files.
+    expect(PRIMERS.ar.length).toBeLessThan(4200);
+    expect(PRIMERS.en.length).toBeLessThan(5000);
+  });
+
   test("both primers name the devlog-protocol skill and the closure rule", () => {
     for (const p of [PRIMERS.en, PRIMERS.ar]) {
       expect(p).toContain("devlog:devlog-protocol");

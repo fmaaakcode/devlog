@@ -6,13 +6,19 @@
 // (This is what caught `-(ask:open)` missing from SKILL.md.)
 
 import { test, expect, describe } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 const ROOT = join(import.meta.dir, "..");
 const claude = readFileSync(join(ROOT, "CLAUDE.md"), "utf-8");
 const primer = readFileSync(join(ROOT, "src", "primer.ts"), "utf-8");
-const skill = readFileSync(join(ROOT, "skills", "devlog-protocol", "SKILL.md"), "utf-8");
+// The skill is an index (SKILL.md) + one file per topic under reference/, so
+// the Skill tool loads ~3K chars instead of the whole 35K reference. Parity is
+// checked against the skill AS A WHOLE — a tag documented in any topic file counts.
+const SKILL_DIR = join(ROOT, "skills", "devlog-protocol");
+const skillIndex = readFileSync(join(SKILL_DIR, "SKILL.md"), "utf-8");
+const refFiles = readdirSync(join(SKILL_DIR, "reference")).filter(f => f.endsWith(".md")).sort();
+const skill = [skillIndex, ...refFiles.map(f => readFileSync(join(SKILL_DIR, "reference", f), "utf-8"))].join("\n");
 
 // The two language primers live in one file; slice them apart.
 const PRIMER_EN = primer.slice(primer.indexOf("PRIMER_EN"), primer.indexOf("PRIMER_AR"));
@@ -45,6 +51,20 @@ describe("protocol parity: CLAUDE.md ↔ shipped protocol (plugin-review #4)", (
       expect(missing).toEqual([]);
     });
   }
+});
+
+describe("skill layout: a small index pointing at topic files", () => {
+  test("the index stays small — it is what the Skill tool loads whole", () => {
+    // Was one 34,816-char file: asking about standards loaded all of it (7% relevant).
+    expect(skillIndex.length).toBeLessThan(4000);
+  });
+
+  test("every topic file is listed in the index, and every listed file exists", () => {
+    const listed = [...skillIndex.matchAll(/reference\/([a-z0-9-]+\.md)/g)].map(m => m[1]);
+    expect(refFiles.length).toBeGreaterThan(5);
+    for (const f of refFiles) expect(listed, f).toContain(f);
+    for (const f of listed) expect(existsSync(join(SKILL_DIR, "reference", f)), f).toBe(true);
+  });
 });
 
 describe("protocol parity: core rules present on every surface", () => {

@@ -9,8 +9,8 @@
 // older stores lack them. Rewording one of these is a protocol change, not a
 // cleanup.
 //
-// Order matters only in that the first row with an unserved occurrence wins the
-// turn (blockContinue exits); the next continuation serves the next command.
+// Order is the order answers appear in: serveAsks collects every row's answer
+// and sends them together in one block.
 // `-(ask:rules)` is deliberately NOT here: it reads the standards library off
 // local disk, runs lifecycle commands and posts telemetry — a different shape
 // that a fetch-and-format row would only pretend to cover.

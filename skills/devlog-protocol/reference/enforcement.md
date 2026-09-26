@@ -1,0 +1,14 @@
+# DevLog — enforcement hooks
+
+These hooks enforce the rules mechanically — you don't need to remember, the harness refuses to end the turn or run the command until you comply:
+
+| Hook | Fires on | Blocks when |
+|---|---|---|
+| **Stop closure-check** | every turn end | a `-(built)` / `-(refactor)` fuzzy-matches an open `#N` and you didn't emit its closure. Exit 2 → re-respond with the closure. |
+| **Stop untagged-guard** | a tag-less turn end | code files — or manual tracking files (tasks/TODO/decisions/CHANGELOG/plans `.md`) — were written this session and NOT ONE tag was ever stored for it. Blocks once per session — re-respond ending with tags that describe the work. Mute: `DEVLOG_UNTAGGED_CHECK=0`. |
+| **PreToolUse tracking-gate** | `Write`/`Edit` of a manual tracking file (`tasks.md`, `TODO.md`, `decisions.md`, `CHANGELOG.md`, `MEMORY.md`, `plans/*.md`) | always, once per file per session — that content IS a DevLog tag (`-(todo)`/`-(decision)`/`-(release)`/`-(doc:plan)`): record it as tags. Deliberate manual file? re-issue the SAME write — it passes. Ordinary docs (README etc.) never trip it. Mute: `DEVLOG_TRACKING_GATE=0`. |
+| **Stop root-cause** | a `-(bug fix) #N` that records no cause | the closer carries nothing but the number AND the turn holds no `-(insight)`. Once per `#N`. Re-emit as `-(bug fix) #N <the cause>`, or add an `-(insight)`, or declare a stopgap with `-(bug fix:interim) #N`. It checks that the question was ASKED, not that the answer is true. Mute: `DEVLOG_ROOTCAUSE_CHECK=0`. |
+| **PreToolUse load-bearing** | first `Write`/`Edit` of a file ≥5 other files import | always, once per file per session — names how many depend on it and how many reports it carried, and sends you to `-(ask:why) <path>` before you rebuild. Deliberate rebuild? re-issue the SAME edit — it passes. Fails OPEN when the daemon or the analysis is unavailable. Mute: `DEVLOG_DEMOLITION_GATE=0`. |
+| **Stop release-guard** | `-(release)` / `-(release:*)` in your response | ANY open item exists (todo, bug, security, plan step). Refuses to persist the release. Close everything first, or `DEVLOG_RELEASE_GUARD=0` to override. |
+| **Release verification stamp** | `-(release)` in your response, and the PreToolUse release commands below | the project's own checks (its `typecheck` / `lint` / `test` scripts, or `cargo test`) have not passed against THIS tree: run `bun <devlog>/scripts/release-check.ts <project>` (writes `.devlog/release-check.json`, bound to a tree fingerprint that ignores the version bump) and re-emit. A project that declares no checks passes. Mute: `DEVLOG_RELEASE_CHECK=0`. |
+| **PreToolUse release-guard** | `gh release create` / `git tag -a v*` / `git push --tags` / `npm publish` / `cargo publish` | same rule, after the verification stamp above; also injects the full since-last-release changelog. |

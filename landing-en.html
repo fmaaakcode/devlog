@@ -323,7 +323,7 @@ footer a:hover { color: var(--emerald); }
     <div class="wrap reveal">
         <div class="kicker">How it works</div>
         <h2>Three steps — all of them automatic</h2>
-        <p class="lead">No commands to memorize, no files to write, nothing added to your repo. You work with Claude exactly as you always do.</p>
+        <p class="lead">No commands to memorize, no files to write, and your history never enters your repo. You work with Claude exactly as you always do.</p>
         <div class="steps">
             <div class="step">
                 <h3>Claude ends its response with short tags</h3>
@@ -346,7 +346,7 @@ footer a:hover { color: var(--emerald); }
     <div class="wrap reveal">
         <div class="kicker">The real difference</div>
         <h2>Not a logger that writes and stays quiet — an accountability system that refuses</h2>
-        <p class="lead">Ordinary trackers record and watch. DevLog enforces discipline on Claude itself — 18 guards that refuse instead of warn; here are three of them.</p>
+        <p class="lead">Ordinary trackers record and watch. DevLog enforces discipline on Claude itself — 19 guards that refuse instead of warn; here are three of them.</p>
         <div class="enforce">
             <div class="shell">
                 <div class="shell-head red">Closure Discipline</div>
@@ -362,6 +362,7 @@ footer a:hover { color: var(--emerald); }
                     <span class="cmd">$ gh release create v2.0.0</span><br><br>
                     <span class="blocked">✗ command intercepted before execution:</span><br>
                     <span class="blocked">  open bug #9 + two unfinished plan steps</span><br>
+                    <span class="blocked">  + the project's tests haven't passed on this code</span><br>
                     <span class="ok">✓ close the items first — or bypass deliberately, yourself</span>
                 </div>
             </div>
@@ -377,7 +378,7 @@ footer a:hover { color: var(--emerald); }
         </div>
         <p class="enforce-note">
             Claude finished work that matches an open task and didn't close it? <b>The response is rejected until it does.</b>
-            Someone tries to ship a release with items still open? <b>The command is intercepted before it runs.</b>
+            Someone tries to ship a release with items still open or tests that haven't passed? <b>The command is intercepted before it runs.</b>
             Claude tries to install a dependency blind? <b>The command is blocked with the safe version to pin — the newest stable at least 7 days old and clean in OSV.</b>
             Nothing slips through — not because someone was paying attention, but because the system doesn't allow it.
         </p>
@@ -407,8 +408,8 @@ footer a:hover { color: var(--emerald); }
                 <p>npm, crates.io, PyPI, Go and Packagist — compares your versions against the latest official release and flags anything newer than 7 days.</p>
             </div>
             <div class="feat">
-                <h3><span class="b" style="background:var(--emerald)"></span>Release reports that write themselves</h3>
-                <p>On every release: a report grouping what was built, fixed and security-closed — the version field in your project manifest bumps automatically, and a release that went out wrong can be rolled back.</p>
+                <h3><span class="b" style="background:var(--emerald)"></span>One-command releases — and only green ones</h3>
+                <p><code>-(release)</code> is enough: DevLog runs your project's own checks (typecheck, lint, tests) in the background and records the release once they pass. Then it writes the release report, bumps the version in your manifest, and runs the post-release steps you declared (mirror to the public checkout, then build). Any failure reaches you on the next response, and a release that went out wrong can be rolled back.</p>
             </div>
             <div class="feat">
                 <h3><span class="b" style="background:var(--gold)"></span>Session memory for Claude itself</h3>
@@ -432,11 +433,11 @@ footer a:hover { color: var(--emerald); }
             </div>
             <div class="feat">
                 <h3><span class="b" style="background:var(--pink)"></span>Retrospectives and deep studies</h3>
-                <p>"What keeps breaking?" — a retrospective of every bug and vulnerability ever, with ages and files, plus a full-history study saved as a document that measures progress since the last one.</p>
+                <p>"What keeps breaking?" — a retrospective of every bug and vulnerability ever, with ages and files, plus a full-history study saved as a document that measures progress since the last one. Every fix is closed with its cause and a failure class from a fixed list (condition, timing, silent failure…), so you see which kind keeps recurring — and a bug that comes back is linked to the old one with ⟲.</p>
             </div>
             <div class="feat">
                 <h3><span class="b" style="background:var(--blue)"></span>A standards library that grows with you</h3>
-                <p>Rules captured from your corrections and pulled on demand by language or app type — so Claude never repeats the same mistake in another project.</p>
+                <p>Rules captured from your corrections and pulled on demand by language or app type. A rule written inside a project stays there; the <code>global:</code> prefix promotes it to all your projects — so Claude never repeats the same mistake in another project.</p>
             </div>
             <div class="feat">
                 <h3><span class="b" style="background:var(--emerald)"></span>The file's dossier before touching it</h3>
@@ -470,6 +471,10 @@ footer a:hover { color: var(--emerald); }
                 <h3><span class="b" style="background:var(--gold)"></span>Nothing gets deleted</h3>
                 <p>Old data is archived compressed, undo keeps a copy first — and if the copy can't be written the deletion is refused. Export any project as one file and import it on another machine.</p>
             </div>
+            <div class="feat">
+                <h3><span class="b" style="background:var(--blue)"></span>Your project is recognized wherever you move it</h3>
+                <p>Move or rename a project folder and its history follows. A copy of the folder, or two folders with the same name, become separate projects whose records never mix — via a random id in <code>.devlog/project.json</code> that stays out of git.</p>
+            </div>
         </div>
     </div>
 </section>
@@ -494,7 +499,7 @@ footer a:hover { color: var(--emerald); }
             </div>
             <div class="priv">
                 <h3>Production-grade security</h3>
-                <p>Built-in defenses against DNS rebinding, XSS and path traversal — covered by 2,500+ automated tests.</p>
+                <p>Built-in defenses against DNS rebinding, XSS and path traversal; API keys, passwords and tokens are scrubbed from the command log before it's stored — covered by 2,500+ automated tests.</p>
             </div>
         </div>
     </div>
@@ -532,7 +537,7 @@ footer a:hover { color: var(--emerald); }
         <div class="faq">
             <details>
                 <summary>Does it add files to my repos or pollute them?</summary>
-                <p>Almost none. Tags are captured straight from Claude's responses and the history is stored in DevLog's own directory (<code>~/.devlog/data</code>) outside your projects. What DevLog does write into a project is one <code>.devlog/</code> folder — generated docs, release pages, the <code>DEVLOG_STATUS.md</code> mirror — and only when those features are used. Add it to <code>.gitignore</code> or commit it; nothing else in your tree is touched.</p>
+                <p>Almost none. Tags are captured straight from Claude's responses and the history is stored in DevLog's own directory (<code>~/.devlog/data</code>) outside your projects. What DevLog does write into a project is one <code>.devlog/</code> folder: a tiny identity file (<code>project.json</code>, kept out of git automatically), plus generated docs, release pages and the <code>DEVLOG_STATUS.md</code> mirror when those features are used. Add it to <code>.gitignore</code> or commit it; nothing else in your tree is touched.</p>
             </details>
             <details>
                 <summary>Does it eat Claude's context or slow it down?</summary>

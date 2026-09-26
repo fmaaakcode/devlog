@@ -193,7 +193,7 @@ async function serveHit(row: AskRow, hit: AskHit, ctx: AskCtx): Promise<"empty" 
     await ctx.log(row.logLine ? row.logLine(data, hit.m) : `${row.key}: served`);
     if (row.skipIfEmpty && !body.trim()) return "empty";
     await ctx.blockContinue(`\n[devlog ${row.label}]\n${body}\n`);
-    return "empty";                          // unreachable: blockContinue exits
+    return "empty";                          // collected by serveAsks; the real block fires once at the end
   } catch (e) {
     const reason = (e as Error)?.message || String(e);
     await ctx.log(`${row.key}: post-fetch failure: ${reason}`);
@@ -205,15 +205,32 @@ async function serveHit(row: AskRow, hit: AskHit, ctx: AskCtx): Promise<"empty" 
 }
 
 /**
- * Answer every pull command present in this turn. Serves at most one block per
- * hook run (blockContinue exits the process); the next continuation picks up
- * the next command, which is what makes several asks in one response work.
+ * Answer every pull command present in this turn — ALL of them, in ONE block.
+ *
+ * Rows "block" into a collector, and the real blockContinue fires once at the
+ * end with every answer joined. It used to be one answer per hook run (the
+ * real blockContinue exits the process), leaving the next command to the next
+ * Stop — which only comes once Claude finishes its continuation, tool calls
+ * included. A reviewer sent `-(ask:recent) 3` and `-(ask:open)` together at
+ * 04:36, got the open list, worked on for four minutes, and received the
+ * recent digest at 04:40, after its review was written: late enough to read
+ * as lost. One block per turn also means one continuation instead of N.
  *
  * A row that throws is logged and skipped — one broken command must never cost
  * the turn its tags, its summary, or the other commands.
  */
 export async function serveAsks(rows: AskRow[], ctx: AskCtx): Promise<void> {
   if (!ctx.msg || !ctx.cwd) return;
+  const answers: string[] = [];
+  const collect: AskCtx = {
+    ...ctx,
+    blockContinue: (async (text: string) => { answers.push(text); }) as AskCtx["blockContinue"],
+  };
+  await serveRows(rows, collect);
+  if (answers.length) await ctx.blockContinue(answers.join(""));
+}
+
+async function serveRows(rows: AskRow[], ctx: AskCtx): Promise<void> {
   for (const row of rows) {
     try {
       const hits = await unservedMatches(ctx, row.re, row.cmd ?? (() => row.key));

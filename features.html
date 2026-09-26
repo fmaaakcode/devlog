@@ -107,6 +107,10 @@
   .card p { color: #c9c9c9; font-size: 0.95em; margin-bottom: 12px; }
   .card .api { font-family: var(--mono); font-size: 0.74em; color: var(--text2); }
   .card .api b { color: var(--emerald); font-weight: 600; }
+  /* RTL: code, API paths and demo lines resolve their own direction, so
+     "$ bun add zod" or "/api/tree" never render mirrored in Arabic. */
+  .card p code { direction: ltr; unicode-bidi: isolate; white-space: nowrap; }
+  .card .api, .card .demo * { unicode-bidi: plaintext; }
 
   /* ---------- mini mockups (pure css/svg) ---------- */
   .mk { width: 100%; font-family: var(--mono); font-size: 0.72em; }
@@ -191,7 +195,7 @@
 
 <header class="hero">
   <h1>DevLog<span class="dot">.</span></h1>
-  <p class="tag" data-i18n="feat.heroTag">An automatic dev log for Claude Code projects. Claude writes short tags in its replies, and the Stop hook captures them to feed a local dashboard — polluting no repository and consuming none of Claude's context.</p>
+  <p class="tag" data-i18n="feat.heroTag">An automatic dev log for Claude Code projects. Claude writes short tags in its replies, and the Stop hook captures them to feed a local dashboard. Your history stays out of your repository, and the session-start briefing is kept small by a hard size cap.</p>
   <div class="badges">
     <span class="badge on" data-i18n="feat.badgeZeroDeps">Zero runtime dependencies</span>
     <span class="badge on" data-i18n="feat.badgeLocal">Local 127.0.0.1 only</span>
@@ -263,6 +267,7 @@
             <div style="color:var(--pink);margin-top:6px" data-i18n="feat.dRejected">⛔ Rejected — open items:</div>
             <div class="row"><span class="dotmark" style="background:var(--gold)"></span> <span data-i18n="feat.dRejTodo">todo #7 — API docs</span></div>
             <div class="row"><span class="dotmark" style="background:var(--pink)"></span> <span data-i18n="feat.dRejBug">bug #12 — memory leak</span></div>
+            <div class="row"><span class="dotmark" style="background:var(--blue)"></span> <span data-i18n="feat.dRejCheck">tests not green on this tree</span></div>
             <div class="muted" style="margin-top:6px" data-i18n="feat.dRejClose">Close everything before releasing.</div>
           </div>
         </div>
@@ -271,7 +276,7 @@
         <span class="pill core" data-i18n="feat.pillCore">Core</span>
         <h3 data-i18n="feat.closureH3">Closure enforcement + release guard</h3>
         <p data-i18n-html="feat.closureP">The Stop hook matches built work against open items and reminds you to close them. The PreToolUse hook intercepts release commands (<code>gh release</code>, <code>git tag -a</code>, <code>npm publish</code>…) and rejects them while open work remains.</p>
-        <div class="api"><b>closure-check.ts</b> · <b>pre-release-hook.js</b></div>
+        <div class="api"><b>closure-check.ts</b> · <b>pre-release-hook.js</b> · <b>release-check.ts</b></div>
       </div>
     </div>
 
@@ -376,7 +381,7 @@
         <span class="pill hidden" data-i18n="feat.pillHidden">Hidden</span>
         <h3 data-i18n="feat.diffH3">File change tracking with diff</h3>
         <p data-i18n-html="feat.diffP">Stores <code>old_string</code> / <code>new_string</code> for every edit Claude makes and renders the <b>diff in-house</b> — at the level of a single edit, a file, or a whole session.</p>
-        <div class="api"><b>GET /api/changes</b> · <b>/changes/by-id/:id</b> · <b>/changes/session</b></div>
+        <div class="api"><b>GET /api/changes</b> · <b>/changes/by-id/:id</b> · <b>/changes/session</b> · <b>secret-redact.ts</b></div>
       </div>
     </div>
 
@@ -417,9 +422,9 @@
       </div>
       <div class="body">
         <span class="pill hidden" data-i18n="feat.pillHidden">Hidden</span>
-        <h3 data-i18n="feat.treeH3">Tree browser · export · injection preview</h3>
+        <h3 data-i18n="feat.treeH3">Tree browser · export/import · injection preview</h3>
         <p data-i18n-html="feat.treeP">Browse the project tree inside the dashboard, export a project (or all of them) to portable JSON, and preview the SessionStart context block <b>exactly</b> before it's injected — with the past injection log.</p>
-        <div class="api"><b>/api/tree/:project</b> · <b>/api/export-all</b> · <b>/api/inject/preview</b></div>
+        <div class="api"><b>/api/tree/:project</b> · <b>/api/export-all</b> · <b>/api/project-import</b> · <b>/api/inject/preview</b></div>
       </div>
     </div>
 
@@ -430,15 +435,114 @@
           <div class="row"><span class="dotmark" style="background:var(--emerald)"></span> <span data-i18n="feat.dWsLive">WebSocket connected — live updates</span></div>
           <div class="act-row" style="margin-top:8px"><span class="dotmark" style="background:var(--blue)"></span> <span data-i18n="feat.dWsNow">now · built · scanner.ts</span></div>
           <div class="muted" style="margin-top:10px" data-i18n="feat.dWsRet">Retention policy:</div>
-          <div class="row"><span class="muted" data-i18n="feat.dWsOld">old events → trimmed</span></div>
+          <div class="row"><span class="muted" data-i18n="feat.dWsOld">old events → monthly archive</span></div>
           <div class="row"><span class="dotmark" style="background:var(--gold)"></span> <span data-i18n="feat.dWsProtected">closure-linked items protected</span></div>
         </div>
       </div>
       <div class="body">
         <span class="pill hidden" data-i18n="feat.pillHidden">Hidden</span>
-        <h3 data-i18n="feat.liveH3">Live updates + retention policy</h3>
+        <h3 data-i18n="feat.liveH3">Live updates + archive, never delete</h3>
         <p data-i18n="feat.liveP">The dashboard subscribes over WebSocket so tags and processes appear instantly with no page refresh. In the background, old events are trimmed by a retention policy that protects closure-linked items.</p>
-        <div class="api"><b>broadcast.ts</b> · <b>retention.ts</b></div>
+        <div class="api"><b>broadcast.ts</b> · <b>retention.ts</b> · <b>event-archive.ts</b></div>
+      </div>
+    </div>
+
+    <!-- release pipeline -->
+    <div class="card">
+      <div class="demo">
+        <div class="mk-win" style="width:100%">
+          <div class="mk-bar"><i style="background:var(--pink)"></i><i style="background:var(--gold)"></i><i style="background:var(--emerald)"></i></div>
+          <div class="mk-body">
+            <div class="tagline">-(<span class="k">release</span>) project identity marker</div>
+            <div class="row" style="margin-top:6px"><span class="dotmark" style="background:var(--gold)"></span> <span data-i18n="feat.dRelRun">stamp stale → running typecheck · lint · test</span></div>
+            <div class="row"><span class="dotmark" style="background:var(--emerald)"></span> <span data-i18n="feat.dRelGreen">green → v3.68.0 recorded</span></div>
+            <div class="row indent" style="padding-inline-start:16px"><span class="muted" data-i18n="feat.dRelMirror">→ mirror to public checkout ✓</span></div>
+            <div class="row indent" style="padding-inline-start:16px"><span class="muted">→ bun run build ✓</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="body">
+        <span class="pill core" data-i18n="feat.pillCore">Core</span>
+        <h3 data-i18n="feat.releaseH3">Release pipeline: checks → release → post-release</h3>
+        <p data-i18n-html="feat.releaseP">A release needs a green stamp: the project's own typecheck / lint / test, bound to the current tree and valid for 24 h. When it's missing or stale, the daemon runs the checks in the background and records the release itself once green. Then it runs the steps the project declares — mirror to a public checkout, then <code>bun run build</code> — and reports any failure on Claude's next turn and in <code>doctor</code>.</p>
+        <div class="api"><b>scripts/release-check.ts</b> · <b>release-autocheck.ts</b> · <b>post-release.ts</b> · <b>.devlog/release-check.json</b></div>
+      </div>
+    </div>
+
+    <!-- memory queries -->
+    <div class="card flip">
+      <div class="demo">
+        <div class="mk" style="width:100%">
+          <div class="tagline">-(<span class="k">ask:why</span>) src/scanner.ts</div>
+          <div class="act-row"><span class="dotmark" style="background:var(--blue)"></span> <span data-i18n="feat.dMemWhy">purpose · 3 decisions · 7 bugs (1 ⟲)</span></div>
+          <div class="tagline" style="margin-top:8px">-(<span class="k">ask:search</span>) <span data-i18n="feat.dMemQ">why not SQLite?</span></div>
+          <div class="act-row"><span class="dotmark" style="background:var(--gold)"></span> <span data-i18n="feat.dMemHit">decision #412 — rejected: native dependency</span></div>
+          <div class="tagline" style="margin-top:8px">-(<span class="k">ask:recent</span>) 3d</div>
+        </div>
+      </div>
+      <div class="body">
+        <span class="pill core" data-i18n="feat.pillCore">Core</span>
+        <h3 data-i18n="feat.memoryH3">Asking the record</h3>
+        <p data-i18n-html="feat.memoryP">Claude pulls the past instead of re-deriving it: <code>-(ask:search)</code> ranks stored decisions and closed fixes against a question, <code>-(ask:why)</code> gives one file's dossier (purpose, decisions, every bug and how it ended), <code>-(ask:map)</code> ranks files by how much depends on them, and <code>-(ask:recent)</code> summarizes the last sessions — tags, files (shell writes included), commands and which failed.</p>
+        <div class="api"><b>GET /api/recall</b> · <b>/api/file-why</b> · <b>/api/map</b> · <b>/api/recent</b></div>
+      </div>
+    </div>
+
+    <!-- retro + failure classes + models -->
+    <div class="card">
+      <div class="demo">
+        <div class="mk" style="width:100%">
+          <div class="muted" style="margin-bottom:8px" data-i18n="feat.dRetroTitle">Closed bugs by failure class</div>
+          <div class="lib"><span style="min-width:74px">timing</span><div class="bar" style="flex:1;margin:0"><i style="width:82%"></i></div> 9</div>
+          <div class="lib"><span style="min-width:74px">condition</span><div class="bar" style="flex:1;margin:0"><i style="width:64%"></i></div> 7</div>
+          <div class="lib"><span style="min-width:74px">silent</span><div class="bar" style="flex:1;margin:0"><i style="width:36%"></i></div> 4</div>
+          <div class="muted" style="margin-top:8px" data-i18n="feat.dRetroModels">per model: fixes that held · fixes with no test</div>
+        </div>
+      </div>
+      <div class="body">
+        <span class="pill hidden" data-i18n="feat.pillHidden">Hidden</span>
+        <h3 data-i18n="feat.retroH3">Retrospective, failure classes, model scorecard</h3>
+        <p data-i18n-html="feat.retroP">Every bug and security report ever, with ages and files, and the files that keep breaking. A fix is closed with its cause and, optionally, a failure class from a fixed list (<code>-(bug fix) #N [timing] …</code>), so rule effects are measured against their own class. A bug that returns is linked with ⟲ and charged to the old fix. The model scorecard compares who opens bugs, whose fixes hold and who ships without a test.</p>
+        <div class="api"><b>GET /api/retro</b> · <b>/api/model-stats</b> · <b>/api/study</b> · <b>failure-class.ts</b></div>
+      </div>
+    </div>
+
+    <!-- install gate + advisor + deps -->
+    <div class="card flip">
+      <div class="demo">
+        <div class="mk-win" style="width:100%">
+          <div class="mk-bar"><i style="background:var(--pink)"></i><i style="background:var(--gold)"></i><i style="background:var(--emerald)"></i></div>
+          <div class="mk-body">
+            <div class="muted">$ bun add zod</div>
+            <div style="color:var(--pink);margin-top:6px" data-i18n="feat.dGateBlocked">⛔ Blocked — no pinned version</div>
+            <div class="row"><span class="dotmark" style="background:var(--gold)"></span> <span data-i18n="feat.dGateAdvice">advisor: zod@3.23.8 · ≥ 7 days · OSV clean</span></div>
+            <div class="row"><span class="dotmark" style="background:var(--emerald)"></span> <span class="muted">$ bun add zod@3.23.8 ✓</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="body">
+        <span class="pill core" data-i18n="feat.pillCore">Core</span>
+        <h3 data-i18n="feat.gateH3">Install gate · version advisor · deps page</h3>
+        <p data-i18n-html="feat.gateP">An install without a pinned version is blocked before it runs, with the version to use: the newest stable release at least 7 days old that OSV reports clean (npm, PyPI, crates, Go). A deliberate override is recorded as an open security item. The deps page explains every library — why it's in this project, its official description and its security status.</p>
+        <div class="api"><b>pre-install-hook.js</b> · <b>GET /api/lib-advice</b> · <b>/api/deps</b> · <b>deps.html</b></div>
+      </div>
+    </div>
+
+    <!-- project identity -->
+    <div class="card">
+      <div class="demo">
+        <div class="mk" style="width:100%">
+          <div class="muted" style="margin-bottom:8px">.devlog/project.json · id 7f3c…</div>
+          <div class="act-row"><span class="dotmark" style="background:var(--emerald)"></span> <span data-i18n="feat.dIdMoved">folder moved or renamed → same history</span></div>
+          <div class="act-row"><span class="dotmark" style="background:var(--blue)"></span> <span data-i18n="feat.dIdCopy">folder copied → a new project</span></div>
+          <div class="act-row"><span class="dotmark" style="background:var(--gold)"></span> <span data-i18n="feat.dIdTwin">two folders, same name → kept apart</span></div>
+        </div>
+      </div>
+      <div class="body">
+        <span class="pill hidden" data-i18n="feat.pillHidden">Hidden</span>
+        <h3 data-i18n="feat.identityH3">Project identity</h3>
+        <p data-i18n-html="feat.identityP">Each project carries a random id in <code>.devlog/project.json</code>, kept out of git by a <code>.gitignore</code> inside <code>.devlog/</code>. A moved or renamed folder keeps its history, a copy becomes a new project, and two folders sharing a name never mix their records.</p>
+        <div class="api"><b>project-identity.ts</b> · <b>project-resolve.ts</b></div>
       </div>
     </div>
 
@@ -462,6 +566,15 @@
       <tr><td data-i18n="feat.rowInject">Injection preview</td><td><span class="mono">GET /api/inject/preview · /api/injections</span></td><td><code>inject.ts</code></td></tr>
       <tr><td data-i18n="feat.rowVuln">Library scan</td><td><span class="mono">GET /api/vuln/:project</span></td><td><code>vuln-scan.ts</code></td></tr>
       <tr><td data-i18n="feat.rowTags">Tag capture</td><td><span class="mono">POST /api/tags</span></td><td><code>tags-service.ts</code></td></tr>
+      <tr><td data-i18n="feat.rowImport">Import</td><td><span class="mono">POST /api/project-import</span></td><td><code>routes-misc.ts</code></td></tr>
+      <tr><td data-i18n="feat.rowRelease">Release check</td><td><span class="mono">bun scripts/release-check.ts [dir]</span></td><td><code>release-check.ts</code></td></tr>
+      <tr><td data-i18n="feat.rowRecall">Recall search</td><td><span class="mono">GET /api/recall</span></td><td><code>recall.ts</code></td></tr>
+      <tr><td data-i18n="feat.rowWhy">File dossier</td><td><span class="mono">GET /api/file-why</span></td><td><code>file-why.ts</code></td></tr>
+      <tr><td data-i18n="feat.rowRecent">Recent sessions</td><td><span class="mono">GET /api/recent</span></td><td><code>recent.ts</code></td></tr>
+      <tr><td data-i18n="feat.rowRetro">Retrospective</td><td><span class="mono">GET /api/retro · /api/study</span></td><td><code>retro.ts</code></td></tr>
+      <tr><td data-i18n="feat.rowModels">Model scorecard</td><td><span class="mono">GET /api/model-stats</span></td><td><code>model-stats.ts</code></td></tr>
+      <tr><td data-i18n="feat.rowAdvisor">Version advisor</td><td><span class="mono">GET /api/lib-advice</span></td><td><code>lib-advisor.ts</code></td></tr>
+      <tr><td data-i18n="feat.rowDeps">Deps explainer</td><td><span class="mono">GET /api/deps</span></td><td><code>deps.html</code></td></tr>
     </tbody>
   </table>
 </div>

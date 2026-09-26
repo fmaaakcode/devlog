@@ -126,5 +126,5 @@ from the DevLog release. No `-(release)` unless asked.
 
 The complete rules (trackable plans `doc:plan`, doc generation, the standards library
 `-(ask:rules)`, and the vuln audit `-(audit)`) live in
-[`skills/devlog-protocol/SKILL.md`](./skills/devlog-protocol/SKILL.md). Read it when you
-need the exact syntax for plans, docs, standards, or audits.
+[`skills/devlog-protocol/`](./skills/devlog-protocol/SKILL.md): `SKILL.md` is a short index,
+each topic is its own file under `reference/`. Read the index, then only the topic file you need.

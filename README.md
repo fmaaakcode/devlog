@@ -30,9 +30,9 @@ On top of the record: **guards** that block mistakes before they land, a **memor
 -(bug fix) #12 — the token check ran before the session cookie was parsed
 ```
 
-## Guards — 18 checks that refuse instead of warn
+## Guards — 19 checks that refuse instead of warn
 
-A guard is an automatic check that stops a mistake before it enters your record. Fifteen run on Claude's response before it closes; three sit on other gates. Every guard has a hit counter, so a silent guard is distinguishable from a dead one.
+A guard is an automatic check that stops a mistake before it enters your record. Sixteen run on Claude's response before it closes; three sit on other gates. Every guard has a hit counter, so a silent guard is distinguishable from a dead one.
 
 **Closure & honesty (5)** — so "done" means done
 
@@ -41,14 +41,15 @@ A guard is an automatic check that stops a mistake before it enters your record.
 | Empty closure | "Closed #12" when nothing is #12 — rejected, with the real open list |
 | Mismatched closure | Right number, wrong item — rejected so the wrong item never closes |
 | Work without closure | Finished an open task and forgot to close it by number — nudged before moving on |
-| Root cause required | A bug can't be closed with a bare number; Claude must name *why* it happened. A knowingly temporary fix is recorded as visible debt (`bug fix:interim`) |
+| Root cause required | A bug can't be closed with a bare number; Claude must name *why* it happened. Optionally a failure class from a fixed list — `-(bug fix) #N [timing] cause` (condition, matcher, missing guard, env, timing, silent, stale, drift, contract, interface, type) — so the retro can show *which kind* of defect keeps recurring. A knowingly temporary fix is recorded as visible debt (`bug fix:interim`) |
 | Silent session | Wrote code and documented nothing — one reminder |
 
-**Release (5)** — so you never ship a half-finished version
+**Release (6)** — so you never ship a half-finished version
 
 | Guard | What it stops |
 |---|---|
 | Open items block shipping | `-(release)` with open todos/bugs/security → refused until closed |
+| Checks must pass | The project's own typecheck / lint / test must be green on the *current* tree (a stamp bound to the tree, valid 24 h). Missing or stale? DevLog runs them in the background and records the release once green — see [Releases](#releases--one-command). Red on this exact tree → back to Claude to fix the code |
 | Version never goes back | A version ≤ current is rejected; no duplicate release ever |
 | Release syntax | Mixing a bump type with an explicit version in one tag → rejected with both correct forms |
 | Feature reminder | A release with work but no client-visible `-(feature)` line → one soft reminder, never blocks |
@@ -72,7 +73,7 @@ A guard is an automatic check that stops a mistake before it enters your record.
 | **Write gate** (PreToolUse on Write/Edit) | Checks config files as they're written (toolchain versions, etc.) against the standards library; a violation stops and needs a deliberate confirm |
 | **Load-bearing wall gate** | The first time Claude touches a file that ≥ 5 other files depend on, it's stopped once: "this is a load-bearing wall — here's what sits on it." Doesn't prevent demolition; prevents *unaware* demolition. If Claude proceeds without recording a reason (`decision`/`insight` in the same session), one non-blocking nudge asks for it |
 
-Bypass knobs for emergencies: `DEVLOG_RELEASE_GUARD=0`, `DEVLOG_CLOSURE_CHECK=0`, `DEVLOG_ROOTCAUSE_CHECK=0`, `DEVLOG_DEMOLITION_GATE=0`, `DEVLOG_STANDARDS_CHECK=0`. Every bypass is deliberate — nothing slips through by oversight.
+Bypass knobs for emergencies: `DEVLOG_RELEASE_GUARD=0`, `DEVLOG_RELEASE_CHECK=0`, `DEVLOG_CLOSURE_CHECK=0`, `DEVLOG_ROOTCAUSE_CHECK=0`, `DEVLOG_DEMOLITION_GATE=0`, `DEVLOG_STANDARDS_CHECK=0`. Every bypass is deliberate — nothing slips through by oversight.
 
 ## Libraries — safety first
 
@@ -89,7 +90,7 @@ Bypass knobs for emergencies: `DEVLOG_RELEASE_GUARD=0`, `DEVLOG_CLOSURE_CHECK=0`
 
 Everything open gets a `#N` that follows you across sessions — open today, close next week.
 
-- **Tasks** open with `-(todo)`, close with `-(done) #N` or withdraw with `-(dropped) #N`. Live list any time with `-(ask:open)`.
+- **Tasks** open with `-(todo)`, close with `-(done) #N` or withdraw with `-(dropped) #N` (or the × on the task's row in the dashboard — recorded as a drop, not deleted). Live list any time with `-(ask:open)`.
 - **Bugs** open with `-(bug found)`, close with a root cause. A bug that comes back after its "fix" is linked with ⟲ when you name the old report in the new one (`-(bug found) ⟲ #N …`) or re-report it word for word — regressions don't pass quietly.
 - **Security** items have their own lane: never deferrable, never shipped open.
 - **Plans** (`-(doc:plan)`) are checkbox documents whose boxes flip themselves as steps close — see [Plans](#plans--two-distinct-things-similar-names).
@@ -115,7 +116,7 @@ Your record becomes something you can ask, so you don't re-open an old debate or
 
 The record used to store *what* was done, not *why it was requested* or *what happened along the way*. Three pieces close that gap:
 
-- **`-(ask:recent) [N | Nd]`** — the time door. A summary of the last session (its tags in order, files touched with edit sizes, commands and which failed, its story if any). `3` = last 3 sessions, `7d` = last week. Pull it when picking up old work instead of digging through raw data.
+- **`-(ask:recent) [N | Nd]`** — the time door. A summary of the last session (its tags in order, files touched with edit sizes — shell writes like `sed -i` or redirection included — commands and which failed, its story if any). `3` = last 3 sessions, `7d` = last week. Pull it when picking up old work instead of digging through raw data.
 - **Your literal request** — with every documentation batch, the user's own prompt (≤ 700 chars) is stored and linked to its tags. It shows in file dossiers and session summaries, so "why was this asked for?" is answered in your words, not the model's interpretation.
 - **`-(story)`** — after a batch that closes two or more items, one nudge asks Claude for the *turning points only*: an approach that failed, a change of direction, a deliberate deferral (≤ 1200 chars, one per batch, no re-telling of tags). Linked to the closed numbers and stamped by an evidence check: a claim like "we tried X and it failed" with no trace in the session's events is marked *unsupported*.
 
@@ -143,13 +144,19 @@ Rules captured from your corrections, pulled on demand by language or app type (
 
 ## Releases — one command
 
-Emit `-(release) <reason>` and DevLog does the rest: detects the bump type, computes the version, writes the changelog, generates the release page, and patches the version field in `package.json` / `Cargo.toml` in place (atomic, anchored regex — nothing else in the file is touched). Every client-visible capability declared with `-(feature)` accumulates in a features registry, backfillable to past releases.
+Emit `-(release) <reason>` and DevLog does the rest: detects the bump type, computes the version, writes the changelog, generates the release page, and patches the version field in `package.json` / `Cargo.toml` in place (atomic, anchored regex — nothing else in the file is touched).
+
+- **Only green releases** — the project's own checks (the manifest's typecheck / lint / test scripts) must pass on the current tree. Run them yourself with `bun <devlog>/scripts/release-check.ts [project-dir]`, or don't: when the stamp is missing or stale, the daemon runs them in the background and records the release on its own once green. The outcome reaches Claude on its next turn. A project that declares no checks is let through — the gate enforces the checks you have, it doesn't invent them.
+- **Post-release steps run themselves** — right after the release is recorded, DevLog runs what the project declares, in order: mirror the tree to a public checkout (if `.devlog/publish.json` names one), then `bun run build` (if `package.json` has a `build` script). A failure comes back on the next turn and stays in `doctor` until fixed. Off with `DEVLOG_POST_RELEASE_DISABLED=1`.
+
+Every client-visible capability declared with `-(feature)` accumulates in a features registry, backfillable to past releases.
 
 ## Your data doesn't get lost
 
 - **Archive, never delete** — old events roll into monthly compressed archives; every `undo` keeps a copy first, and if the copy can't be written the deletion is refused.
 - **Daily backups** of project settings.
 - **Move between machines** — export any project's history as one JSON bundle and import it elsewhere with duplicate-skipping merge.
+- **Move or rename a folder** — each project carries a random id in `<project>/.devlog/project.json` (kept out of git by a `.gitignore` inside `.devlog/`). A moved or renamed folder keeps its history; a copy of the folder, or two folders sharing a name, become separate projects whose records never mix.
 - **Doctor** — `bun run doctor [path] [--json]` finds corruption, duplicates, stale items, abandoned plans, releases shipped past open bugs; recent findings also surface at session start.
 - **`-(ask:record)`** — audits the record itself for entries captured wrongly (swallowed prose, fragments, drifted shape); fixes only with your approval, entry by entry, archiving the original first.
 
@@ -176,7 +183,7 @@ That's the whole install. The plugin bundles everything:
 - **The tag protocol** arrives as a compact SessionStart primer plus an on-demand `devlog-protocol` skill — nothing gets copied into your global `~/.claude/CLAUDE.md`.
 - **The local server** auto-starts on first use (bundled `ensure-server.sh`); open the dashboard at `http://127.0.0.1:7777`.
 - **Your data** lives in `~/.devlog/data/` — outside the plugin cache, so it survives every `/plugin marketplace update`.
-- **One folder in your project:** the daemon keeps running in the background after Claude Code exits (stop it any time — see [Uninstall](#uninstall)), and the first captured tag creates `<project>/.devlog/` (`DEVLOG_STATUS.md`, changelog, release pages). Add `.devlog/` to your `.gitignore` if you don't want those generated files in your repo.
+- **One folder in your project:** the daemon keeps running in the background after Claude Code exits (stop it any time — see [Uninstall](#uninstall)), and DevLog creates `<project>/.devlog/`: a small identity file (`project.json`, git-ignored automatically) plus, as you use the features, `DEVLOG_STATUS.md`, the changelog and release pages. Add `.devlog/` to your `.gitignore` if you don't want those generated files in your repo.
 
 Requires [Bun](https://bun.sh/) 1.3.14+ on your `PATH` (the plugin prints the one-line install command if it's missing) and `bash` + `curl` for the hooks (Git for Windows ships both). Update later with `/plugin marketplace update`. Set `DEVLOG_LANG=ar` for Arabic protocol messages.
 
@@ -212,7 +219,7 @@ Add the rest from `hooks/hooks.json` the same way. The full set is:
 
 > **Do not set `"async": true` on the Stop hook.** Async fires-and-forgets, so nothing can block — the guards would print warnings nobody reads. The 200–500 ms at the end of each turn is the price of real enforcement.
 
-Manual installs also need the protocol: paste [`skills/devlog-protocol/SKILL.md`](./skills/devlog-protocol/SKILL.md) (or its relevant parts) into your `~/.claude/CLAUDE.md`. Plugin users skip this.
+Manual installs also need the protocol: copy the [`skills/devlog-protocol/`](./skills/devlog-protocol/SKILL.md) folder (the `SKILL.md` index plus its `reference/` topic files) into `~/.claude/skills/`. Plugin users skip this.
 
 ### Verify
 
@@ -242,7 +249,7 @@ Full rules: the [`devlog-protocol` skill](./skills/devlog-protocol/SKILL.md).
 
 ## Privacy
 
-All data stays local — the server listens on loopback only (`127.0.0.1` / `::1`), and **no telemetry** is ever sent. The only outbound requests are **opt-out** lookups of package names + versions (npm / crates.io / PyPI / Go / Packagist and OSV.dev — the dependency sweep, the `-(ask:lib)` advisor, the install gate, and the standards gate's toolchain check) and an hourly update check against GitHub Releases — metadata only, never your code or history. Switch off with `DEVLOG_VULN_CHECK_DISABLED=1`, `DEVLOG_REGISTRY_CHECK_DISABLED=1`, `DEVLOG_VERSION_CHECK_DISABLED=1` — with all three set, nothing leaves your machine. Host-by-host table and full threat model: [SECURITY.md](./SECURITY.md). Removing everything: [Uninstall](#uninstall).
+All data stays local — the server listens on loopback only (`127.0.0.1` / `::1`), and **no telemetry** is ever sent. The only outbound requests are **opt-out** lookups of package names + versions (npm / crates.io / PyPI / Go / Packagist and OSV.dev — the dependency sweep, the `-(ask:lib)` advisor, the install gate, and the standards gate's toolchain check) and an hourly update check against GitHub Releases — metadata only, never your code or history. Secrets inside captured commands (API keys, passwords, tokens, PEM blocks) are replaced with `[redacted]` before storage. Switch off with `DEVLOG_VULN_CHECK_DISABLED=1`, `DEVLOG_REGISTRY_CHECK_DISABLED=1`, `DEVLOG_VERSION_CHECK_DISABLED=1` — with all three set, nothing leaves your machine. Host-by-host table and full threat model: [SECURITY.md](./SECURITY.md). Removing everything: [Uninstall](#uninstall).
 
 ## Development
 

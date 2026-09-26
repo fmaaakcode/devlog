@@ -68,7 +68,8 @@ CI runs the same gates on Ubuntu, macOS, and Windows.
 DevLog tracks its own development. If you work on it via Claude Code, the plugin is
 disabled for this repo (`.claude/settings.json`) so hooks run against your live
 working tree — emit `-(tag)` markers per [`CLAUDE.md`](./CLAUDE.md) and the full
-protocol in [`skills/devlog-protocol/SKILL.md`](./skills/devlog-protocol/SKILL.md).
+protocol in [`skills/devlog-protocol/`](./skills/devlog-protocol/SKILL.md) (an index plus one
+file per topic under `reference/`).
 
 ## Scope changes
 

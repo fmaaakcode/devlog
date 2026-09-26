@@ -553,16 +553,17 @@ export function buildContext(
   // Gated by its own toggle so it can be silenced independently of the summary.
   if (config.describeNudge) parts.push(...describeNudgeLines(profile, tags));
 
-  // Standards catalog — awareness only (names, not content). Claude maps the
-  // task to the relevant categories and pulls them with -(ask:rules). For a
-  // brand-new empty project this is the only hint that a rules library exists.
+  // Standards catalog — awareness only (names, not content). Standards are
+  // SILENT by user decision (2026-09-26): a category that does not fit the open
+  // project, pulled on Claude's own initiative, does more harm than good — so
+  // the names are listed only so Claude knows what exists WHEN THE USER ASKS.
   if (ctx.catalogNames) {
     parts.push("");
     parts.push(L("## Available standards", "## معايير متاحة (Standards)"));
     parts.push(ctx.catalogNames);
     parts.push(L(
-      "> Pull what fits your task with `-(ask:rules) <category>` (multiple allowed). Add a rule with `-(rule:add)`, full list with `-(rules:list)`. Rules land in this project's layer; `global:` promotes one that fits every project.",
-      "> اسحب المناسب لمهمتك بـ `-(ask:rules) <التصنيف>` (عدّة مسموحة). أضِف قاعدة بـ `-(rule:add)`، القائمة الكاملة بـ `-(rules:list)`. القواعد تُكتب لهذا المشروع؛ `global:` يرفع ما ينفع الجميع."));
+      "> Pull a category with `-(ask:rules) <category>` ONLY when the user asks for it — never on your own initiative. Add a rule with `-(rule:add)`, full list with `-(rules:list)`. Rules land in this project's layer; `global:` promotes one that fits every project.",
+      "> اسحب التصنيف بـ `-(ask:rules) <التصنيف>` فقط حين يطلبه المستخدم — لا من تلقاء نفسك. أضِف قاعدة بـ `-(rule:add)`، القائمة الكاملة بـ `-(rules:list)`. القواعد تُكتب لهذا المشروع؛ `global:` يرفع ما ينفع الجميع."));
   }
 
   if (built.length) {

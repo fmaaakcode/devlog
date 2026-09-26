@@ -85,10 +85,12 @@ describe("a failed pull is audible (#860)", () => {
   test("a successful pull still blocks — the note path is failure-only", async () => {
     globalThis.fetch = (async () => Response.json({ items: [] })) as unknown as typeof fetch;
     const ctx = makeCtx("-(ask:open)");
-    await expect(serveAsks([OPEN_ROW], ctx)).resolves.toBeUndefined();
-    // blockContinue throws by design here; serveAsks catches it as a row error,
-    // so the proof that we took the BLOCKING path is that the command WAS
-    // consumed (mark-after-success, #398) before the block attempt.
-    expect(ctx.served).toEqual(["ask:open"]);
+    const blocks: string[] = [];
+    ctx.blockContinue = (async (t: string) => { blocks.push(t); }) as AskCtx["blockContinue"];
+    await serveAsks([OPEN_ROW], ctx);
+    expect(ctx.served).toEqual(["ask:open"]);   // consumed only after success (#398)
+    expect(blocks.length).toBe(1);
+    expect(blocks[0]).toContain("[devlog open]");
+    expect(ctx.feedback).toEqual([]);
   });
 });
