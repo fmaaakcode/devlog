@@ -122,11 +122,11 @@ The record used to store *what* was done, not *why it was requested* or *what ha
 
 ## Session-start briefing
 
-Every new session, Claude receives a compact briefing so it never starts from zero: the project's identity and stack, the last five things built, open items with their numbers, alerts (outdated libraries, vulnerabilities, record damage, a stale server), and which standards it can pull — all under an enforced size cap so the start never bloats. Preview the exact block at `GET /api/inject/preview`.
+Every new session, Claude receives a compact briefing so it never starts from zero: the project's identity and stack, the last five things built, open items with their numbers, alerts (outdated libraries, vulnerabilities, record damage, a stale server), and which standards exist (listed only — Claude pulls them when you ask) — all under an enforced size cap so the start never bloats. Preview the exact block at `GET /api/inject/preview`.
 
 ## Standards library
 
-Rules captured from your corrections, pulled on demand by language or app type (`-(ask:rules) typescript security`), added with `-(rule:add)`. Two layers: rules written inside a project land in that project's own layer (`<root>/.devlog/standards`, travels with the repo), and `-(rule:add) global:<cat>` promotes a rule to the global library (`<CLAUDE_CONFIG_DIR or ~/.claude>/standards`, override with `DEVLOG_STANDARDS_DIR`) so one Rust rule serves every Rust project. Each rule gets a before/after effect measurement (see below), so you know which rules actually changed anything.
+Rules captured from your corrections, added with `-(rule:add)`, and pulled by language or app type (`-(ask:rules) typescript security`) **only when you ask** — Claude never pulls them on its own, so a rule that does not fit the project in front of it never gets in the way. Two layers: rules written inside a project land in that project's own layer (`<root>/.devlog/standards`, travels with the repo), and `-(rule:add) global:<cat>` promotes a rule to the global library (`<CLAUDE_CONFIG_DIR or ~/.claude>/standards`, override with `DEVLOG_STANDARDS_DIR`) so one Rust rule serves every Rust project. Each rule gets a before/after effect measurement (see below), so you know which rules actually changed anything.
 
 ## Dashboard — everything above, live
 

@@ -1,5 +1,5 @@
 // i18n guard (#709): the dashboard assets must carry ZERO Arabic literals
-// outside assets/dashboard-i18n.js — every UI string goes through the shared
+// outside assets/dashboard-i18n.js (+ features-i18n.js, spread into DICT) — every UI string goes through the shared
 // dictionary. Comments are exempt (they document, they don't render), so a
 // small lexer strips JS/CSS/HTML comments before scanning. The suite also
 // checks the dictionary itself (every key has both languages) and that every
@@ -198,5 +198,23 @@ describe("serve-time language stamping (#701)", () => {
     try {
       expect(localizeHtmlLang(MARKER)).toContain(`<html lang="en" dir="ltr" data-default-lang="en">`);
     } finally { if (old === undefined) delete process.env.DEVLOG_LANG; else process.env.DEVLOG_LANG = old; }
+  });
+});
+
+// #1291: the enforcement toggle's help text claimed it "blocks writing code until
+// Claude pulls the project's standards" — a pull gate deleted 2026-08-13. The
+// toggle only gates the write-checkers (pre-standards.js) and the Stop-side
+// dependency-freshness check (hook-guards.ts); standards are pulled on request only.
+describe("standards toggle help text matches what the toggle gates (#1291)", () => {
+  const sub = DICT["inj.enforceSub"] as { en: string; ar: string };
+
+  test("never claims a pull-before-write gate", () => {
+    expect(sub.en).not.toMatch(/until claude pulls/i);
+    expect(sub.ar).not.toContain("حتى يسحب");
+  });
+
+  test("names the write checks it actually switches off", () => {
+    expect(sub.en).toMatch(/as they're written/);
+    expect(sub.ar).toContain("وقت كتابتها");
   });
 });

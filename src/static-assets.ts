@@ -35,6 +35,7 @@ import depsJs from "../assets/deps.js" with { type: "text" };
 // i18n dictionary + the static-page applier (#700/#708): every dashboard page
 // imports its UI strings from dashboard-i18n.js.
 import dashboardI18nJs from "../assets/dashboard-i18n.js" with { type: "text" };
+import featuresI18nJs from "../assets/features-i18n.js" with { type: "text" };
 import pageI18nJs from "../assets/page-i18n.js" with { type: "text" };
 // Binary asset: the "file" loader yields a path (real on disk in dev, virtual
 // in the compiled fs) that Bun.file() can stream either way.
@@ -66,6 +67,7 @@ export const STATIC_ASSETS: Record<string, Asset> = {
   "stack-map-graph-util.js": { text: stackMapGraphUtilJs, mime: "application/javascript; charset=utf-8" },
   "deps.js": { text: depsJs, mime: "application/javascript; charset=utf-8" },
   "dashboard-i18n.js": { text: dashboardI18nJs, mime: "application/javascript; charset=utf-8" },
+  "features-i18n.js": { text: featuresI18nJs, mime: "application/javascript; charset=utf-8" },
   "page-i18n.js": { text: pageI18nJs, mime: "application/javascript; charset=utf-8" },
   "dashboard.jpeg": { file: dashboardJpeg, mime: "image/jpeg" },
 };
