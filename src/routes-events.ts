@@ -95,6 +95,10 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
             const name = resolved.name;
             const effectiveCwd = resolved.cwd;
             await applyRelocation(data, resolved);
+            // The status mirror reads tags, plans and the project profile —
+            // never events. Rebuilding it on every tool call cost ~150ms under
+            // the lock for an unchanged file; only a change it reads re-exports.
+            let statusDirty = resolved.relocatedFrom !== undefined;
             // Apply the phase-1 scan if resolution still points at the same
             // project (guards the rare case where a concurrent writer changed
             // what `cwd` resolves to between the two phases).
@@ -105,6 +109,7 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
             if (fresh && name === name0 && (!stored || pathsEqual(stored.path, effectiveCwd))) {
               const isNew = !stored;
               applyPreservedScan(data, name, fresh);
+              statusDirty = true;
               if (isNew) stackJob = { cwd: effectiveCwd, profile: data.projects[name] };
               runVulnScan(name).catch(e => softFail("runVulnScan", e));
             }
@@ -127,6 +132,7 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
                   if (!isStepClosed(step) && desc.includes(step.text.toLowerCase().slice(0, 20))) {
                     step.completed = true;
                     plan.updatedAt = new Date().toISOString();
+                    statusDirty = true;
                   }
                 }
               }
@@ -143,7 +149,7 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
               scheduleRescan(effectiveCwd, name);
             }
 
-            if (effectiveCwd) await exportStatusMd(effectiveCwd, data, name);
+            if (statusDirty && effectiveCwd) await exportStatusMd(effectiveCwd, data, name);
             broadcast("hook", { project: name, event: entry.event, tool: entry.tool, file_path: entry.file_path, type: entry.type, description: entry.description, command: entry.command });
             return Response.json({ ok: true });
           // Narrowed save: this handler appends an event and may refresh the

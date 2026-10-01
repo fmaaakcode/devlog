@@ -15,7 +15,7 @@
 // mentions `npm install` no command at all (#1172), and `bun add "react"` still
 // name react.
 
-import { isBlankTok, shellSegments, type ShellTok } from "./shell-write";
+import { isBlankTok, shellSegments, withoutRedirects, type ShellTok } from "./shell-write";
 
 export interface InstallPkg {
   name: string;
@@ -147,8 +147,10 @@ export function parseInstallCommands(cmd: string): InstallPkg[] {
   // Segments come from the shell tokenizer: `&&`/`||`/`;`/`|`/newline split
   // (#762 — a `bun add x` line that isn't the LAST line used to escape the `$`
   // anchor), `\`+newline joined into one command (#1036), quoted strings,
-  // comments and heredoc bodies blanked (#1172).
-  for (const seg of shellSegments(cmd)) {
+  // comments and heredoc bodies blanked (#1172). Redirections are dropped
+  // first: `pip install x 2>&1` named a package `2`, `npm i x > out.txt` one
+  // called `out.txt`.
+  for (const seg of shellSegments(cmd).map(withoutRedirects)) {
     const text = sentence(seg);
     for (const { re, eco } of MANAGERS) {
       const m = text.match(re);
@@ -159,7 +161,9 @@ export function parseInstallCommands(cmd: string): InstallPkg[] {
         if (skipNext) { skipNext = false; continue; }
         const flag = flagOf(w);
         if (flag.startsWith("-")) { skipNext = VALUE_FLAGS.has(flag); continue; }
-        const tok = nameOf(w);
+        // A redirect glued to an npm/cargo name (`lodash>out.txt`) is cut off;
+        // pip keeps it — there `pkg>=2` / `pkg>1` is the version specifier.
+        const tok = eco === "pypi" ? nameOf(w) : nameOf(w).replace(/&?[<>].*$/, "");
         if (!tok || isNonRegistryToken(tok)) continue;
         const pkg = eco === "pypi" ? parsePipToken(tok) : parseAtToken(tok, eco);
         if (pkg && !seen.has(`${pkg.eco}:${pkg.name}`)) {

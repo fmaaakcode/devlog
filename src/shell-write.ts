@@ -147,6 +147,21 @@ export const isBlankTok = (t: ShellTok): boolean => /^·+$/.test(t.stripped);
 const SEP_RE = /^(?:&&|\|\||\|&|\||;|\n|\(|\)|&(?!>))/;
 const REDIRECT_RE = /^(\d*|&)(>>|>\||>|<<<|<<|<)(&\d+|&-)?/;
 
+/** The segment's words minus its redirections: `2>&1`, `&>log`, `>>log`, and
+ *  `>` / `2>` / `<` together with the word they point at. What remains is the
+ *  command and its arguments — so a name reader never takes `2` or `out.txt`
+ *  for an operand. A redirect glued to an argument (`x>out`) is the caller's. */
+export function withoutRedirects(seg: ShellTok[]): ShellTok[] {
+  const words: ShellTok[] = [];
+  for (let k = 0; k < seg.length; k++) {
+    const m = REDIRECT_RE.exec(seg[k].stripped);
+    if (!m) { words.push(seg[k]); continue; }
+    // A bare operator (`>`, `2>`, `<`, `<< EOF`) points at the NEXT word.
+    if (!m[3] && m[0] === seg[k].stripped) k++;
+  }
+  return words;
+}
+
 function unquote(raw: string): string {
   let t = raw.trim();
   if (t.length >= 2 && ((t[0] === "'" && t.at(-1) === "'") || (t[0] === '"' && t.at(-1) === '"'))) t = t.slice(1, -1);

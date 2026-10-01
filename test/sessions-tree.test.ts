@@ -6,8 +6,8 @@
 // kill buttons included). Pure functions, no WMI.
 
 import { describe, expect, test } from "bun:test";
-import { buildDescendantTree, isTrustedParent, pruneDescendantsAgainst, sameProcess, type WinProc } from "../src/sessions";
-import type { DescendantProcess } from "../src/types";
+import { applyDescendants, buildDescendantTree, isTrustedParent, pruneDescendantsAgainst, sameProcess, type WinProc } from "../src/sessions";
+import type { ClaudeSession, DescendantProcess, DevLogData } from "../src/types";
 
 const P = (pid: number, ppid: number, name: string, created: number): WinProc => ({ pid, ppid, name, command: "", created });
 const SELF = 999_999;
@@ -76,5 +76,34 @@ describe("sameProcess / pruneDescendantsAgainst (#1062)", () => {
     expect(kept.map(d => d.pid)).toEqual([10]);
     expect(kept[0]?.orphaned).toBe(true);
     expect(kept[0]?.lastSeen).toBe("now");
+  });
+});
+
+// The WMI snapshot (~0.75s, 4s worst case) ran INSIDE withData on every 10s
+// poll, stalling each hook POST queued behind it. Phase 1 (gatherProcessState)
+// now takes it off the lock; phase 2 must stay a synchronous merge so nothing
+// slow can creep back under the lock.
+describe("applyDescendants — the merge half, run under the lock", () => {
+  const data = (descendants: DescendantProcess[] = []) =>
+    ({ projects: {}, descendants }) as unknown as DevLogData;
+  const live = (pid: number): ClaudeSession => ({ pid, sessionId: "s1", cwd: "", startedAt: 0, alive: true });
+
+  test("is synchronous: it returns no promise to await under the lock", () => {
+    expect(applyDescendants(data(), { sessions: [], procs: [] })).toBeUndefined();
+  });
+
+  test("tracks a live session's children from the gathered snapshot", () => {
+    const d = data();
+    applyDescendants(d, { sessions: [live(100)], procs: [P(100, 1, "claude.exe", 1), P(200, 100, "bun.exe", 2)] });
+    expect(d.descendants.map(x => [x.pid, x.orphaned])).toEqual([[200, false]]);
+  });
+
+  test("an empty snapshot (WMI failure / none taken) changes nothing", () => {
+    const row = { pid: 200, name: "bun.exe", command: "", parentPid: 100, created: 2, claudePid: 100,
+      sessionId: "s1", project: "p", firstSeen: "t", lastSeen: "t", orphaned: false } as DescendantProcess;
+    const d = data([row]);
+    applyDescendants(d, { sessions: [], procs: [] });
+    applyDescendants(d, { sessions: [live(100)], procs: [] });
+    expect(d.descendants).toEqual([row]);
   });
 });

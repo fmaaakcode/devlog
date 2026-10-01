@@ -8,7 +8,7 @@
 import { loadData, withData } from "./data";
 import { resolveProjectFor } from "./project-resolve";
 import { broadcast } from "./broadcast";
-import { readActiveSessions, refreshDescendants, killProcess } from "./sessions";
+import { readActiveSessions, applyDescendants, gatherProcessState, killProcess } from "./sessions";
 import { appendAudit } from "./audit";
 
 // These handlers read params/url + pass the request to appendAudit; none call
@@ -57,11 +57,13 @@ export function makeProcessRoutes(): Record<string, unknown> {
     // Force refresh descendant snapshot
     "/api/processes/refresh": {
       async POST() {
+        // Snapshot off the lock, merge under it (same split as the poll).
+        const state = await gatherProcessState((await loadData()).descendants.length > 0);
         return await withData(async (data) => {
-          await refreshDescendants(data);
+          applyDescendants(data, state);
           broadcast("processes", { count: data.descendants.length });
           return Response.json({ ok: true, count: data.descendants.length });
-        });
+        }, { touches: ["meta"] });
       },
     },
 

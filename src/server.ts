@@ -33,7 +33,7 @@ import { rebuildChangelogsMigration } from "./changelog-rebuild";
 import { buildContext, getEffectiveConfig, isDynamicTypeEnabled, newSecurityAlerts, shownRejectionIds, trimInjectionsLog } from "./inject";
 import { primerFor } from "./primer";
 import { migrateLegacyData } from "./migrate";
-import { refreshDescendants } from "./sessions";
+import { applyDescendants, gatherProcessState } from "./sessions";
 import { rename as fsRename } from "node:fs/promises";
 import { migrateMemoryDir } from "./project-rename";
 import { resolveProjectFor } from "./project-resolve";
@@ -638,12 +638,13 @@ async function pollDescendants() {
     descendantPollBusy = true;
     try {
       let count = 0; let changed = false;
+      const state = await gatherProcessState((await loadData()).descendants.length > 0); // off the lock — see its doc
       await withData(async (data) => {
         const before = data.descendants.length;
-        await refreshDescendants(data);
+        applyDescendants(data, state);
         count = data.descendants.length;
         changed = before !== count || data.descendants.some(d => d.orphaned);
-      });
+      }, { touches: ["meta"] });
       if (changed) broadcast("processes", { count });
       descendantPollDelay = (changed || count > 0)
         ? DESCENDANT_POLL_MIN_MS

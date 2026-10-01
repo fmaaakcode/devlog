@@ -97,6 +97,26 @@ describe("parseInstallCommands", () => {
     // A comment after the names is dropped, the names before it survive.
     expect(parseInstallCommands("bun add hono # web framework").map(p => p.name)).toEqual(["hono"]);
   });
+
+  // Live telemetry carried `pypi:2`: `pip install pymupdf 2>&1` read the
+  // redirect as a second package, `npm i lodash > out.txt` one named out.txt.
+  test.each([
+    ["pip install pymupdf 2>&1", "pypi:pymupdf@"],
+    ["pip install pymupdf==1.24.0 2>&1", "pypi:pymupdf@1.24.0"],
+    ["pip install pillow 2> err.txt", "pypi:pillow@"],
+    ["npm i lodash > out.txt", "npm:lodash@"],
+    ["npm i lodash>out.txt", "npm:lodash@"],
+    ["bun add zod &>log", "npm:zod@"],
+    ["bun add zod >> install.log 2>&1", "npm:zod@"],
+    ["cargo add serde < /dev/null", "crates:serde@"],
+    ["bun create astro@5 2>&1", "npm:create-astro@5"],
+  ])("redirections are never package names: %p", (cmd, want) => {
+    expect(parseInstallCommands(cmd).map(p => `${p.eco}:${p.name}@${p.version}`)).toEqual([want]);
+  });
+
+  test("a pip specifier glued with > stays a version, not a redirect", () => {
+    expect(parseInstallCommands('pip install "requests>=2.31"')).toEqual([{ name: "requests", version: ">=2.31", eco: "pypi" }]);
+  });
 });
 
 // #606 — the test12 live gap: `bun create astro@5` installed the old generation

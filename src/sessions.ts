@@ -210,8 +210,23 @@ export function sameProcess(stored: { pid: number; created?: number }, live: Win
   return !!live && !!stored.created && live.created === stored.created;
 }
 
-export async function refreshDescendants(data: DevLogData): Promise<void> {
+/** What a descendant refresh reads from the machine: the session records with
+ *  liveness, and the process snapshot (empty when not taken or WMI failed). */
+export interface ProcessState { sessions: ClaudeSession[]; procs: WinProc[] }
+
+/** Phase 1 — the slow half, run OFF the store lock: the PowerShell/WMI
+ *  snapshot takes ~0.75s (4s worst case), and taken inside withData it stalled
+ *  every hook POST behind the 10s poll. `tracking` = descendants are stored;
+ *  with no live session and nothing tracked there is nothing to check, so no
+ *  snapshot is spawned (the idle machine stays free). */
+export async function gatherProcessState(tracking: boolean): Promise<ProcessState> {
   const sessions = await readActiveSessions();
+  const procs = tracking || sessions.some(s => s.alive) ? await snapshotAllProcesses() : [];
+  return { sessions, procs };
+}
+
+/** Phase 2 — the cheap merge, under the lock: pure over the gathered state. */
+export function applyDescendants(data: DevLogData, { sessions, procs }: ProcessState): void {
   const aliveSessions = sessions.filter(s => s.alive);
   // No active Claude sessions: prune the DEAD descendants, keep live ones as
   // orphans. #775: this used to wipe data.descendants wholesale with no pid
@@ -220,14 +235,15 @@ export async function refreshDescendants(data: DevLogData): Promise<void> {
   // the module's own "transient failure must not read as mass death" promise.
   if (aliveSessions.length === 0) {
     if (data.descendants.length === 0) return;
-    const snapshot = await snapshotAllProcesses();
-    if (snapshot.length === 0) return;   // transient WMI failure — change nothing
+    // Empty = transient WMI failure, or no snapshot taken because nothing was
+    // tracked when phase 1 ran — either way, change nothing.
+    if (procs.length === 0) return;
     data.descendants = pruneDescendantsAgainst(
-      data.descendants, new Map(snapshot.map(p => [p.pid, p])), new Date().toISOString(),
+      data.descendants, new Map(procs.map(p => [p.pid, p])), new Date().toISOString(),
     );
     return;
   }
-  const allProcs = await snapshotAllProcesses();
+  const allProcs = procs;
   if (allProcs.length === 0) return;
 
   const procMap = new Map(allProcs.map(p => [p.pid, p]));
