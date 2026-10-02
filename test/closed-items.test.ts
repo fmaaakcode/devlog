@@ -146,6 +146,45 @@ describe("closedItems resolver (src/closed-items.ts)", () => {
     expect(it?.planTitle).toBe("drop plan");
   });
 
+  // #1303: closers are stored with their item's TEXT, so two items sharing a
+  // text shared one key, and both reported the NEWEST closure.
+  test("two items with the same text each keep their own closure", () => {
+    const text = "open the port on the local network";
+    const tags = [
+      tag("todo", text, { num: 309, timestamp: "2026-10-02T01:48:00Z" }),
+      tag("done", text, { id: "c1", timestamp: "2026-10-02T03:33:00Z" }),
+      tag("todo", text, { num: 316, timestamp: "2026-10-02T03:34:00Z" }),
+      tag("done", text, { id: "c2", timestamp: "2026-10-02T03:36:00Z" }),
+    ];
+    const byNum = new Map(closedItems(baseData(tags), PROJ).map(i => [i.num, i]));
+    expect(byNum.get(309)?.closerId).toBe("c1");
+    expect(byNum.get(316)?.closerId).toBe("c2");
+  });
+
+  test("both open, then closed one after the other: paired in order", () => {
+    const text = "same text twice";
+    const tags = [
+      tag("todo", text, { num: 1, timestamp: "2026-10-01T00:00:00Z" }),
+      tag("todo", text, { num: 2, timestamp: "2026-10-01T01:00:00Z" }),
+      tag("done", text, { id: "c1", timestamp: "2026-10-02T00:00:00Z" }),
+      tag("done", text, { id: "c2", timestamp: "2026-10-03T00:00:00Z" }),
+    ];
+    const byNum = new Map(closedItems(baseData(tags), PROJ).map(i => [i.num, i]));
+    expect(byNum.get(1)?.closerId).toBe("c1");
+    expect(byNum.get(2)?.closerId).toBe("c2");
+  });
+
+  test("one closer that text-closed both items serves both", () => {
+    const text = "closed once for two";
+    const tags = [
+      tag("todo", text, { num: 1, timestamp: "2026-10-01T00:00:00Z" }),
+      tag("todo", text, { num: 2, timestamp: "2026-10-01T01:00:00Z" }),
+      tag("done", text, { id: "c1", timestamp: "2026-10-02T00:00:00Z" }),
+    ];
+    const items = closedItems(baseData(tags), PROJ);
+    expect(items.map(i => i.closerId)).toEqual(["c1", "c1"]);
+  });
+
   test("empty when nothing is closed", () => {
     const tags = [tag("todo", "just open", { num: 1 })];
     expect(closedItems(baseData(tags), PROJ)).toEqual([]);

@@ -100,6 +100,25 @@ describe("duplicateReleases", () => {
 });
 
 describe("duplicateTags (the blind spot between the two re-post checks — #590)", () => {
+  // #1302 sweep: same text, different items — not a re-post.
+  test("two numbered items with the same text, and their two closers, are not duplicates", () => {
+    const text = "افتح المنفذ على الشبكة المحلية";
+    expect(duplicateTags([
+      tag("todo", text, at(0), 309),
+      tag("todo", text, at(1), 316),
+      tag("done", text, at(2)),
+      tag("done", text, at(3)),
+    ])).toBeNull();
+  });
+
+  test("a closer re-posted for ONE item is still a duplicate", () => {
+    expect(duplicateTags([
+      tag("todo", "افتح المنفذ على الشبكة المحلية", at(-10), 309),
+      tag("done", "افتح المنفذ على الشبكة المحلية", at(0)),
+      tag("done", "افتح المنفذ على الشبكة المحلية", at(1)),
+    ])?.code).toBe("DUPLICATE_TAGS");
+  });
+
   test("the live-log incident: four `dropped` tags re-posted 96s apart", () => {
     const f = duplicateTags([
       tag("dropped", "تحسين التصميم", at(0)),
@@ -193,6 +212,30 @@ describe("bloatedTwins (the #486/#487 signature)", () => {
       tag("todo", "اختبارات البارسر للحالات", at(0), 3),
       tag("todo", "اختبارات البارسر للحالات الفارغة والمتطرفة", at(1), 4),
     ])).toBeNull();
+  });
+
+  // kb 2026-10-02: #309 closed by mistake, reopened as #316 with a suffix, then
+  // closed for real. Closers are stored with their item's text and no number,
+  // so the two real closures looked like a twin and doctor advised -(undo).
+  test("closers of two different items are not a twin, even outside the window", () => {
+    const base = "جعل kb متاحاً على الشبكة المحلية بتغيير KB_HOST";
+    const reopened = `${base} — يعاد فتحه بعد إغلاق #309 بالخطأ`;
+    const opener309 = tag("todo", base, at(-60 * 24 * 10), 309);
+    const recent = [
+      tag("done", base, at(0)),
+      tag("todo", reopened, at(1), 316),
+      tag("done", reopened, at(3)),
+    ];
+    expect(bloatedTwins([opener309, ...recent])).toBeNull();
+    expect(bloatedTwins(recent, [opener309, ...recent])).toBeNull();
+  });
+
+  test("a closer re-read with a swallowed tail is still a twin", () => {
+    expect(bloatedTwins([
+      tag("todo", "اختبارات البارسر للحالات", at(-10), 3),
+      tag("done", "اختبارات البارسر للحالات", at(0)),
+      tag("done", "اختبارات البارسر للحالات وهنا نثر مبتلع", at(1)),
+    ])?.code).toBe("BLOATED_TWINS");
   });
 
   test("a re-read twin carrying the same number, or no number, is still caught", () => {
@@ -334,8 +377,10 @@ describe("checkInvariants", () => {
       // fixture gave it #4 — two numbers are two items, not a twin).
       tag("todo", "نص أصلي طويل كفاية", at(0), 3),
       tag("todo", "نص أصلي طويل كفاية مع ذيل مبتلَع", at(1)),
-      tag("dropped", "تحسين التصميم", at(0), 5),
-      tag("dropped", "تحسين التصميم", at(1.6), 6),
+      // Closers never carry a number in the live log (#1302 sweep: two numbers
+      // would read as two different items).
+      tag("dropped", "تحسين التصميم", at(0)),
+      tag("dropped", "تحسين التصميم", at(1.6)),
       tag("bug found", "عطل\nبسطرين", at(0), 9),
     ], []).map(f => f.code);
     expect(codes).toEqual([

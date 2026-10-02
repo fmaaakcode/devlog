@@ -26,6 +26,7 @@
 // can also run in-process at SessionStart (see inject-warnings.ts).
 
 import { SINGLE_LINE_TAGS } from "./tag-parser";
+import { CLOSER_KINDS } from "./open-items";
 import type { DevLogData, TagEntry, PlanEntry } from "./types";
 import { currentLang } from "./i18n";
 
@@ -52,6 +53,31 @@ const ms = (t: string): number => {
 // Content compared for IDENTITY, not for display: whitespace runs collapse, case
 // folds. Two tags differing only in a trailing newline are the same tag.
 const norm = (s: string): string => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+
+/**
+ * "Provably two different items?" for the re-post checks. A numbered opener is
+ * its number. A closer has none — `-(done) #N` is stored with item N's text — so
+ * it borrows the numbers of the openers carrying that text (from the project's
+ * full log: a recent window can start after the item opened). Two different
+ * numbers, or a closer text shared by several items, is two events; unknown on
+ * either side keeps the old text-only verdict (#1073, #1302).
+ */
+function distinctItems(openers: TagEntry[]): (a: TagEntry, b: TagEntry) => boolean {
+  const byText = new Map<string, Set<number>>();
+  for (const t of openers) {
+    if (typeof t.num !== "number" || CLOSER_KINDS[t.tag]) continue;
+    const k = norm(t.content);
+    byText.set(k, (byText.get(k) ?? new Set()).add(t.num));
+  }
+  const numsOf = (t: TagEntry): Set<number> =>
+    typeof t.num === "number" ? new Set([t.num]) : CLOSER_KINDS[t.tag] ? (byText.get(norm(t.content)) ?? new Set()) : new Set();
+  return (a, b) => {
+    const an = numsOf(a), bn = numsOf(b);
+    if (!an.size || !bn.size) return false;
+    if (an.size === 1 && bn.size === 1) return [...an][0] !== [...bn][0];
+    return true;
+  };
+}
 
 // The reason behind a release's version: `vX.Y.Z — reason` → "reason" (the same
 // shape resolveReleaseIntent writes at store time). Content with no leading
@@ -135,7 +161,8 @@ export function duplicateReleases(tags: TagEntry[]): Finding | null {
  * (no changelog split, no not-newer guard). It lies in the aggregates instead —
  * study counts work tag-by-tag, and release-html prints a row per tag.
  */
-export function duplicateTags(tags: TagEntry[]): Finding | null {
+export function duplicateTags(tags: TagEntry[], openers: TagEntry[] = tags): Finding | null {
+  const distinct = distinctItems(openers);
   // Releases are duplicateReleases' beat: same shape, different remedy (rollback),
   // different severity. Filtering them here keeps one finding per corruption.
   const sorted = [...tags]
@@ -156,7 +183,7 @@ export function duplicateTags(tags: TagEntry[]): Finding | null {
       const b = sorted[j];
       const dt = ms(b.timestamp) - ms(a.timestamp);
       if (dt > NEAR_MS) break;                       // sorted → nothing further is near
-      if (consumed.has(j) || b.tag !== a.tag || norm(b.content) !== an) continue;
+      if (consumed.has(j) || b.tag !== a.tag || norm(b.content) !== an || distinct(a, b)) continue;
       copies++;
       consumed.add(j);
       lastDt = dt;
@@ -195,13 +222,20 @@ export function duplicateTags(tags: TagEntry[]): Finding | null {
  * i.e. deleting real open work to satisfy a detector. A twin is the same tag
  * where at least one side carries no number, or both carry the SAME number.
  * Chains are grouped: a ⊂ b ⊂ c is one event reported once, not three rows.
+ *
+ * Closers carry no number of their own — `-(done) #N` is stored with item N's
+ * text — so a closer borrows the number of the item whose text it holds. A
+ * mistaken close of #309 followed by a reopen as #316 ("… — reopened after #309")
+ * and its real close left two closers, one a prefix of the other, and the old
+ * rule advised deleting a real closure. `openers` is the project's full log (the
+ * SessionStart window can start after the item was opened).
  */
-export function bloatedTwins(tags: TagEntry[]): Finding | null {
+export function bloatedTwins(tags: TagEntry[], openers: TagEntry[] = tags): Finding | null {
   const sorted = [...tags].sort((a, b) => ms(a.timestamp) - ms(b.timestamp));
   const twins: string[] = [];
   const consumed = new Set<number>();
-  const sameIdentity = (a: TagEntry, b: TagEntry) =>
-    typeof a.num !== "number" || typeof b.num !== "number" || a.num === b.num;
+  const distinct = distinctItems(openers);
+  const sameIdentity = (a: TagEntry, b: TagEntry) => !distinct(a, b);
   for (let i = 0; i < sorted.length; i++) {
     if (consumed.has(i)) continue;
     const a = sorted[i];
@@ -342,7 +376,8 @@ export function integrityWarning(
   data: DevLogData, project: string, recentDays = RECENT_DAYS, acked: ReadonlySet<string> = new Set(),
 ): string | null {
   const since = Date.now() - recentDays * 86400000;
-  const tags = (data.tags || []).filter(t => t.project === project && ms(t.timestamp) >= since);
+  const all = (data.tags || []).filter(t => t.project === project);
+  const tags = all.filter(t => ms(t.timestamp) >= since);
   if (!tags.length) return null;
 
   // Number gaps are excluded by construction, not by severity: computed over a
@@ -350,8 +385,8 @@ export function integrityWarning(
   // check must only run invariants that are meaningful within the window.
   const findings = [
     duplicateReleases(tags),
-    duplicateTags(tags),
-    bloatedTwins(tags),
+    duplicateTags(tags, all),
+    bloatedTwins(tags, all),
     multilineHeadlines(tags),
   ].filter((f): f is Finding => f !== null && f.severity !== "low" && !acked.has(f.code));
   if (!findings.length) return null;

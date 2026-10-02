@@ -56,37 +56,54 @@ const closerGroups = (closerTag: string): string[] => {
   return [...new Set(groups)];
 };
 
-interface CloserIndex { byText: Map<string, TagEntry>; byNum: Map<number, TagEntry>; }
+interface CloserIndex { byText: Map<string, TagEntry[]>; byNum: Map<number, TagEntry>; }
+
+const tsOf = (t: { timestamp?: string }): number => +new Date(t.timestamp || 0) || 0;
 
 /**
  * Index every closer once, grouped by the opener-set it can close and keyed by
- * BOTH normalized text and each leading `#N`, keeping the most-recent per key.
- * Turns closer lookup from a full scan per opener — O(openers × closers) — into
- * O(1) (#407).
+ * BOTH normalized text (every closer, oldest first) and each leading `#N` (the
+ * most recent). Turns closer lookup from a full scan per opener —
+ * O(openers × closers) — into a short per-text list (#407).
  */
 function buildCloserIndex(tags: TagEntry[]): Map<string, CloserIndex> {
   const idx = new Map<string, CloserIndex>();
-  const newer = (a: TagEntry | undefined, b: TagEntry) =>
-    (!a || +new Date(b.timestamp) > +new Date(a.timestamp)) ? b : a;
+  const newer = (a: TagEntry | undefined, b: TagEntry) => (!a || tsOf(b) > tsOf(a)) ? b : a;
   for (const t of tags) {
     for (const g of closerGroups(t.tag)) {
       let e = idx.get(g);
       if (!e) { e = { byText: new Map(), byNum: new Map() }; idx.set(g, e); }
       const norm = normalizeTagContent(t.content);
-      e.byText.set(norm, newer(e.byText.get(norm), t));
+      const list = e.byText.get(norm);
+      if (list) list.push(t); else e.byText.set(norm, [t]);
       for (const n of leadingNums(t.content)) e.byNum.set(n, newer(e.byNum.get(n), t));
     }
   }
+  for (const e of idx.values()) for (const list of e.byText.values()) list.sort((a, b) => tsOf(a) - tsOf(b));
   return idx;
 }
 
-/** Most-recent closer for `opener` within `group`, matched by text OR `#num`. */
-function findCloser(idx: Map<string, CloserIndex>, group: string | undefined, opener: { content: string; num?: number }): TagEntry | undefined {
+/**
+ * The closer for `opener` within `group`, matched by text OR `#num`. A closer is
+ * stored with its item's TEXT, so two items sharing a text (a reopen under a new
+ * number) share one text key: each takes the first closer at or after its own
+ * opening that an earlier item hasn't claimed (`used`, filled as openers are
+ * walked oldest first) — the newest-only rule handed both items the second
+ * closure (#1303). One closer that text-closed both still serves both.
+ */
+function findCloser(
+  idx: Map<string, CloserIndex>, group: string | undefined,
+  opener: { content: string; num?: number; timestamp?: string }, used: Set<string>,
+): TagEntry | undefined {
   const e = group ? idx.get(group) : undefined;
   if (!e) return undefined;
-  const byT = e.byText.get(normalizeTagContent(opener.content));
+  const list = e.byText.get(normalizeTagContent(opener.content)) ?? [];
+  const from = tsOf(opener);
+  const after = list.filter(c => tsOf(c) >= from);
+  const byT = after.find(c => !used.has(c.id)) ?? after[0] ?? list[list.length - 1];
+  if (byT) used.add(byT.id);
   const byN = typeof opener.num === "number" ? e.byNum.get(opener.num) : undefined;
-  if (byT && byN) return +new Date(byT.timestamp) >= +new Date(byN.timestamp) ? byT : byN;
+  if (byT && byN) return tsOf(byT) >= tsOf(byN) ? byT : byN;
   return byT ?? byN;
 }
 
@@ -105,10 +122,11 @@ export function closedItems(data: DevLogData, project: string): ClosedItem[] {
   const openIds = new Set(
     [...openTodos(tags), ...openBugs(tags), ...openSecurity(tags)].map(t => t.id),
   );
-  for (const t of tags) {
+  const used = new Set<string>();             // closers already paired (#1303)
+  for (const t of [...tags].sort((a, b) => tsOf(a) - tsOf(b))) {
     const group = openerGroup(t.tag);
     if (!group || openIds.has(t.id)) continue;   // not an opener, or still open
-    const closer = findCloser(closerIdx, group, t);
+    const closer = findCloser(closerIdx, group, t, used);
     // The problem's footprint = where it was reported ∪ where it was fixed.
     const files = [...new Set([...(t.files || []), ...(closer?.files || [])])].slice(0, 8);
     // The FIX's own footprint, kept separate from that union (#585): "did the fix
@@ -150,7 +168,7 @@ export function closedItems(data: DevLogData, project: string): ClosedItem[] {
       if (typeof s.num !== "number") continue;
       if (openStepNums.has(s.num)) continue;                       // still open
       if (!isStepClosed(s) && !closedByDone.has(s.num)) continue;  // neither closed nor #N-closed
-      const closer = findCloser(closerIdx, planGroup, { content: s.text, num: s.num });
+      const closer = findCloser(closerIdx, planGroup, { content: s.text, num: s.num }, used);
       out.push({
         num: s.num, kind: "plan-step", text: s.text, planTitle: plan.title, openedAt: plan.timestamp,
         closedBy: closer?.tag ?? "plan-complete", closedAt: closer?.timestamp, closerText: closer?.content,
