@@ -8,6 +8,8 @@
 // side's CI is the only CI — never feed it a tree that failed locally).
 //
 //   bun scripts/publish-snapshot.ts --to D:/devlog-public [--dry] [--force] [source-dir]
+//   (a hand run approves the target on this machine; the daemon passes --auto
+//   and may only write a target approved that way)
 //
 // Never commits, never pushes: git stays with the release specialist.
 
@@ -15,7 +17,7 @@ import { existsSync, mkdirSync, copyFileSync, rmSync } from "node:fs";
 import { writeFile, mkdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "../src/spawn";
-import { planSnapshot, manifestVersion, type PublishRecord } from "../src/publish-snapshot";
+import { planSnapshot, manifestVersion, approveTarget, isApprovedTarget, type PublishRecord } from "../src/publish-snapshot";
 import { verifyStamp } from "../src/release-check";
 
 const args = process.argv.slice(2);
@@ -27,6 +29,13 @@ const source = resolve(args.filter((a, i) => !a.startsWith("--") && args[i - 1] 
 if (!target) { console.error("usage: bun scripts/publish-snapshot.ts --to <public-checkout> [--dry] [--force] [source-dir]"); process.exit(2); }
 const targetDir = resolve(target);
 if (!existsSync(join(targetDir, ".git"))) { console.error(`${targetDir}: not a git checkout — refusing to mirror into an arbitrary folder.`); process.exit(2); }
+// --auto = the daemon's post-release run, driven by the REPO's publish.json —
+// foreign input after a clone. Only a target approved on this machine (by a
+// manual run of this script) may be written.
+if (args.includes("--auto") && !isApprovedTarget(source, targetDir)) {
+  console.error(`${targetDir} is not an approved mirror target for ${source} on this machine — .devlog/publish.json alone can't authorise a write. If it is yours, run once by hand: bun scripts/publish-snapshot.ts --to ${targetDir} ${source}`);
+  process.exit(3);
+}
 
 // Read-only git: the list of files the repository would ship from each side.
 function shipList(root: string): string[] {
@@ -55,6 +64,7 @@ for (const rel of plan.copy) {
 }
 for (const rel of plan.delete) rmSync(join(targetDir, rel), { force: true });
 
+if (!args.includes("--auto")) approveTarget(source, targetDir);   // a hand run IS the approval
 const record: PublishRecord = { target: targetDir, at: new Date().toISOString(), version: manifestVersion(source) };
 await mkdir(join(source, ".devlog"), { recursive: true });
 await writeFile(join(source, ".devlog", "publish.json"), JSON.stringify(record, null, 2), "utf8");

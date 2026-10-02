@@ -36,7 +36,7 @@ describe("discoverPostRelease", () => {
     publish("D:/somewhere-public");
     const steps = discoverPostRelease(root);
     expect(steps.map(s => s.name)).toEqual(["snapshot"]);
-    expect(steps[0].cmd).toEqual(["bun", SNAPSHOT_SCRIPT, "--to", "D:/somewhere-public", root]);
+    expect(steps[0].cmd).toEqual(["bun", SNAPSHOT_SCRIPT, "--auto", "--to", "D:/somewhere-public", root]);
     expect(existsSync(SNAPSHOT_SCRIPT)).toBe(true);
   });
 

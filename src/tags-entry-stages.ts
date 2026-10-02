@@ -43,6 +43,7 @@ import type { DevLogData, TagEntry } from "./types";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { currentLang } from "./i18n";
+import { linkStoryNums } from "./story-nudge";
 
 const L = <T>(en: T, ar: T): T => (currentLang() === "ar" ? ar : en);
 
@@ -652,6 +653,28 @@ export const ENTRY_STAGES: EntryStage[] = [
       if (tag === "story") {
         tagEntry.evidence = ctx.sessionEdits > 0 ? "supported" : ctx.sessionCommands > 0 ? "unverifiable" : "unsupported";
         if (ctx.closedInBatch.size) tagEntry.relatedNums = [...ctx.closedInBatch];
+        else {
+          // Written after its closers were recorded (the story whisper's form,
+          // `-(story) #4 #5 …`): the lead names the work. Only numbers this
+          // project actually has are kept — the link is never guessed.
+          const { nums, text } = linkStoryNums(tagEntry.content);
+          const known = nums.filter(n => data.tags.some(t => t.project === project && t.num === n));
+          if (known.length) {
+            tagEntry.relatedNums = known;
+            tagEntry.content = text;
+            // Its own window touched nothing; the files of the work it narrates
+            // (the items and their closers) are what file dossiers key on.
+            if (!tagEntry.files?.length) {
+              const files = new Set<string>();
+              for (const t of data.tags) {
+                if (t.project !== project || !t.files?.length) continue;
+                const about = typeof t.num === "number" ? [t.num] : CLOSER_KINDS[t.tag] ? leadingNums(t.content) : [];
+                if (about.some(n => known.includes(n))) for (const f of t.files) files.add(f);
+              }
+              if (files.size) tagEntry.files = [...files];
+            }
+          }
+        }
       }
       // Assign a per-project number to openable tags so Claude can close
       // them by `#N`. Skip closures, meta, and non-tracking tags.

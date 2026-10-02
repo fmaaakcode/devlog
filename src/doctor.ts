@@ -9,7 +9,8 @@ import { readdir, readFile } from "node:fs/promises";
 import { resolve, basename } from "node:path";
 import { normalizeSlashes } from "./path-utils";
 import { spawnSync } from "./spawn";
-import { openTodos, openBugs, openSecurity, isStepClosed } from "./data";
+import { openTodos, openBugs, openSecurity, isStepClosed, DATA_DIR } from "./data";
+import { incidentLine, openIncidents } from "./store-incidents";
 import { checkInvariants, type Finding } from "./doctor-invariants";
 import { isAcked } from "./standards-ack";
 import { snapshotLag, type PublishRecord } from "./publish-snapshot";
@@ -437,6 +438,17 @@ async function diagnose(projectPath: string): Promise<DoctorReport> {
       title: L(`Post-release chain for v${post.version} never finished`, `خطوات ما بعد الإصدار v${post.version} لم تكتمل`),
       detail: L(`Started ${post.startedAt}, ${post.steps.length} step(s) recorded, no final verdict — the daemon probably restarted mid-chain. Re-run the missing steps by hand.`,
                 `بدأت ${post.startedAt}، سُجّلت ${post.steps.length} خطوة بلا حكم نهائي — الأرجح أن الـdaemon أُعيد إقلاعه أثناءها. أعد الخطوات الناقصة يدويًا.`),
+    });
+  }
+
+  // A corrupt store quarantined at load (src/store-incidents.ts) — data-wide,
+  // so every project's doctor shows it until the `.corrupt-*` file is deleted.
+  for (const i of openIncidents(DATA_DIR)) {
+    findings.push({
+      severity: "high",
+      code: "STORE_CORRUPT",
+      title: L(`Data store ${i.store} was corrupt`, `مخزن البيانات ${i.store} كان تالفًا`),
+      detail: incidentLine(i, L),
     });
   }
 

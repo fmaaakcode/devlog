@@ -183,6 +183,26 @@ describe("shouldAutoRestart (the watchdog's pure decision)", () => {
     expect(shouldAutoRestart(c)).toBe(false);              // default 20s quiet
     expect(shouldAutoRestart({ ...c, quietMs: 1_000 })).toBe(true);
   });
+
+  // The v3.70.5 release sat at "checking" with no process behind it: its
+  // auto-check ran minutes after the POST returned, the idle clock read
+  // "nothing in flight", and a self-restart killed the check.
+  test("never while background work holds it — and the held beat is not spent", () => {
+    expect(shouldAutoRestart({ ...base, holds: 1 })).toBe(false);
+    expect(shouldAutoRestart({ ...base, holds: 0 })).toBe(true);
+  });
+
+  test("holdRestart: each hold releases once, however often its release is called", async () => {
+    const { holdRestart, restartHolds } = await import("../src/freshness");
+    const start = restartHolds();
+    const a = holdRestart();
+    const b = holdRestart();
+    expect(restartHolds()).toBe(start + 2);
+    a(); a();                     // idempotent: a double release can't free b's hold
+    expect(restartHolds()).toBe(start + 1);
+    b();
+    expect(restartHolds()).toBe(start);
+  });
 });
 
 describe("newestSourceMtime (portable mtime gather)", () => {

@@ -21,6 +21,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { bunSpawn } from "./spawn";
+import { holdRestart } from "./freshness";
 import { CHECK_SCRIPT, captureTail, type StepResult } from "./release-check";
 import type { PublishRecord } from "./publish-snapshot";
 
@@ -50,7 +51,9 @@ export function discoverPostRelease(root: string): PostReleaseStep[] {
     try {
       const rec = JSON.parse(readFileSync(publishFile, "utf8")) as Partial<PublishRecord>;
       if (typeof rec.target === "string" && rec.target) {
-        steps.push({ name: "snapshot", cmd: ["bun", SNAPSHOT_SCRIPT, "--to", rec.target, root] });
+        // --auto: the script refuses a target not approved on this machine
+        // (publish.json travels with a clone — it names, it doesn't authorise).
+        steps.push({ name: "snapshot", cmd: ["bun", SNAPSHOT_SCRIPT, "--auto", "--to", rec.target, root] });
       }
     } catch { /* torn record — no mirror step; doctor's SNAPSHOT_LAG still watches */ }
   }
@@ -100,8 +103,16 @@ export async function runStepAsync(step: { name: string; cmd: string[] }, root: 
 export async function runPostRelease(
   root: string,
   version: string,
-  opts: { steps?: PostReleaseStep[]; runner?: (step: PostReleaseStep, root: string) => Promise<StepResult>; log?: (line: string) => void } = {},
+  opts: PostReleaseOpts = {},
 ): Promise<PostReleaseRecord> {
+  // A mirror + build runs long after the release POST returned — hold the self-restart.
+  const release = holdRestart();
+  try { return await postReleaseChain(root, version, opts); } finally { release(); }
+}
+
+type PostReleaseOpts = { steps?: PostReleaseStep[]; runner?: (step: PostReleaseStep, root: string) => Promise<StepResult>; log?: (line: string) => void };
+
+async function postReleaseChain(root: string, version: string, opts: PostReleaseOpts): Promise<PostReleaseRecord> {
   const log = opts.log ?? ((): void => undefined);
   const run = opts.runner ?? runStepAsync;
   const steps = opts.steps ?? discoverPostRelease(root);

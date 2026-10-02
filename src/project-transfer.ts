@@ -32,6 +32,7 @@
 //   project.
 
 import { existsSync } from "node:fs";
+import { safeProjectKey } from "./path-utils";
 import { normalizeTagContent } from "./data";
 import { FEATURE_REF_TAGS } from "./features";
 import { CLOSURE_TAGS } from "./open-items";
@@ -122,6 +123,9 @@ export function validateBundle(raw: unknown): string | null {
   if (typeof b.schemaVersion !== "number" || b.schemaVersion < 1 || b.schemaVersion > TRANSFER_SCHEMA_VERSION)
     return `unsupported schemaVersion ${b.schemaVersion} (this server reads 1..${TRANSFER_SCHEMA_VERSION})`;
   if (typeof b.project !== "string" || !b.project.trim()) return "missing project name";
+  // `__proto__` resolved data.projects[name] to Object.prototype and the merge
+  // wrote the bundle's desc/about onto every object (path-utils.safeProjectKey).
+  if (safeProjectKey(b.project) !== b.project) return `reserved project name "${b.project}"`;
   if (!b.profile || typeof b.profile !== "object") return "missing profile";
   for (const k of ["tags", "plans", "events", "worklog"] as const)
     if (!Array.isArray(b[k])) return `${k} must be an array`;

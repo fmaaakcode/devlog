@@ -167,6 +167,19 @@ export function foreignRootWarning(daemonRoot: string, hookRoot: string): string
 let lastMutationMs = 0;
 export function noteMutation(): void { lastMutationMs = Date.now(); }
 
+/** Background work no request is waiting on — the release auto-check, the
+ *  post-release chain — runs for minutes AFTER its POST returned, so the idle
+ *  clock saw "nothing in flight" and a self-restart killed it mid-check: the
+ *  v3.70.5 record sat at "checking" with no process behind it. Such work takes
+ *  a hold; the watchdog waits while any is held. Returns the (idempotent) release. */
+let holds = 0;
+export function holdRestart(): () => void {
+  holds++;
+  let released = false;
+  return () => { if (!released) { released = true; holds--; } };
+}
+export const restartHolds = (): number => holds;
+
 /** Which requests hold the watchdog: real mutations only. GET must stay out —
  *  wrapRoutes once noted EVERY guarded method including GET (#619), so an open
  *  dashboard tab (or any 3s monitoring poll) reset the idle clock forever and
@@ -185,6 +198,7 @@ export interface AutoRestartCheck {
   attemptedForMtime: number;
   quietMs?: number;   // source must be untouched this long (an edit burst isn't a version)
   idleMs?: number;    // no mutating request this long (don't drop a session's hook POSTs mid-swap)
+  holds?: number;     // background work in progress (holdRestart) — never restart under it
 }
 
 /** Pure decision: should the daemon self-restart NOW to pick up newer code? */
@@ -192,6 +206,7 @@ export function shouldAutoRestart(c: AutoRestartCheck): boolean {
   const quietMs = c.quietMs ?? 20_000;
   const idleMs = c.idleMs ?? 30_000;
   if (!isStale(c.bootMs, c.newestSourceMs)) return false;
+  if (c.holds) return false;   // checked before the one-shot arm: a held beat is not an attempt
   if (c.attemptedForMtime === c.newestSourceMs) return false;
   if (c.now - c.newestSourceMs < quietMs) return false;
   if (c.now - c.lastMutationMs < idleMs) return false;
@@ -218,7 +233,7 @@ export function startAutoRestart(opts: {
   const timer = setInterval(async () => {
     try {
       const newest = await newestSourceMtime(opts.root);
-      if (!shouldAutoRestart({ now: Date.now(), bootMs: opts.bootMs, newestSourceMs: newest, lastMutationMs, attemptedForMtime })) return;
+      if (!shouldAutoRestart({ now: Date.now(), bootMs: opts.bootMs, newestSourceMs: newest, lastMutationMs, attemptedForMtime, holds })) return;
       attemptedForMtime = newest;
       console.log("[freshness] disk code newer than this process and nothing in flight — self-restarting to serve it");
       restart(opts.stop);

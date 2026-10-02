@@ -13,8 +13,10 @@
 // SNAPSHOT_LAG the next time the two manifests disagree. It never commits or
 // pushes — git stays with the release specialist.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { DATA_DIR } from "./data";
+import { normalizePath } from "./path-utils";
 
 export interface SnapshotPlan {
   copy: string[];
@@ -73,4 +75,28 @@ export function snapshotLag(sourceRoot: string, record: PublishRecord | null): {
   const target = manifestVersion(record.target);
   if (!source || !target || source === target) return null;
   return { source, target, targetDir: record.target };
+}
+
+// ── Approved targets ─────────────────────────────────────────────────────────
+// `.devlog/publish.json` lives in the repo, so a cloned project can ship one
+// naming ANY checkout on the machine — and the daemon's post-release chain
+// would mirror over it, deleting what that checkout has and the source lacks.
+// The repo record therefore only says WHERE; whether DevLog may write there is
+// decided by this per-machine list in the data dir. A manual run of the
+// script is the approval; the daemon's own run (`--auto`) refuses a target
+// that isn't on it, which surfaces as a failed post-release step.
+const TARGETS_FILE = () => join(DATA_DIR, "publish-targets.json");
+
+function readTargets(): Record<string, string> {
+  try { return JSON.parse(readFileSync(TARGETS_FILE(), "utf8")) as Record<string, string>; } catch { return {}; }
+}
+
+export function isApprovedTarget(source: string, target: string): boolean {
+  return readTargets()[normalizePath(source)] === normalizePath(target);
+}
+
+export function approveTarget(source: string, target: string): void {
+  const all = readTargets();
+  all[normalizePath(source)] = normalizePath(target);
+  writeFileSync(TARGETS_FILE(), JSON.stringify(all, null, 2), "utf8");
 }

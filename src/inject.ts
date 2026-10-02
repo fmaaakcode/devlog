@@ -19,9 +19,10 @@ import type { DevLogData, InjectionConfig, ProjectProfile, TagEntry, InjectionEn
 import { takeReleaseAnnouncement } from "./release-autocheck";
 import {
   DEFAULT_INJECTION_CONFIG, CLOSURE_TAGS,
-  openTodos, openBugs, openSecurity, openPlanSteps, openOutdatedLibs, type OpenPlanStep,
+  openTodos, openBugs, openSecurity, openPlanSteps, openOutdatedLibs, type OpenPlanStep, DATA_DIR,
 } from "./data";
 import { currentLang } from "./i18n";
+import { incidentLine, openIncidents } from "./store-incidents";
 import { formatFileStoryContext } from "./file-story";
 import { closedItems } from "./closed-items";
 import { similarClosedBugs, type SimilarBug } from "./recall";
@@ -509,7 +510,7 @@ export function buildContext(
     // A release the daemon finished on the model's behalf (release-autocheck.ts):
     // said once, first, then never again — the model is otherwise waiting for it.
     const released = takeReleaseAnnouncement(profile.path, currentLang() === "ar");
-    if (released) parts.unshift(released);
+    if (released) parts.unshift(safe(released));   // the detail quotes a check's output
     if (!parts.length) return "";
     return ["<devlog-context>", ...parts, "</devlog-context>"].join("\n");
   }
@@ -639,6 +640,15 @@ export function buildContext(
     parts.push(L(`## ⚠ Previously rejected (${projectRejections.length})${more > 0 ? ` — last ${shown.length}, ${more} more next session` : ""}`,
       `## ⚠ رُفِض في السابق (${projectRejections.length})${more > 0 ? ` — آخر ${shown.length}، و${more} في الجلسة التالية` : ""}`));
     for (const r of shown) parts.push(`- ${safe(clipLine(r.detail, MAX_REJECTION_LINE))}`);
+  }
+
+  // A corrupt store was quarantined (and restored from a backup when one
+  // parsed): every project's session hears it until the user deals with it.
+  const incidents = openIncidents(DATA_DIR);
+  if (incidents.length) {
+    parts.push("");
+    parts.push(L("## 🛑 DevLog data store damaged — tell the user", "## 🛑 تلف في مخزن بيانات DevLog — أخبر المستخدم"));
+    for (const i of incidents) parts.push(`- ${safe(incidentLine(i, L))}`);
   }
 
   parts.push("</devlog-context>");

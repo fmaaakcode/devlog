@@ -20,12 +20,13 @@
 // re-exported below, so `from "./data"` keeps working for every existing
 // caller.
 
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { mkdir, rename } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
+import { recordIncident, restoreNewestBackup } from "./store-incidents";
 import type { DevLogData, InjectionConfig, TagEntry } from "./types";
-import { normalizeSlashes, type ExistsProbe } from "./path-utils";
+import { normalizeSlashes, safeProjectKey, type ExistsProbe } from "./path-utils";
 import { diskExists } from "./disk-probe";
 import { atomicWriteText } from "./atomic-write";
 import { assertTestDataDirIsolated } from "./data-guard";
@@ -183,19 +184,17 @@ async function readJsonOr<T>(path: string, fallback: T): Promise<T> {
     // next save then writes a fresh file while the evidence stays on disk for
     // manual recovery (`.corrupt-*` never matches the `.bak` pruning) — and say
     // so loudly; this is the one read failure that must never pass unnoticed.
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const dest = `${path}.corrupt-${stamp}`;
-    try { await rename(path, dest); } catch { /* rename failed → leave it; next save overwrites */ }
-    // Name the actual newest .bak instead of promising one exists — meta.json
-    // had no backups at all while this line told the user to restore from one.
-    let bakHint = "none — this store has no .bak backups";
-    try {
-      const base = path.split(/[\\/]/).pop()?.replace(/\.json$/, "") ?? "";
-      const baks = readdirSync(dirname(path)).filter(f => f.startsWith(`${base}.`) && f.endsWith(".bak")).sort();
-      if (baks.length) bakHint = baks[baks.length - 1];
-    } catch { /* unreadable dir — keep the "none" hint */ }
-    console.error(`[store] ${path} is corrupt (${(e as Error)?.message}) — quarantined to ${dest}; continuing with an empty store. Newest backup: ${bakHint}.`);
-    return fallback;
+    const at = new Date().toISOString();
+    const dest = `${path}.corrupt-${at.replace(/[:.]/g, "-")}`;
+    let moved = false;
+    try { await rename(path, dest); moved = true; } catch { /* rename failed → leave it; next save overwrites */ }
+    // Restore the newest backup that parses instead of booting empty — only
+    // once the original is safely aside (src/store-incidents.ts). Either way
+    // the incident is recorded so SessionStart and doctor tell the user.
+    const restored = moved ? await restoreNewestBackup<T>(path) : null;
+    if (moved) recordIncident(dirname(path), { store: basename(path), quarantinedTo: dest, ...(restored ? { restoredFrom: restored.from } : {}), at });
+    console.error(`[store] ${path} is corrupt (${(e as Error)?.message}) — quarantined to ${dest}; ${restored ? `restored from ${restored.from}` : "no backup parsed — continuing with an empty store"}.`);
+    return restored ? restored.value : fallback;
   }
 }
 
@@ -684,5 +683,5 @@ export function assignNum(data: DevLogData, project: string): number {
 }
 
 export function projectName(cwd: string): string {
-  return normalizeSlashes(cwd).split("/").filter(Boolean).pop() || "unknown";
+  return safeProjectKey(normalizeSlashes(cwd).split("/").filter(Boolean).pop() || "unknown");
 }

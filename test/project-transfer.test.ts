@@ -56,6 +56,23 @@ describe("validateBundle", () => {
   test("accepts a well-formed bundle", () => {
     expect(validateBundle(mkBundle("p"))).toBeNull();
   });
+
+  // `__proto__` made data.projects[name] Object.prototype: the merge wrote the
+  // bundle's desc onto every object in the daemon (reproduced: `({}).description`).
+  test.each(["__proto__", "constructor", "toString"])("rejects the reserved project name %p", (name) => {
+    expect(validateBundle({ ...mkBundle("p"), project: name })).toContain("reserved");
+    expect(({} as Record<string, unknown>).description).toBeUndefined();
+  });
+});
+
+describe("safeProjectKey — the same guard on the folder-name path", () => {
+  test("a folder named like a prototype member gets a suffix; any other name is untouched", async () => {
+    const { safeProjectKey } = await import("../src/path-utils");
+    const { projectName } = await import("../src/data");
+    expect(safeProjectKey("__proto__")).toBe("__proto__-project");
+    expect(projectName("D:/work/constructor")).toBe("constructor-project");
+    expect(projectName("D:/work/helper")).toBe("helper");
+  });
 });
 
 describe("applyImportBundle — new project", () => {

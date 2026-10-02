@@ -16,7 +16,9 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { PORT } from "./data";
+import { DATA_DIR, PORT } from "./data";
+import { normalizePath } from "./path-utils";
+import { holdRestart } from "./freshness";
 import { CHECK_SCRIPT, verifyStamp, type StepResult, type StampStatus } from "./release-check";
 import { runStepAsync } from "./post-release";
 
@@ -43,29 +45,54 @@ export interface PendingRelease {
   finishedAt?: string;
   /** The prompt-time announcement was delivered once; never repeat it. */
   announced?: true;
+  /** The daemon process running the check — a "checking" record from any
+   *  other pid has no check behind it (autoCheckAllowed). */
+  pid?: number;
 }
 
 export const autoCheckDisabled = (env: NodeJS.ProcessEnv = process.env): boolean =>
   env.DEVLOG_RELEASE_AUTOCHECK === "0" || (env.NODE_ENV === "test" && env.DEVLOG_RELEASE_AUTOCHECK !== "1");
 
+// The record lives in the REPO (`.devlog/` travels with a clone), so a file
+// there proves nothing: a cloned project could ship a "failed" record whose
+// detail is instructions, and the next prompt would carry it to the model
+// under DevLog's 🛑 banner. Ownership is kept in the DATA dir instead — the
+// request time of the last record this daemon wrote per project root — and a
+// record that doesn't match is not ours: it is never read, announced or counted.
+const OWNERS_FILE = join(DATA_DIR, "release-requests.json");
+
+function readOwners(): Record<string, string> {
+  try { return JSON.parse(readFileSync(OWNERS_FILE, "utf8")) as Record<string, string>; } catch { return {}; }
+}
+
 export function readPending(root: string): PendingRelease | null {
   try {
     const p = JSON.parse(readFileSync(join(root, PENDING_REL), "utf8"));
-    return p && typeof p.tag === "string" && typeof p.status === "string" ? p as PendingRelease : null;
+    if (!p || typeof p.tag !== "string" || typeof p.status !== "string") return null;
+    return readOwners()[normalizePath(root)] === p.requestedAt ? p as PendingRelease : null;
   } catch { return null; }
 }
 
 export function writePending(root: string, p: PendingRelease): void {
   mkdirSync(join(root, ".devlog"), { recursive: true });
   writeFileSync(join(root, PENDING_REL), JSON.stringify(p, null, 2), "utf8");
+  const owners = readOwners();
+  if (owners[normalizePath(root)] !== p.requestedAt) {
+    owners[normalizePath(root)] = p.requestedAt;
+    try { writeFileSync(OWNERS_FILE, JSON.stringify(owners), "utf8"); } catch { /* unowned → never announced: fails closed */ }
+  }
 }
 
 /** May the stage hand THIS refusal to the auto-check? Not while one is
  *  running, and not after MAX_ATTEMPTS rounds for the same tag text. */
-export function autoCheckAllowed(status: StampStatus, pending: PendingRelease | null, content: string): boolean {
+export function autoCheckAllowed(status: StampStatus, pending: PendingRelease | null, content: string, selfPid = process.pid): boolean {
   if (!AUTO_STATUSES.has(status)) return false;
   if (!pending) return true;
-  if (pending.status === "checking") return false;
+  // "checking" blocks only while ITS daemon lives: a self-restart killed the
+  // v3.70.5 check mid-run and its record said "checking" forever, refusing
+  // every later release. A record from another process (or one predating the
+  // pid field) has no check behind it — it no longer blocks.
+  if (pending.status === "checking" && pending.pid === selfPid) return false;
   if (pending.content === content && pending.status !== "released" && pending.attempt >= MAX_ATTEMPTS) return false;
   return true;
 }
@@ -104,13 +131,22 @@ export async function runAutoCheck(
   req: { root: string; project: string; tag: string; content: string; cwd: string; sessionId?: string },
   deps: AutoCheckDeps = {},
 ): Promise<PendingRelease> {
+  // Minutes of work after the POST returned — the self-restart must wait for it.
+  const release = holdRestart();
+  try { return await autoCheckRound(req, deps); } finally { release(); }
+}
+
+async function autoCheckRound(
+  req: { root: string; project: string; tag: string; content: string; cwd: string; sessionId?: string },
+  deps: AutoCheckDeps,
+): Promise<PendingRelease> {
   const log = deps.log ?? ((): void => undefined);
   const fail = deps.onFail ?? (async (): Promise<void> => undefined);
   const prior = readPending(req.root);
   const attempt = prior && prior.content === req.content && prior.status !== "released" ? prior.attempt + 1 : 1;
   const rec: PendingRelease = {
     project: req.project, tag: req.tag, content: req.content, cwd: req.cwd, sessionId: req.sessionId,
-    requestedAt: new Date().toISOString(), attempt, status: "checking",
+    requestedAt: new Date().toISOString(), attempt, status: "checking", pid: process.pid,
   };
   writePending(req.root, rec);
   const finish = (status: PendingRelease["status"], extra: Partial<PendingRelease> = {}): PendingRelease => {

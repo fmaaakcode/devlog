@@ -30,10 +30,18 @@ function docsDirFor(projectPath: string): string {
   return join(projectPath, ".devlog", "docs");
 }
 
+// The only shape docSlug ever produces. index.json lives in the repo, so a
+// cloned project's index is foreign input: a slug like `../../../.claude/CLAUDE`
+// made writeDoc overwrite any .md/.html the user can write. An entry whose
+// slug isn't ours is dropped — the doc is then treated as new and gets a fresh slug.
+const SAFE_SLUG_RE = /^[\p{L}\p{N}-]+$/u;
+
 export async function readIndex(dir: string): Promise<DocIndexEntry[]> {
   try {
     const parsed = await Bun.file(join(dir, "index.json")).json();
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed)
+      ? parsed.filter(e => e && typeof e.slug === "string" && SAFE_SLUG_RE.test(e.slug))
+      : [];
   } catch { return []; }
 }
 

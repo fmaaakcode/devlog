@@ -50,6 +50,16 @@ export function claudeProjectSlug(cwd: string): string {
 // Null-safe (nullish → ""). Preserves casing and trailing slashes; use this for
 // display/storage. For whole-path EQUALITY use normalizePath (which also folds
 // case + trailing slashes).
+/** A project name usable as a key of the plain `data.projects` object. A name
+ *  that is an Object.prototype member (`__proto__`, `constructor`, `toString`…)
+ *  is not: `data.projects["__proto__"]` IS Object.prototype, so an import or a
+ *  folder of that name wrote `description`/`gitRemote` onto every object in
+ *  the daemon — forged text in every project's session context. Such a name
+ *  gets a suffix; every other name is returned unchanged. */
+export function safeProjectKey(name: string): string {
+  return name in Object.prototype ? `${name}-project` : name;
+}
+
 export function normalizeSlashes(p: string | null | undefined): string {
   return (p || "").replace(/\\/g, "/");
 }

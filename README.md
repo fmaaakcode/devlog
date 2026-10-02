@@ -118,7 +118,7 @@ The record used to store *what* was done, not *why it was requested* or *what ha
 
 - **`-(ask:recent) [N | Nd]`** — the time door. A summary of the last session (its tags in order, files touched with edit sizes — shell writes like `sed -i` or redirection included — commands and which failed, its story if any). `3` = last 3 sessions, `7d` = last week. Pull it when picking up old work instead of digging through raw data.
 - **Your literal request** — with every documentation batch, the user's own prompt (≤ 700 chars) is stored and linked to its tags. It shows in file dossiers and session summaries, so "why was this asked for?" is answered in your words, not the model's interpretation.
-- **`-(story)`** — after a batch that closes two or more items, one nudge asks Claude for the *turning points only*: an approach that failed, a change of direction, a deliberate deferral (≤ 1200 chars, one per batch, no re-telling of tags). Linked to the closed numbers and stamped by an evidence check: a claim like "we tried X and it failed" with no trace in the session's events is marked *unsupported*.
+- **`-(story)`** — after a batch that closes two or more items, a non-blocking whisper (the batch is already recorded) asks Claude for the *turning points only*: an approach that failed, a change of direction, a deliberate deferral (≤ 1200 chars, one per batch, no re-telling of tags), written in the next response as `-(story) #4 #5 <text>`. Mute with `DEVLOG_STORY_NUDGE=0`. Linked to the closed numbers and stamped by an evidence check: a claim like "we tried X and it failed" with no trace in the session's events is marked *unsupported*.
 
 ## Session-start briefing
 
@@ -154,7 +154,7 @@ Every client-visible capability declared with `-(feature)` accumulates in a feat
 ## Your data doesn't get lost
 
 - **Archive, never delete** — old events roll into monthly compressed archives; every `undo` keeps a copy first, and if the copy can't be written the deletion is refused.
-- **Daily backups** of project settings.
+- **Daily backups** of the stores (kept 30 days). If a store file is ever found corrupt, DevLog moves it aside as `<store>.json.corrupt-<time>`, loads the newest backup that reads cleanly, and tells you at the start of every session (and in `doctor`) until you delete the corrupt copy.
 - **Move between machines** — export any project's history as one JSON bundle and import it elsewhere with duplicate-skipping merge.
 - **Move or rename a folder** — each project carries a random id in `<project>/.devlog/project.json` (kept out of git by a `.gitignore` inside `.devlog/`). A moved or renamed folder keeps its history; a copy of the folder, or two folders sharing a name, become separate projects whose records never mix.
 - **Doctor** — `bun run doctor [path] [--json]` finds corruption, duplicates, stale items, abandoned plans, releases shipped past open bugs; recent findings also surface at session start.

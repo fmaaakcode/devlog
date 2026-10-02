@@ -14,6 +14,7 @@ import { runResponseRows } from "./src/hook-response-rows.ts";
 import { runClosureCheck } from "./src/hook-closure-check.ts";
 import { makeBudget } from "./src/hook-budget.ts";
 import { runDemolitionWhy } from "./src/hook-demolition-why.ts";
+import { storyNudgeCloserCount, storyWhisper } from "./src/story-nudge.ts";
 import { makeOutcomeCollector, type ShellOutcome } from "./src/command-outcomes.ts";
 import { postCommandOutcomes } from "./src/hook-command-outcomes.ts";
 
@@ -538,38 +539,9 @@ if (msg) {
       }
     }
 
-    // Story nudge (plan narrative-layer P2, same shape as the feature nudge):
-    // a batch that closes a RUN of items (≥2) is a chapter ending, and the tags
-    // alone record WHAT happened, never the turning points between them. One
-    // soft block asks for the -(story); re-emitting the same lines plus (or
-    // without) it passes. Closers-only on purpose: a bare -(release) narrates
-    // nothing itself (its work batches were nudged already), and blocking every
-    // release broke the whole release flow's one-block contract.
-    // Mute: DEVLOG_STORY_NUDGE=0.
-    const STORY_CLOSERS = new Set(["done", "bug fix", "bug fix:interim", "security fix"]);
-    const storyCloserCount = entries.filter(e => STORY_CLOSERS.has(e.tag)).length;
-    if (cwd && process.env.DEVLOG_STORY_NUDGE !== "0"
-        && storyCloserCount >= 2
-        && !entries.some(e => e.tag === "story")
-        && await shouldServeAsk("story-nudge")) {
-      await markAskServed("story-nudge");
-      const out = [
-        "════════ DevLog Story Nudge ════════",
-        L(`This batch ${releaseEntry ? "ships a release" : `closes ${storyCloserCount} item(s)`} — the tags say WHAT, nothing says HOW it went.`,
-          `هذه الدفعة ${releaseEntry ? "تشحن إصدارًا" : `تغلق ${storyCloserCount} عناصر`} — التاقات تقول «ماذا»، ولا شيء يقول «كيف جرت».`),
-        L("If the road had turning points worth keeping — an approach that failed, a change of direction, a deliberate deferral — record them now as ONE story (≤1200 chars, turning points only, never a re-list of the tags):",
-          "إن كان للطريق منعطفات تستحق الحفظ — نهج فشل، تغيير اتجاه، تأجيل متعمد — سجّلها الآن قصةً واحدة (≤1200 حرف، المنعطفات فقط، لا إعادة سرد للتاقات):"),
-        "  -(story) <النص>",
-        L("then re-emit the same closing lines. A straight road with no turns? Just re-emit them without a story.",
-          "ثم أعد أسطر الإغلاق نفسها. طريق مستقيم بلا منعطفات؟ أعد الأسطر كما هي بلا قصة."),
-        L("(Nothing was recorded yet. This whisper fires once per turn — it never blocks twice.)",
-          "(لم يُسجَّل شيء بعد. هذه الهمسة تظهر مرة واحدة في الدور — لا تعيق مرتين.)"),
-        "════════════════════════════════════",
-      ].join("\n");
-      await consumeRefusedRelease();
-      await log(`story-nudge BLOCKED once: closers=${storyCloserCount}, release=${!!releaseEntry}`);
-      await blockContinue(`\n${out}\n`, "story-nudge");
-    }
+    // Story nudge (src/story-nudge.ts): a whisper riding the RECORDED batch —
+    // it no longer blocks; see the module header for why.
+    const storyCloserCount = cwd && await shouldServeAsk("story-nudge") ? storyNudgeCloserCount(entries) : 0;
 
     // The POST itself is unconditional (an all-echo continuation sends an empty
     // batch — a server-side no-op) so the queue drain, response handling and
@@ -627,6 +599,12 @@ if (msg) {
         // process, so info rows pushed before it ride out with the block.
         try {
           const resp = JSON.parse(respBody);
+          // Pushed BEFORE the rows: a blocking row exits, carrying feedback with it.
+          if (storyCloserCount) {
+            feedback.push(storyWhisper(L, storyCloserCount, (resp.closed || []).map((c: { num: number }) => c.num)));
+            await markAskServed("story-nudge");
+            await log(`story-nudge whispered: closers=${storyCloserCount}`);
+          }
           await runResponseRows(resp, {
             L, log, feedback, blockContinue, flushBlock,
             session: ledger.session,

@@ -33,7 +33,7 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { normalizePath, pathsEqual, isPathInside, normalizeSlashes } from "./path-utils";
+import { normalizePath, pathsEqual, isPathInside, normalizeSlashes, safeProjectKey } from "./path-utils";
 import { bunSpawnSync } from "./spawn";
 // The same conventional-subfolder list the scanner already folds manifests from
 // (src-tauri/, frontend/, …). lockfile-tree imports node:path only, so this keeps
@@ -50,7 +50,7 @@ export type GitRootFn = (dir: string) => string | null;
 // Last path segment, mirroring data.ts:projectName. Inlined to keep this module
 // dependency-light (path-utils + types only) and trivially unit-testable.
 function baseName(cwd: string): string {
-  return normalizeSlashes(cwd).split("/").filter(Boolean).pop() || "unknown";
+  return safeProjectKey(normalizeSlashes(cwd).split("/").filter(Boolean).pop() || "unknown");
 }
 
 // Parent directory of cwd ("" at a root). Forward-slash normalized like

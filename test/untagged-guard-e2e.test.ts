@@ -123,6 +123,24 @@ describe("untagged-session guard (e2e, real hook)", () => {
     expect(blockReason(r.out)).toBe("");
   });
 
+  // A read-only review session got "code written, nothing tagged": a subagent's
+  // scratch script in the temp dir counted as the project's work. Only writes
+  // inside the project root count; one inside it still does.
+  test("a code write OUTSIDE the project is not the project's work", async () => {
+    const sid = freshSid();
+    const scratch = mkdtempSync(join(tmpdir(), "untagged-e2e-scratch-"));
+    try {
+      await seedEdit(projDir, sid, join(scratch, "probe.ts"));
+      const r = await runHook(projDir, sid, "reviewed the code, nothing changed.");
+      expect(r.code).toBe(0);
+      expect(blockReason(r.out)).toBe("");
+
+      await seedEdit(projDir, sid, join(projDir, "src", "main.ts"));
+      const r2 = await runHook(projDir, sid, "now an actual edit.");
+      expect(blockReason(r2.out)).toContain("DevLog Untagged Session");
+    } finally { rmSync(scratch, { recursive: true, force: true }); }
+  });
+
   test("docs-only writes do not count as code", async () => {
     const sid = freshSid();
     await seedEdit(projDir, sid, join(projDir, "README.md"));

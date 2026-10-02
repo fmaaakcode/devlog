@@ -197,3 +197,20 @@ describe("applyTaskDrop", () => {
     expect(await applyTaskDrop(TMP, "p", mdPath, "ghost")).toBe(false);
   });
 });
+
+// index.json lives in the repo — after a clone it is foreign input. A planted
+// slug like `../../outside/PWNED` made writeDoc write PWNED.md/.html outside the
+// docs folder (reproduced: any .md/.html the user can write, e.g. ~/.claude/CLAUDE.md).
+describe("writeDoc — a planted index slug never escapes the docs folder", () => {
+  test("the foreign entry is dropped and the doc lands under a fresh slug", async () => {
+    const docs = join(TMP, ".devlog", "docs");
+    await mkdir(docs, { recursive: true });
+    await Bun.write(join(docs, "index.json"), JSON.stringify([
+      { slug: "../../../outside/PWNED", name: "architecture", type: "report", createdAt: "t", updatedAt: "t" },
+    ]));
+    const r = await writeDoc(TMP, "p", "report", "architecture\n# body");
+    expect(r.slug).toBe("architecture");
+    expect(r.mdPath.startsWith(docs)).toBe(true);
+    expect(await Bun.file(join(TMP, "..", "outside", "PWNED.md")).exists()).toBe(false);
+  });
+});

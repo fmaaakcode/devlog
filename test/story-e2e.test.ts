@@ -1,5 +1,6 @@
-// Narrative layer P2 end to end: a batch that closes a run of items gets ONE
-// soft story nudge; the continuation's `-(story)` is stored capped, stamped
+// Narrative layer P2 end to end: a batch that closes a run of items is recorded
+// and gets ONE story whisper (never a block); a later `-(story) #N #M` is
+// stored capped, stamped
 // with a SESSION-scoped evidence verdict, linked to the numbers the batch
 // closed — and surfaces in the ask:why dossier. Also pins the negatives: one
 // closer nudges nothing, and the nudge never fires twice in a turn.
@@ -86,31 +87,42 @@ afterAll(async () => {
 });
 
 describe("story tag (narrative layer P2)", () => {
-  test("a batch closing 2 items nudges once, the continuation stores the story linked and judged", async () => {
-    const closers = "خلصنا.\n\n-(done) #1\n\n-(done) #2";
-
-    // Take 1: two closers, no story → the nudge blocks, nothing posted yet.
-    const take1 = writeTranscript("S1", [closers]);
+  // The nudge used to BLOCK the batch (nothing recorded, every tag re-written
+  // in a continuation) — 85 of 207 Stop-hook blocks in 53 days. It now rides
+  // the recorded batch as a whisper; the story arrives in a later response.
+  test("a batch closing 2 items is recorded at once and whispered — never blocked", async () => {
+    const take1 = writeTranscript("S1", ["خلصنا.\n\n-(done) #1\n\n-(done) #2"]);
     const first = await runHook(TEST_PORT, { cwd: projDir, session_id: sid, transcript_path: take1, stop_hook_active: false });
     const p1 = JSON.parse(first.out.trim());
-    expect(p1.decision).toBe("block");
-    expect(p1.reason).toContain("Story Nudge");
-    expect((await tagsOf("done")).length).toBe(0);           // not recorded yet
+    expect(p1.decision).toBeUndefined();
+    const ctx = p1.hookSpecificOutput?.additionalContext || "";
+    expect(ctx).toContain("Story Nudge");
+    expect(ctx).toContain("-(story) #1 #2");                 // names the numbers to narrate
+    expect((await tagsOf("done")).length).toBe(2);           // recorded in the same pass
+  });
 
-    // Take 2 (continuation): same closers + the story → posts, no second nudge.
-    const take2 = writeTranscript("S1", [closers, `${closers}\n\n-(story) ${STORY_TEXT}`]);
-    const second = await runHook(TEST_PORT, { cwd: projDir, session_id: sid, transcript_path: take2, stop_hook_active: true });
-    const out2 = second.out.trim();
-    if (out2) expect(out2).not.toContain("Story Nudge");     // fired once, never twice
+  test("a later -(story) #1 #2 is linked to those numbers and judged", async () => {
+    const tx = writeTranscript("S1b", [`-(story) #1 #2 ${STORY_TEXT}`]);
+    const r = await runHook(TEST_PORT, { cwd: projDir, session_id: sid, transcript_path: tx, stop_hook_active: false });
+    if (r.out.trim()) expect(r.out).not.toContain("Story Nudge");
 
     const stories = await tagsOf("story");
     expect(stories.length).toBe(1);
-    expect(stories[0].content).toBe(STORY_TEXT);
+    expect(stories[0].content).toBe(STORY_TEXT);             // the number lead is not part of the text
     // Session-scoped verdict: the session DID record an edit → supported.
     expect(stories[0].evidence).toBe("supported");
-    // Linked to the numbers the batch closed.
     expect((stories[0].relatedNums || []).sort()).toEqual([1, 2]);
-    expect((await tagsOf("done")).length).toBe(2);           // the closers landed too
+  });
+
+  test("a story naming a number the project doesn't have links nothing and keeps its text", async () => {
+    await fetch(`${BASE}/api/tags`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cwd: projDir, session_id: sid, entries: [{ tag: "story", content: "#999 مسار بلا رقم معروف" }] }),
+      signal: AbortSignal.timeout(8000),
+    });
+    const s = (await tagsOf("story")).find(t => t.content.includes("مسار بلا رقم معروف"));
+    expect(s?.content).toBe("#999 مسار بلا رقم معروف");
+    expect(s?.relatedNums).toBeUndefined();
   });
 
   test("the story surfaces in the ask:why dossier of the touched file", async () => {

@@ -25,6 +25,7 @@
 import { nearMissTags, backtickedCommandLines, parseTags } from "./tag-parser";
 import { saveLedger, type TurnLedger } from "./turn-ledger";
 import { parseCloserTail, closerTail } from "./failure-class";
+import { isPathInside } from "./path-utils";
 
 /** Everything a guard needs from the hook process. Passed in rather than
  *  imported so the guards stay testable without stdin, exit, or a real ledger
@@ -321,11 +322,16 @@ export async function untaggedSessionGuard(ctx: GuardCtx): Promise<void> {
   const { isCodeWrite } = await import("./standards");
   const { shouldNudgeUntagged } = await import("./untagged-guard");
   const { isTrackingFile } = await import("./tracking-files");
-  const codeFiles = new Set(items.filter(it => isCodeWrite(it.file_path || "")).map(it => it.file_path));
+  // Only writes INSIDE the project are the project's work: a scratch script a
+  // subagent dropped in the temp dir fired "code written, nothing tagged" on a
+  // read-only review session. A relative path is the project's own.
+  const inProject = (f: string) => !/^(?:[A-Za-z]:[\\/]|[\\/])/.test(f) || isPathInside(ctx.cwd, f);
+  const ownWrites = items.map(it => it.file_path || "").filter(f => f && inProject(f));
+  const codeFiles = new Set(ownWrites.filter(isCodeWrite));
   // #676: manual tracking files (tasks/decisions/plans/… .md) count as a second
   // trigger — they're the incident's own signature and invisible to isCodeWrite.
   // Ordinary markdown still never trips the guard.
-  const trackingFiles = new Set(items.filter(it => isTrackingFile(it.file_path || "")).map(it => it.file_path));
+  const trackingFiles = new Set(ownWrites.filter(isTrackingFile));
   if (!shouldNudgeUntagged({
     codeWriteCount: codeFiles.size,
     trackingWriteCount: trackingFiles.size,
