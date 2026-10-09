@@ -120,9 +120,29 @@ describe("inspectTranscript — each broken assumption is named", () => {
       userPrompt("hi"),
       { type: "assistant", uuid: "a1", message: { role: "assistant", content: [{ type: "text", value: "-(built) x" }] } },
       { type: "assistant", uuid: "a2", message: { role: "assistant", content: [{ type: "text", value: "more" }] } },
+      userPrompt("next", "u9"),
     ));
     expect(r.findings.map(f => f.code)).toContain("assistant-text-shape");
     expect(r.assistantWithText).toBe(0);
+  });
+
+  test("(3a) a first reply still being written is NOT drift (2026-10-09)", () => {
+    // Claude Code flushes each block as its own line, text last: read mid-turn,
+    // the file holds thinking + tool_use and no text yet. That fired
+    // "no text from 2 assistant messages" on a healthy build.
+    const midTurn = [userPrompt("hi"), assistantThinking(), assistantToolUse()];
+    const r = inspectTranscript(jsonl(...midTurn));
+    expect(r.findings).toEqual([]);
+    expect(r.sufficient).toBe(false);   // never a borrowed all-clear either
+
+    // A loaded skill's meta body lands mid-turn — it does not end the turn.
+    const skill = { type: "user", uuid: "u5", isMeta: true, message: { role: "user", content: "skill body" } };
+    expect(inspectTranscript(jsonl(...midTurn, skill)).findings).toEqual([]);
+
+    // Once the reply finished with text and the next prompt came, it is judged — and healthy.
+    const done = inspectTranscript(jsonl(...midTurn, toolResult(), assistantText("ok"), userPrompt("next", "u9")));
+    expect(done.findings).toEqual([]);
+    expect(done.sufficient).toBe(true);
   });
 
   test("(3b) content blocks lost their `type` — tool results become turn boundaries", () => {

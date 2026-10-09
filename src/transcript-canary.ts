@@ -92,6 +92,15 @@ export function inspectTranscript(raw: string): CanaryReport {
   let userArrayBlocksTyped = 0;
   let metaFeedbackUnflagged = 0;
   let boundariesWithoutKey = 0;
+  // Assistant entries of turns that have ENDED. Claude Code flushes every block of
+  // a reply as its own line — thinking, then tool_use, the text last — so a file
+  // read mid-turn holds "2 assistant messages, no text" on a perfectly healthy
+  // build. Only a turn something came AFTER (a human prompt, or our own Stop-hook
+  // echo) is finished enough to say its text is missing.
+  let closedAssistant = 0;
+  let closedWithText = 0;
+  let pendingAssistant = 0;
+  let pendingWithText = 0;
 
   for (const line of lines) {
     let obj: Record<string, unknown> & { message?: { role?: unknown; content?: unknown } };
@@ -103,16 +112,18 @@ export function inspectTranscript(raw: string): CanaryReport {
 
     if (role === "assistant") {
       assistant++;
+      pendingAssistant++;
+      let hasText = false;
       if (typeof content === "string") {
-        if (content.trim()) assistantWithText++;
+        hasText = content.trim() !== "";
       } else if (Array.isArray(content)) {
         // Exactly the extraction parse-tags performs. A `thinking`/`tool_use`-only
         // message legitimately yields nothing — that's why the verdict below is an
         // aggregate ("NO assistant message yields text"), never a per-entry one.
-        const hasText = content.some(b =>
+        hasText = content.some(b =>
           (b as { type?: unknown })?.type === "text" && typeof (b as { text?: unknown })?.text === "string");
-        if (hasText) assistantWithText++;
       }
+      if (hasText) { assistantWithText++; pendingWithText++; }
       continue;
     }
 
@@ -131,6 +142,15 @@ export function inspectTranscript(raw: string): CanaryReport {
       const humanTyped = typeof (obj as { promptSource?: unknown }).promptSource === "string";
       const isFeedback = !humanTyped && FEEDBACK_MARKERS.some(m => content.includes(m));
       if (isFeedback && !isMeta) metaFeedbackUnflagged++;
+      // Turn end: a genuine prompt, or our Stop-hook echo (it only fires once the
+      // reply is over). Other meta strings — a loaded skill's body — land MID-turn,
+      // before the text, so they close nothing.
+      if (!isMeta || isFeedback) {
+        closedAssistant += pendingAssistant;
+        closedWithText += pendingWithText;
+        pendingAssistant = 0;
+        pendingWithText = 0;
+      }
       // A genuine (non-meta) user entry is a turn boundary: it must carry a key.
       if (!isMeta && !(obj as { uuid?: unknown }).uuid && !(obj as { timestamp?: unknown }).timestamp) {
         boundariesWithoutKey++;
@@ -146,7 +166,11 @@ export function inspectTranscript(raw: string): CanaryReport {
     }
   }
 
-  const sufficient = assistant >= MIN_ASSISTANT && user >= MIN_USER;
+  // The model has spoken at all — enough to judge the block/flag/key checks.
+  const spoken = assistant >= MIN_ASSISTANT && user >= MIN_USER;
+  // A whole turn has finished — enough to judge the text check too, and the only
+  // read that may count as a clean bill of health (2026-10-09 false alarm).
+  const sufficient = closedAssistant >= MIN_ASSISTANT && user >= MIN_USER;
 
   // (1) Still JSONL?
   if (lines.length > 0 && parsed === 0) {
@@ -173,19 +197,20 @@ export function inspectTranscript(raw: string): CanaryReport {
     return { lines: lines.length, parsed, assistant, assistantWithText, user, userStrings, userToolResult, sufficient: false, findings };
   }
 
-  if (!sufficient) {
+  if (!spoken) {
     // Too thin to judge (a brand-new session). No findings — the caller falls back
     // to an older transcript rather than reporting a false all-clear.
     return { lines: lines.length, parsed, assistant, assistantWithText, user, userStrings, userToolResult, sufficient, findings };
   }
 
-  // (3a) Assistant text — the tag carrier itself.
-  if (assistantWithText === 0) {
+  // (3a) Assistant text — the tag carrier itself. Judged on finished turns only:
+  // the first reply still being written has no text YET, which is not drift.
+  if (sufficient && closedWithText === 0) {
     findings.push({
       code: "assistant-text-shape",
       severity: "break",
-      en: `no text could be extracted from any of ${assistant} assistant message(s) — \`{type:"text", text}\` blocks are gone. Tag capture is DEAD.`,
-      ar: `تعذّر استخراج أي نص من ${assistant} رسالة مساعد — كتل \`{type:"text", text}\` اختفت. التقاط التاقات معطَّل.`,
+      en: `no text could be extracted from any of ${closedAssistant} assistant message(s) — \`{type:"text", text}\` blocks are gone. Tag capture is DEAD.`,
+      ar: `تعذّر استخراج أي نص من ${closedAssistant} رسالة مساعد — كتل \`{type:"text", text}\` اختفت. التقاط التاقات معطَّل.`,
     });
   }
 
