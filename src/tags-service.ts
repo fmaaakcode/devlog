@@ -15,8 +15,7 @@ import {
   CLOSER_KINDS, CLOSER_FOR, OPENER_TO_CLOSER, NUMBERED_OPENABLE, singleHashNum, leadingNums, isStepClosed, inflightClosures,
   latestCloserTs, withData,
 } from "./data";
-import { discoverPostRelease, runPostRelease, describePostReleaseFailure, postReleaseDisabled } from "./post-release";
-import { applyTaskCompletion, applyTaskDrop, extractCheckboxes } from "./doc-store";
+import { discoverPostRelease, runPostRelease, describePostReleaseFailure, postReleaseDisabled } from "./post-release";import { applyTaskCompletion, applyTaskDrop, extractCheckboxes } from "./doc-store";
 import { writeReleaseHtml, parseVersion, parseVersionMarker, isRealVersion } from "./release-html";
 import { compareSemver, computeNextVersion, readManifestVersion, type VersionReject, type BumpType } from "./version-writer";
 import { pathsEqual } from "./path-utils";
@@ -675,8 +674,7 @@ export async function applyRelease(tagEntry: TagEntry, data: DevLogData, project
       runPostRelease(projPath, version, { steps, log: line => console.log(`[post-release ${project}] ${line}`) })
         .then(async rec => {
           if (rec.ok) return;
-          const detail = describePostReleaseFailure(rec);
-          await withData(async d => { pushRejection(d, project, "post-release", `v${version}: ${detail}`); }, { touches: ["meta"] });
+          const detail = describePostReleaseFailure(rec);          await withData(async d => { pushRejection(d, project, "post-release", `v${version}: ${detail}`); }, { touches: ["meta"] });
         })
         .catch(e => console.error(`[post-release ${project}] chain error:`, (e as Error)?.message));
     }

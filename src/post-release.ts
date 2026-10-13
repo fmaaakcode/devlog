@@ -19,8 +19,9 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { bunSpawn } from "./spawn";
+import { notifyDesktop, postReleaseFailToast } from "./desktop-notify";
 import { holdRestart } from "./freshness";
 import { CHECK_SCRIPT, captureTail, type StepResult } from "./release-check";
 import type { PublishRecord } from "./publish-snapshot";
@@ -107,10 +108,23 @@ export async function runPostRelease(
 ): Promise<PostReleaseRecord> {
   // A mirror + build runs long after the release POST returned — hold the self-restart.
   const release = holdRestart();
-  try { return await postReleaseChain(root, version, opts); } finally { release(); }
+  try {
+    const rec = await postReleaseChain(root, version, opts);
+    // The release toast already said "released" — a chain that then fails
+    // must reach the user the same way (desktop-notify.ts). Not awaited.
+    if (!rec.ok) void (opts.notify ?? defaultNotify)(root, rec);
+    return rec;
+  } finally { release(); }
 }
 
-type PostReleaseOpts = { steps?: PostReleaseStep[]; runner?: (step: PostReleaseStep, root: string) => Promise<StepResult>; log?: (line: string) => void };
+const defaultNotify = (root: string, rec: PostReleaseRecord): Promise<unknown> =>
+  notifyDesktop(postReleaseFailToast(basename(root), rec.version, rec.steps.find(s => !s.ok)?.name || "?"));
+
+type PostReleaseOpts = {
+  steps?: PostReleaseStep[]; runner?: (step: PostReleaseStep, root: string) => Promise<StepResult>; log?: (line: string) => void;
+  /** Tells the USER a step failed; defaults to a desktop toast. */
+  notify?: (root: string, rec: PostReleaseRecord) => unknown;
+};
 
 async function postReleaseChain(root: string, version: string, opts: PostReleaseOpts): Promise<PostReleaseRecord> {
   const log = opts.log ?? ((): void => undefined);

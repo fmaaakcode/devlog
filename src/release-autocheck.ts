@@ -21,6 +21,7 @@ import { normalizePath } from "./path-utils";
 import { holdRestart } from "./freshness";
 import { CHECK_SCRIPT, verifyStamp, type StepResult, type StampStatus } from "./release-check";
 import { runStepAsync } from "./post-release";
+import { notifyDesktop, releaseToast } from "./desktop-notify";
 
 export const PENDING_REL = ".devlog/pending-release.json";
 /** Stamp states the daemon resolves by running the check; `failed` is not one. */
@@ -112,6 +113,8 @@ export interface AutoCheckDeps {
   /** Called with (reason, detail) whenever the release did not happen. */
   onFail?: (reason: string, detail: string) => Promise<void>;
   log?: (line: string) => void;
+  /** Tells the USER the final outcome; defaults to a desktop toast. */
+  notify?: (rec: PendingRelease) => unknown;
 }
 
 const defaultRunCheck = (root: string): Promise<StepResult> =>
@@ -133,8 +136,16 @@ export async function runAutoCheck(
 ): Promise<PendingRelease> {
   // Minutes of work after the POST returned — the self-restart must wait for it.
   const release = holdRestart();
-  try { return await autoCheckRound(req, deps); } finally { release(); }
+  try {
+    const rec = await autoCheckRound(req, deps);
+    // The user is the one waiting, and no turn is running to tell them
+    // (desktop-notify.ts). Not awaited: a toast never delays the record.
+    void (deps.notify ?? defaultNotify)(rec);
+    return rec;
+  } finally { release(); }
 }
+
+const defaultNotify = (rec: PendingRelease): Promise<unknown> => notifyDesktop(releaseToast(rec));
 
 async function autoCheckRound(
   req: { root: string; project: string; tag: string; content: string; cwd: string; sessionId?: string },
