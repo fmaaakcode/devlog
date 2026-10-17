@@ -191,6 +191,23 @@ describe("inspectTranscript — each broken assumption is named", () => {
     expect(f?.severity).toBe("degrade");
   });
 
+  test("API-request copies (type api-request-blob, keyless) are not turns — no false finding", () => {
+    // Live shape, Claude Code v2.1.302 (2026-10-17): a keyless role="user" copy of
+    // each request, a string before the real prompt or text blocks mid-turn.
+    const blob = (content: unknown) =>
+      ({ type: "api-request-blob", sessionId: "s", hash: "h", message: { role: "user", content } });
+    const r = inspectTranscript(jsonl(
+      blob("start"),
+      userPrompt("start"),
+      assistantToolUse(),
+      blob([{ type: "text", text: "start" }, { type: "text", text: "<system-reminder>…" }]),
+      toolResult(),
+      assistantText("done"),
+    ));
+    expect(r.findings.find(x => x.code === "turn-key-missing")).toBeUndefined();
+    expect(formatCanaryWarning(r)).toBeNull();
+  });
+
   test("a broken transcript renders a warning naming the assumption", () => {
     const r = inspectTranscript(jsonl(userPrompt("hi"), hookFeedback("u3", {}), assistantText("ok")));
     const msg = formatCanaryWarning(r);

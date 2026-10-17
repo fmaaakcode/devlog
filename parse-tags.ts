@@ -17,6 +17,7 @@ import { runDemolitionWhy } from "./src/hook-demolition-why.ts";
 import { storyNudgeCloserCount, storyWhisper } from "./src/story-nudge.ts";
 import { makeOutcomeCollector, type ShellOutcome } from "./src/command-outcomes.ts";
 import { postCommandOutcomes } from "./src/hook-command-outcomes.ts";
+import { isRequestEcho } from "./src/transcript-canary.ts";
 
 // One wall-clock budget for every server call in this hook (#1042 / F-3.71):
 // each fetch gets min(its own cap, what is left), so a live-but-slow daemon
@@ -146,6 +147,7 @@ async function readTurnFromTranscript(transcriptPath: string): Promise<{ text: s
     for (const line of lines) {
       let obj: any;
       try { obj = JSON.parse(line); } catch { continue; }
+      if (isRequestEcho(obj)) continue;   // API-request copy, not conversation
       outcomes.see(obj);
       const role = obj.message?.role || obj.role;
       const c = obj.message?.content ?? obj.content;

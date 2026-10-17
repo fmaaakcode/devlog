@@ -78,6 +78,16 @@ const MIN_PARSED_FOR_NO_ROLES = 30;
  * drift; they are a normal part of every transcript and are simply skipped, the
  * same way `readTurnFromTranscript` skips them.
  */
+/** Claude Code (seen first on v2.1.302, 2026-10-17) logs a copy of each API
+ *  request it sends as `type: "api-request-blob"` lines — role="user" messages
+ *  with no uuid/timestamp, some carrying TEXT blocks mid-turn. They are not part
+ *  of the conversation: read as a turn boundary they wipe the reply's earlier
+ *  segments (tags lost) and trip the "turn without a key" finding. Every
+ *  transcript reader skips them. */
+export function isRequestEcho(obj: unknown): boolean {
+  return (obj as { type?: unknown } | null)?.type === "api-request-blob";
+}
+
 export function inspectTranscript(raw: string): CanaryReport {
   const lines = raw.split("\n").filter(Boolean);
   const findings: CanaryFinding[] = [];
@@ -106,6 +116,7 @@ export function inspectTranscript(raw: string): CanaryReport {
     let obj: Record<string, unknown> & { message?: { role?: unknown; content?: unknown } };
     try { obj = JSON.parse(line); } catch { continue; }
     parsed++;
+    if (isRequestEcho(obj)) continue;
 
     const role = obj.message?.role ?? (obj as { role?: unknown }).role;
     const content = obj.message?.content ?? (obj as { content?: unknown }).content;
