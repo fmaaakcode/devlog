@@ -26,7 +26,7 @@ import { readdir, readFile, access } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, extname, } from "node:path";
 import { claudeConfigDir, claudeProjectSlug, normalizeSlashes, pathsEqual } from "./path-utils";
-import { NESTED_MANIFEST_DIRS } from "./lockfile-tree";
+import { nestedManifestDirs } from "./manifest-dirs";
 import { NOISE_DIRS, readDevignore } from "./skip-dirs";
 import { parseCargoDeps, resolveWorkspaceMemberDirs, type CargoDep } from "./cargo-workspace";
 import { readIndex as readDocIndex } from "./doc-store";
@@ -361,8 +361,7 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<Detec
   if (_depth === 0) {
     const seen = new Set<string>(result.libraries.map(l => l.name));
     const probeFiles = MANIFESTS.filter(m => !m.fallbackOnly).map(m => m.file);
-    for (const sub of NESTED_MANIFEST_DIRS) {
-      const subPath = join(dirPath, sub);
+    for (const subPath of nestedManifestDirs(dirPath)) {
       let hasManifest = false;
       for (const file of probeFiles) {
         if (await Bun.file(join(subPath, file)).exists()) { hasManifest = true; break; }
@@ -601,7 +600,14 @@ export async function scanProject(cwd: string, nameFromPath: (p: string) => stri
   const totalFiles = Object.values(files).reduce((a, b) => a + b, 0);
   const language = detectLanguage(files);
   const pkgInfo = await detectPackages(cwd);
-  const runtime = await detectRuntime(cwd, language);
+  // Root first; else the first nested manifest folder that declares one — the
+  // same folders detectPackages reads, so a manifest-less root (D:\kb → kb/)
+  // doesn't list libraries while reporting no runtime (#1309 sweep).
+  let runtime = await detectRuntime(cwd, language);
+  for (const sub of nestedManifestDirs(cwd)) {
+    if (runtime) break;
+    if (existsSync(sub)) runtime = await detectRuntime(sub, language);
+  }
 
   let directories: string[] = [];
   try {

@@ -5,10 +5,10 @@
 // direct-only scan misses roughly half of them (verified vs bun/cargo audit).
 
 import { join } from "node:path";
+import { nestedManifestDirs } from "./manifest-dirs";
 
-// Common subfolders that hold the real manifest when the root has none.
-// Tauri keeps Rust in `src-tauri/`; some apps split UI/server into `frontend/`+`backend/`.
-export const NESTED_MANIFEST_DIRS = ["src-tauri", "backend", "server", "api", "frontend", "web", "client", "app"];
+// Re-exported: project-resolve and the tests import the list from here.
+export { NESTED_MANIFEST_DIRS } from "./manifest-dirs";
 
 // Tolerant JSON for bun.lock: it's strict JSON plus TRAILING COMMAS (no comments).
 // We only strip trailing commas — crucially NOT `//`, because base64 integrity
@@ -47,7 +47,7 @@ export async function enumerateDepTree(dirPath: string): Promise<{ name: string;
   // OSV scan silently degraded to direct deps only (no transitive coverage, no
   // auto-close of their security tags).
   await collectLockfiles(dirPath, add);
-  for (const sub of NESTED_MANIFEST_DIRS) await collectLockfiles(join(dirPath, sub), add);
+  for (const sub of nestedManifestDirs(dirPath)) await collectLockfiles(sub, add);
   return out;
 }
 

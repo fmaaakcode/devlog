@@ -106,6 +106,38 @@ describe("detectPackages (manifest → framework + libraries)", () => {
     });
   });
 
+  test("manifest-less root: a subfolder of ANY name is read (D:\\kb keeps package.json in kb/)", async () => {
+    await withTmp(async dir => {
+      await mkdir(join(dir, "kb"));
+      await writeFile(join(dir, "kb", "package.json"), JSON.stringify({ dependencies: { unpdf: "1.8.1" } }));
+      await mkdir(join(dir, "node_modules", "x"), { recursive: true });
+      await writeFile(join(dir, "node_modules", "x", "package.json"), JSON.stringify({ dependencies: { leaked: "1.0.0" } }));
+      const names = (await detectPackages(dir)).libraries.map(l => l.name);
+      expect(names).toEqual(["unpdf"]);
+    });
+  });
+
+  test("manifest-less root: the runtime comes from the same subfolder the libraries do", async () => {
+    await withTmp(async dir => {
+      await mkdir(join(dir, "kb"));
+      await writeFile(join(dir, "kb", "package.json"), JSON.stringify({ dependencies: { hono: "4.0.0" } }));
+      await writeFile(join(dir, "kb", "bun.lock"), "{}");
+      await writeFile(join(dir, "kb", "index.ts"), "export {};\n");
+      const p = await scanFreshProfile(dir);
+      expect(p.runtime?.name).toBe("Bun");
+    });
+  });
+
+  test("a root manifest keeps arbitrary subfolders out (examples/ never leaks in)", async () => {
+    await withTmp(async dir => {
+      await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { hono: "4.0.0" } }));
+      await mkdir(join(dir, "examples"));
+      await writeFile(join(dir, "examples", "package.json"), JSON.stringify({ dependencies: { express: "5.0.0" } }));
+      const names = (await detectPackages(dir)).libraries.map(l => l.name);
+      expect(names).toEqual(["hono"]);
+    });
+  });
+
   test("Python pyproject.toml: deps with version operators stripped", async () => {
     await withTmp(async dir => {
       await writeFile(join(dir, "pyproject.toml"),

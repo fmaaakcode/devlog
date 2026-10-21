@@ -20,10 +20,10 @@
 // a new layout, this is the file that must learn it too.
 
 import { join } from "node:path";
-import { NESTED_MANIFEST_DIRS } from "./lockfile-tree";
+import { MANIFEST_FILES, nestedManifestDirs } from "./manifest-dirs";
 
-/** Declared dependencies — what the user edits. */
-export const MANIFEST_FILES = ["package.json", "Cargo.toml", "requirements.txt", "pyproject.toml", "go.mod", "composer.json"];
+/** Declared dependencies — what the user edits (defined in manifest-dirs). */
+export { MANIFEST_FILES };
 
 /** Resolved dependencies — what the scanner actually reports versions from, and
  *  what a range-internal upgrade rewrites without touching any manifest. */
@@ -36,7 +36,7 @@ export const FRESHNESS_FILES = [...MANIFEST_FILES, ...LOCKFILES];
  *  nested layouts the scanner reads. Existence is the caller's business — a
  *  watcher needs the ones that exist, a stat sweep can just miss. */
 export function freshnessDirs(root: string): string[] {
-  return [root, ...NESTED_MANIFEST_DIRS.map(d => join(root, d))];
+  return [root, ...nestedManifestDirs(root)];
 }
 
 /**
