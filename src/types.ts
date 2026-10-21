@@ -34,6 +34,10 @@ export interface ProjectProfile {
   // library. Absent on profiles stored before the multi-ecosystem fix —
   // consumers fall back to ecoMap[language] then.
   libraries: { name: string; version: string; dev?: boolean; eco?: string }[];
+  /** Indirect libraries whose version the manifest forces (npm/bun overrides,
+   *  yarn resolutions, pnpm.overrides) — apart from `libraries`, which every
+   *  consumer reads as "direct dependencies" (manifest-overrides.ts). */
+  forced?: { name: string; version: string; eco?: string }[];
   files: Record<string, number>;
   directories: string[];
   totalFiles: number;
@@ -88,6 +92,9 @@ export interface VulnResult {
   daysSinceFix?: number | null;
   advisories?: Array<{ id: string; severity: string; summary: string; fix: string; url: string; kind?: string }>;
   transitive?: boolean;  // vuln came from an indirect (transitive) dependency, not a direct one
+  /** For a transitive one: the chain that drags it in, direct library first and
+   *  the immediate parent last (lockfile-tree.ts chainTo). Absent when unknown. */
+  via?: string[];
   // Official one-liner from the registry (npm description / crates description /
   // pypi summary) — captured from the SAME response the freshness lookup already
   // fetches, so it costs no extra request. Feeds the deps explainer page (#663).

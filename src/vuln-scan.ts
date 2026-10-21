@@ -16,7 +16,7 @@ import { loadData, withData, normalizeTagContent, assignNum, latestCloserTs, SEC
 import { latestVersions, synthesizeStatus, type VersionInfo } from "./registry";
 import type { PkgVuln } from "./osv";
 import { buildScanInventory, scanInventory, pkgKey } from "./vuln-inventory";
-import { enumerateDepTree } from "./lockfile-tree";
+import { chainTo, dependentsGraph, enumerateDepTree } from "./lockfile-tree";
 import { loadVulnIgnore } from "./vuln-ignore";
 import { broadcast } from "./broadcast";
 import { softFail } from "./soft-fail";
@@ -171,6 +171,13 @@ export async function runVulnScan(name: string) {
         transitiveResults.push({ ...base, status: "safe" });
       }
     }
+    // Who drags each vulnerable transitive in — read off-lock, and only when
+    // one exists, so a clean project pays nothing.
+    if (transitiveResults.some(r => (r.vulns as number) > 0)) {
+      const graph = await dependentsGraph(projectSnap.path);
+      const direct = new Set(packages.map(p => p.name));
+      for (const r of transitiveResults) if ((r.vulns as number) > 0) r.via = chainTo(graph, r.name as string, direct);
+    }
     // biome-ignore lint/suspicious/noExplicitAny: merged direct+transitive scan results flow loosely through the tag-reconciliation pipeline below; every field is sanitized at storage (sStr/sUrl) and re-validated at each render sink.
     const libResults: { results: any[] } = { results: [...directResults, ...transitiveResults] };
 
@@ -214,7 +221,7 @@ export async function runVulnScan(name: string) {
                 kind: sStr(a?.kind, 20) || "vuln",
               }))
             : [];
-          vulnMap[sStr(pkg.name, 100)] = { status: sStr(pkg.status, 20), icon: sStr(pkg.icon, 20), message: sStr(pkg.message, 500), vulns: pkg.vulns ?? 0, notices: pkg.notices ?? 0, severity: sStr(pkg.severity, 20) || "none", topVuln: pkg.topVuln || null, fixVersion: sStr(pkg.fixVersion, 50), latestVersion: sStr(pkg.latestVersion, 50), ...(typeof pkg.isLatest === "boolean" ? { isLatest: pkg.isLatest } : {}), unscannableReason: sStr(pkg.unscannableReason, 200), detailsUrl: sUrl(pkg.detailsUrl), daysSinceFix: pkg.daysSinceFix ?? null, daysSinceLatest: pkg.daysSinceLatest ?? null, fixReleaseDate: sDate(pkg.fixReleaseDate), latestReleaseDate: sDate(pkg.latestReleaseDate), description: sStr(pkg.description, 300), advisories, transitive: pkg.direct === false };
+          vulnMap[sStr(pkg.name, 100)] = { status: sStr(pkg.status, 20), icon: sStr(pkg.icon, 20), message: sStr(pkg.message, 500), vulns: pkg.vulns ?? 0, notices: pkg.notices ?? 0, severity: sStr(pkg.severity, 20) || "none", topVuln: pkg.topVuln || null, fixVersion: sStr(pkg.fixVersion, 50), latestVersion: sStr(pkg.latestVersion, 50), ...(typeof pkg.isLatest === "boolean" ? { isLatest: pkg.isLatest } : {}), unscannableReason: sStr(pkg.unscannableReason, 200), detailsUrl: sUrl(pkg.detailsUrl), daysSinceFix: pkg.daysSinceFix ?? null, daysSinceLatest: pkg.daysSinceLatest ?? null, fixReleaseDate: sDate(pkg.fixReleaseDate), latestReleaseDate: sDate(pkg.latestReleaseDate), description: sStr(pkg.description, 300), advisories, transitive: pkg.direct === false, ...(Array.isArray(pkg.via) && pkg.via.length ? { via: pkg.via.slice(0, 8).map((n: unknown) => sStr(n, 100)) } : {}) };
         }
         project.vulnResults = vulnMap as typeof project.vulnResults;
         // Two clocks (#1104/#1139): libScanDate = "a scan ran" (the sweep's

@@ -66,7 +66,7 @@ async function load() {
     return;
   }
   if (!payload.project) { status.textContent = tr("depsPage.unknownProject"); return; }
-  if (!payload.libraries.length && !(Array.isArray(payload.orphans) && payload.orphans.length)) { status.textContent = tr("depsPage.noLibs"); return; }
+  if (!payload.libraries.length && !(Array.isArray(payload.forced) && payload.forced.length) && !(Array.isArray(payload.orphans) && payload.orphans.length)) { status.textContent = tr("depsPage.noLibs"); return; }
 
   const cov = document.getElementById("coverage");
   const total = Number(payload.total) || 0;
@@ -83,7 +83,11 @@ async function load() {
     <div class="purpose">${esc(o.purpose || "")}</div>
   </div>`);
   const orphanHead = orphans.length ? `<h2 class="orphans-head">${tr("depsPage.orphansHead", { n: orphans.length })}</h2>` : "";
-  list.innerHTML = payload.libraries.map(card).join("") + orphanHead + orphanCards.join("");
+  // Indirect libraries the manifest forces a version on (overrides) — real
+  // manifest entries, not orphans, but not direct dependencies either.
+  const forced = Array.isArray(payload.forced) ? payload.forced : [];
+  const forcedHead = forced.length ? `<h2 class="orphans-head">${tr("depsPage.forcedHead", { n: forced.length })}</h2>` : "";
+  list.innerHTML = payload.libraries.map(card).join("") + forcedHead + forced.map(card).join("") + orphanHead + orphanCards.join("");
   status.hidden = true;
   list.hidden = false;
 

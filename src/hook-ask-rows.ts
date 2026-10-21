@@ -541,7 +541,7 @@ export const ASK_ROWS: AskRow[] = [
     path: "/api/deps",
     logLine: d => `ask:deps: served ${(d.libraries || []).length} item(s)`,
     format: (d, _m, ctx) => {
-      const { libraries = [], total = 0, withPurpose = 0, orphans = [] } = d as { libraries?: Row[]; total?: number; withPurpose?: number; orphans?: Row[] };
+      const { libraries = [], forced = [], total = 0, withPurpose = 0, orphans = [] } = d as { libraries?: Row[]; forced?: Row[]; total?: number; withPurpose?: number; orphans?: Row[] };
       const line = (l: Row) => {
         const dev = l.dev ? " (dev)" : "";
         const desc = l.description ? ` · ${String(l.description).slice(0, 120)}` : "";
@@ -563,7 +563,10 @@ export const ASK_ROWS: AskRow[] = [
         ? `${ctx.L(`Project libraries (${total}, ${withPurpose} with a recorded purpose):`, `مكتبات المشروع (${total}، منها ${withPurpose} بغرض مسجَّل):`)}\n${libraries.map(line).join("\n")}${footer}`
         : ctx.L("No libraries known for this project yet (they appear after the first scan).",
                 "لا مكتبات معروفة للمشروع بعد (تظهر بعد أول فحص).");
-      return body + orphanBlock;
+      const forcedBlock = forced.length
+        ? `\n${ctx.L(`Indirect libraries with a forced version (overrides) (${forced.length}):`, `مكتبات فرعية مفروضة النسخة في overrides (${forced.length}):`)}\n${forced.map(line).join("\n")}`
+        : "";
+      return body + forcedBlock + orphanBlock;
     },
   },
 

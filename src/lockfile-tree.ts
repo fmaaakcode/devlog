@@ -16,7 +16,13 @@ export { NESTED_MANIFEST_DIRS } from "./manifest-dirs";
 // corrupt them and break the parse. Tries strict JSON first.
 // One node in an npm/bun lockfile dependency tree (loose — only the fields the
 // tree walker reads; nested arbitrarily deep).
-type LockNode = { version?: unknown; dependencies?: Record<string, LockNode> };
+type LockNode = { version?: unknown; dependencies?: Record<string, LockNode>; optionalDependencies?: Record<string, unknown>; requires?: Record<string, unknown> };
+type AddFn = (name: string, version: string, eco: string) => void;
+// parent → child: "parent's own lock entry lists child as a dependency".
+type EdgeFn = (parent: string, child: string) => void;
+const noEdge: EdgeFn = () => undefined;
+const noAdd: AddFn = () => undefined;
+const keysOf = (o: unknown): string[] => (o && typeof o === "object" && !Array.isArray(o) ? Object.keys(o) : []);
 
 function parseJsonc(text: string): unknown {
   try { return JSON.parse(text); } catch { /* strict JSON failed → retry below with trailing commas stripped */ }
@@ -51,8 +57,51 @@ export async function enumerateDepTree(dirPath: string): Promise<{ name: string;
   return out;
 }
 
+/** child name → names of the packages whose lock entries require it, over the
+ *  same lockfiles enumerateDepTree reads. By NAME, not name@version: the
+ *  question it answers is "which direct library drags this in", and a name
+ *  is what the user acts on (update it, or force the child in overrides). */
+export async function dependentsGraph(dirPath: string): Promise<Map<string, Set<string>>> {
+  const parents = new Map<string, Set<string>>();
+  if (!dirPath) return parents;
+  const edge: EdgeFn = (parent, child) => {
+    if (!parent || !child || parent === child) return;
+    const s = parents.get(child) ?? new Set<string>();
+    s.add(parent);
+    parents.set(child, s);
+  };
+  await collectLockfiles(dirPath, noAdd, edge);
+  for (const sub of nestedManifestDirs(dirPath)) await collectLockfiles(sub, noAdd, edge);
+  return parents;
+}
+
+/** Shortest chain from a DIRECT library down to `target`'s immediate parent —
+ *  ["@huggingface/transformers", "onnxruntime-node"] for adm-zip. [] when
+ *  `target` is itself direct or no path reaches a direct library. */
+export function chainTo(parents: Map<string, Set<string>>, target: string, direct: Set<string>): string[] {
+  if (direct.has(target)) return [];
+  const from = new Map<string, string>();   // node → the child it was reached from
+  const queue = [target];
+  const seen = new Set(queue);
+  while (queue.length) {
+    const node = queue.shift() as string;
+    for (const p of parents.get(node) || []) {
+      if (seen.has(p)) continue;
+      seen.add(p);
+      from.set(p, node);
+      if (direct.has(p)) {
+        const chain = [p];
+        for (let n = from.get(p); n && n !== target; n = from.get(n)) chain.push(n);
+        return chain;
+      }
+      queue.push(p);
+    }
+  }
+  return [];
+}
+
 /** Parse every recognized lockfile directly inside `dirPath` into `add`. */
-async function collectLockfiles(dirPath: string, add: (name: string, version: string, eco: string) => void): Promise<void> {
+async function collectLockfiles(dirPath: string, add: AddFn, edge: EdgeFn = noEdge): Promise<void> {
   // npm: package-lock.json — v2/v3 keys paths under `packages`, v1 nests `dependencies`.
   const pkgLock = Bun.file(join(dirPath, "package-lock.json"));
   const hasNpmLock = await pkgLock.exists();
@@ -64,11 +113,13 @@ async function collectLockfiles(dirPath: string, add: (name: string, version: st
           if (!path) continue; // "" is the root project itself
           const name = path.split("node_modules/").pop() || "";
           if (name && info?.version) add(name, String(info.version), "npm");
+          for (const d of [...keysOf(info?.dependencies), ...keysOf(info?.optionalDependencies)]) edge(name, d);
         }
       } else if (j.dependencies && typeof j.dependencies === "object") {
         const walk = (deps: Record<string, LockNode>) => {
           for (const [name, info] of Object.entries(deps)) {
             if (info?.version) add(name, String(info.version), "npm");
+            for (const d of keysOf(info?.requires)) edge(name, d);
             if (info?.dependencies) walk(info.dependencies);
           }
         };
@@ -90,6 +141,9 @@ async function collectLockfiles(dirPath: string, add: (name: string, version: st
           const spec = typeof raw === "string" ? raw : "";
           const at = spec.lastIndexOf("@");
           if (at > 0) add(spec.slice(0, at), spec.slice(at + 1), "npm");
+          // [spec, registry, { dependencies, optionalDependencies, … }, integrity]
+          const meta = Array.isArray(v) ? v[2] as Record<string, unknown> | undefined : undefined;
+          if (at > 0 && meta) for (const d of [...keysOf(meta.dependencies), ...keysOf(meta.optionalDependencies)]) edge(spec.slice(0, at), d);
         }
       }
     } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
@@ -100,8 +154,13 @@ async function collectLockfiles(dirPath: string, add: (name: string, version: st
   if (await cargoLock.exists()) {
     try {
       const text = await cargoLock.text();
-      for (const m of text.matchAll(/\[\[package\]\]\s*\nname\s*=\s*"([^"]+)"\s*\nversion\s*=\s*"([^"]+)"/g)) {
+      for (const block of text.split(/^\[\[package\]\]\s*$/m)) {
+        const m = block.match(/^name\s*=\s*"([^"]+)"\s*\nversion\s*=\s*"([^"]+)"/m);
+        if (!m) continue;
         add(m[1], m[2], "crates.io");
+        // dependencies = [ "serde", "tokio 1.40.0", … ] — the name is the first word.
+        const deps = block.match(/^dependencies\s*=\s*\[([^\]]*)\]/m);
+        if (deps) for (const d of deps[1].matchAll(/"([^"\s]+)[^"]*"/g)) edge(m[1], d[1]);
       }
     } catch { /* best-effort probe: missing/unreadable source or absent tool → detection left empty */ }
   }

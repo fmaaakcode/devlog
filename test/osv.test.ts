@@ -106,6 +106,33 @@ describe("dedupByAlias", () => {
   });
 });
 
+describe("last_affected advisories (adm-zip@0.5.18)", () => {
+  const adm = (id: string, events: Record<string, string>[]) => advisory({ id,
+    affected: [{ package: { name: "adm-zip", ecosystem: "npm" }, ranges: [{ type: "SEMVER", events }] }] });
+  test("a sibling's fix above the last bad version clears it — not 'no complete fix'", () => {
+    const r = summarizeVulns([
+      adm("GHSA-a", [{ introduced: "0" }, { fixed: "0.6.1" }]),
+      adm("GHSA-b", [{ introduced: "0.5.9" }, { last_affected: "0.6.0" }]),
+    ], "adm-zip", "0.5.18");
+    expect(r.status).toBe("update");
+    expect(r.fixVersion).toBe("0.6.1");
+    expect(r.advisories.every(a => a.fix === "0.6.1")).toBe(true);
+  });
+  test("no version above the last bad one stays unfixed (sprintf-js@1.1.3)", () => {
+    const r = summarizeVulns([advisory({ id: "GHSA-c",
+      affected: [{ package: { name: "sprintf-js", ecosystem: "npm" }, ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { last_affected: "1.1.3" }] }] }] })],
+      "sprintf-js", "1.1.3");
+    expect(r.status).toBe("danger");
+  });
+  test("a fix BELOW the last bad version does not clear it", () => {
+    const r = summarizeVulns([
+      adm("GHSA-a", [{ introduced: "0" }, { fixed: "0.6.1" }]),
+      adm("GHSA-b", [{ introduced: "0" }, { last_affected: "0.7.0" }]),
+    ], "adm-zip", "0.5.18");
+    expect(r.status).toBe("danger");
+  });
+});
+
 describe("nearestFix", () => {
   test("returns the fixed version above the installed one", () => {
     expect(nearestFix("4.12.18", advisory(), "hono")).toBe("4.12.21");

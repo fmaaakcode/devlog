@@ -70,6 +70,9 @@ export interface DepsExplainPayload {
   /** Coverage: how many libraries carry a recorded purpose line. */
   withPurpose: number;
   libraries: DepExplainItem[];
+  /** Indirect libraries the manifest forces a version on (overrides) — own
+   *  section, outside the coverage count, which stays about direct libraries. */
+  forced: DepExplainItem[];
   orphans: OrphanPurpose[];
 }
 
@@ -81,7 +84,7 @@ export function buildDepsPayload(data: DevLogData, project: string): DepsExplain
   if (!p) return null;
   const purposes = depPurposes(data, project);
   const vulns = p.vulnResults || {};
-  const libraries: DepExplainItem[] = (p.libraries || []).map((l) => {
+  const annotate = (l: { name: string; version: string; dev?: boolean; eco?: string }): DepExplainItem => {
     const pur = purposes.get(l.name.toLowerCase());
     const v = vulns[l.name];
     return {
@@ -96,9 +99,11 @@ export function buildDepsPayload(data: DevLogData, project: string): DepsExplain
       ...(v?.latestVersion ? { latestVersion: v.latestVersion } : {}),
       ...(v?.detailsUrl ? { detailsUrl: v.detailsUrl } : {}),
     };
-  });
-  libraries.sort((a, b) => Number(!!a.purpose) - Number(!!b.purpose) || a.name.localeCompare(b.name));
-  const known = new Set((p.libraries || []).map(l => l.name.toLowerCase()));
+  };
+  const byGap = (a: DepExplainItem, b: DepExplainItem) => Number(!!a.purpose) - Number(!!b.purpose) || a.name.localeCompare(b.name);
+  const libraries = (p.libraries || []).map(annotate).sort(byGap);
+  const forced = (p.forced || []).map(annotate).sort(byGap);
+  const known = new Set([...(p.libraries || []), ...(p.forced || [])].map(l => l.name.toLowerCase()));
   const orphans: OrphanPurpose[] = [];
   for (const [name, pur] of purposes) if (!known.has(name)) orphans.push({ name, purpose: pur.purpose, purposeAt: pur.at });
   orphans.sort((a, b) => a.name.localeCompare(b.name));
@@ -107,6 +112,7 @@ export function buildDepsPayload(data: DevLogData, project: string): DepsExplain
     total: libraries.length,
     withPurpose: libraries.filter((l) => l.purpose).length,
     libraries,
+    forced,
     orphans,
   };
 }

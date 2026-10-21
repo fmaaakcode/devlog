@@ -308,9 +308,19 @@ function showVulnsModal(project, lib, fallbackText) {
     if (v && (v.vulns > 0 || v.notices > 0)) {
         titleCount = v.vulns > 0 ? ` — ${v.vulns}` : '';
         const list = Array.isArray(v.advisories) ? v.advisories : [];
+        // A transitive one can't be "upgraded" from the manifest: name the chain
+        // that drags it in and the two real moves (force it, or update the top).
+        const via = Array.isArray(v.via) ? v.via : [];
+        const top = via[0] || '';
         fixLine = v.fixVersion
-            ? `<div class="vuln-fix">${tr("vuln.fixLine", { ver: esc(v.fixVersion), rest: list.some(a => !a.fix) ? tr("vuln.someNoFix") : tr("vuln.closesAll") })}</div>`
+            ? (v.transitive && top
+                ? `<div class="vuln-fix">${tr("vuln.fixIndirect", { ver: esc(v.fixVersion), top: esc(top) })}</div>`
+                : `<div class="vuln-fix">${tr("vuln.fixLine", { ver: esc(v.fixVersion), rest: list.some(a => !a.fix) ? tr("vuln.someNoFix") : tr("vuln.closesAll") })}</div>`)
             : '';
+        if (v.transitive) {
+            const chain = via.length ? ` · ${tr("vuln.via", { chain: via.map(esc).join(tr("vuln.chainSep")) })}` : '';
+            fixLine = `<div class="vuln-item-sum" style="margin-bottom:6px">${tr("vuln.indirect")}${chain}</div>${fixLine}`;
+        }
         // Older cached results have no advisories[] — fall back to the headline.
         rows = list.length
             ? list.map(a => {

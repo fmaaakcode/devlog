@@ -92,6 +92,10 @@ export const DICT = {
   "vuln.unsound": { en: "unsound", ar: "غير سليم (unsound)" },
   "vuln.notice": { en: "notice", ar: "إشعار" },
   "vuln.noFix": { en: "no fix", ar: "لا إصلاح" },
+  "vuln.indirect": { en: "Indirect library — not in your manifest", ar: "مكتبة فرعية — ليست في ملف مكتباتك" },
+  "vuln.via": { en: "pulled in by: {chain}", ar: "جاية عن طريق: {chain}" },
+  "vuln.chainSep": { en: " → ", ar: " ← " },
+  "vuln.fixIndirect": { en: "Force <b>{ver}</b> in overrides, or update <b>{top}</b> to a release that already carries it", ar: "افرض <b>{ver}</b> في overrides، أو حدّث <b>{top}</b> لإصدار يحملها" },
   "vuln.noDetails": { en: "details unavailable", ar: "تفاصيل غير متوفّرة" },
   "vuln.scanHint": { en: "Run a security scan for per-CVE details.", ar: "اضغط «افحص الآن» لتفاصيل كل ثغرة." },
   "vuln.modalTitle": { en: "Vulnerabilities — {lib}", ar: "ثغرات {lib}" },
@@ -539,6 +543,7 @@ export const DICT = {
   },
   "depsPage.latestTitle": { en: "Latest version", ar: "النسخة الأحدث" },
   "depsPage.orphansHead": { en: "Recorded purposes with no matching manifest library ({n})", ar: "أغراض مسجَّلة بلا مكتبة مطابقة في المانيفست ({n})" },
+  "depsPage.forcedHead": { en: "Indirect libraries with a forced version — overrides ({n})", ar: "مكتبات فرعية مفروضة النسخة في overrides ({n})" },
   "depsPage.orphanBadge": { en: "not in manifest", ar: "ليست في المانيفست" },
 
   // ===== stack map page =====

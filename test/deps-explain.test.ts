@@ -100,6 +100,18 @@ describe("buildDepsPayload — the /api/deps shape", () => {
   test("unknown project → null; project with no libraries → empty payload", () => {
     expect(buildDepsPayload(makeData(), "ghost")).toBeNull();
     const data = makeData({ projects: { p: { ...project, libraries: [] } } });
-    expect(buildDepsPayload(data, "p")).toEqual({ project: "p", total: 0, withPurpose: 0, libraries: [], orphans: [] });
+    expect(buildDepsPayload(data, "p")).toEqual({ project: "p", total: 0, withPurpose: 0, libraries: [], forced: [], orphans: [] });
+  });
+
+  test("forced (overrides) libraries: own list, outside coverage, and never orphans", () => {
+    const data = makeData({
+      projects: { p: { ...project, forced: [{ name: "adm-zip", version: "0.6.1", eco: "npm" }, { name: "proxy-addr", version: "2.0.8", eco: "npm" }] } },
+      tags: [tag("p", "lib", "adm-zip — مفروضة عشان الثغرات", "2026-10-21T00:00:00Z")],
+    });
+    const payload = buildDepsPayload(data, "p");
+    expect(payload?.forced.map(l => l.name)).toEqual(["proxy-addr", "adm-zip"]);   // uncovered first
+    expect(payload?.forced.find(l => l.name === "adm-zip")?.purpose).toBe("مفروضة عشان الثغرات");
+    expect(payload?.orphans).toEqual([]);
+    expect(payload?.total).toBe(3);
   });
 });

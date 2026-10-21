@@ -326,7 +326,8 @@ export const ENTRY_STAGES: EntryStage[] = [
     run(ctx) {
       const parsed = parseLibTag(ctx.content);
       if (!parsed) { ctx.libHints.push({ kind: "no-purpose", name: ctx.content.trim().split(/\s+/)[0] || "" }); return "stop"; }
-      const libs = ctx.data.projects[ctx.project]?.libraries || [];
+      const proj = ctx.data.projects[ctx.project];
+      const libs = [...(proj?.libraries || []), ...(proj?.forced || [])];   // a forced (overrides) name is in the manifest too
       if (libs.length && !libs.some(l => l.name.toLowerCase() === parsed.name.toLowerCase())) {
         ctx.libHints.push({ kind: "orphan", name: parsed.name });
       }

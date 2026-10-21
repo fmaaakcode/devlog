@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { enumerateDepTree } from "../src/lockfile-tree";
+import { enumerateDepTree, dependentsGraph, chainTo } from "../src/lockfile-tree";
 import { mkdtemp, writeFile, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -104,5 +104,38 @@ version = "2.9.5"
     await withTmp(async dir => {
       expect(await enumerateDepTree(dir)).toEqual([]);
     });
+  });
+});
+
+// Who drags a vulnerable transitive in (lockfile-tree.ts dependentsGraph +
+// chainTo): the shortest chain from a direct library down to the parent.
+
+describe("dependency chains", () => {
+  test("bun.lock: adm-zip ← onnxruntime-node ← transformers", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "chain-"));
+    try {
+      await writeFile(join(dir, "bun.lock"), JSON.stringify({ packages: {
+        "@huggingface/transformers": ["@huggingface/transformers@4.3.1", "", { dependencies: { "onnxruntime-node": "1.0.0", sharp: "^0.34" } }, "sha"],
+        "onnxruntime-node": ["onnxruntime-node@1.0.0", "", { dependencies: { "adm-zip": "^0.5" } }, "sha"],
+        "adm-zip": ["adm-zip@0.6.1", "", {}, "sha"],
+        sharp: ["sharp@0.35.5", "", {}, "sha"],
+      } }));
+      const g = await dependentsGraph(dir);
+      const direct = new Set(["@huggingface/transformers"]);
+      expect(chainTo(g, "adm-zip", direct)).toEqual(["@huggingface/transformers", "onnxruntime-node"]);
+      expect(chainTo(g, "sharp", direct)).toEqual(["@huggingface/transformers"]);
+      expect(chainTo(g, "@huggingface/transformers", direct)).toEqual([]);   // direct itself
+      expect(chainTo(g, "unknown", direct)).toEqual([]);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  test("Cargo.lock: dependencies list names the parent edge", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "chain-"));
+    try {
+      await writeFile(join(dir, "Cargo.lock"),
+        `[[package]]\nname = "app"\nversion = "0.1.0"\ndependencies = [\n "reqwest",\n]\n\n[[package]]\nname = "reqwest"\nversion = "0.12.0"\ndependencies = [\n "rustls 0.23.0",\n]\n\n[[package]]\nname = "rustls"\nversion = "0.23.0"\n`);
+      const g = await dependentsGraph(dir);
+      expect(chainTo(g, "rustls", new Set(["reqwest"]))).toEqual(["reqwest"]);
+    } finally { await rm(dir, { recursive: true, force: true }); }
   });
 });

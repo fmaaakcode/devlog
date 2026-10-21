@@ -237,6 +237,29 @@ export function nearestFix(installed: string, vuln: OsvVuln, name: string): stri
   return best;
 }
 
+// Highest `last_affected` at or above the installed version: the advisory's
+// other way of naming its bound ("0.6.0 is the last bad one" instead of "fixed
+// in 0.6.1"). It names no version to move to, so it can't BE a fix — but any
+// fix found for a sibling advisory that sits above it clears this one too.
+// adm-zip@0.5.18 read "no complete fix" while 0.6.1 cleared all 8 advisories.
+export function lastAffected(installed: string, vuln: OsvVuln, name: string): string | null {
+  const affected = Array.isArray(vuln?.affected) ? vuln.affected : [];
+  let worst: string | null = null;
+  for (const a of affected) {
+    const pkgName = a?.package?.name;
+    if (typeof pkgName === "string" && pkgName.toLowerCase() !== name.toLowerCase()) continue;
+    for (const rg of Array.isArray(a?.ranges) ? a.ranges : []) {
+      for (const ev of Array.isArray(rg?.events) ? rg.events : []) {
+        if (ev && typeof ev.last_affected === "string") {
+          const l = ev.last_affected.replace(/^v/, "");
+          if (!isVersionBehind(l, installed) && (!worst || isVersionBehind(worst, l))) worst = l;
+        }
+      }
+    }
+  }
+  return worst;
+}
+
 // First advisory reference (prefer the human ADVISORY page) → the dashboard's
 // "details" link. Falls back to osv.dev's own page for the id.
 function refUrl(vuln: OsvVuln | null): string {
@@ -347,13 +370,21 @@ export function summarizeVulns(rawVulns: OsvVuln[], name: string, installed: str
   let topSev = "low";
   let anyUnfixed = false;
   let bestFix = "";
-  for (const vln of real) {
+  const fixes = real.map(vln => nearestFix(installed, vln, name));
+  for (const fix of fixes) if (fix && (!bestFix || isVersionBehind(bestFix, fix))) bestFix = fix;
+  for (let i = 0; i < real.length; i++) {
+    const vln = real[i];
     const sev = normalizeSeverity(vln);
     if (severityRank(sev) > topRank) { topRank = severityRank(sev); topSev = sev; top = vln; }
     const isMalware = typeof vln?.id === "string" && vln.id.startsWith("MAL-");
-    const fix = nearestFix(installed, vln, name);
+    let fix = fixes[i];
+    // No `fixed` event, only `last_affected`: cleared by the overall fix when
+    // that sits above the last bad version (see lastAffected).
+    if (!fix && !isMalware && bestFix) {
+      const last = lastAffected(installed, vln, name);
+      if (last && isVersionBehind(last, bestFix)) fix = bestFix;
+    }
     if (isMalware || !fix) anyUnfixed = true;
-    if (fix && (!bestFix || isVersionBehind(bestFix, fix))) bestFix = fix;
     pushAdvisory(vln, sev, fix);
   }
   // Highest severity first so the modal leads with what matters ("none" notices sink).

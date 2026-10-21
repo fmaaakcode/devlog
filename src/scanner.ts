@@ -27,6 +27,7 @@ import { existsSync } from "node:fs";
 import { join, extname, } from "node:path";
 import { claudeConfigDir, claudeProjectSlug, normalizeSlashes, pathsEqual } from "./path-utils";
 import { nestedManifestDirs } from "./manifest-dirs";
+import { type ForcedLib, forcedFromPackageJson } from "./manifest-overrides";
 import { NOISE_DIRS, readDevignore } from "./skip-dirs";
 import { parseCargoDeps, resolveWorkspaceMemberDirs, type CargoDep } from "./cargo-workspace";
 import { readIndex as readDocIndex } from "./doc-store";
@@ -157,7 +158,7 @@ export function detectLanguage(files: Record<string, number>): string {
 // merged multi-manifest list (Tauri: package.json + src-tauri/Cargo.toml)
 // keeps each library routable to its OWN registry.
 type DetectedLib = { name: string; version: string; dev?: boolean; eco: string };
-type DetectResult = { framework: string; libraries: DetectedLib[] };
+type DetectResult = { framework: string; libraries: DetectedLib[]; forced?: ForcedLib[] };
 
 // Strip range operators so "^18.0.0" / ">=2.0" render as bare versions.
 const cleanVer = (v: string) => v.replace(/[\^~>=<!\s]/g, "");
@@ -205,6 +206,7 @@ const MANIFESTS: ManifestSpec[] = [
       const devDeps = pkg.devDependencies || {};
       for (const [name, ver] of Object.entries(deps)) result.libraries.push({ name, version: String(ver), eco: "npm" });
       for (const [name, ver] of Object.entries(devDeps)) result.libraries.push({ name, version: String(ver), dev: true, eco: "npm" });
+      result.forced = [...(result.forced || []), ...forcedFromPackageJson(pkg)];
       pickFramework(result, [["next","Next.js"],["nuxt","Nuxt"],["react","React"],["vue","Vue"],["svelte","Svelte"],["express","Express"],["hono","Hono"],["elysia","Elysia"]], { clean: true, prodOnly: true });
     },
   },
@@ -374,6 +376,14 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<Detec
         seen.add(lib.name);
         result.libraries.push(lib);
       }
+      if (nested.forced?.length) result.forced = [...(result.forced || []), ...nested.forced];
+    }
+    // A pin on a DIRECT library is just its version — it's listed already.
+    if (result.forced?.length) {
+      const known = new Set(result.libraries.map(l => l.name));
+      const kept: ForcedLib[] = [];
+      for (const f of result.forced) if (!known.has(f.name)) { known.add(f.name); kept.push(f); }
+      result.forced = kept;
     }
   }
 
@@ -656,6 +666,7 @@ export async function scanProject(cwd: string, nameFromPath: (p: string) => stri
     language,
     framework: pkgInfo.framework,
     libraries: pkgInfo.libraries,
+    ...(pkgInfo.forced?.length && { forced: pkgInfo.forced }),
     files,
     totalFiles,
     directories,
