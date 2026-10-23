@@ -809,6 +809,8 @@
                 document.body.dataset.vulnEnabled = c.vulnEnabled ? "true" : "false";
                 if (c.machineBun) document.body.dataset.machineBun = c.machineBun;
                 if (c.machineTools) document.body.dataset.machineTools = JSON.stringify(c.machineTools);
+                // The compiler probe settles after the first answer — ask once more soon.
+                else if (!fetchConfig.retried) { fetchConfig.retried = true; setTimeout(fetchConfig, 5000); }
             } catch {
                 // Unreachable server: keep the current flag until the next probe.
             }

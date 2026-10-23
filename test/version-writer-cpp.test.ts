@@ -12,7 +12,7 @@ import { decodeRc, encodeRc, scanRc, bumpRcText } from "../src/version-writer-cp
 //   2. the file's encoding (VS default UTF-16LE) survives the rewrite;
 //   3. the 4th (build) part is never invented or dropped.
 
-// The shape of a real MinGW project's resource.rc (plusnetstat).
+// The shape of a real MinGW project's resource.rc.
 const RC = `#include <windows.h>
 
 101 ICON "icon.ico"
@@ -26,9 +26,9 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "CompanyName", "PlusNetstat"
+            VALUE "CompanyName", "SampleApp"
             VALUE "FileVersion", "1.4.0.0"
-            VALUE "InternalName", "plusnetstat"
+            VALUE "InternalName", "sampleapp"
             VALUE "ProductVersion", "1.4.0.0"
         END
     END
@@ -36,7 +36,7 @@ END
 `;
 
 const DEPS = JSON.stringify({
-  project: { name: "PlusNetstat", version: "1.4.0", language: "C++" },
+  project: { name: "SampleApp", version: "1.4.0", language: "C++" },
   dependencies: [{ name: "libmaxminddb", version: "1.14.0" }],
 }, null, 2);
 

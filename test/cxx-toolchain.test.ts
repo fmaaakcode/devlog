@@ -5,7 +5,7 @@ import { describe, test, expect } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { compilerFamily, toolsetVersion, declaredCompiler, machineCompilers } from "../src/cxx-toolchain";
+import { compilerFamily, toolsetVersion, declaredCompiler, machineCompilers, machineCompilersNow } from "../src/cxx-toolchain";
 import { detectRuntime } from "../src/scanner";
 import { parseWorkflow } from "../src/ci-toolchain";
 
@@ -31,7 +31,7 @@ test("toolsetVersion: MSBuild toolset → MSVC version", () => {
 });
 
 describe("declaredCompiler — from the project's own build files", () => {
-  test("Makefile CXX := g++ (the plusnetstat shape)", () => {
+  test("Makefile CXX := g++ (a MinGW Makefile)", () => {
     const dir = proj({ Makefile: "CXX     := g++\nCC      := gcc\nCXXFLAGS := -std=c++23\n" });
     try { expect(declaredCompiler(dir)).toEqual({ name: "GCC", version: "" }); }
     finally { rmSync(dir, { recursive: true, force: true }); }
@@ -80,8 +80,18 @@ describe("parseWorkflow — C/C++ compiler pins", () => {
   });
 });
 
-test("machineCompilers: versions are dotted numbers, probed once", async () => {
+// Probes the REAL machine (a CI runner may carry full VS + MSYS2): the whole
+// probe is bounded by one budget, so the test timeout only needs headroom.
+test("machineCompilers: versions are dotted numbers, probed once, within budget", async () => {
+  const t0 = Date.now();
   const a = machineCompilers();
   expect(machineCompilers()).toBe(a);
   for (const v of Object.values(await a)) expect(v).toMatch(/^\d+(\.\d+)+$/);
-});
+  expect(Date.now() - t0).toBeLessThan(10_000);
+}, 20_000);
+
+test("machineCompilersNow never waits: null or the settled result", async () => {
+  const now = machineCompilersNow();
+  expect(now === null || typeof now === "object").toBe(true);
+  expect(machineCompilersNow()).toEqual(await machineCompilers());
+}, 20_000);

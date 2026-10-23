@@ -17,7 +17,7 @@ const realFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = realFetch; });
 
 describe("vendoredGithubRepo — which dependencies.json entries are GitHub sources", () => {
-  test("pkg:github purl → owner/repo (the plusnetstat shape)", () => {
+  test("pkg:github purl → owner/repo (a vendored C library)", () => {
     expect(vendoredGithubRepo({ ecosystem: "vendored", purl: "pkg:github/maxmind/libmaxminddb@1.14.0" })).toBe("maxmind/libmaxminddb");
   });
   test("vendored with a github.com homepage", () => {

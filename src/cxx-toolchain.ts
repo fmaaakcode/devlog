@@ -101,23 +101,44 @@ async function msvcVersion(): Promise<string> {
   return found.sort((a, b) => { const x = num(a), y = num(b); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]; }).pop() || "";
 }
 
-let machineCache: Promise<Partial<Record<Compiler, string>>> | null = null;
+type MachineCompilers = Partial<Record<Compiler, string>>;
+let machineCache: Promise<MachineCompilers> | null = null;
+let machineResult: MachineCompilers | null = null;
 
-/** Compilers installed on this machine → version. Probed once per daemon. */
-export function machineCompilers(): Promise<Partial<Record<Compiler, string>>> {
+// One budget for the whole probe, not per command: a CI runner with full VS +
+// MSYS2 chained several 5s waits past any caller's patience. A probe still
+// running at the deadline reports nothing for that compiler.
+const PROBE_BUDGET_MS = 4000;
+
+/** Compilers installed on this machine → version. Probed once per daemon,
+ *  settled within PROBE_BUDGET_MS. */
+export function machineCompilers(): Promise<MachineCompilers> {
   machineCache ??= (async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<string>(r => { timer = setTimeout(() => r(""), PROBE_BUDGET_MS); });
+    const within = (p: Promise<string>) => Promise.race([p, deadline]);
     const [gcc, clang, msvc] = await Promise.all([
-      firstVersion("g++", ["-dumpfullversion"]).then(v => v || firstVersion("gcc", ["-dumpfullversion"])),
-      firstVersion("clang++", ["-dumpversion"]),
-      msvcVersion(),
+      within(firstVersion("g++", ["-dumpfullversion"]).then(v => v || firstVersion("gcc", ["-dumpfullversion"]))),
+      within(firstVersion("clang++", ["-dumpversion"])),
+      within(msvcVersion()),
     ]);
-    const out: Partial<Record<Compiler, string>> = {};
+    clearTimeout(timer);
+    const out: MachineCompilers = {};
     if (gcc) out.GCC = gcc;
     if (clang) out.Clang = clang;
     if (msvc) out.MSVC = msvc;
+    machineResult = out;
     return out;
   })();
   return machineCache;
+}
+
+/** Non-blocking read for request handlers: the settled result, or null while
+ *  the probe (started here on first call) is still running — a dashboard
+ *  request must never wait on spawning compilers. */
+export function machineCompilersNow(): MachineCompilers | null {
+  void machineCompilers();
+  return machineResult;
 }
 
 // `owner/repo` of a dependencies.json entry that names a GitHub source: the
