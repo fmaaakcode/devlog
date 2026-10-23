@@ -49,7 +49,7 @@ interface GoProxyLatest { Version?: string; Time?: string | null; }
 interface PackagistVersion { version?: string; time?: string | null; }
 interface PackagistResponse { packages?: Record<string, PackagistVersion[]>; }
 interface VcpkgManifest { version?: string | number; "version-semver"?: string; "version-string"?: string; "version-date"?: string; }
-interface GithubRelease { tag_name?: string; }
+interface GithubRelease { tag_name?: string; published_at?: string | null; }
 interface GoDlRelease { stable?: boolean; version?: string; }
 interface NodeDistEntry { version?: string; }
 
@@ -372,6 +372,18 @@ async function queryHistory(ecosystem: string, name: string): Promise<VersionEnt
         e.date = info?.Time ?? null;
       }
       return top;
+    }
+    case "rust-toolchain": {
+      // The Rust compiler itself (not a crate): GitHub releases of rust-lang/rust
+      // carry the stable tag + its publish date. One page covers ~a year.
+      const j = await fetchJson<GithubRelease[]>("https://api.github.com/repos/rust-lang/rust/releases?per_page=20");
+      if (!Array.isArray(j)) return [];
+      const out: VersionEntry[] = [];
+      for (const r of j) {
+        const ver = String(r?.tag_name || "").replace(/^v/, "");
+        if (STABLE_VER_RE.test(ver)) out.push({ version: ver, date: r?.published_at ?? null });
+      }
+      return sortVersionsDesc(out);
     }
     default:
       return []; // packagist/vcpkg: no cheap full history → matured math skipped

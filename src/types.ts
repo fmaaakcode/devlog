@@ -43,6 +43,9 @@ export interface ProjectProfile {
   totalFiles: number;
   lastScan: string;
   runtime?: RuntimeInfo;
+  /** Tool versions the project's CI workflows pin (ci-toolchain.ts) — shown
+   *  beside the declared runtime, never read as the project's own runtime. */
+  ciToolchain?: CiTool[];
   vulnResults?: Record<string, VulnResult>;
   /** When the last COMPLETE OSV pass finished (every queried group answered).
    *  Absent = never security-scanned; a freshness-only round (vcpkg, OSV
@@ -105,6 +108,12 @@ export interface RuntimeInfo {
   name: string;       // "Bun", "Node", "rustc", "Go", "GCC", "Python", "PHP"
   version: string;    // "1.3.11", "1.78.0", "1.22", etc.
   edition?: string;   // Rust: "2021", C/C++: "C++20", TS: "ESNext"
+}
+
+export interface CiTool {
+  tool: string;      // "Bun", "Node", "Go", "Python", "Rust"
+  version: string;   // as written in the workflow, quotes stripped
+  file: string;      // workflow file name, e.g. "test.yml"
 }
 
 export interface EventEntry {

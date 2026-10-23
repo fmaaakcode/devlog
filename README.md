@@ -15,7 +15,7 @@ Local dashboard, zero telemetry, zero runtime dependencies (pure Bun). Arabic an
 /plugin install devlog@devlog
 ```
 
-That's the whole install (needs [Bun](https://bun.sh/) 1.3.14+ on your `PATH`, plus `bash` and `curl` — on Windows, Git for Windows provides both). Details, manual install and uninstall are [below](#install-claude-code-plugin--recommended).
+That's the whole install (needs [Bun](https://bun.sh/) 1.4.4+ on your `PATH`, plus `bash` and `curl` — on Windows, Git for Windows provides both). Details, manual install and uninstall are [below](#install-claude-code-plugin--recommended).
 
 ## The whole idea in two lines
 
@@ -185,7 +185,7 @@ That's the whole install. The plugin bundles everything:
 - **Your data** lives in `~/.devlog/data/` — outside the plugin cache, so it survives every `/plugin marketplace update`.
 - **One folder in your project:** the daemon keeps running in the background after Claude Code exits (stop it any time — see [Uninstall](#uninstall)), and DevLog creates `<project>/.devlog/`: a small identity file (`project.json`, git-ignored automatically) plus, as you use the features, `DEVLOG_STATUS.md`, the changelog and release pages. Add `.devlog/` to your `.gitignore` if you don't want those generated files in your repo.
 
-Requires [Bun](https://bun.sh/) 1.3.14+ on your `PATH` (the plugin prints the one-line install command if it's missing) and `bash` + `curl` for the hooks (Git for Windows ships both). Update later with `/plugin marketplace update`. Set `DEVLOG_LANG=ar` for Arabic protocol messages.
+Requires [Bun](https://bun.sh/) 1.4.4+ on your `PATH` (the plugin prints the one-line install command if it's missing) and `bash` + `curl` for the hooks (Git for Windows ships both). Update later with `/plugin marketplace update`. Set `DEVLOG_LANG=ar` for Arabic protocol messages.
 
 ## Manual install (from a clone)
 

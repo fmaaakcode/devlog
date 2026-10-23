@@ -327,7 +327,11 @@
                 </span>
                 <span class="lang-badge" id="hdr-lang" style="background:${color}18; color:${color}">${esc(p.language)}</span>
                 <span class="framework-badge" id="hdr-framework" style="background:#04201a;color:var(--emerald);${p.framework ? '' : 'display:none'}">${esc(p.framework || '')}</span>
-                <span id="hdr-runtime" style="font-size:0.7em;padding:2px 8px;border-radius:4px;background:#1a1a2e;color:#7c8cf5;font-weight:600;${p.runtime ? '' : 'display:none'}">${p.runtime ? `${esc(p.runtime.name || '')}${p.runtime.version ? ` ${esc(p.runtime.version)}` : ''}${p.runtime.edition ? ` · ${esc(p.runtime.edition)}` : ''}` : ''}</span>
+                <span class="stats-btn" id="hdr-runtime" style="background:#1a1a2e;color:#7c8cf5;border-color:#2a2a4e;white-space:nowrap;display:none">
+                    <span id="hdr-runtime-text"></span>
+                    <span id="hdr-runtime-warn" style="color:var(--gold);display:none">●</span>
+                    <div class="stats-popup" id="hdr-runtime-popup"></div>
+                </span>
                 ${gitBadgeHtml(p)}
                 <span id="hdr-sessions" data-action="open-sessions" data-project="${esc(p.name)}" style="display:none;font-size:0.7em;padding:2px 8px;border-radius:4px;background:#0d2e1f;color:var(--emerald);font-weight:600;cursor:pointer" title="${tr("hdr.sessionsTitle")}"></span>
             `;
@@ -345,6 +349,7 @@
                 </div>
             `;
             setHeaderBuilt(true);
+            patchRuntime(p);
             patchLibraries(p);
             patchSessions(p.name);
             patchStatsButton(p, tags);
@@ -408,6 +413,88 @@
                 html += '</div>';
             }
             return html;
+        }
+
+        // Runtime dropdown: the declared engine, this machine's Bun and the CI
+        // pins side by side. Only a DIFFERENCE is news (one value repeated three
+        // times is noise), so the badge carries a gold dot only when they disagree.
+        const bareVer = v => String(v || '').replace(/^[\s^~>=<v]+/, '').trim();
+        // Two pins agree when the shorter is a prefix of the longer: a declared
+        // rust-version "1.99" is met by a CI on 1.99.1 — no news there.
+        const agree = (a, b) => {
+            const x = bareVer(a).split('.'), y = bareVer(b).split('.');
+            for (let i = 0; i < Math.min(x.length, y.length); i++) if (x[i] !== y[i]) return false;
+            return true;
+        };
+        // Strictly older, numeric parts only ("1.4.3" < "1.4.4"; "1.99" vs "1.99.1" is not behind).
+        const verBehind = (a, b) => {
+            const x = bareVer(a).split('.').map(Number), y = bareVer(b).split('.').map(Number);
+            for (let i = 0; i < Math.min(x.length, y.length); i++) if (x[i] !== y[i]) return x[i] < y[i];
+            return false;
+        };
+        const matureCache = {};   // tool → { version, date, days } | null while in flight
+        function runtimeRows(p) {
+            const rt = p.runtime, ciRaw = p.ciToolchain;
+            const machine = rt?.name === 'Bun' ? (document.body.dataset.machineBun || '') : '';
+            // One row per tool+version, naming every workflow that pins it.
+            const byKey = new Map();
+            for (const c of ciRaw || []) {
+                const k = `${c.tool}\0${c.version}`;
+                byKey.set(k, byKey.has(k) ? { ...byKey.get(k), file: `${byKey.get(k).file}, ${c.file}` } : { ...c });
+            }
+            const ci = [...byKey.values()];
+            const vals = [rt?.version, machine, ...ci.filter(c => c.tool === rt?.name).map(c => c.version)]
+                .filter(v => /^\d/.test(bareVer(v)));
+            const mismatch = vals.some((a, i) => vals.slice(i + 1).some(b => !agree(a, b)));
+            return { rt, ci, hasWorkflows: Array.isArray(ciRaw), machine, mismatch };
+        }
+        function patchRuntime(p) {
+            const el = document.getElementById('hdr-runtime');
+            if (!el) return;
+            const { rt, ci, mismatch } = runtimeRows(p);
+            const text = rt ? (rt.name || '') + (rt.version ? ` ${rt.version}` : '') + (rt.edition ? ` · ${rt.edition}` : '') : '';
+            el.style.display = (text || ci.length) ? '' : 'none';
+            patch(document.getElementById('hdr-runtime-text'), text || tr("rtPop.ci"));
+            document.getElementById('hdr-runtime-warn').style.display = mismatch ? '' : 'none';
+            el.title = mismatch ? tr("rtPop.mismatch") : '';
+            // Built on hover: the machine's version arrives with /api/config, which
+            // may land after the header is built.
+            const render = () => {
+                const r = runtimeRows(p);
+                const row = (k, v, warn) => `<div class="stats-row"><span class="stats-key">${esc(k)}</span><span class="stats-value" dir="ltr"${warn ? ' style="color:var(--gold)"' : ''}>${esc(v)}</span></div>`;
+                const ref = bareVer(r.machine || r.rt?.version);
+                const off = v => r.mismatch && !agree(v, ref);
+                // #1256: newest mature release vs the EXACT pins (machine, CI) — a
+                // declared minimum (engines, rust-version) is never judged (#1112).
+                const latest = r.rt && matureCache[r.rt.name];
+                const pins = [r.machine, ...r.ci.filter(c => c.tool === r.rt?.name).map(c => c.version)].filter(v => /^\d/.test(bareVer(v)));
+                const behind = latest?.version ? pins.filter(v => verBehind(v, latest.version)) : [];
+                let h = `<div class="stats-section-title">${tr("rtPop.engine")}</div>`;
+                if (r.rt) {
+                    h += row(`${r.rt.name} · ${tr("rtPop.declared")}`, r.rt.version || '—', off(r.rt.version));
+                    if (r.machine) h += row(`${r.rt.name} · ${tr("rtPop.machine")}`, r.machine, false);
+                    if (latest?.version) h += row(`${r.rt.name} · ${tr("rtPop.latest")}`, `${latest.version}${typeof latest.days === 'number' ? ` · ${tr("rtPop.daysAgo", { d: latest.days })}` : ''}`, behind.length > 0);
+                    // "TS 7.0.2" → TS | 7.0.2; a bare edition (Rust "2021") keeps a generic key.
+                    const [ek, ...ev] = (r.rt.edition || '').split(' ');
+                    if (r.rt.edition) h += ev.length ? row(ek, ev.join(' '), false) : row('edition', r.rt.edition, false);
+                }
+                h += `<div class="stats-section-title">${tr("rtPop.ci")}</div>`;
+                if (!r.ci.length) h += `<div class="stats-row"><span class="stats-key" style="color:var(--text2)">${tr(r.hasWorkflows ? "rtPop.ciNoPin" : "rtPop.noCi")}</span></div>`;
+                for (const c of r.ci) h += row(`${c.tool} · ${c.file}`, c.version, c.tool === r.rt?.name && off(c.version));
+                if (r.mismatch) h += `<div style="margin-top:8px;font-size:0.85em;color:var(--gold)">${tr("rtPop.mismatch")}</div>`;
+                if (behind.length) h += `<div style="margin-top:8px;font-size:0.85em;color:var(--gold)">${tr("rtPop.behind", { v: latest.version })}</div>`;
+                document.getElementById('hdr-runtime-popup').innerHTML = h;
+            };
+            el.onmouseenter = () => {
+                render();
+                const tool = p.runtime?.name;
+                if (!tool || tool in matureCache) return;
+                matureCache[tool] = null;   // one fetch per tool per page load
+                fetch(`${API}/api/toolchain-latest/${encodeURIComponent(tool)}`)
+                    .then(res => (res.ok ? res.json() : null))
+                    .then(j => { matureCache[tool] = j; render(); })
+                    .catch(() => { delete matureCache[tool]; });
+            };
         }
 
         function patchStatsButton(p, tags) {
@@ -636,13 +723,7 @@
                 gitEl.outerHTML = gitBadgeHtml(p);
             }
 
-            // Runtime — same always-present pattern as the framework badge.
-            const rtEl = document.getElementById('hdr-runtime');
-            if (rtEl) {
-                const rtText = p.runtime ? (p.runtime.name || '') + (p.runtime.version ? ` ${p.runtime.version}` : '') + (p.runtime.edition ? ` · ${p.runtime.edition}` : '') : '';
-                patch(rtEl, rtText);
-                rtEl.style.display = rtText ? '' : 'none';
-            }
+            patchRuntime(p);
 
             // Libraries
             patchLibraries(p);

@@ -26,7 +26,7 @@ import { acquireDaemonLock, releaseDaemonLock } from "./daemon-lock";
 import { wsClients, broadcast } from "./broadcast";
 import { applyPreservedScan, freshOrRelocatedProfile } from "./scanner";
 import { makeRescanScheduler } from "./rescan-scheduler";
-import { FRESHNESS_FILES, freshnessDirs, firstChangedSince } from "./manifest-freshness";
+import { FRESHNESS_FILES, watchedDirs, isFreshnessHit, firstChangedSince } from "./manifest-freshness";
 import { parseHookEvent, attributionCwd } from "./hooks";
 import { exportStatusMd, generateStackMd } from "./export";
 import { rebuildChangelogsMigration } from "./changelog-rebuild";
@@ -739,7 +739,7 @@ function watchProject(name: string, projectPath: string, dirPath: string = proje
     const w = watch(dirPath, { recursive: false }, (_event, filename) => {
       if (!filename) return;
       const base = filename.toString().split(/[\\/]/).pop() || "";
-      if (!FRESHNESS_FILES.includes(base)) return;
+      if (!isFreshnessHit(projectPath, dirPath, base)) return;
       scheduleRescan(projectPath, name);
     });
     w.on("error", () => {
@@ -778,9 +778,9 @@ async function refreshWatchers() {
     const live = new Set<string>();
     for (const [name, p] of Object.entries(data.projects)) {
       if (!p.path || !existsSync(p.path)) continue;
-      // Root + whichever nested layout dirs exist; `live` must list every
+      // Root + existing nested layout dirs + CI workflows; `live` must list every
       // watched dir or the prune below would drop the nested ones each sweep.
-      for (const dir of freshnessDirs(p.path)) {
+      for (const dir of watchedDirs(p.path)) {
         if (!existsSync(dir)) continue;
         live.add(dir);
         watchProject(name, p.path, dir);

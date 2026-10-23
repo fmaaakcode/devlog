@@ -67,7 +67,7 @@ const SEV_ORDER = ["none", "low", "moderate", "high", "critical"];
 
 export function severityRank(s: string): number {
   const i = SEV_ORDER.indexOf((s || "").toLowerCase());
-  return i < 0 ? 0 : i;
+  return Math.max(i, 0);
 }
 
 // Representative CVSS-ish score per label, for the dashboard's topVuln.score badge.

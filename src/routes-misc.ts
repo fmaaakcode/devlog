@@ -15,6 +15,7 @@ import { broadcast } from "./broadcast";
 import { appendAudit } from "./audit";
 import { exportStatusMd } from "./export";
 import { getCachedUpdates, checkAllToolUpdates } from "./version-check";
+import { matureToolchain } from "./toolchain-latest";
 import { softFail } from "./soft-fail";
 import { join } from "node:path";
 
@@ -41,15 +42,25 @@ export function makeMiscRoutes(): Record<string, unknown> {
 
     // Runtime feature flags for the dashboard. Native version scanning is always
     // available (no external server), so the scan button is always enabled.
+    // `machineBun` is the Bun this daemon runs on — the header's runtime
+    // dropdown shows it as "this machine", never as the project's runtime (#1090).
     "/api/config": {
       GET() {
-        return Response.json({ vulnEnabled: true, vulnConfigured: true });
+        return Response.json({ vulnEnabled: true, vulnConfigured: true, machineBun: Bun.version });
       },
     },
 
     // Upstream tool versions (DevLog + Vuln Watch). The dashboard polls this on
     // init to render an "update available" badge. Refreshed by the version-check
     // loop every hour. POST forces an immediate refresh.
+    // Newest mature (≥7 days) release of a runtime tool, for the header's
+    // runtime dropdown (#1256). Cached in registry.ts; unknown tool → nulls.
+    "/api/toolchain-latest/:tool": {
+      async GET(req: ApiReq) {
+        return Response.json(await matureToolchain(req.params.tool));
+      },
+    },
+
     "/api/updates": {
       GET() {
         // pluginMode lets the dashboard show the right upgrade path: a plugin

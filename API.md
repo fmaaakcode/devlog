@@ -122,7 +122,8 @@
 - `/api/ignore` — toggle a `.devignore` entry (POST)
 
 ## Misc / utility (`routes-misc.ts`)
-- `/api/config` — dashboard feature flags (GET)
+- `/api/config` — dashboard feature flags + this machine's Bun version (GET)
+- `/api/toolchain-latest/:tool` — newest mature (≥7 days) release of a runtime tool, `Bun` or `rustc` (GET)
 - `/api/updates` — upstream tool-update info (GET/POST)
 - `/api/event/:id` — delete an event (DELETE)
 - `/api/data/clear` — wipe all data (DELETE, X-Confirm)

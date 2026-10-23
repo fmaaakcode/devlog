@@ -78,7 +78,7 @@ export async function newestSourceMtime(root: string): Promise<number> {
   const mtimes = await Promise.all(paths.map(async p => {
     try { return (await stat(p)).mtimeMs; } catch { return 0; }  // missing/unreadable → ignore
   }));
-  return mtimes.reduce((newest, m) => (m > newest ? m : newest), 0);
+  return mtimes.reduce((newest, m) => Math.max(newest, m), 0);
 }
 
 /**

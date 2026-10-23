@@ -19,8 +19,10 @@
 // beside NESTED_MANIFEST_DIRS' consumers is deliberate: when the scanner learns
 // a new layout, this is the file that must learn it too.
 
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { MANIFEST_FILES, nestedManifestDirs } from "./manifest-dirs";
+import { isWorkflowFile, workflowDir } from "./ci-toolchain";
 
 /** Declared dependencies — what the user edits (defined in manifest-dirs). */
 export { MANIFEST_FILES };
@@ -39,18 +41,31 @@ export function freshnessDirs(root: string): string[] {
   return [root, ...nestedManifestDirs(root)];
 }
 
+/** The CI workflows feed the profile too (ciToolchain), under arbitrary file
+ *  names — so their folder is watched as a whole: any .yml/.yaml in it counts. */
+export const watchedDirs = (root: string) => [...freshnessDirs(root), workflowDir(root)];
+
+/** Does a change to `name` inside watched `dir` move the snapshot of `root`? */
+export function isFreshnessHit(root: string, dir: string, name: string): boolean {
+  return dir === workflowDir(root) ? isWorkflowFile(name) : FRESHNESS_FILES.includes(name);
+}
+
+const listDirSafe = (dir: string): string[] => { try { return readdirSync(dir); } catch { return []; } };
+
 /**
  * The first freshness-relevant file modified after `sinceMs`, or null when the
  * snapshot is still current. Returns the PATH (not a boolean) so callers can
  * log what actually moved — "stale" with no culprit is unfalsifiable.
  *
  * `statMs` is injected: tests need a virtual filesystem, and an absent file
- * must read as "no signal" (null), never as "changed".
+ * must read as "no signal" (null), never as "changed". `listDir` likewise —
+ * it lists the workflows folder, whose file names are not known in advance.
  */
 export async function firstChangedSince(
   root: string,
   sinceMs: number,
   statMs: (path: string) => Promise<number | null>,
+  listDir: (dir: string) => string[] = listDirSafe,
 ): Promise<string | null> {
   if (!Number.isFinite(sinceMs)) return null;
   // Stats fan out WITHIN a directory (audit 2026-08-14 E6): one folder's ~16
@@ -65,6 +80,15 @@ export async function firstChangedSince(
       const m = mtimes[i];
       if (m !== null && m > sinceMs) return paths[i];
     }
+  }
+  // Last: the workflows. The folder's own mtime catches an added, deleted or
+  // renamed workflow; each file's catches an edit in place.
+  const wf = workflowDir(root);
+  const wfPaths = [wf, ...listDir(wf).filter(isWorkflowFile).map(n => join(wf, n))];
+  const wfTimes = await Promise.all(wfPaths.map(p => statMs(p)));
+  for (let i = 0; i < wfPaths.length; i++) {
+    const m = wfTimes[i];
+    if (m !== null && m > sinceMs) return wfPaths[i];
   }
   return null;
 }

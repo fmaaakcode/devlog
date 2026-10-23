@@ -807,6 +807,7 @@
                 if (!r.ok) return;
                 const c = await r.json();
                 document.body.dataset.vulnEnabled = c.vulnEnabled ? "true" : "false";
+                if (c.machineBun) document.body.dataset.machineBun = c.machineBun;
             } catch {
                 // Unreachable server: keep the current flag until the next probe.
             }

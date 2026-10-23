@@ -15,7 +15,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { join } from "node:path";
-import { firstChangedSince, freshnessDirs, FRESHNESS_FILES, MANIFEST_FILES, LOCKFILES } from "../src/manifest-freshness";
+import { firstChangedSince, freshnessDirs, watchedDirs, isFreshnessHit, FRESHNESS_FILES, MANIFEST_FILES, LOCKFILES } from "../src/manifest-freshness";
 
 const ROOT = join("D:", "proj");
 const SCAN = 1_000_000;
@@ -73,5 +73,32 @@ describe("freshness detection reaches where the scanner reads (#861)", () => {
     for (const f of [...MANIFEST_FILES, ...LOCKFILES]) expect(FRESHNESS_FILES).toContain(f);
     expect(FRESHNESS_FILES).toContain("Cargo.lock");
     expect(FRESHNESS_FILES).toContain("bun.lock");
+  });
+});
+
+describe("CI workflows move the snapshot too (ciToolchain)", () => {
+  const WF = join(ROOT, ".github", "workflows");
+  const lsWf = (names: string[]) => (d: string) => (d === WF ? names : []);
+
+  test("an edited workflow file is seen, whatever its name", async () => {
+    const p = join(WF, "test.yml");
+    expect(await firstChangedSince(ROOT, SCAN, fsOf({ [p]: SCAN + 1 }), lsWf(["test.yml"]))).toBe(p);
+  });
+
+  test("an added or deleted workflow shows up as the folder's own mtime", async () => {
+    expect(await firstChangedSince(ROOT, SCAN, fsOf({ [WF]: SCAN + 1 }), lsWf([]))).toBe(WF);
+  });
+
+  test("a non-YAML file in the workflows folder is not a signal", async () => {
+    const p = join(WF, "README.md");
+    expect(await firstChangedSince(ROOT, SCAN, fsOf({ [p]: SCAN + 1 }), lsWf(["README.md"]))).toBeNull();
+  });
+
+  test("the watcher covers the workflows folder and accepts only YAML there", () => {
+    expect(watchedDirs(ROOT)).toContain(WF);
+    expect(isFreshnessHit(ROOT, WF, "ci.yaml")).toBe(true);
+    expect(isFreshnessHit(ROOT, WF, "package.json")).toBe(false);
+    expect(isFreshnessHit(ROOT, ROOT, "package.json")).toBe(true);
+    expect(isFreshnessHit(ROOT, ROOT, "test.yml")).toBe(false);
   });
 });

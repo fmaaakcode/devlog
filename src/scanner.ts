@@ -27,6 +27,7 @@ import { existsSync } from "node:fs";
 import { join, extname, } from "node:path";
 import { claudeConfigDir, claudeProjectSlug, normalizeSlashes, pathsEqual } from "./path-utils";
 import { nestedManifestDirs } from "./manifest-dirs";
+import { readCiToolchain } from "./ci-toolchain";
 import { type ForcedLib, forcedFromPackageJson } from "./manifest-overrides";
 import { NOISE_DIRS, readDevignore } from "./skip-dirs";
 import { parseCargoDeps, resolveWorkspaceMemberDirs, type CargoDep } from "./cargo-workspace";
@@ -618,6 +619,7 @@ export async function scanProject(cwd: string, nameFromPath: (p: string) => stri
     if (runtime) break;
     if (existsSync(sub)) runtime = await detectRuntime(sub, language);
   }
+  const ciToolchain = readCiToolchain(cwd);
 
   let directories: string[] = [];
   try {
@@ -672,6 +674,7 @@ export async function scanProject(cwd: string, nameFromPath: (p: string) => stri
     directories,
     lastScan: new Date().toISOString(),
     ...(runtime && { runtime }),
+    ...(ciToolchain && { ciToolchain }),
     ...(aboutFromFile && { about: aboutFromFile }),
     memoryFiles,
     docFiles,
