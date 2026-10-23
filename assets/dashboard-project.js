@@ -433,9 +433,13 @@
             return false;
         };
         const matureCache = {};   // tool → { version, date, days } | null while in flight
+        // C/C++ compilers installed on this machine (GCC/Clang/MSVC → version), from /api/config.
+        const machineTool = (name) => {
+            try { return (name && JSON.parse(document.body.dataset.machineTools || '{}')[name]) || ''; } catch { return ''; }
+        };
         function runtimeRows(p) {
             const rt = p.runtime, ciRaw = p.ciToolchain;
-            const machine = rt?.name === 'Bun' ? (document.body.dataset.machineBun || '') : '';
+            const machine = rt?.name === 'Bun' ? (document.body.dataset.machineBun || '') : machineTool(rt?.name);
             // One row per tool+version, naming every workflow that pins it.
             const byKey = new Map();
             for (const c of ciRaw || []) {
@@ -548,8 +552,10 @@
         // (same ecosystem map the server scans against). Lets the user click a
         // library to verify the version/date manually. Returns '' for
         // ecosystems with no stable per-package page (C/C++/vcpkg).
-        export function registryUrl(language, name) {
+        export function registryUrl(language, name, eco) {
             if (!name) return '';
+            // A C/C++ library vendored from GitHub carries its own source.
+            if (eco === 'github') return `https://github.com/${name.split('/').map(encodeURIComponent).join('/')}`;
             const n = encodeURIComponent(name);
             switch (language) {
                 // npm names are URL-path-safe by spec; keep the @ and / raw so
@@ -641,7 +647,7 @@
                 }
                 const arrow = target ? `<span class="lib-arrow">→</span><span class="lib-ver">${esc(target)}</span>` : '';
                 const devTag = l.dev ? '<span class="lib-tag">dev</span>' : '';
-                const url = registryUrl(p.language, l.name);
+                const url = registryUrl(p.language, l.name, l.eco);
                 const nameEl = url
                     ? `<a class="lib-name" href="${esc(url)}" target="_blank" rel="noopener" title="${tr("lib.openPage")}">${esc(l.name)}</a>`
                     : `<span class="lib-name">${esc(l.name)}</span>`;

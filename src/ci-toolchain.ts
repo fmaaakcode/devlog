@@ -29,6 +29,12 @@ const PATTERNS: [RegExp, string, ((s: string) => string)?][] = [
   [/^\s*toolchain:\s*(.+)$/, "rustc"],
   [/dtolnay\/rust-toolchain@([\w.-]+)/, "rustc"],
   [/rustup\s+(?:toolchain\s+install|install|default|override\s+set)\b([^&|;]*)/g, "rustc", firstToolchain],
+  // C/C++: a versioned compiler package (`apt install g++-13`, `clang-18`) and
+  // the MSVC toolset of ilammy/msvc-dev-cmd (`toolset: 14.29`). Names match
+  // cxx-toolchain.ts so the dropdown pairs them with the declared compiler.
+  [/\b(?:apt(?:-get)?|brew)\s+install\b[^&|;]*?\b(?:g\+\+|gcc)-(\d+)\b/, "GCC"],
+  [/\b(?:apt(?:-get)?|brew)\s+install\b[^&|;]*?\bclang(?:\+\+)?-(\d+)\b/, "Clang"],
+  [/^\s*toolset:\s*(1\d\.\d+(?:\.\d+)?)\s*$/, "MSVC"],
 ];
 
 // An action ref that names no toolchain: a branch or a commit SHA.

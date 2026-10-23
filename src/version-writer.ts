@@ -2,7 +2,9 @@
  * Auto-bump manifest version when `-(release) vX.Y.Z — ...` arrives.
  * Supported: package.json (JSON), Cargo.toml (TOML — [package] and/or the
  * workspace-wide [workspace.package] version, with Cargo.lock kept in sync for
- * every crate that inherits it), .claude-plugin/plugin.json.
+ * every crate that inherits it), .claude-plugin/plugin.json, pyproject.toml
+ * ([project] / [tool.poetry]), composer.json (when it carries a version), and for C/C++ a
+ * root *.rc VERSIONINFO + dependencies.json (version-writer-cpp.ts).
  * Conservative regex replace — preserves formatting, comments, ordering.
  * Returns the list of files actually updated.
  */
@@ -12,6 +14,7 @@ import { join } from "node:path";
 import { resolveWorkspaceMemberDirs } from "./cargo-workspace";
 import { atomicWriteText } from "./atomic-write";
 import { escapeRegex } from "./regex-escape";
+import { bumpCppManifests, readCppVersions } from "./version-writer-cpp";
 
 export interface VersionUpdate {
   file: string;
@@ -151,7 +154,7 @@ interface BlockVersion {
 // ([package] or [workspace.package]), bounded before the next section so a
 // dependency's version can never be picked up. An inherited version
 // (`version.workspace = true`) has no quoted literal → null.
-function findBlockVersion(raw: string, section: "[package]" | "[workspace.package]"): BlockVersion | null {
+function findBlockVersion(raw: string, section: string): BlockVersion | null {
   const idx = raw.indexOf(section);
   if (idx < 0) return null;
   const after = raw.slice(idx);
@@ -188,6 +191,21 @@ export async function readManifestVersion(projectPath: string): Promise<string |
       }
     } catch { /* skip */ }
   }
+  // Python: pyproject.toml [project] / [tool.poetry] literal version.
+  const py = join(projectPath, "pyproject.toml");
+  if (existsSync(py)) {
+    try {
+      const raw = await readFile(py, "utf8");
+      for (const section of ["[project]", "[tool.poetry]"]) {
+        const v = findBlockVersion(raw, section)?.from;
+        if (v && /\d/.test(v)) found.push(v);
+      }
+    } catch { /* skip */ }
+  }
+  // PHP: composer.json `version` (optional — Composer prefers git tags).
+  await pushJsonVer(join(projectPath, "composer.json"));
+  // C/C++: root *.rc VERSIONINFO + dependencies.json project.version.
+  found.push(...await readCppVersions(projectPath, compareSemver));
   if (!found.length) return null;
   return found.reduce((hi, v) => (compareSemver(v, hi) > 0 ? v : hi));
 }
@@ -234,7 +252,22 @@ async function bumpPackageJson(filePath: string, newVersion: string, allowDowngr
   return { file: filePath, from, to: newVersion };
 }
 
+// pyproject.toml: PEP 621 [project] and/or Poetry's [tool.poetry]. A project
+// whose version is `dynamic` (setuptools-scm, hatch-vcs) or absent owns its
+// version in git tags — nothing to write, and not an error: null, not a reject.
+async function bumpPyproject(filePath: string, newVersion: string, allowDowngrade = false): Promise<VersionUpdate | VersionReject | null> {
+  return bumpTomlVersion(filePath, ["[project]", "[tool.poetry]"], newVersion, allowDowngrade, false);
+}
+
 async function bumpCargoToml(filePath: string, newVersion: string, allowDowngrade = false): Promise<VersionUpdate | VersionReject | null> {
+  return bumpTomlVersion(filePath, ["[package]", "[workspace.package]"], newVersion, allowDowngrade, true);
+}
+
+// The literal `version = "…"` of every listed TOML section moves together
+// (all or none), each lookup bounded to its own section.
+async function bumpTomlVersion(
+  filePath: string, sections: string[], newVersion: string, allowDowngrade: boolean, rejectWhenAbsent: boolean,
+): Promise<VersionUpdate | VersionReject | null> {
   const raw = await readFile(filePath, "utf8");
   // A plain crate versions itself in [package]; a workspace versions its
   // members in [workspace.package] (they opt in with `version.workspace =
@@ -242,11 +275,9 @@ async function bumpCargoToml(filePath: string, newVersion: string, allowDowngrad
   // version so the root crate and its workspace never drift apart. Dependency
   // versions (in [dependencies*] tables) are never touched — both lookups are
   // bounded to their own block.
-  const targets = [
-    findBlockVersion(raw, "[package]"),
-    findBlockVersion(raw, "[workspace.package]"),
-  ].filter((t): t is BlockVersion => t !== null);
+  const targets = sections.map((sec) => findBlockVersion(raw, sec)).filter((t): t is BlockVersion => t !== null);
   if (!targets.length) {
+    if (!rejectWhenAbsent) return null;
     // Cargo.toml exists but nothing here is bumpable — a virtual workspace
     // without [workspace.package] version, an inherited `version.workspace =
     // true`, or an omitted version field. This used to return null and the
@@ -424,6 +455,24 @@ async function writeManifestVersions(
       classify(await bumpPackageJson(pluginManifest, version, allowDowngrade));
     } catch (e) { classify(ioError(pluginManifest, e)); }
   }
+  const pyproject = join(projectPath, "pyproject.toml");
+  if (existsSync(pyproject)) {
+    try {
+      classify(await bumpPyproject(pyproject, version, allowDowngrade));
+    } catch (e) { classify(ioError(pyproject, e)); }
+  }
+  // composer.json: bumped only when it carries a top-level version — Composer
+  // recommends omitting it (Packagist reads git tags), so absent is not an error.
+  const composer = join(projectPath, "composer.json");
+  if (existsSync(composer)) {
+    try {
+      if (typeof JSON.parse(await readFile(composer, "utf8"))?.version === "string") {
+        classify(await bumpPackageJson(composer, version, allowDowngrade));
+      }
+    } catch (e) { classify(ioError(composer, e)); }
+  }
+  // C/C++ projects: resource .rc + dependencies.json (version-writer-cpp.ts).
+  for (const r of await bumpCppManifests(projectPath, version, compareSemver, allowDowngrade)) classify(r);
   return out;
 }
 

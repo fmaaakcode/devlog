@@ -28,6 +28,7 @@ import { join, extname, } from "node:path";
 import { claudeConfigDir, claudeProjectSlug, normalizeSlashes, pathsEqual } from "./path-utils";
 import { nestedManifestDirs } from "./manifest-dirs";
 import { readCiToolchain } from "./ci-toolchain";
+import { declaredCompiler, vendoredGithubRepo } from "./cxx-toolchain";
 import { type ForcedLib, forcedFromPackageJson } from "./manifest-overrides";
 import { NOISE_DIRS, readDevignore } from "./skip-dirs";
 import { parseCargoDeps, resolveWorkspaceMemberDirs, type CargoDep } from "./cargo-workspace";
@@ -320,10 +321,13 @@ const MANIFESTS: ManifestSpec[] = [
       if (lang !== "C++" && lang !== "C" && !/klmny3.local\/schemas\/dependencies/.test(pkg?.$schema || "")) return;
       for (const dep of (pkg.dependencies || [])) {
         if (!dep?.name) continue;
+        // A library vendored from GitHub is checked against ITS repo (releases
+        // for freshness, OSV's GIT feed for CVEs) — not a same-named vcpkg port.
+        const repo = vendoredGithubRepo(dep);
         result.libraries.push({
-          name: String(dep.name),
+          name: repo || String(dep.name),
           version: String(dep.version || "*"),
-          ...(dep.transitive ? { dev: true } : {}), eco: "vcpkg",
+          ...(dep.transitive ? { dev: true } : {}), eco: repo ? "github" : "vcpkg",
         });
       }
       // Pick GUI framework if present
@@ -545,22 +549,28 @@ export async function detectRuntime(dirPath: string, language: string): Promise<
 
     // C / C++
     if (language === "C" || language === "C++") {
+      // The engine is the compiler the build files name (GCC/Clang/MSVC) —
+      // the language name only when none is named. Standard → edition.
+      const cc = declaredCompiler(dirPath);
+      const engine = (edition: string): RuntimeInfo =>
+        ({ name: cc?.name || language, version: cc?.version || "", ...(edition && { edition }) });
       // CMakeLists.txt
       const cmake = Bun.file(join(dirPath, "CMakeLists.txt"));
       if (await cmake.exists()) {
         const text = await cmake.text();
         const cxxStd = text.match(/CMAKE_CXX_STANDARD\s+(\d+)/);
         const cStd = text.match(/CMAKE_C_STANDARD\s+(\d+)/);
-        if (cxxStd) return { name: "C++", version: "", edition: `C++${cxxStd[1]}` };
-        if (cStd) return { name: "C", version: "", edition: `C${cStd[1]}` };
+        if (cxxStd) return engine(`C++${cxxStd[1]}`);
+        if (cStd) return engine(`C${cStd[1]}`);
       }
       // Makefile → -std=
       const makefile = Bun.file(join(dirPath, "Makefile"));
       if (await makefile.exists()) {
         const text = await makefile.text();
         const std = text.match(/-std=(c\+\+\d+|c\d+|gnu\+\+\d+|gnu\d+)/i);
-        if (std) return { name: language, version: "", edition: std[1] };
+        if (std) return engine(std[1]);
       }
+      if (cc) return engine("");
     }
 
     // Python

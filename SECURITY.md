@@ -44,9 +44,9 @@ attacks against a localhost service:
 
   | Host | Feature | Payload | Off switch |
   |---|---|---|---|
-  | `registry.npmjs.org`, `crates.io`, `pypi.org`, `proxy.golang.org`, `repo.packagist.org`, `raw.githubusercontent.com` (vcpkg ports) | dependency freshness sweep, `-(ask:lib)` advisor, install gate | package name (+ version) | `DEVLOG_REGISTRY_CHECK_DISABLED=1` |
+  | `registry.npmjs.org`, `crates.io`, `pypi.org`, `proxy.golang.org`, `repo.packagist.org`, `raw.githubusercontent.com` (vcpkg ports), `api.github.com/repos/{owner}/{repo}/releases` (C/C++ libraries vendored from GitHub) | dependency freshness sweep, `-(ask:lib)` advisor, install gate | package name (+ version) | `DEVLOG_REGISTRY_CHECK_DISABLED=1` |
   | `go.dev`, `nodejs.org`, `api.github.com/repos/rust-lang/rust`, `registry.npmjs.org/typescript` | latest-toolchain lookup for the standards write gate | language name only | `DEVLOG_REGISTRY_CHECK_DISABLED=1` |
-  | `api.osv.dev` | vulnerability check (sweep, `-(audit)`, advisor, install gate) | package name + version | `DEVLOG_VULN_CHECK_DISABLED=1` |
+  | `api.osv.dev` | vulnerability check (sweep, `-(audit)`, advisor, install gate) | package name + version (for a GitHub-vendored library: its repo URL + release tag) | `DEVLOG_VULN_CHECK_DISABLED=1` |
   | `api.github.com/repos/fmaaakcode/{devlog,vuln}/releases/latest` | hourly update check | nothing (GET) | `DEVLOG_VERSION_CHECK_DISABLED=1` |
 
   With all three set, DevLog makes **no** outbound request; the advisor then answers

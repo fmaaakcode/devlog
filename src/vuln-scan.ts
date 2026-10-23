@@ -14,7 +14,7 @@
 
 import { loadData, withData, normalizeTagContent, assignNum, latestCloserTs, SECURITY_OPEN_TAGS } from "./data";
 import { latestVersions, synthesizeStatus, type VersionInfo } from "./registry";
-import type { PkgVuln } from "./osv";
+import { settleGitFix, type PkgVuln } from "./osv";
 import { buildScanInventory, scanInventory, pkgKey } from "./vuln-inventory";
 import { chainTo, dependentsGraph, enumerateDepTree } from "./lockfile-tree";
 import { loadVulnIgnore } from "./vuln-ignore";
@@ -118,6 +118,14 @@ export async function runVulnScan(name: string) {
       ? { verdicts: new Map<string, PkgVuln>(), osvEcos: new Set<string>(), unresolved: 0, complete: false }
       : await scanInventory(treePackages, fetch, await loadVulnIgnore(projectSnap.path));
     const vulnByPkg = osv.verdicts;
+    // GIT-feed verdicts (libraries vendored from GitHub) name no fix version —
+    // resolve it from the latest release when OSV finds that one clean.
+    for (const p of packages) {
+      if (p.eco !== "github") continue;
+      const key = pkgKey(p.eco, p.name);
+      const pv = vulnByPkg.get(key);
+      if (pv) vulnByPkg.set(key, await settleGitFix(p.name, pv, nativeLatest.get(key)?.version));
+    }
     // Ecosystems whose OSV scan actually ran — gates security-tag creation and
     // auto-close below PER PACKAGE, so a freshness-only group (or a disabled
     // vuln check) never touches that group's security tags.

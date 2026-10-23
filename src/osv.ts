@@ -55,7 +55,16 @@ const OSV_ECO: Record<string, string> = {
   maven: "Maven",
   nuget: "NuGet",
   rubygems: "RubyGems",
+  // A C/C++ library vendored from GitHub (`owner/repo`): OSV's GIT feed is
+  // queried by repo URL + release tag (OSV accepts the tag with or without "v").
+  github: "GIT",
 };
+
+// The package name OSV expects: the repo URL for the GIT feed, the name as-is
+// everywhere else. Only the request payload changes — verdicts stay keyed by
+// the inventory name.
+export const osvPackageName = (osvEco: string, name: string): string =>
+  osvEco === "GIT" ? `https://github.com/${name}` : name;
 
 export function osvEcosystem(internalEco: string): string | null {
   return OSV_ECO[internalEco] ?? null;
@@ -225,6 +234,8 @@ export function nearestFix(installed: string, vuln: OsvVuln, name: string): stri
     if (typeof pkgName === "string" && pkgName.toLowerCase() !== name.toLowerCase()) continue;
     const ranges = Array.isArray(a?.ranges) ? a.ranges : [];
     for (const rg of ranges) {
+      // A GIT range bounds by commit hash, not version — never a version to move to.
+      if (rg?.type === "GIT") continue;
       const events = Array.isArray(rg?.events) ? rg.events : [];
       for (const ev of events) {
         if (ev && typeof ev.fixed === "string") {
@@ -249,6 +260,7 @@ export function lastAffected(installed: string, vuln: OsvVuln, name: string): st
     const pkgName = a?.package?.name;
     if (typeof pkgName === "string" && pkgName.toLowerCase() !== name.toLowerCase()) continue;
     for (const rg of Array.isArray(a?.ranges) ? a.ranges : []) {
+      if (rg?.type === "GIT") continue; // commit-hash bound (see nearestFix)
       for (const ev of Array.isArray(rg?.events) ? rg.events : []) {
         if (ev && typeof ev.last_affected === "string") {
           const l = ev.last_affected.replace(/^v/, "");
@@ -447,6 +459,26 @@ const OSV_QUERY_URL = "https://api.osv.dev/v1/query";
 // (e.g. "latest", a git ref, "*") can't be matched against advisory ranges, so it
 // returns UNKNOWN (indeterminate) rather than a misleading "safe". fetchImpl is
 // injectable so the test suite never hits the network.
+/** OSV's GIT feed names a fix by commit, never by version, so every GIT verdict
+ *  with a CVE reads "no complete fix". Ask about the latest release instead: if
+ *  OSV finds it clean, that release IS the fix to move to. A failed or dirty
+ *  answer keeps the danger verdict — never upgrade to an unverified version. */
+export async function settleGitFix(
+  name: string, verdict: PkgVuln, latest: string | null | undefined, fetchImpl: typeof fetch = fetch,
+): Promise<PkgVuln> {
+  if (verdict.status !== "danger" || !latest || !isVersionBehind(verdict.version, latest)) return verdict;
+  const check = (await scanPackages("GIT", [{ name, version: latest }], fetchImpl, 1)).get(name);
+  if (!check?.ok || check.vulns > 0) return verdict;
+  return {
+    ...verdict,
+    status: "update",
+    icon: "warning",
+    fixVersion: latest,
+    message: L(`${verdict.vulns} vuln(s) (${verdict.severity}) — upgrade to ${latest}`, `${verdict.vulns} ثغرة (${verdict.severity}) — رقِّ لـ${latest}`),
+    advisories: verdict.advisories.map(a => (a.kind === "vuln" && !a.fix ? { ...a, fix: latest } : a)),
+  };
+}
+
 export async function scanPackages(
   osvEco: string,
   packages: { name: string; version: string }[],
@@ -471,7 +503,7 @@ export async function scanPackages(
       if (!/^\d/.test(p.version)) {
         verdict = { ...UNKNOWN, version: p.version };
       } else {
-        const j = await postJson<OsvQueryResponse>(OSV_QUERY_URL, { version: p.version, package: { name: p.name, ecosystem: osvEco } }, fetchImpl);
+        const j = await postJson<OsvQueryResponse>(OSV_QUERY_URL, { version: p.version, package: { name: osvPackageName(osvEco, p.name), ecosystem: osvEco } }, fetchImpl);
         if (j === null) consecutiveNulls++; else consecutiveNulls = 0;
         verdict = j === null
           ? { ...UNKNOWN, version: p.version }
@@ -520,7 +552,7 @@ async function batchVulnerable(
   let consecutiveFailures = 0;
   for (let off = 0; off < packages.length; off += BATCH_CHUNK) {
     const slice = packages.slice(off, off + BATCH_CHUNK);
-    const queries = slice.map(p => ({ package: { name: p.name, ecosystem: osvEco }, version: p.version }));
+    const queries = slice.map(p => ({ package: { name: osvPackageName(osvEco, p.name), ecosystem: osvEco }, version: p.version }));
     const j = await postJson<OsvBatchResponse>(OSV_BATCH_URL, { queries }, fetchImpl);
     if (!j || !Array.isArray(j.results)) {
       consecutiveFailures++;

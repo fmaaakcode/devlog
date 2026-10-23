@@ -15,6 +15,7 @@ const REGISTRY_URL = {
   pypi: (n) => `https://pypi.org/project/${encodeURIComponent(n)}/`,
   go: (n) => `https://pkg.go.dev/${n.split("/").map(encodeURIComponent).join("/")}`,
   packagist: (n) => `https://packagist.org/packages/${n.split("/").map(encodeURIComponent).join("/")}`,
+  github: (n) => `https://github.com/${n.split("/").map(encodeURIComponent).join("/")}`,
 };
 
 const sevColor = { critical: "#ff1744", high: "#ff5252", moderate: "#ff9800", low: "#ffd93d" };

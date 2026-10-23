@@ -33,7 +33,7 @@ export function tmpPathFor(path: string, now = Date.now()): string {
  *  doc-store index — kept so their historical orphans are swept too). */
 export const ORPHAN_TMP_RE = /(?:\.tmp\.\d+\.\d+|\.\d+\.\d+\.tmp)$/;
 
-export async function atomicWriteText(path: string, body: string): Promise<void> {
+export async function atomicWriteText(path: string, body: string | Uint8Array): Promise<void> {
   const tmp = tmpPathFor(path);
   try {
     const fh = await open(tmp, "w");

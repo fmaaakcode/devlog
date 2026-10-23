@@ -49,7 +49,23 @@ interface GoProxyLatest { Version?: string; Time?: string | null; }
 interface PackagistVersion { version?: string; time?: string | null; }
 interface PackagistResponse { packages?: Record<string, PackagistVersion[]>; }
 interface VcpkgManifest { version?: string | number; "version-semver"?: string; "version-string"?: string; "version-date"?: string; }
-interface GithubRelease { tag_name?: string; published_at?: string | null; }
+interface GithubRelease { tag_name?: string; published_at?: string | null; draft?: boolean; prerelease?: boolean; }
+
+// `owner/repo` → URL path, or null for anything else. Each segment is checked
+// (a `..` segment would walk the API path) and encoded (R4 sec L1).
+export function githubRepoPath(name: string): string | null {
+  const parts = name.split("/");
+  if (parts.length !== 2 || parts.some(p => !/^[\w.-]+$/.test(p) || /^\.+$/.test(p))) return null;
+  return parts.map(encodeURIComponent).join("/");
+}
+
+// Release tags carry a prefix as often as not ("v1.2.3", "release-1.2.3",
+// "zlib-1.3.1"): the version is the trailing dotted number. A tag with no
+// such tail (a date, a codename) is not a version we can compare.
+export function githubTagVersion(tag: string): string | null {
+  const m = String(tag).match(/(?:^|[^\d.])(\d+\.\d+(?:\.\d+)*)$/);
+  return m ? m[1] : null;
+}
 interface GoDlRelease { stable?: boolean; version?: string; }
 interface NodeDistEntry { version?: string; }
 
@@ -228,6 +244,16 @@ async function queryRegistry(ecosystem: string, name: string): Promise<VersionIn
       const raw = j?.version ?? j?.["version-semver"] ?? j?.["version-string"] ?? j?.["version-date"] ?? null;
       return { version: raw != null ? String(raw) : null, date: null };
     }
+    case "github": {
+      // A C/C++ library vendored from its GitHub repo (`owner/repo`): the latest
+      // release (drafts/prereleases excluded by GitHub) carries its publish date.
+      // A repo that tags without publishing releases 404s → "unknown".
+      const repo = githubRepoPath(name);
+      if (!repo) return { version: null, date: null };
+      const j = await fetchJson<GithubRelease>(`https://api.github.com/repos/${repo}/releases/latest`);
+      const version = j?.tag_name ? githubTagVersion(j.tag_name) : null;
+      return { version, date: version ? (j?.published_at ?? null) : null };
+    }
     default:
       // maven / nuget / rubygems — not yet supported natively.
       return { version: null, date: null };
@@ -382,6 +408,20 @@ async function queryHistory(ecosystem: string, name: string): Promise<VersionEnt
       for (const r of j) {
         const ver = String(r?.tag_name || "").replace(/^v/, "");
         if (STABLE_VER_RE.test(ver)) out.push({ version: ver, date: r?.published_at ?? null });
+      }
+      return sortVersionsDesc(out);
+    }
+    case "github": {
+      // One page of releases with their dates — enough for latest + matured picks.
+      const repo = githubRepoPath(name);
+      if (!repo) return [];
+      const j = await fetchJson<GithubRelease[]>(`https://api.github.com/repos/${repo}/releases?per_page=30`);
+      if (!Array.isArray(j)) return [];
+      const out: VersionEntry[] = [];
+      for (const r of j) {
+        if (r?.draft || r?.prerelease) continue;
+        const ver = r?.tag_name ? githubTagVersion(r.tag_name) : null;
+        if (ver) out.push({ version: ver, date: r?.published_at ?? null });
       }
       return sortVersionsDesc(out);
     }

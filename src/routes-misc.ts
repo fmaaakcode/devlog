@@ -16,6 +16,7 @@ import { appendAudit } from "./audit";
 import { exportStatusMd } from "./export";
 import { getCachedUpdates, checkAllToolUpdates } from "./version-check";
 import { matureToolchain } from "./toolchain-latest";
+import { machineCompilers } from "./cxx-toolchain";
 import { softFail } from "./soft-fail";
 import { join } from "node:path";
 
@@ -45,8 +46,10 @@ export function makeMiscRoutes(): Record<string, unknown> {
     // `machineBun` is the Bun this daemon runs on — the header's runtime
     // dropdown shows it as "this machine", never as the project's runtime (#1090).
     "/api/config": {
-      GET() {
-        return Response.json({ vulnEnabled: true, vulnConfigured: true, machineBun: Bun.version });
+      // `machineTools`: C/C++ compilers installed here (GCC/Clang/MSVC), probed
+      // once per daemon — same "this machine" row for C/C++ projects.
+      async GET() {
+        return Response.json({ vulnEnabled: true, vulnConfigured: true, machineBun: Bun.version, machineTools: await machineCompilers() });
       },
     },
 
