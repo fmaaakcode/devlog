@@ -362,7 +362,9 @@
                 const target = v ? (kind === 'fix' ? (v.fixVersion || v.latestVersion) : v.latestVersion) : '';
                 const dateStr = v ? (kind === 'fix' ? v.fixReleaseDate : v.latestReleaseDate) : '';
                 const days = v ? (kind === 'fix' ? v.daysSinceFix : v.daysSinceLatest) : null;
-                const isFresh = kind === 'latest' && typeof days === 'number' && days < 7;
+                const firstAge = v && typeof v.daysSinceFirstNewer === 'number' ? v.daysSinceFirstNewer : days; // oldest newer release: ⏳ only when ALL newer ones are <7d
+                const isFresh = kind === 'latest' && typeof firstAge === 'number' && firstAge < 7;
+                const behindPart = kind === 'latest' && v?.behind > 1 && typeof firstAge === 'number' ? tr("sec.behindPart", { n: v.behind, d: firstAge }) : '';
                 const dateLabel = kind === 'fix' ? tr("sec.fixReleased") : tr("sec.latestReleased");
                 // toISOString THROWS on an unparsable date — one «unknown» from a
                 // registry took down the whole security card and project view
@@ -371,7 +373,7 @@
                 const datePart = parsedDate && !Number.isNaN(parsedDate.getTime()) ? parsedDate.toISOString().slice(0, 10) : '';
                 const caption = (typeof days === 'number' || datePart)
                     ? `<div dir="${uiDir()}" style="margin-inline-start:22px;color:${isFresh ? 'var(--gold)' : 'var(--text2)'};font-size:0.85em;padding-top:1px">
-                          ${isFresh ? '⏳ ' : ''}${esc(dateLabel)}${typeof days === 'number' ? tr("sec.daysAgoPart", { d: days }) : ''}${datePart ? ` · ${esc(datePart)}` : ''}
+                          ${isFresh ? '⏳ ' : ''}${esc(behindPart)}${esc(dateLabel)}${typeof days === 'number' ? tr("sec.daysAgoPart", { d: days }) : ''}${datePart ? ` · ${esc(datePart)}` : ''}
                        </div>` : '';
                 const verStyle = strike ? 'text-decoration:line-through;color:var(--text2)' : `color:${accent}`;
                 const url = registryUrl(project?.language, parsed.name);

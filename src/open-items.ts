@@ -334,17 +334,20 @@ export function openPlanSteps(data: DevLogData, project: string, opts: OpenItemO
 export interface OutdatedLib {
   name: string;
   current: string;      // installed version, "" if unknown
-  latest: string;       // latest available version
-  daysSinceLatest: number;
+  latest: string;       // upgrade target: newest release ≥ minAgeDays old (else the latest)
+  daysBehind: number;   // age of the OLDEST release newer than installed
+  behind?: number;      // how many stable releases are newer (absent without history)
 }
 
 /**
  * Libraries with a newer version that has been published longer than
  * `minAgeDays` days ago. Reads the latest vuln-scan snapshot (`vulnResults`),
- * the source of truth for version-behind (`isLatest`) + release age
- * (`daysSinceLatest`). The age gate excludes versions released <1 week ago so a
- * just-cut (possibly unstable) release doesn't immediately read as "open work".
- * Current version comes from `libraries` since VulnResult doesn't carry it.
+ * the source of truth for version-behind (`isLatest`) + release ages. The gate
+ * asks whether the FIRST release newer than installed is over a week old
+ * (`daysSinceFirstNewer`) — the latest's own age let a library releasing every
+ * few days stay "too fresh" forever. Profiles scanned before the history fields
+ * fall back to `daysSinceLatest`. Current version comes from `libraries` since
+ * VulnResult doesn't carry it.
  */
 export function openOutdatedLibs(profile: ProjectProfile, minAgeDays = 7): OutdatedLib[] {
   const results = profile.vulnResults;
@@ -354,15 +357,17 @@ export function openOutdatedLibs(profile: ProjectProfile, minAgeDays = 7): Outda
   for (const [name, r] of Object.entries(results)) {
     if (r.isLatest !== false) continue;                 // up to date or unknown
     if (!r.latestVersion) continue;
-    if (typeof r.daysSinceLatest !== "number") continue;
-    if (r.daysSinceLatest <= minAgeDays) continue;      // newer version too fresh
+    const age = typeof r.daysSinceFirstNewer === "number" ? r.daysSinceFirstNewer : r.daysSinceLatest;
+    if (typeof age !== "number") continue;
+    if (age <= minAgeDays) continue;                    // every newer version too fresh
     out.push({
       name,
       current: versionByName.get(name) || "",
-      latest: r.latestVersion,
-      daysSinceLatest: r.daysSinceLatest,
+      latest: r.maturedVersion || r.latestVersion,
+      daysBehind: age,
+      ...(typeof r.behind === "number" ? { behind: r.behind } : {}),
     });
   }
-  out.sort((a, b) => b.daysSinceLatest - a.daysSinceLatest);
+  out.sort((a, b) => b.daysBehind - a.daysBehind);
   return out;
 }

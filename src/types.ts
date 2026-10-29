@@ -93,6 +93,13 @@ export interface VulnResult {
   fixReleaseDate?: string;     // ISO publish date of fixVersion (external API)
   daysSinceLatest?: number | null;
   daysSinceFix?: number | null;
+  /** From the full version history (dep-check.ts behindInfo), only when behind:
+   *  how many stable releases are newer than installed, the oldest of them (how
+   *  long you've been behind), and the newest one already ≥7 days old. */
+  behind?: number;
+  firstNewerDate?: string;
+  daysSinceFirstNewer?: number | null;
+  maturedVersion?: string;
   advisories?: Array<{ id: string; severity: string; summary: string; fix: string; url: string; kind?: string }>;
   transitive?: boolean;  // vuln came from an indirect (transitive) dependency, not a direct one
   /** For a transitive one: the chain that drags it in, direct library first and

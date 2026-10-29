@@ -13,7 +13,8 @@
 // many projects can't open a burst of HTTPS connections (rate-limit/ban risk).
 
 import { loadData, withData, normalizeTagContent, assignNum, latestCloserTs, SECURITY_OPEN_TAGS } from "./data";
-import { latestVersions, synthesizeStatus, type VersionInfo } from "./registry";
+import { latestVersions, synthesizeStatus, versionHistories, isVersionBehind, type VersionInfo } from "./registry";
+import { behindInfo, type BehindInfo } from "./dep-check";
 import { settleGitFix, type PkgVuln } from "./osv";
 import { buildScanInventory, scanInventory, pkgKey } from "./vuln-inventory";
 import { chainTo, dependentsGraph, enumerateDepTree } from "./lockfile-tree";
@@ -99,6 +100,22 @@ export async function runVulnScan(name: string) {
       if (Number.isNaN(t)) return null;
       return Math.max(0, Math.floor((Date.now() - t) / 86_400_000));
     };
+    // Full history for the BEHIND direct deps only: the latest's own date hides
+    // how many releases were missed and when the first of them landed (a lib
+    // releasing every 3 days always read "0 days" and never crossed the 7-day
+    // outdated gate). Same 6h cache as the latest lookup; up-to-date libs pay nothing.
+    const behindByKey = new Map<string, BehindInfo>();
+    const behindPkgs = packages.filter(p => {
+      const v = nativeLatest.get(pkgKey(p.eco, p.name))?.version;
+      return !!v && isVersionBehind(p.version, v);
+    });
+    for (const [eco, group] of groupByEco(behindPkgs)) {
+      const hist = await versionHistories(eco, group.map(p => p.name));
+      for (const p of group) {
+        const b = behindInfo(hist.get(p.name) || [], p.version);
+        if (b.behind > 0) behindByKey.set(pkgKey(eco, p.name), b);
+      }
+    }
 
     // CVE axis (OSV.dev) — the native scan above sees only freshness; OSV adds the
     // known-advisory data that lets the reconciliation loop create/close security
@@ -143,7 +160,9 @@ export async function runVulnScan(name: string) {
       const s = synthesizeStatus(p.version, nativeLatest.get(pkgKey(p.eco, p.name)));
       // description rides the freshness lookup's own response (registry.ts) —
       // attached here so every direct-dep result shape below carries it.
-      const fresh = { isLatest: s.isLatest, latestVersion: s.latestVersion, latestReleaseDate: s.date || "", daysSinceLatest: daysSince(s.date), description: nativeLatest.get(pkgKey(p.eco, p.name))?.description || "" };
+      const b = behindByKey.get(pkgKey(p.eco, p.name));
+      const behindFields = b ? { behind: b.behind, firstNewerDate: b.firstNewer?.date || "", daysSinceFirstNewer: daysSince(b.firstNewer?.date ?? null), maturedVersion: b.matured?.version || "" } : {};
+      const fresh = { isLatest: s.isLatest, latestVersion: s.latestVersion, latestReleaseDate: s.date || "", daysSinceLatest: daysSince(s.date), description: nativeLatest.get(pkgKey(p.eco, p.name))?.description || "", ...behindFields };
       const pv = vulnByPkg.get(pkgKey(p.eco, p.name));
       if (pv?.ok && pv.vulns > 0) {
         // vulnVersion: the resolved version the advisories actually hit. A lockfile
@@ -229,7 +248,10 @@ export async function runVulnScan(name: string) {
                 kind: sStr(a?.kind, 20) || "vuln",
               }))
             : [];
-          vulnMap[sStr(pkg.name, 100)] = { status: sStr(pkg.status, 20), icon: sStr(pkg.icon, 20), message: sStr(pkg.message, 500), vulns: pkg.vulns ?? 0, notices: pkg.notices ?? 0, severity: sStr(pkg.severity, 20) || "none", topVuln: pkg.topVuln || null, fixVersion: sStr(pkg.fixVersion, 50), latestVersion: sStr(pkg.latestVersion, 50), ...(typeof pkg.isLatest === "boolean" ? { isLatest: pkg.isLatest } : {}), unscannableReason: sStr(pkg.unscannableReason, 200), detailsUrl: sUrl(pkg.detailsUrl), daysSinceFix: pkg.daysSinceFix ?? null, daysSinceLatest: pkg.daysSinceLatest ?? null, fixReleaseDate: sDate(pkg.fixReleaseDate), latestReleaseDate: sDate(pkg.latestReleaseDate), description: sStr(pkg.description, 300), advisories, transitive: pkg.direct === false, ...(Array.isArray(pkg.via) && pkg.via.length ? { via: pkg.via.slice(0, 8).map((n: unknown) => sStr(n, 100)) } : {}) };
+          const behind = typeof pkg.behind === "number" && pkg.behind > 0
+            ? { behind: Math.min(pkg.behind, 9999), firstNewerDate: sDate(pkg.firstNewerDate), daysSinceFirstNewer: pkg.daysSinceFirstNewer ?? null, maturedVersion: sStr(pkg.maturedVersion, 50) }
+            : {};
+          vulnMap[sStr(pkg.name, 100)] = { ...behind, status: sStr(pkg.status, 20), icon: sStr(pkg.icon, 20), message: sStr(pkg.message, 500), vulns: pkg.vulns ?? 0, notices: pkg.notices ?? 0, severity: sStr(pkg.severity, 20) || "none", topVuln: pkg.topVuln || null, fixVersion: sStr(pkg.fixVersion, 50), latestVersion: sStr(pkg.latestVersion, 50), ...(typeof pkg.isLatest === "boolean" ? { isLatest: pkg.isLatest } : {}), unscannableReason: sStr(pkg.unscannableReason, 200), detailsUrl: sUrl(pkg.detailsUrl), daysSinceFix: pkg.daysSinceFix ?? null, daysSinceLatest: pkg.daysSinceLatest ?? null, fixReleaseDate: sDate(pkg.fixReleaseDate), latestReleaseDate: sDate(pkg.latestReleaseDate), description: sStr(pkg.description, 300), advisories, transitive: pkg.direct === false, ...(Array.isArray(pkg.via) && pkg.via.length ? { via: pkg.via.slice(0, 8).map((n: unknown) => sStr(n, 100)) } : {}) };
         }
         project.vulnResults = vulnMap as typeof project.vulnResults;
         // Two clocks (#1104/#1139): libScanDate = "a scan ran" (the sweep's

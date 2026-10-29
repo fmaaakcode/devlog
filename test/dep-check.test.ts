@@ -1,7 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import {
   ageDays,
-  maturedVersion, evaluateDepRich, findDepVerdicts,
+  maturedVersion, evaluateDepRich, findDepVerdicts, behindInfo,
 } from "../src/dep-check";
 
 const NOW = new Date("2026-06-16T00:00:00Z");
@@ -16,6 +16,23 @@ describe("ageDays", () => {
   test("null for missing/unparseable date", () => {
     expect(ageDays(null, NOW)).toBeNull();
     expect(ageDays("not-a-date", NOW)).toBeNull();
+  });
+});
+
+describe("behindInfo", () => {
+  // three releases three days apart, after the installed 1.0.0
+  const hist = [v("1.3.0", 0), v("1.2.0", 3), v("1.1.0", 9), v("1.0.0", 40), v("0.9.0", 80)];
+  test("counts the missed releases and dates the FIRST newer one", () => {
+    const b = behindInfo(hist, "1.0.0", NOW);
+    expect(b.behind).toBe(3);
+    expect(b.firstNewer?.version).toBe("1.1.0");
+    expect(b.matured?.version).toBe("1.1.0");
+  });
+  test("matured is null while every newer release is still cooling down", () => {
+    expect(behindInfo(hist, "1.1.0", NOW)).toMatchObject({ behind: 2, matured: null });
+  });
+  test("up to date → nothing behind", () => {
+    expect(behindInfo(hist, "1.3.0", NOW)).toEqual({ behind: 0, firstNewer: null, matured: null });
   });
 });
 

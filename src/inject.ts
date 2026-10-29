@@ -19,7 +19,7 @@ import type { DevLogData, InjectionConfig, ProjectProfile, TagEntry, InjectionEn
 import { takeReleaseAnnouncement } from "./release-autocheck";
 import {
   DEFAULT_INJECTION_CONFIG, CLOSURE_TAGS,
-  openTodos, openBugs, openSecurity, openPlanSteps, openOutdatedLibs, type OpenPlanStep, DATA_DIR,
+  openTodos, openBugs, openSecurity, openPlanSteps, openOutdatedLibs, type OpenPlanStep, type OutdatedLib, DATA_DIR,
 } from "./data";
 import { currentLang } from "./i18n";
 import { incidentLine, openIncidents } from "./store-incidents";
@@ -96,6 +96,14 @@ export function clipLine(s: string, max: number): string {
 // A "N days ago" suffix for outdated-library lines, in the active language.
 function ageAgo(days: number): string {
   return L(`(${days}d ago)`, `(منذ ${days} يوم)`);
+}
+
+// One outdated-library line: the target is the newest matured release, the age
+// is how long the FIRST newer release has been out, plus how many were missed.
+function outdatedLine(l: OutdatedLib): string {
+  const cur = l.current ? `${safe(l.current)} ` : "";
+  const n = l.behind && l.behind > 1 ? L(` — ${l.behind} releases behind`, ` — متأخر ${l.behind} إصدارات`) : "";
+  return `- ${safe(l.name)} ${cur}→ ${safe(l.latest)} ${ageAgo(l.daysBehind)}${n}`;
 }
 
 // Compact list of #N references grouped by category. Replaces the verbose
@@ -213,10 +221,7 @@ function formatOpenDetailed(data: DevLogData, project: string): string[] {
     parts.push(L(
       `## Outdated libraries (${outdated.length}) — a newer version has been out for over a week`,
       `## مكتبات منتهية (${outdated.length}) — إصدار أحدث متاح منذ أكثر من أسبوع`));
-    for (const l of outdated) {
-      const cur = l.current ? `${safe(l.current)} ` : "";
-      parts.push(`- ${safe(l.name)} ${cur}→ ${safe(l.latest)} ${ageAgo(l.daysSinceLatest)}`);
-    }
+    for (const l of outdated) parts.push(outdatedLine(l));
   }
   return parts;
 }
@@ -238,12 +243,9 @@ function outdatedSection(profile: ProjectProfile, config: InjectionConfig): stri
   if (!outdated.length) return [];
   const out: string[] = [];
   out.push(L(
-    `## Outdated libraries (${outdated.length}) — newest version out for >a week`,
-    `## مكتبات منتهية (${outdated.length}) — أحدث إصدار متاح منذ ›أسبوع`));
-  for (const l of outdated.slice(0, MAX_OUTDATED)) {
-    const cur = l.current ? `${safe(l.current)} ` : "";
-    out.push(`- ${safe(l.name)} ${cur}→ ${safe(l.latest)} ${ageAgo(l.daysSinceLatest)}`);
-  }
+    `## Outdated libraries (${outdated.length}) — a newer version out for >a week`,
+    `## مكتبات منتهية (${outdated.length}) — إصدار أحدث متاح منذ ›أسبوع`));
+  for (const l of outdated.slice(0, MAX_OUTDATED)) out.push(outdatedLine(l));
   const rest = outdated.length - MAX_OUTDATED;
   if (rest > 0) out.push(L(`- …and ${rest} more — \`?open\` lists them all.`,
                           `- …و${rest} أخرى — \`?open\` يسردها كلها.`));

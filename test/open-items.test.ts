@@ -148,7 +148,18 @@ describe("openOutdatedLibs (outdated libraries in ?open)", () => {
   test("returns only libs >1 week behind, with current+latest+age", () => {
     const out = openOutdatedLibs(profileWithVulns());
     expect(out.map(l => l.name)).toEqual(["behind-old"]);
-    expect(out[0]).toMatchObject({ current: "1.0.0", latest: "1.5.0", daysSinceLatest: 30 });
+    expect(out[0]).toMatchObject({ current: "1.0.0", latest: "1.5.0", daysBehind: 30 });
+  });
+
+  test("a lib releasing every few days still surfaces: gate reads the FIRST newer release, target is the matured one", () => {
+    const p = profileWithVulns();
+    // latest 2.3.0 is 0 days old, but 2.1.0 (first newer than 2.0.0) is 9 days old
+    Object.assign(p.vulnResults!["behind-fresh"], { latestVersion: "2.3.0", daysSinceLatest: 0, behind: 3, daysSinceFirstNewer: 9, maturedVersion: "2.1.0" });
+    const lib = openOutdatedLibs(p).find(l => l.name === "behind-fresh");
+    expect(lib).toMatchObject({ latest: "2.1.0", daysBehind: 9, behind: 3 });
+    // every newer release still under a week → not yet open work
+    Object.assign(p.vulnResults!["behind-fresh"], { daysSinceFirstNewer: 6, maturedVersion: "" });
+    expect(openOutdatedLibs(p).map(l => l.name)).toEqual(["behind-old"]);
   });
 
   test("minAgeDays threshold is inclusive-exclusive (>minAgeDays)", () => {

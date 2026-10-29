@@ -41,6 +41,25 @@ export function maturedVersion(
   return null;
 }
 
+/** How far an installed version trails the registry, read from the FULL history
+ *  (newest-first) — the latest's own date alone hides both the count and the
+ *  wait: three releases three days apart always read "latest out 0 days", and a
+ *  library that releases weekly never crossed the 7-day outdated gate.
+ *  `firstNewer` = the oldest release newer than installed (how long you've been
+ *  behind); `matured` = the newest of those already ≥ minDays old (the safe
+ *  upgrade target — null means every newer release is still cooling down). */
+export interface BehindInfo { behind: number; firstNewer: VersionEntry | null; matured: VersionEntry | null }
+export function behindInfo(
+  history: VersionEntry[], installed: string, now: Date = new Date(), minDays = RULE_MIN_AGE_DAYS,
+): BehindInfo {
+  const newer = history.filter(e => isVersionBehind(installed, e.version));
+  return {
+    behind: newer.length,
+    firstNewer: newer.length ? newer[newer.length - 1] : null,
+    matured: maturedVersion(newer, now, minDays),
+  };
+}
+
 function majorOf(v: string): number | null {
   const m = (v || "").replace(/^[v=^~><\s]+/, "").match(/^(\d+)/);
   return m ? parseInt(m[1], 10) : null;

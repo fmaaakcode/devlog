@@ -176,7 +176,8 @@ export const DICT = {
   "sec.fixed": { en: "fixed", ar: "مُصلحة" },
   "sec.outdated": { en: "outdated", ar: "قديمة" },
   "sec.fixReleased": { en: "fix released", ar: "صدر الفيكس" },
-  "sec.latestReleased": { en: "new version released", ar: "صدر الإصدار الجديد" },
+  "sec.latestReleased": { en: "newest version released", ar: "صدر أحدث إصدار" },
+  "sec.behindPart": { en: "{n} releases behind · first newer {d} days ago · ", ar: "متأخر {n} إصدارات · أول إصدار أحدث منذ {d} يوم · " },
   "sec.daysAgoPart": { en: " {d} days ago", ar: " منذ {d} يوم" },
   "sec.reopenTitle": {
     en: "Possible reopen of closed report #{n} — check the old fix for regression",
