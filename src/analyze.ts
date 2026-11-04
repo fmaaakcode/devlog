@@ -654,7 +654,7 @@ function rootLibIsBuildOutput(projectPath: string): boolean {
   try {
     const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as Record<string, unknown>;
     const fields = [pkg.main, pkg.types, pkg.typings, pkg.module, JSON.stringify(pkg.exports ?? ""), JSON.stringify(pkg.bin ?? "")];
-    return fields.some(v => typeof v === "string" && /(?:^|["'.\/])lib\//.test(v));
+    return fields.some(v => typeof v === "string" && /(?:^|["'./])lib\//.test(v));
   } catch { return false; }
 }
 

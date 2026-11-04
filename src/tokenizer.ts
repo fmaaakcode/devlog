@@ -342,7 +342,7 @@ function looksLikeTypeArgs(source: string, from: number): boolean {
   while (j < end && (source[j] === " " || source[j] === "\t")) j++;
   const first = source[j];
   if (first === undefined) return false;
-  if (!/[A-Za-z_'(\[&*>!0-9:]/.test(first)) return false;
+  if (!/[A-Za-z_'([&*>!0-9:]/.test(first)) return false;
   for (; j < end; j++) {
     const c = source[j];
     if (c === "<") { depth++; continue; }

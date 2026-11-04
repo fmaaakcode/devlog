@@ -61,9 +61,9 @@ try {
     // one-shot nudges (story etc.) block once and ask for a re-emit — do what Claude would do
     if ((r.code === 2 || /"decision":"block"/.test(r.out)) && !/recorded in DevLog/.test(r.out)) {
       const squash = (t: string) => t.split(/\s+/).join(" ");
-      console.log("  [blocked once] " + squash(r.out || r.err).slice(0, 160));
+      console.log(`  [blocked once] ${squash(r.out || r.err).slice(0, 160)}`);
       r = await runHook(PORT, { cwd, session_id: session, transcript_path: tp, stop_hook_active: true });
-      if (r.code === 2 || /"decision":"block"/.test(r.out)) console.log("  [STILL BLOCKED] " + squash(r.out || r.err).slice(0, 300));
+      if (r.code === 2 || /"decision":"block"/.test(r.out)) console.log(`  [STILL BLOCKED] ${squash(r.out || r.err).slice(0, 300)}`);
     }
     return r.out;
   }
