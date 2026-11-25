@@ -157,6 +157,7 @@ function installsMajor(shape: SpecShape, history: VersionEntry[]): number | null
 export function formatRangeSpec(eco: string | undefined, version: string): string {
   if (eco === "pypi") return `>=${version}`;
   if (eco === "go") return `v${version}`;
+  if (eco === "nuget") return version;   // a bare NuGet version already means "this or newer"
   return `^${version}`;
 }
 
@@ -169,6 +170,7 @@ export function installCmd(eco: string, name: string, version: string): string {
   if (eco === "pypi") return `pip install ${name}==${version}`;
   if (eco === "crates.io") return `cargo add ${name}@${version}`;
   if (eco === "go") return `go get ${name}@v${version}`; // history stores versions v-stripped; go tooling wants the v back
+  if (eco === "nuget") return `dotnet add package ${name} --version ${version}`;
   return `${name}@${version}`;
 }
 

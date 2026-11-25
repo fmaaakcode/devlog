@@ -32,6 +32,7 @@ import { declaredCompiler, vendoredGithubRepo } from "./cxx-toolchain";
 import { type ForcedLib, forcedFromPackageJson } from "./manifest-overrides";
 import { NOISE_DIRS, readDevignore } from "./skip-dirs";
 import { parseCargoDeps, resolveWorkspaceMemberDirs, type CargoDep } from "./cargo-workspace";
+import { detectNugetDeps } from "./nuget-deps";
 import { readIndex as readDocIndex } from "./doc-store";
 import { softFail } from "./soft-fail";
 import type { ProjectProfile, MemoryFile, RuntimeInfo, DevLogData } from "./types";
@@ -391,7 +392,8 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<Detec
       result.forced = kept;
     }
   }
-
+  // .NET: project files have free names and sit below the root — own bounded walk.
+  if (_depth === 0) result.libraries.push(...await detectNugetDeps(dirPath));
   return result;
 }
 

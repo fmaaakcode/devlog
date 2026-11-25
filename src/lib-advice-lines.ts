@@ -54,8 +54,8 @@ export function formatLibAdviceLines(items: LibAdviceItem[], L: (en: string, ar:
         // means project detection failed — say that, and hand over the prefix
         // escape hatch instead of "ecosystem ? not supported".
         return it.eco
-          ? `  ${it.name} — ${L(`ecosystem "${it.eco}" not supported for version history (npm/pypi/crates/go only)`, `النظام "${it.eco}" غير مدعوم لتاريخ النسخ (npm/pypi/crates/go فقط)`)}`
-          : `  ${it.name} — ${L("could not detect this project's ecosystem — prefix the name and re-ask: npm:/pypi:/crates:/go:", "لم أتعرّف على نظام هذا المشروع — أضِف بادئة للاسم وأعد السؤال: npm:/pypi:/crates:/go:")}`;
+          ? `  ${it.name} — ${L(`ecosystem "${it.eco}" not supported for version history (npm/pypi/crates/go/nuget only)`, `النظام "${it.eco}" غير مدعوم لتاريخ النسخ (npm/pypi/crates/go/nuget فقط)`)}`
+          : `  ${it.name} — ${L("could not detect this project's ecosystem — prefix the name and re-ask: npm:/pypi:/crates:/go:/nuget:", "لم أتعرّف على نظام هذا المشروع — أضِف بادئة للاسم وأعد السؤال: npm:/pypi:/crates:/go:/nuget:")}`;
       case "need-full-path":
         return `  ${it.name} — ${L("Go needs the FULL module path (e.g. go:github.com/jackc/pgx/v5) — the proxy knows no short names, and guessing one is typo-squatting territory. Re-ask with the import path.", "Go يتطلب مسار الوحدة الكامل (مثل go:github.com/jackc/pgx/v5) — البروكسي لا يعرف الأسماء القصيرة، وتخمينها باب typo-squatting. أعد السؤال بمسار الاستيراد.")}`;
       case "invalid-name":

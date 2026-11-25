@@ -18,7 +18,7 @@ Before **adding a new dependency**, ask DevLog instead of researching versions y
 | Command | Use |
 |---|---|
 | `-(ask:lib) astro zod` | The exact version to install for each name (up to 8) |
-| `-(ask:lib) crates:serde pypi:requests` | Prefix overrides the project's ecosystem (`npm:`/`pypi:`/`crates:`/`go:`) |
+| `-(ask:lib) crates:serde pypi:requests` | Prefix overrides the project's ecosystem (`npm:`/`pypi:`/`crates:`/`go:`/`nuget:`) |
 | `-(ask:lib) go:github.com/jackc/pgx/v5` | Go takes the FULL module path (the import path) — short names are refused, never guessed. A full path routes to Go even without the prefix |
 
 The suggestion is the newest **stable** release **≥7 days old** (the dependency-maturity rule) that **OSV certifies clean** — vulnerable candidates are stepped past with the reason shown. Guarantees: never a pre-release, never a version younger than 7 days, never a knowingly vulnerable version (a package with no clean matured release is reported, not recommended), and never a near-miss name guess — an unknown name is refused (typo-squatting). If OSV doesn't answer, the maturity pick is flagged as carrying no security certificate. Then install with the returned command — don't substitute blind `@latest`.

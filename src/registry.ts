@@ -66,6 +66,43 @@ export function githubTagVersion(tag: string): string | null {
   const m = String(tag).match(/(?:^|[^\d.])(\d+\.\d+(?:\.\d+)*)$/);
   return m ? m[1] : null;
 }
+interface NugetCatalogEntry { version?: string; published?: string | null; listed?: boolean; description?: string; deprecation?: unknown; }
+interface NugetPage { "@id"?: string; items?: { catalogEntry?: NugetCatalogEntry }[]; }
+interface NugetIndex { items?: NugetPage[]; }
+
+// NuGet registration (api.nuget.org, the endpoint `dotnet restore` reads):
+// the index lists PAGES oldest → newest, each inlined only for small packages —
+// a big one (Serilog: 10 pages) hands just each page's URL. The newest page can
+// hold nothing but previews (serilog's ends in `4.4.1-dev-…`), so the walk goes
+// newest-first; `stopAtStable` ends it at the first page holding a stable
+// release (latest lookup), otherwise it reads up to `maxPages` (history).
+// Unlisted versions (`listed:false`) are hidden from restore → skipped.
+// semver2 variant so SemVer 2.0 versions are seen; Bun's fetch un-gzips it.
+const NUGET_REG = "https://api.nuget.org/v3/registration5-gz-semver2";
+// NuGet versions may carry a 4th part (System.Data.SQLite 1.0.118.0); the
+// comparison math reads the first three.
+const NUGET_STABLE_RE = /^\d+\.\d+(?:\.\d+){0,2}$/;
+async function nugetEntries(name: string, maxPages: number, stopAtStable: boolean): Promise<NugetCatalogEntry[]> {
+  const idx = await fetchJson<NugetIndex>(`${NUGET_REG}/${encodeURIComponent(name.toLowerCase())}/index.json`);
+  const pages = Array.isArray(idx?.items) ? idx.items : [];
+  const out: NugetCatalogEntry[] = [];
+  for (let i = pages.length - 1, read = 0; i >= 0 && read < maxPages; i--, read++) {
+    const page = pages[i];
+    const items = Array.isArray(page?.items) ? page.items
+      : page?.["@id"]?.startsWith(`${NUGET_REG}/`) ? (await fetchJson<NugetPage>(page["@id"]))?.items : null;   // follow only the registry's own URLs
+    if (!Array.isArray(items)) break;   // a page that failed to load: stop, never skip over a gap
+    for (const it of items) {
+      const e = it?.catalogEntry;
+      if (e?.version && e.listed !== false) out.push(e);
+    }
+    if (stopAtStable && out.some(e => NUGET_STABLE_RE.test(String(e.version)))) break;
+  }
+  return out;
+}
+const nugetStable = (entries: NugetCatalogEntry[]): VersionEntry[] => sortVersionsDesc(entries
+  .filter(e => NUGET_STABLE_RE.test(String(e.version)))
+  .map(e => ({ version: String(e.version), date: e.published ?? null, ...(e.deprecation ? { deprecated: true } : {}) })));
+
 interface GoDlRelease { stable?: boolean; version?: string; }
 interface NodeDistEntry { version?: string; }
 
@@ -254,8 +291,15 @@ async function queryRegistry(ecosystem: string, name: string): Promise<VersionIn
       const version = j?.tag_name ? githubTagVersion(j.tag_name) : null;
       return { version, date: version ? (j?.published_at ?? null) : null };
     }
+    case "nuget": {
+      const entries = await nugetEntries(name, 4, true);
+      const top = nugetStable(entries)[0];
+      if (!top) return { version: null, date: null };
+      const desc = entries.find(e => e.version === top.version)?.description;
+      return { version: top.version, date: top.date, description: pkgDescription(desc) };
+    }
     default:
-      // maven / nuget / rubygems — not yet supported natively.
+      // maven / rubygems — not yet supported natively.
       return { version: null, date: null };
   }
 }
@@ -425,6 +469,11 @@ async function queryHistory(ecosystem: string, name: string): Promise<VersionEnt
       }
       return sortVersionsDesc(out);
     }
+    case "nuget":
+      // Three newest pages ≈ the last ~190 releases: enough for latest + matured
+      // picks; for an install older than that, the "N releases behind" count
+      // stops at what those pages hold (an undercount, never a false "current").
+      return nugetStable(await nugetEntries(name, 3, false));
     default:
       return []; // packagist/vcpkg: no cheap full history → matured math skipped
   }

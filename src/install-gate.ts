@@ -21,7 +21,7 @@ export interface InstallPkg {
   name: string;
   /** "" = blind install (no version, or a floating dist-tag like @latest). */
   version: string;
-  eco: "npm" | "pypi" | "crates";
+  eco: "npm" | "pypi" | "crates" | "nuget";
   /**
    * Set when the package arrived via a scaffold command (#606): the original
    * invocation minus version (`bun create astro`), so block messages can show
@@ -172,6 +172,11 @@ export function parseInstallCommands(cmd: string): InstallPkg[] {
         }
       }
     }
+    const dotnet = parseDotnetSegment(seg);
+    if (dotnet && !seen.has(`nuget:${dotnet.name}`)) {
+      seen.add(`nuget:${dotnet.name}`);
+      out.push(dotnet);
+    }
     const scaffold = parseScaffoldSegment(seg);
     if (scaffold && !seen.has(`${scaffold.eco}:${scaffold.name}`)) {
       seen.add(`${scaffold.eco}:${scaffold.name}`);
@@ -179,6 +184,38 @@ export function parseInstallCommands(cmd: string): InstallPkg[] {
     }
   }
   return out;
+}
+
+// ── .NET (#1332) ─────────────────────────────────────────────────────────────
+// `dotnet add [<PROJECT>] package <NAME> [--version|-v X]` and the .NET 10
+// form `dotnet package add <NAME>[@X]`. One package per command; the version
+// arrives through a FLAG, so the generic name loop above can't read it. A
+// floating version (`*`, `1.*`) or `--prerelease` with no version is as blind
+// as no version at all: restore picks whatever is newest.
+const DOTNET_RE = /(?:^|\s)dotnet\s+(?:add\s+(?:\S+\s+)?package|package\s+add)\s+(.+)$/;
+const DOTNET_VALUE_FLAGS = new Set(["-f", "--framework", "-s", "--source", "--package-directory", "--project"]);
+function parseDotnetSegment(seg: ShellTok[]): InstallPkg | null {
+  const m = sentence(seg).match(DOTNET_RE);
+  if (!m) return null;
+  let name = "";
+  let version = "";
+  const words = tailWords(seg, m[1]);
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (isBlankTok(w)) continue;
+    const flag = flagOf(w);
+    if (flag === "-v" || flag === "--version") { version = nameOf(words[++i] ?? w); continue; }
+    if (flag.startsWith("-")) { if (DOTNET_VALUE_FLAGS.has(flag)) i++; continue; }
+    if (!name) {
+      const tok = nameOf(w);
+      const at = tok.indexOf("@");
+      name = at > 0 ? tok.slice(0, at) : tok;
+      if (at > 0) version = tok.slice(at + 1);
+    }
+  }
+  if (!name || !/^[A-Za-z0-9_][A-Za-z0-9._-]*$/.test(name)) return null;
+  if (version.includes("*") || version.startsWith("-")) version = "";
+  return { name, version, eco: "nuget" };
 }
 
 // npm / cargo style: `name@version`, scoped `@scope/name@version`.

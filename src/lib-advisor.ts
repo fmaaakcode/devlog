@@ -21,10 +21,10 @@ import { osvEcosystem, scanPackages, type PkgVuln } from "./osv";
 const MAX_STEPBACK = 3;
 
 /** Ecosystems versionHistory can enumerate with dates (per-version history). */
-const HISTORY_ECOS = new Set(["npm", "pypi", "crates.io", "go"]);
+const HISTORY_ECOS = new Set(["npm", "pypi", "crates.io", "go", "nuget"]);
 
-/** Explicit per-name ecosystem override: `npm:astro`, `pypi:requests`, `crates:serde`, `go:github.com/x/y`. */
-const ECO_PREFIX: Record<string, string> = { npm: "npm", pypi: "pypi", crates: "crates.io", go: "go" };
+/** Explicit per-name ecosystem override: `npm:astro`, `pypi:requests`, `crates:serde`, `go:github.com/x/y`, `nuget:Serilog`. */
+const ECO_PREFIX: Record<string, string> = { npm: "npm", pypi: "pypi", crates: "crates.io", go: "go", nuget: "nuget" };
 
 // A Go module path by spec: the first path element is a domain (contains a
 // dot) followed by more segments. Unambiguous against the other ecosystems —

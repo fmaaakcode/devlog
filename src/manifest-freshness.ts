@@ -23,16 +23,18 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { MANIFEST_FILES, nestedManifestDirs } from "./manifest-dirs";
 import { isWorkflowFile, workflowDir } from "./ci-toolchain";
+import { NUGET_LOCKFILE, NUGET_SHARED_FILES, isNugetManifest } from "./nuget-deps";
 
 /** Declared dependencies — what the user edits (defined in manifest-dirs). */
 export { MANIFEST_FILES };
 
 /** Resolved dependencies — what the scanner actually reports versions from, and
  *  what a range-internal upgrade rewrites without touching any manifest. */
-export const LOCKFILES = ["Cargo.lock", "package-lock.json", "bun.lock", "bun.lockb", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "uv.lock", "go.sum", "composer.lock"];
+export const LOCKFILES = ["Cargo.lock", "package-lock.json", "bun.lock", "bun.lockb", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "uv.lock", "go.sum", "composer.lock", NUGET_LOCKFILE];
 
-/** Every filename whose change can move the snapshot. */
-export const FRESHNESS_FILES = [...MANIFEST_FILES, ...LOCKFILES];
+/** Every filename whose change can move the snapshot. NuGet's shared files
+ *  have fixed names; its project files (`*.csproj`) don't — see isFreshnessHit. */
+export const FRESHNESS_FILES = [...MANIFEST_FILES, ...LOCKFILES, ...NUGET_SHARED_FILES];
 
 /** The directories those files are looked for in: the project root plus the
  *  nested layouts the scanner reads. Existence is the caller's business — a
@@ -47,7 +49,7 @@ export const watchedDirs = (root: string) => [...freshnessDirs(root), workflowDi
 
 /** Does a change to `name` inside watched `dir` move the snapshot of `root`? */
 export function isFreshnessHit(root: string, dir: string, name: string): boolean {
-  return dir === workflowDir(root) ? isWorkflowFile(name) : FRESHNESS_FILES.includes(name);
+  return dir === workflowDir(root) ? isWorkflowFile(name) : FRESHNESS_FILES.includes(name) || isNugetManifest(name);
 }
 
 const listDirSafe = (dir: string): string[] => { try { return readdirSync(dir); } catch { return []; } };

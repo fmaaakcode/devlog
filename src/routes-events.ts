@@ -23,6 +23,7 @@ import { currentLang } from "./i18n";
 import { withShellWrites } from "./shell-write-events";
 import { applyShellOutcomes, type ShellOutcome } from "./command-outcomes";
 import type { ProjectProfile, EventEntry } from "./types";
+import { isNugetManifest } from "./nuget-deps";
 
 type ApiReq = Bun.BunRequest;
 const L = <T>(en: T, ar: T): T => (currentLang() === "ar" ? ar : en);
@@ -145,7 +146,7 @@ export function makeEventRoutes({ pushEvent, scheduleRescan, isRealCwd, MANIFEST
             // pointless (debounced but disk-walking) rescan on a false positive.
             const isDelete = entry.type === "command" && /(^|[\s;|&(])(rm|del|remove-item)\s/.test(bashCmd);
             const isCreate = entry.tool === "Create";
-            if ((MANIFEST_FILES.includes(changedFile) || isDelete || isCreate) && effectiveCwd) {
+            if ((MANIFEST_FILES.includes(changedFile) || isNugetManifest(changedFile) || isDelete || isCreate) && effectiveCwd) {
               scheduleRescan(effectiveCwd, name);
             }
 

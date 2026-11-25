@@ -6,6 +6,7 @@
 
 import { join } from "node:path";
 import { nestedManifestDirs } from "./manifest-dirs";
+import { collectNugetLocks } from "./nuget-deps";
 
 // Re-exported: project-resolve and the tests import the list from here.
 export { NESTED_MANIFEST_DIRS } from "./manifest-dirs";
@@ -54,6 +55,9 @@ export async function enumerateDepTree(dirPath: string): Promise<{ name: string;
   // auto-close of their security tags).
   await collectLockfiles(dirPath, add);
   for (const sub of nestedManifestDirs(dirPath)) await collectLockfiles(sub, add);
+  // .NET keeps one packages.lock.json beside EACH project, below the root — its
+  // own bounded walk instead of the conventional-subfolder list (#1333).
+  await collectNugetLocks(dirPath, add);
   return out;
 }
 
@@ -72,6 +76,7 @@ export async function dependentsGraph(dirPath: string): Promise<Map<string, Set<
   };
   await collectLockfiles(dirPath, noAdd, edge);
   for (const sub of nestedManifestDirs(dirPath)) await collectLockfiles(sub, noAdd, edge);
+  await collectNugetLocks(dirPath, noAdd, edge);
   return parents;
 }
 
