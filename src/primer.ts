@@ -37,7 +37,7 @@ Closure is mandatory: every open item (todo/bug/security/plan step) is closed by
 
 Before ADDING a new dependency, emit \`-(ask:lib) <name…>\` (up to 8) — DevLog answers with the exact version to install: newest stable ≥7 days old that OSV certifies clean. Don't research versions yourself and don't install blind \`@latest\`. A \`npm:\`/\`pypi:\`/\`crates:\`/\`nuget:\` prefix on a name overrides the project's ecosystem. After installing, record WHY the library is in this project: \`-(lib) <name> — <one-line purpose>\` (re-emit the same name to update; \`-(ask:deps)\` pulls the inventory and lists libraries still missing a purpose).
 
-Ask before you act (the answer arrives in the same turn, never logged): \`-(ask:search) <query>\` past decisions and fixes (\`all:\` = every project) · \`-(ask:recent)\` what happened last session · \`-(ask:map)\` where the code lives, before grepping · \`-(ask:why) <path>\` one file's history, before rewriting it · \`-(ask:rules) <category>\` a standards category, only when the user asks for it · \`-(ask:retro)\` / \`-(ask:study)\` / \`-(ask:record)\` whole-history analysis.
+Ask before you act (the answer arrives in the same turn, never logged): \`-(ask:search) <query>\` past decisions and fixes (\`all:\` = every project) · \`-(ask:recent)\` what happened last session · \`-(ask:about)\` what the project is and what it's built on, when asked to explain it · \`-(ask:map)\` where the code lives, before grepping · \`-(ask:why) <path>\` one file's history, before rewriting it · \`-(ask:rules) <category>\` a standards category, only when the user asks for it · \`-(ask:retro)\` / \`-(ask:study)\` / \`-(ask:record)\` whole-history analysis.
 
 Atomic: one concept per tag; no questions or planning prose inside a tag; multiple items → multiple tags.
 
@@ -65,7 +65,7 @@ DevLog مفعّل. في نهاية كل رد أصدر تاقات \`-(tag) conten
 
 قبل إضافة تبعية جديدة أصدر \`-(ask:lib) <اسم…>\` (حتى 8) — يجيبك DevLog بالنسخة الدقيقة للتركيب: أحدث مستقرة عمرها ≥7 أيام يشهد OSV بنظافتها. لا تبحث عن النسخ بنفسك ولا تركّب \`@latest\` أعمى. بادئة \`npm:\`/\`pypi:\`/\`crates:\`/\`nuget:\` على الاسم تتجاوز نظام المشروع. بعد التركيب سجّل سبب وجود المكتبة في المشروع: \`-(lib) <الاسم> — <غرض من سطر واحد>\` (أعد إصداره بنفس الاسم للتحديث؛ \`-(ask:deps)\` يسحب الجرد ويسرد ما بقي بلا غرض).
 
-اسأل قبل أن تعمل (الجواب يصل في نفس الدور ولا يُخزَّن): \`-(ask:search) <سؤال>\` قرارات وإصلاحات سابقة (\`all:\` = كل المشاريع) · \`-(ask:recent)\` ما جرى في الجلسة السابقة · \`-(ask:map)\` أين يسكن الكود، قبل grep · \`-(ask:why) <مسار>\` تاريخ ملف واحد، قبل إعادة كتابته · \`-(ask:rules) <تصنيف>\` تصنيف معايير، فقط حين يطلبه المستخدم · \`-(ask:retro)\` / \`-(ask:study)\` / \`-(ask:record)\` تحليل التاريخ كله.
+اسأل قبل أن تعمل (الجواب يصل في نفس الدور ولا يُخزَّن): \`-(ask:search) <سؤال>\` قرارات وإصلاحات سابقة (\`all:\` = كل المشاريع) · \`-(ask:recent)\` ما جرى في الجلسة السابقة · \`-(ask:about)\` ما هو المشروع وعلى ماذا بُني، حين يُطلب شرحه · \`-(ask:map)\` أين يسكن الكود، قبل grep · \`-(ask:why) <مسار>\` تاريخ ملف واحد، قبل إعادة كتابته · \`-(ask:rules) <تصنيف>\` تصنيف معايير، فقط حين يطلبه المستخدم · \`-(ask:retro)\` / \`-(ask:study)\` / \`-(ask:record)\` تحليل التاريخ كله.
 
 محتوى ذرّي: مفهوم واحد لكل تاق، بلا أسئلة أو تخطيط داخل التاق؛ عدّة عناصر → عدّة تاقات.
 

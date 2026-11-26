@@ -1,4 +1,4 @@
-# DevLog — recall and navigation: ask:search, ask:recent, ask:map, ask:why
+# DevLog — recall and navigation: ask:search, ask:recent, ask:about, ask:map, ask:why
 
 ## Recall (`ask:search`)
 
@@ -22,6 +22,14 @@ Every other pull asks by *subject* (a file, a question, an inventory); this one 
 | `-(ask:recent) 7d` | Sessions of the last 7 days (max 90d, 10 sessions) |
 
 It is a digest, not a dump: per session at most 20 tags and 15 files are listed, with `+N` overflow counts, and a footer points to `-(ask:why)` / `-(ask:search)` for depth.
+
+## What the project is (`ask:about`)
+
+| Form | Returns |
+|---|---|
+| `-(ask:about)` | The stored description in full (SessionStart only shows `about: yes`), the scanner's own facts (language, framework, runtime, file count, top folders, library counts, manifest folders), and drift warnings |
+
+Pull it when the user asks to be taught the project — before reading the code. The facts are a second opinion on the hand-written text. Drift warnings: the description is ≥5 releases old; it names a library the manifest no longer has (scoped names, or a name whose `-(lib)` purpose outlived its removal); `-(lib)` purposes kept for removed libraries. On a warning, propose the corrected description and, once the user approves, rewrite `.devlog/ABOUT.md` directly — a `-(about)` tag ends at its first blank line.
 
 ## Code map (`ask:map`)
 

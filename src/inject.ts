@@ -549,7 +549,10 @@ export function buildContext(
   // `desc` is by contract a ONE-LINE identity; clip it like the rest so a
   // paragraph pasted into it can't quietly become the biggest line in the block.
   if (profile.description) parts.push(`desc: ${safe(clipLine(profile.description, MAX_DESC_LINE))}`);
-  if (profile.about) parts.push(`about: yes`);
+  // Only the flag here — the text runs to 5000 chars. `-(ask:about)` serves it
+  // with the scanner's facts and the drift checks (#1342) when it is needed.
+  // Same in both languages and kept short: inject-size-budget's ceiling binds.
+  if (profile.about) parts.push("about: yes → -(ask:about)");
   if (profile.lastScan) parts.push(L(`Last scan: ${profile.lastScan.slice(0, 10)}`, `آخر فحص: ${profile.lastScan.slice(0, 10)}`));
 
   // Nudge Claude to fill a missing description/about (see describeNudgeLines).

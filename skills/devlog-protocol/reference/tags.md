@@ -5,7 +5,7 @@ Format: `-(tag) content` (case-sensitive). Append `!` after the tag for a breaki
 | Tag | Use |
 |---|---|
 | `-(desc)` | The project's STABLE one-line identity ("what is this project?") — never a session summary. Shows under the project name and as the client report's subtitle; re-emit only when the project itself changes. |
-| `-(about)` | Long description, replaces previous: plain-language "what it is / how it works" + the concrete stack (language, runtime, frameworks, key libraries, integrations). A technical ID card, not marketing prose. |
+| `-(about)` | Long description, replaces previous: plain-language "what it is / how it works" + the concrete stack (language, runtime, frameworks, key libraries, integrations). A technical ID card, not marketing prose. Ends at the first blank line like every body tag — for a multi-section description write `.devlog/ABOUT.md` directly (rescans read it). |
 | `-(built)` | New code that does **not** map to a plan step |
 | `-(refactor)` | Restructure without behavior change |
 | `-(update)` | Dependency/library bump |

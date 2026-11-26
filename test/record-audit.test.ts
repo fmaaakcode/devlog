@@ -40,12 +40,12 @@ describe("swallowed prose", () => {
     expect(det(data([tag("built", "وصف\nتكملة تقنية ملاصقة")]), "swallowed-prose").total).toBe(0);
   });
 
-  test("`about` and doc bodies keep their paragraphs", () => {
-    const d = data([
-      tag("about", "أداة\n\nالستاك: Bun"),
-      tag("doc:report", "تقرير\n\n# عنوان\n\nفقرة"),
-    ]);
-    expect(det(d, "swallowed-prose").total).toBe(0);
+  test("doc bodies keep their paragraphs", () => {
+    expect(det(data([tag("doc:report", "تقرير\n\n# عنوان\n\nفقرة")]), "swallowed-prose").total).toBe(0);
+  });
+
+  test("an `about` with a paragraph break is swallowed prose, like the parser now cuts it", () => {
+    expect(det(data([tag("about", "أداة\n\nوش رأيك؟")]), "swallowed-prose").total).toBe(1);
   });
 });
 

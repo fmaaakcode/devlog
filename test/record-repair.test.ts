@@ -32,10 +32,13 @@ describe("a repair only ever trims", () => {
     expect(repairedContent("built", c)).toBe(c);
   });
 
-  test("`about` and doc bodies are never trimmed", () => {
+  test("doc bodies are never trimmed", () => {
     const c = "أداة\n\nالستاك: Bun";
-    expect(repairedContent("about", c)).toBe(c);
     expect(repairedContent("doc:report", c)).toBe(c);
+  });
+
+  test("an `about` is trimmed at the paragraph break, as the parser now cuts it", () => {
+    expect(repairedContent("about", "أداة\n\nوش رأيك؟")).toBe("أداة");
   });
 
   test("the result is always a PREFIX of the original — nothing is invented", () => {

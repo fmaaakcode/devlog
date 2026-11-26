@@ -52,7 +52,7 @@ export const SINGLE_LINE_TAGS = new Set([
 // stored with a trailing "\n\n-(ask:features)").
 export const COMMAND_TAGS = [
   "ask:open", "ask:closed", "ask:features", "ask:retro", "ask:backfill", "ask:map", "ask:why", "ask:recent", "ask:record",
-  "ask:study", "ask:rules", "ask:lib", "ask:deps", "ask:search", "rules:list", "rule:add", "rule:new", "rule:rm",
+  "ask:study", "ask:rules", "ask:lib", "ask:deps", "ask:about", "ask:search", "rules:list", "rule:add", "rule:new", "rule:rm",
   "rule:ack", "rule:acks", "audit",
 ] as const;
 
@@ -210,9 +210,12 @@ export function parseTags(msg: string): ParsedTag[] {
     // كلمتك للـpush"). A blank line is the one structural signal that separates
     // them: across the store, genuine continuations are always the ADJACENT
     // line (a second clause of the same sentence), while swallowed reply prose
-    // starts its own paragraph. `about` is the long project description and
-    // `doc:*` bodies are markdown by design — both keep their blank lines.
-    else if (tag !== "about" && !tag.startsWith("doc:")) {
+    // starts its own paragraph. Only `doc:*` bodies (markdown by design) keep
+    // their blank lines. `about` used to be exempt too, and that is how a
+    // four-question discussion that followed it ended up stored as the
+    // project's description; a structured multi-section description is written
+    // to `.devlog/ABOUT.md` directly (the scanner reads it on every rescan).
+    else if (!tag.startsWith("doc:")) {
       const brk = content.search(/\r?\n[ \t]*\r?\n/);
       if (brk >= 0) content = content.slice(0, brk).trim();
     }

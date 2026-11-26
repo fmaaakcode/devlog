@@ -48,6 +48,8 @@ export interface DepExplainItem {
   version: string;
   dev?: boolean;
   eco?: string;
+  /** Subfolder whose manifest declared it — absent for the project root. */
+  dir?: string;
   purpose?: string;
   purposeAt?: string;
   /** Official registry one-liner — absent until a vuln scan has cached it. */
@@ -74,6 +76,10 @@ export interface DepsExplainPayload {
    *  section, outside the coverage count, which stays about direct libraries. */
   forced: DepExplainItem[];
   orphans: OrphanPurpose[];
+  /** Manifest folders the libraries came from ("" = root), when more than one
+   *  — the answer then groups by folder so an experiment's libraries never
+   *  read as the system's. Absent for the ordinary single-manifest project. */
+  dirs?: string[];
 }
 
 /** The /api/deps payload: every manifest library, annotated. Null when the
@@ -84,7 +90,7 @@ export function buildDepsPayload(data: DevLogData, project: string): DepsExplain
   if (!p) return null;
   const purposes = depPurposes(data, project);
   const vulns = p.vulnResults || {};
-  const annotate = (l: { name: string; version: string; dev?: boolean; eco?: string }): DepExplainItem => {
+  const annotate = (l: { name: string; version: string; dev?: boolean; eco?: string; dir?: string }): DepExplainItem => {
     const pur = purposes.get(l.name.toLowerCase());
     const v = vulns[l.name];
     return {
@@ -92,6 +98,7 @@ export function buildDepsPayload(data: DevLogData, project: string): DepsExplain
       version: l.version,
       ...(l.dev ? { dev: true } : {}),
       ...(l.eco ? { eco: l.eco } : {}),
+      ...(l.dir ? { dir: l.dir } : {}),
       ...(pur ? { purpose: pur.purpose, purposeAt: pur.at } : {}),
       ...(v?.description ? { description: v.description } : {}),
       ...(typeof v?.vulns === "number" && v.vulns > 0 ? { vulns: v.vulns, ...(v.severity ? { severity: v.severity } : {}) } : {}),
@@ -107,6 +114,7 @@ export function buildDepsPayload(data: DevLogData, project: string): DepsExplain
   const orphans: OrphanPurpose[] = [];
   for (const [name, pur] of purposes) if (!known.has(name)) orphans.push({ name, purpose: pur.purpose, purposeAt: pur.at });
   orphans.sort((a, b) => a.name.localeCompare(b.name));
+  const dirs = [...new Set(libraries.map(l => l.dir || ""))].sort();
   return {
     project,
     total: libraries.length,
@@ -114,5 +122,6 @@ export function buildDepsPayload(data: DevLogData, project: string): DepsExplain
     libraries,
     forced,
     orphans,
+    ...(dirs.length > 1 ? { dirs } : {}),
   };
 }

@@ -24,7 +24,7 @@
 
 import { readdir, readFile, access } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join, extname, } from "node:path";
+import { basename, join, extname } from "node:path";
 import { claudeConfigDir, claudeProjectSlug, normalizeSlashes, pathsEqual } from "./path-utils";
 import { nestedManifestDirs } from "./manifest-dirs";
 import { readCiToolchain } from "./ci-toolchain";
@@ -160,7 +160,10 @@ export function detectLanguage(files: Record<string, number>): string {
 // Every parser stamps its libraries with its manifest's ecosystem key, so a
 // merged multi-manifest list (Tauri: package.json + src-tauri/Cargo.toml)
 // keeps each library routable to its OWN registry.
-type DetectedLib = { name: string; version: string; dev?: boolean; eco: string };
+// `dir` names the subfolder whose manifest declared the library (absent = the
+// root): D:\kb keeps its system in `kb/` and a finished experiment in `slice/`,
+// and without the label the experiment's libraries read as the system's.
+type DetectedLib = { name: string; version: string; dev?: boolean; eco: string; dir?: string };
 type DetectResult = { framework: string; libraries: DetectedLib[]; forced?: ForcedLib[] };
 
 // Strip range operators so "^18.0.0" / ">=2.0" render as bare versions.
@@ -377,10 +380,11 @@ export async function detectPackages(dirPath: string, _depth = 0): Promise<Detec
       if (!hasManifest) continue;
       const nested = await detectPackages(subPath, 1);
       if (!result.framework && nested.framework) result.framework = nested.framework;
+      const dir = basename(subPath);   // single level: the basename IS the relative path
       for (const lib of nested.libraries) {
         if (seen.has(lib.name)) continue;
         seen.add(lib.name);
-        result.libraries.push(lib);
+        result.libraries.push({ ...lib, dir });
       }
       if (nested.forced?.length) result.forced = [...(result.forced || []), ...nested.forced];
     }

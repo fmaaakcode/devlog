@@ -93,6 +93,7 @@ beforeAll(async () => {
   await post([{ tag: "bug fix", content: "#2" }]);
   await post([{ tag: "feature", content: "export the monthly report as PDF" }]);
   await post([{ tag: "lib", content: "zod — request body validation" }]);
+  await post([{ tag: "about", content: "askfam builds the monthly operations report" }]);
   await post([{ tag: "decision", content: "chose polling over websockets for the status bar" }]);
 });
 
@@ -112,6 +113,7 @@ describe("every ask serves its own labelled block", () => {
     ["-(ask:search) polling", "U-search", "[devlog recall]", "polling"],
     ["-(ask:features)", "U-feat", "[devlog features]", "monthly report"],
     ["-(ask:deps)", "U-deps", "[devlog deps]", "zod"],
+    ["-(ask:about)", "U-about", "[devlog about]", "monthly operations report"],
     ["-(ask:retro)", "U-retro", "[devlog retro]", "duplicate row on retry"],
     ["-(ask:study)", "U-study", "[devlog study]", "helper" as string],
   ];

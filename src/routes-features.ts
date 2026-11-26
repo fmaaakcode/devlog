@@ -7,6 +7,7 @@
 // and serve the rendered `.devlog/docs/` documents for the dashboard's studies
 // section. Spread into server.ts's routeDefs.
 
+import { stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { loadData, withData } from "./data";
 import { resolveProjectFor } from "./project-resolve";
@@ -15,6 +16,7 @@ import { diskExists } from "./disk-probe";
 import { tallyEvidence } from "./claim-evidence";
 import { featureList, featuresSinceLastRelease, backfillCorpus } from "./features";
 import { buildDepsPayload } from "./deps-explain";
+import { buildAboutPayload } from "./project-about";
 import { collectClientReport, renderClientReportHtml, writeClientReport } from "./client-report";
 import { retroCorpus, fragileFiles, regressionGap, interimDebt } from "./retro";
 import { auditRecord, shapeDrift, previewRepair } from "./record-audit";
@@ -122,6 +124,23 @@ export function makeFeatureRoutes({ htmlResponse }: FeatureRouteDeps): Record<st
         if (!project) return Response.json(empty);
         const data = await loadData();
         return Response.json(buildDepsPayload(data, project) ?? empty);
+      },
+    },
+
+    // The `-(ask:about)` answer (#1342/#1344): stored description in full + the
+    // scanner's own facts + drift checks. ABOUT.md's mtime dates the text — the
+    // file is the description's source of truth (a rescan reloads it).
+    "/api/about": {
+      async GET(req: ApiReq) {
+        const project = await resolveParam(req);
+        if (!project) return Response.json({ project: null });
+        const data = await loadData();
+        const root = data.projects[project]?.path;
+        let mtime: string | undefined;
+        if (root) {
+          try { mtime = (await stat(join(root, ".devlog", "ABOUT.md"))).mtime.toISOString(); } catch { /* no file → dated by the last about tag */ }
+        }
+        return Response.json(buildAboutPayload(data, project, mtime) ?? { project: null });
       },
     },
 

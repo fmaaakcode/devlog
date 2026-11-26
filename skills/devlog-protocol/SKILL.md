@@ -25,7 +25,7 @@ Paths are relative to this skill's directory.
 | `doc:report/analysis/plan/comparison/readme/update`, trackable plans and closing their steps | `reference/docs-plans.md` |
 | Standards library: `ask:rules`, `rule:add`, `rule:new`, `rules:list`, `rule:rm`, `rule:ack(s)`, the two layers, what `[check]` really enforces | `reference/standards.md` |
 | Dependencies: `ask:lib` (the version to install) and the install gate, `lib` / `ask:deps`, the `audit` vuln scan | `reference/deps.md` |
-| Asking the record: `ask:search` (past decisions/fixes), `ask:recent` (last sessions), `ask:map` (where code lives), `ask:why` (one file's history) | `reference/recall.md` |
+| Asking the record: `ask:search` (past decisions/fixes), `ask:recent` (last sessions), `ask:about` (what the project is + drift), `ask:map` (where code lives), `ask:why` (one file's history) | `reference/recall.md` |
 | Whole-history analysis: `ask:retro`, `ask:study`, `ask:record` | `reference/analysis.md` |
 
 Open items and closures in one line: `-(ask:open)` pulls the live open list, `-(ask:closed) #N` says whether and how an item was closed — details in `reference/closure.md`.

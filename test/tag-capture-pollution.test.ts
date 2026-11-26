@@ -61,9 +61,11 @@ describe("#692 — a body tag stops at the first paragraph break", () => {
     expect(parseTags(msg)[0].content).toBe("غُيّر اسم الحزمة\nوالـbinary صار aljsr.exe");
   });
 
-  test("`about` keeps its paragraphs — it IS the long description", () => {
-    const msg = "-(about) أداة توثيق\n\nالستاك: Bun + TypeScript";
-    expect(parseTags(msg)[0].content).toBe("أداة توثيق\n\nالستاك: Bun + TypeScript");
+  test("`about` stops at the paragraph break — reply prose after it is not the description", () => {
+    // The real case: an about followed by `---` and a four-question discussion
+    // was stored whole as the project's description.
+    const msg = "-(about) أداة توثيق\nالستاك: Bun + TypeScript\n\n---\n\nوش رأيك بهالأربع؟";
+    expect(parseTags(msg)[0].content).toBe("أداة توثيق\nالستاك: Bun + TypeScript");
   });
 
   test("`doc:*` bodies keep their markdown blank lines", () => {

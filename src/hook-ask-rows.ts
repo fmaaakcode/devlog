@@ -15,6 +15,7 @@
 // local disk, runs lifecycle commands and posts telemetry — a different shape
 // that a fetch-and-format row would only pretend to cover.
 
+import { PROJECT_ASK_ROWS } from "./hook-ask-project";
 import { noteAskFailure } from "./hook-asks";
 import type { AskCtx, AskData, AskHit, AskRow } from "./hook-asks";
 import { formatLibAdviceLines, type LibAdviceItem } from "./lib-advice-lines";
@@ -530,45 +531,8 @@ export const ASK_ROWS: AskRow[] = [
     },
   },
 
-  // ── -(ask:deps) — dependency inventory + purpose coverage ─────────────────
-  // Every manifest library with its recorded purpose (`-(lib)`, latest wins)
-  // and the registry one-liner the vuln scan cached. Uncovered ones listed so
-  // the gap is visible; the footer says how to close it.
-  {
-    key: "ask:deps",
-    label: "deps",
-    re: /^[ \t]*-\s*\(ask:deps\)[ \t]*$/gm,
-    path: "/api/deps",
-    logLine: d => `ask:deps: served ${(d.libraries || []).length} item(s)`,
-    format: (d, _m, ctx) => {
-      const { libraries = [], forced = [], total = 0, withPurpose = 0, orphans = [] } = d as { libraries?: Row[]; forced?: Row[]; total?: number; withPurpose?: number; orphans?: Row[] };
-      const line = (l: Row) => {
-        const dev = l.dev ? " (dev)" : "";
-        const desc = l.description ? ` · ${String(l.description).slice(0, 120)}` : "";
-        return l.purpose
-          ? `  ✓ ${l.name}@${l.version}${dev} — ${l.purpose}${desc}`
-          : `  ∅ ${l.name}@${l.version}${dev} — ${ctx.L("no purpose recorded", "بلا غرض مسجَّل")}${desc}`;
-      };
-      const uncovered = total - withPurpose;
-      const footer = uncovered > 0
-        ? ctx.L(`\n  ${uncovered} without a purpose — draft one line each, get the user's approval, then record each with \`-(lib) <name> — <purpose>\`.`,
-                `\n  ${uncovered} بلا غرض — اقترح سطرًا لكل واحدة، خذ موافقة المستخدم، ثم سجّل كل واحدة بـ\`-(lib) <الاسم> — <الغرض>\`.`)
-        : "";
-      // Purposes recorded for names outside the manifest (#1115) — shown, not
-      // swallowed: a typo to fix with a re-emit, or a CDN library to keep.
-      const orphanBlock = orphans.length
-        ? `\n${ctx.L(`Purposes recorded for names NOT in the manifest (${orphans.length}) — typo? re-emit under the right name; CDN/vendored? fine as is:`, `أغراض مسجَّلة لأسماء ليست في المانيفست (${orphans.length}) — خطأ إملائي؟ أعد الإصدار بالاسم الصحيح؛ CDN/مضمَّنة؟ تبقى كما هي:`)}\n${orphans.map((o: Row) => `  ⌀ ${o.name} — ${o.purpose}`).join("\n")}`
-        : "";
-      const body = libraries.length
-        ? `${ctx.L(`Project libraries (${total}, ${withPurpose} with a recorded purpose):`, `مكتبات المشروع (${total}، منها ${withPurpose} بغرض مسجَّل):`)}\n${libraries.map(line).join("\n")}${footer}`
-        : ctx.L("No libraries known for this project yet (they appear after the first scan).",
-                "لا مكتبات معروفة للمشروع بعد (تظهر بعد أول فحص).");
-      const forcedBlock = forced.length
-        ? `\n${ctx.L(`Indirect libraries with a forced version (overrides) (${forced.length}):`, `مكتبات فرعية مفروضة النسخة في overrides (${forced.length}):`)}\n${forced.map(line).join("\n")}`
-        : "";
-      return body + forcedBlock + orphanBlock;
-    },
-  },
+  // ── -(ask:about) + -(ask:deps) — what the project is (./hook-ask-project) ──
+  ...PROJECT_ASK_ROWS,
 
   // ── -(ask:retro) — the whole problem corpus ───────────────────────────────
   // Every bug/security report, open and closed, pre-clustered by file so the

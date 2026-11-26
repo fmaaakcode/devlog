@@ -65,6 +65,9 @@ const EXCERPT = 90;
 // design: both legitimately hold blank lines and great length. Excluding them is
 // not leniency, it is the same exemption the parser itself makes.
 const isFreeform = (tag: string) => tag === "about" || tag.startsWith("doc:");
+// The paragraph rule follows the parser, which since the ABOUT.md pollution
+// exempts only `doc:*`: an `about` with a blank line is swallowed prose too.
+const keepsParagraphs = (tag: string) => tag.startsWith("doc:");
 
 const excerpt = (s: string) => {
   const flat = String(s || "").replace(/\s*\r?\n\s*/g, " ⏎ ").trim();
@@ -89,7 +92,7 @@ const median = (xs: number[]): number => {
 function swallowedProse(tags: TagEntry[]): AuditFinding[] {
   const out: AuditFinding[] = [];
   for (const t of tags) {
-    if (isFreeform(t.tag)) continue;
+    if (keepsParagraphs(t.tag)) continue;
     const brk = String(t.content || "").search(/\r?\n[ \t]*\r?\n/);
     if (brk >= 0) out.push(finding(t, t.content.length - brk));
   }
@@ -216,7 +219,7 @@ const DETECTORS: { key: string; title: { en: string; ar: string }; run: (t: TagE
  * different words; when that rule changes, this must follow it.
  */
 export function repairedContent(tag: string, content: string): string {
-  if (isFreeform(tag)) return content;
+  if (keepsParagraphs(tag)) return content;
   const brk = String(content || "").search(/\r?\n[ \t]*\r?\n/);
   return brk >= 0 ? content.slice(0, brk).trimEnd() : content;
 }

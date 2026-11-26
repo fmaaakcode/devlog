@@ -69,6 +69,12 @@ Write the tag content in the user's language.
   عليه. اسحبه **قبل** إعادة كتابة ملف مترابط، فلا تقترح حلًّا سبق رفضه ولا
   تعيد خطأً أُصلح. `-(ask:map)` يقول «أين أنظر»، وهذا يقول «ماذا جرى هنا».
   عابر، لا يُخزَّن.
+- `-(ask:about)` «علّمني هذا المشروع»: الوصف المخزَّن كاملًا (سياق البداية يقول
+  `about: yes` فقط) + ما يراه الفحص بنفسه (اللغة، الإطار، المجلدات، عدد المكتبات
+  ومجلدات المانيفست) + تنبيهات الانجراف: وصف أقدم من 5 إصدارات، مكتبة يذكرها
+  الوصف ولم تعد في المانيفست، أغراض `-(lib)` لمكتبات أُزيلت. اسحبه قبل قراءة
+  الكود. الوصف متعدد الأقسام يُكتب في `.devlog/ABOUT.md` مباشرة — تاق `-(about)`
+  يقف عند أول سطر فارغ. عابر، لا يُخزَّن.
 - `-(ask:map) [محور]` the project's code map — files ranked by how much the rest
   of the code depends on them, each with the purpose its own header states. Use it
   BEFORE grepping an unfamiliar area; the argument narrows to one subsystem

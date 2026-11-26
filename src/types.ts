@@ -33,7 +33,8 @@ export interface ProjectProfile {
   // "crates.io", "pypi", …) stamped by the manifest parser that found the
   // library. Absent on profiles stored before the multi-ecosystem fix —
   // consumers fall back to ecoMap[language] then.
-  libraries: { name: string; version: string; dev?: boolean; eco?: string }[];
+  /** `dir`: the subfolder whose manifest declared it (absent = project root). */
+  libraries: { name: string; version: string; dev?: boolean; eco?: string; dir?: string }[];
   /** Indirect libraries whose version the manifest forces (npm/bun overrides,
    *  yarn resolutions, pnpm.overrides) — apart from `libraries`, which every
    *  consumer reads as "direct dependencies" (manifest-overrides.ts). */
